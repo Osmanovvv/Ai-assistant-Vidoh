@@ -24,6 +24,18 @@ export interface TextProfile {
   readonly limits: {
     readonly tooManyDumps: string;
   };
+  readonly privacy: {
+    readonly deleteFirstStep: string;
+    readonly deleteSecondStep: string;
+    readonly deleteConfirmButton: string;
+    readonly deleteFinalButton: string;
+    readonly deleteCancelButton: string;
+    readonly deleteDone: string;
+    readonly deleteCancelled: string;
+    readonly nothingToDelete: string;
+    readonly nothingToExport: string;
+    readonly exportReady: string;
+  };
   readonly errors: {
     readonly generic: string;
   };
@@ -50,6 +62,20 @@ const reserved: TextProfile = {
 
   limits: {
     tooManyDumps: 'На сегодня достаточно. Всё, что прислала, сохранено — вернёмся завтра.',
+  },
+
+  privacy: {
+    deleteFirstStep:
+      'Удалю всё: записи, расшифровки, настройки и сам профиль. Восстановить будет нельзя.',
+    deleteSecondStep: 'Последняя проверка. Удаляю всё безвозвратно?',
+    deleteConfirmButton: 'Удалить',
+    deleteFinalButton: 'Да, удалить безвозвратно',
+    deleteCancelButton: 'Отмена',
+    deleteDone: 'Готово. Всё удалено. Если захочешь начать заново — просто напиши.',
+    deleteCancelled: 'Отменила. Всё на месте.',
+    nothingToDelete: 'Удалять нечего: данных нет.',
+    nothingToExport: 'Выгружать нечего: данных пока нет.',
+    exportReady: 'Вот всё, что у меня есть.',
   },
 
   errors: {
