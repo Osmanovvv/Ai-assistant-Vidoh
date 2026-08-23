@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { EnvValidationError, WEBHOOK_PATH, parseEnv, webhookUrl } from './env.js';
+import {
+  EnvValidationError,
+  WEBHOOK_PATH,
+  parseEnv,
+  productionWarnings,
+  webhookUrl,
+} from './env.js';
 
 /** Заведомо ненастоящий токен нужного формата: репозиторий публичный. */
 const FAKE_TOKEN = '123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 const valid: Record<string, string> = {
   NODE_ENV: 'test',
-  PUBLIC_URL: 'https://bot.example.com',
+  PUBLIC_URL: 'https://bot.vydoh.test',
+  PRIVACY_POLICY_URL: 'https://vydoh.test/privacy',
   BOT_TOKEN: FAKE_TOKEN,
   BOT_WEBHOOK_SECRET: 'a'.repeat(32),
-  DATABASE_URL: 'postgres://vydoh:vydoh@localhost:5432/vydoh',
+  DATABASE_URL: 'postgres://vydoh:vydoh@localhost:5434/vydoh',
   REDIS_URL: 'redis://localhost:6379',
 };
 
@@ -93,11 +100,11 @@ describe('parseEnv', () => {
 
   describe('публичный адрес', () => {
     it('отвергает http: Telegram принимает вебхук только по https', () => {
-      expect(() => parseWith({ PUBLIC_URL: 'http://bot.example.com' })).toThrow(EnvValidationError);
+      expect(() => parseWith({ PUBLIC_URL: 'http://bot.vydoh.test' })).toThrow(EnvValidationError);
     });
 
     it('отвергает строку, которая не является адресом', () => {
-      expect(() => parseWith({ PUBLIC_URL: 'bot.example.com' })).toThrow(EnvValidationError);
+      expect(() => parseWith({ PUBLIC_URL: 'bot.vydoh.test' })).toThrow(EnvValidationError);
     });
   });
 
@@ -137,11 +144,50 @@ describe('parseEnv', () => {
 describe('webhookUrl', () => {
   it('собирает адрес вебхука из публичного адреса', () => {
     const env = parseEnv(valid);
-    expect(webhookUrl(env)).toBe(`https://bot.example.com${WEBHOOK_PATH}`);
+    expect(webhookUrl(env)).toBe(`https://bot.vydoh.test${WEBHOOK_PATH}`);
   });
 
   it('не задваивает слэш, если публичный адрес заканчивается на слэш', () => {
-    const env = parseWith({ PUBLIC_URL: 'https://bot.example.com/' });
-    expect(webhookUrl(env)).toBe(`https://bot.example.com${WEBHOOK_PATH}`);
+    const env = parseWith({ PUBLIC_URL: 'https://bot.vydoh.test/' });
+    expect(webhookUrl(env)).toBe(`https://bot.vydoh.test${WEBHOOK_PATH}`);
+  });
+});
+
+describe('адрес политики конфиденциальности', () => {
+  it('обязателен: §16 ТЗ требует показывать согласие при первом запуске', () => {
+    expect(() => parseWith({ PRIVACY_POLICY_URL: undefined })).toThrow(EnvValidationError);
+  });
+
+  it('должен быть по https', () => {
+    expect(() => parseWith({ PRIVACY_POLICY_URL: 'http://vydoh.test/privacy' })).toThrow(
+      EnvValidationError,
+    );
+  });
+});
+
+describe('productionWarnings', () => {
+  it('молчит на настоящих адресах', () => {
+    expect(productionWarnings(parseEnv(valid))).toEqual([]);
+  });
+
+  it('ловит заглушку из .env.example в публичном адресе', () => {
+    const env = parseWith({ PUBLIC_URL: 'https://example.invalid' });
+
+    expect(productionWarnings(env)).toContain('PUBLIC_URL указывает на заглушку из .env.example');
+  });
+
+  it('ловит заглушку в адресе политики', () => {
+    const env = parseWith({ PRIVACY_POLICY_URL: 'https://example.invalid/privacy' });
+
+    expect(productionWarnings(env)).toHaveLength(1);
+  });
+
+  it('сообщает про обе заглушки сразу', () => {
+    const env = parseWith({
+      PUBLIC_URL: 'https://example.invalid',
+      PRIVACY_POLICY_URL: 'https://example.invalid/privacy',
+    });
+
+    expect(productionWarnings(env)).toHaveLength(2);
   });
 });

@@ -57,6 +57,13 @@ export const envSchema = z.object({
 
   BOT_SET_WEBHOOK_ON_BOOT: booleanFromEnv(true),
 
+  /**
+   * §16 ТЗ: согласие на обработку данных показывается при первом запуске
+   * одним экраном со ссылкой. Переменная обязательная намеренно — иначе
+   * про политику вспомнят на приёмке, а не при выкладке.
+   */
+  PRIVACY_POLICY_URL: httpsUrl,
+
   DATABASE_URL: z.string().min(1).startsWith('postgres', 'должен начинаться с postgres://'),
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });
@@ -111,4 +118,26 @@ export const WEBHOOK_PATH = '/telegram/webhook';
 
 export function webhookUrl(env: Env): string {
   return new URL(WEBHOOK_PATH, env.PUBLIC_URL).toString();
+}
+
+/** Адреса-заглушки из .env.example, которые нельзя тащить в бой. */
+const PLACEHOLDER_HOSTS = new Set(['example.invalid', 'example.com']);
+
+/**
+ * Настройки, с которыми нельзя запускаться в бою. Возвращает список
+ * проблем, а не бросает: на этапе разработки они допустимы.
+ */
+export function productionWarnings(env: Env): readonly string[] {
+  const warnings: string[] = [];
+
+  for (const [name, value] of [
+    ['PUBLIC_URL', env.PUBLIC_URL],
+    ['PRIVACY_POLICY_URL', env.PRIVACY_POLICY_URL],
+  ] as const) {
+    if (PLACEHOLDER_HOSTS.has(new URL(value).hostname)) {
+      warnings.push(`${name} указывает на заглушку из .env.example`);
+    }
+  }
+
+  return warnings;
 }
