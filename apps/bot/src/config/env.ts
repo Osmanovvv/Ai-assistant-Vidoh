@@ -64,6 +64,13 @@ export const envSchema = z.object({
    */
   PRIVACY_POLICY_URL: httpsUrl,
 
+  /**
+   * §18 ТЗ: чат для оповещений об ошибках и недоступности сервисов.
+   * Необязателен: без него мониторинг только пишет в лог, и это видно
+   * при старте. С ним оповещения приходят в Telegram.
+   */
+  MONITORING_CHAT_ID: z.coerce.number().int().optional(),
+
   DATABASE_URL: z.string().min(1).startsWith('postgres', 'должен начинаться с postgres://'),
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });

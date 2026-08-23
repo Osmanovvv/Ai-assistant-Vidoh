@@ -1,15 +1,19 @@
 import type { Server } from 'node:http';
 
 import type { Worker } from 'bullmq';
+import type { Api } from 'grammy';
 
 import { ALLOWED_UPDATES, createBot } from './bot/bot.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
+import { registerMembershipHandlers } from './bot/handlers/membership.js';
+import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
 import { createWebhookHandler } from './bot/webhook.js';
 import { WEBHOOK_PATH, getEnv, productionWarnings, webhookUrl } from './config/env.js';
 import { closeDb, getDb, pingDb } from './infra/db.js';
 import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
+import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import {
   createQueue,
   createWorker,
@@ -20,6 +24,7 @@ import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
 import { createServer } from './http/server.js';
 import { DEFAULT_LIMITS, closeBatchOnSilence } from './modules/buffer/buffer.service.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
+import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 
 /** Точка входа. */
 
@@ -30,6 +35,31 @@ const logger = createLogger({
 });
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
+
+/** Оповещения в Telegram, если задан чат; иначе только в лог (§18 ТЗ). */
+function createAlertSink(api: Api, chatId: number | undefined): AlertSink {
+  if (chatId === undefined) {
+    logger.warn('MONITORING_CHAT_ID не задан: оповещения будут только в логе');
+    return {
+      deliver: (alert) => {
+        logger.error({ alert }, 'Оповещение мониторинга');
+        return Promise.resolve();
+      },
+    };
+  }
+
+  return {
+    deliver: async (alert) => {
+      logger.error({ alert }, 'Оповещение мониторинга');
+      try {
+        await api.sendMessage(chatId, formatAlert(alert));
+      } catch (error) {
+        // Недоступный чат мониторинга не должен ронять обработку.
+        logger.error({ err: error }, 'Не удалось доставить оповещение');
+      }
+    },
+  };
+}
 
 async function main(): Promise<void> {
   if (env.NODE_ENV === 'production') {
@@ -42,12 +72,43 @@ async function main(): Promise<void> {
   await Promise.all([pingDb(db), pingRedis(getRedis())]);
   logger.info('Postgres и Redis отвечают');
 
+  const bot = createBot(env.BOT_TOKEN);
+  await bot.init();
+  logger.info(
+    {
+      username: bot.botInfo.username,
+      // §8 ТЗ целиком зависит от этого флага: если режим тем выключен
+      // в @BotFather, бот работает в плоском режиме, и это видно в логе.
+      hasTopicsEnabled: bot.botInfo.has_topics_enabled,
+      allowsUsersToCreateTopics: bot.botInfo.allows_users_to_create_topics,
+    },
+    'Бот инициализирован',
+  );
+
+  const monitor = new Monitor({ sink: createAlertSink(bot.api, env.MONITORING_CHAT_ID) });
+
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
   // свои клиенты: общий с приложением они бы заняли надолго.
   const queueConnection = createRedis(env.REDIS_URL);
   const workerConnection = createRedis(env.REDIS_URL);
   const queue = createQueue(queueConnection);
   const lock = new RedisLock(getRedis());
+
+  // §9.1 правило 4 ТЗ: незавершённая обработка возобновляется, а не теряется.
+  const recovery = await recoverStuckBatches(db);
+  if (recovery.userIds.length > 0) {
+    logger.warn(
+      {
+        requeued: recovery.requeuedProcessing,
+        closedOrphaned: recovery.closedOrphanedOpen,
+        users: recovery.userIds.length,
+      },
+      'Подхватываю незавершённые выгрузки после перезапуска',
+    );
+    for (const userId of recovery.userIds) {
+      await enqueueUserProcessing(queue, userId);
+    }
+  }
 
   const worker = createWorker(workerConnection, async (job) => {
     const data: PipelineJob = job.data;
@@ -65,34 +126,27 @@ async function main(): Promise<void> {
 
     const result = await processUserBatches({ db, lock }, data.userId);
     if (result.skipped) {
-      // Замок занят: работу доделает тот воркер, который его держит.
       logger.debug({ userId: data.userId }, 'Пользователь уже обрабатывается');
     }
   });
 
+  worker.on('completed', () => {
+    void monitor.recordOutcome(true);
+  });
   worker.on('failed', (job, error) => {
     logger.error({ jobId: job?.id, err: error }, 'Задание не выполнено');
+    void monitor.recordOutcome(false);
   });
-
-  const bot = createBot(env.BOT_TOKEN);
-  await bot.init();
-  logger.info(
-    {
-      username: bot.botInfo.username,
-      // §8 ТЗ целиком зависит от этого флага: если режим тем выключен
-      // в @BotFather, бот работает в плоском режиме, и это видно в логе.
-      hasTopicsEnabled: bot.botInfo.has_topics_enabled,
-      allowsUsersToCreateTopics: bot.botInfo.allows_users_to_create_topics,
-    },
-    'Бот инициализирован',
-  );
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
   bot.use(incomingMiddleware({ db, queue }));
   registerStartHandlers(bot, env.PRIVACY_POLICY_URL);
+  registerPrivacyHandlers(bot, db, logger);
+  registerMembershipHandlers(bot, db, logger);
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');
+    void monitor.recordOutcome(false);
   });
 
   if (env.BOT_SET_WEBHOOK_ON_BOOT) {

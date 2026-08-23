@@ -12,7 +12,9 @@ import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.serv
 import { upsertUser } from '../users/users.repo.js';
 import { processUserBatches } from './pipeline.service.js';
 
-const redis: Redis = createRedis(process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379');
+const redis: Redis = createRedis(process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379', {
+  maxReconnectAttempts: 3,
+});
 const lock = new RedisLock(redis, 'test-pipe:');
 
 const T0 = new Date('2026-08-23T10:00:00.000Z');
