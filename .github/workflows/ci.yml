@@ -34,8 +34,20 @@ jobs:
           --health-timeout 5s
           --health-retries 12
 
+      redis:
+        # Нужен блокировке пользователя и очереди конвейера (§9.1 ТЗ).
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
     env:
       TEST_DATABASE_URL: postgres://vydoh:vydoh@localhost:5432/vydoh_test
+      TEST_REDIS_URL: redis://localhost:6379
 
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +56,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: ffmpeg для тестов нарезки аудио
+        run: |
+          ffmpeg -version >/dev/null 2>&1 || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          }
+          ffmpeg -version | head -1
 
       - name: Установка зависимостей
         run: npm ci
