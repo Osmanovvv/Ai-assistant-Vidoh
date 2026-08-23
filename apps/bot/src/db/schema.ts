@@ -212,6 +212,13 @@ export const batches = pgTable(
     /** Счётчик нужен для жёсткого потолка выгрузки в 15 сообщений. */
     messageCount: integer('message_count').notNull().default(0),
 
+    /**
+     * Одно статусное сообщение на выгрузку (задача 1.17): бот отправляет
+     * его один раз и дальше правит, а не шлёт новое на каждое голосовое.
+     */
+    statusMessageId: bigint('status_message_id', { mode: 'number' }),
+    statusUpdatedAt: timestamp('status_updated_at', { withTimezone: true }),
+
     openedAt: createdAt('opened_at'),
     /** От этой отметки отсчитывается окно тишины. */
     lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
@@ -236,6 +243,68 @@ export const batches = pgTable(
   ],
 );
 
+/** Этапы обращения к моделям (§10.1 ТЗ плюс embedder из разбора). */
+export const aiStage = pgEnum('ai_stage', [
+  'speech',
+  'router',
+  'extractor',
+  'classifier',
+  'resolver',
+  'presenter',
+  'decomposer',
+  'embedder',
+]);
+
+/**
+ * Учёт обращений к моделям (задача 1.16).
+ *
+ * §10.5 ТЗ: таблица заполняется на каждом вызове, включая неуспешные, и
+ * входит в первую версию, а не в доработки. Без неё невозможно посчитать
+ * себестоимость пользователя и назначить цену подписки.
+ *
+ * Стоимость хранится в микродолларах целым числом, а не дробью: сложение
+ * тысяч мелких сумм в плавающей точке накапливает ошибку, а деньги
+ * должны сходиться. null означает «цена модели неизвестна» — это видно
+ * в отчёте, в отличие от молчаливого нуля.
+ */
+export const aiCalls = pgTable(
+  'ai_calls',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    batchId: uuid('batch_id').references(() => batches.id, { onDelete: 'set null' }),
+
+    stage: aiStage('stage').notNull(),
+    model: text('model').notNull(),
+    /** Версия промпта, чтобы связать жалобу с конкретной версией (§10.3 ТЗ). */
+    promptVersion: text('prompt_version'),
+
+    tokensIn: integer('tokens_in'),
+    tokensOut: integer('tokens_out'),
+    audioSeconds: integer('audio_seconds'),
+
+    costMicros: bigint('cost_micros', { mode: 'number' }),
+
+    latencyMs: integer('latency_ms').notNull(),
+    ok: boolean('ok').notNull(),
+    error: text('error'),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index('ai_calls_user_created_idx').on(table.userId, table.createdAt),
+    index('ai_calls_batch_idx').on(table.batchId),
+    index('ai_calls_stage_created_idx').on(table.stage, table.createdAt),
+    // Отдельный индекс по сбоям: журнал ошибок §15 ТЗ листается по нему.
+    index('ai_calls_failed_idx')
+      .on(table.createdAt)
+      .where(sql`${table.ok} = false`),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -244,3 +313,6 @@ export type NewMessageRaw = typeof messagesRaw.$inferInsert;
 export type MessageKind = (typeof messageKind.enumValues)[number];
 export type Batch = typeof batches.$inferSelect;
 export type BatchStatus = (typeof batchStatus.enumValues)[number];
+export type AiCall = typeof aiCalls.$inferSelect;
+export type NewAiCall = typeof aiCalls.$inferInsert;
+export type AiStage = (typeof aiStage.enumValues)[number];
