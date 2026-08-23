@@ -88,6 +88,20 @@ export async function recordConsentIfAbsent(db: Executor, userId: string): Promi
   return updated.length > 0;
 }
 
+/**
+ * Пользователи, которым можно писать. Планировщик берёт адресатов только
+ * отсюда: отправка заблокировавшему вернёт 403 и засорит журнал ошибок.
+ */
+export async function activeUserIds(db: Executor): Promise<string[]> {
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.isBlocked, false))
+    .orderBy(users.createdAt);
+
+  return rows.map((row) => row.id);
+}
+
 export async function findByTgId(db: Executor, tgId: number): Promise<User | undefined> {
   const [user] = await db.select().from(users).where(eq(users.tgId, tgId)).limit(1);
   return user;
