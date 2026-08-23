@@ -4,16 +4,16 @@ Telegram-бот, который принимает поток мыслей го�
 
 ## Стек
 
-| Слой | Технология |
-|---|---|
-| Язык | Node.js 24, TypeScript в строгом режиме |
-| Бот | grammY (Bot API 9.5+ — нужны темы в личных чатах) |
-| API | Express 5 |
-| База | PostgreSQL 17 + pgvector |
-| Очереди | Redis + BullMQ |
-| Админка | React + TypeScript |
-| Тесты | Vitest, Playwright, GramJS |
-| Хостинг | Docker Compose, Caddy |
+| Слой    | Технология                                        |
+| ------- | ------------------------------------------------- |
+| Язык    | Node.js 24, TypeScript в строгом режиме           |
+| Бот     | grammY (Bot API 9.5+ — нужны темы в личных чатах) |
+| API     | Express 5                                         |
+| База    | PostgreSQL 17 + pgvector                          |
+| Очереди | Redis + BullMQ                                    |
+| Админка | React + TypeScript                                |
+| Тесты   | Vitest, Playwright, GramJS                        |
+| Хостинг | Docker Compose, Caddy                             |
 
 ## Требования к окружению
 
@@ -35,15 +35,15 @@ npm run dev
 
 ## Команды
 
-| Команда | Что делает |
-|---|---|
-| `npm run dev` | Запуск бота в режиме разработки |
-| `npm run build` | Сборка |
-| `npm run typecheck` | Проверка типов |
-| `npm test` | Модульные и интеграционные тесты |
-| `npm run db:generate` | Генерация миграции по изменённой схеме |
-| `npm run db:migrate` | Применение миграций |
-| `npm run infra:up` / `infra:down` | Локальные Postgres и Redis |
+| Команда                           | Что делает                             |
+| --------------------------------- | -------------------------------------- |
+| `npm run dev`                     | Запуск бота в режиме разработки        |
+| `npm run build`                   | Сборка                                 |
+| `npm run typecheck`               | Проверка типов                         |
+| `npm test`                        | Модульные и интеграционные тесты       |
+| `npm run db:generate`             | Генерация миграции по изменённой схеме |
+| `npm run db:migrate`              | Применение миграций                    |
+| `npm run infra:up` / `infra:down` | Локальные Postgres и Redis             |
 
 ## Структура
 
