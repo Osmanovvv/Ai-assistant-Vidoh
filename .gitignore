@@ -1,0 +1,42 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+
+# секреты — никогда в репозиторий (§16 ТЗ)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+*.log
+npm-debug.log*
+
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# локальные тома docker
+.data/
+
+# аудио не хранится дольше обработки (§16 ТЗ)
+*.ogg
+*.oga
+*.mp3
+*.wav
+*.m4a
+
+# артефакты тестов
+playwright-report/
+test-results/
+tests/eval/runs/
+
+# --- Материалы заказчика ---
+# Репозиторий публичный. ТЗ, разбор, план и всё, что содержит
+# коммерческие данные заказчика, в него не попадает.
+docs/
