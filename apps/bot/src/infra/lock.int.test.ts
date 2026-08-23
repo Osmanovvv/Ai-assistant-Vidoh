@@ -7,7 +7,9 @@ import { RedisLock } from './lock.js';
 import { createRedis } from './redis.js';
 
 const url = process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379';
-const redis: Redis = createRedis(url);
+// Предел повторов: тестовый процесс короткий, и отложенное
+// переподключение не должно сработать уже после закрытия соединения.
+const redis: Redis = createRedis(url, { maxReconnectAttempts: 3 });
 const lock = new RedisLock(redis, 'test-lock:');
 
 beforeEach(async () => {
