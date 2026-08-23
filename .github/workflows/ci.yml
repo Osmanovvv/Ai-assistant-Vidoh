@@ -15,7 +15,27 @@ jobs:
   check:
     name: Типы, линтер, формат, тесты
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # Тот же образ, что в разработке и в бою: расширение vector должно
+        # существовать, иначе первая миграция не применится.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: vydoh
+          POSTGRES_PASSWORD: vydoh
+          POSTGRES_DB: vydoh
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vydoh -d vydoh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      TEST_DATABASE_URL: postgres://vydoh:vydoh@localhost:5432/vydoh_test
 
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +57,11 @@ jobs:
       - name: Формат
         run: npm run format:check
 
-      - name: Тесты
+      - name: Модульные тесты
         run: npm test
+
+      - name: Интеграционные тесты
+        run: npm run test:int
 
       - name: Сборка
         run: npm run build
