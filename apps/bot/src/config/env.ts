@@ -1,0 +1,114 @@
+import { z } from 'zod';
+
+import { LOG_LEVELS } from '../infra/logger.js';
+
+/**
+ * Конфигурация окружения (задача 1.3).
+ *
+ * Разделение на чистый `parseEnv` и кэширующий `getEnv` сделано намеренно:
+ * модуль не выполняет побочных действий при импорте, поэтому его можно
+ * импортировать в тестах, не подставляя предварительно process.env.
+ */
+
+/** Telegram принимает вебхук только по HTTPS с валидным сертификатом. */
+const httpsUrl = z
+  .string()
+  .min(1, 'обязательное значение')
+  .refine((value) => {
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'должен быть корректным адресом со схемой https');
+
+/**
+ * Булево значение из переменной окружения. Переменные всегда строки,
+ * поэтому «false» без преобразования означало бы true.
+ */
+const booleanFromEnv = (fallback: boolean) =>
+  z
+    .enum(['true', 'false', '1', '0'])
+    .optional()
+    .transform((value) => (value === undefined ? fallback : value === 'true' || value === '1'));
+
+export const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  // Список уровней берётся из логгера, чтобы конфигурация и логгер
+  // не разошлись при добавлении уровня.
+  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+
+  PUBLIC_URL: httpsUrl,
+
+  /** Формат токена @BotFather: идентификатор бота, двоеточие, секрет. */
+  BOT_TOKEN: z.string().regex(/^\d+:[A-Za-z0-9_-]{30,}$/, 'не похож на токен от @BotFather'),
+
+  /**
+   * Секрет вебхука. Telegram присылает его в заголовке
+   * X-Telegram-Bot-Api-Secret-Token и допускает только A-Z, a-z, 0-9, _ и -.
+   * Нижняя граница длины — наша, чтобы секрет нельзя было подобрать.
+   */
+  BOT_WEBHOOK_SECRET: z
+    .string()
+    .min(16, 'не короче 16 символов')
+    .max(256, 'не длиннее 256 символов')
+    .regex(/^[A-Za-z0-9_-]+$/, 'допустимы только латиница, цифры, дефис и подчёркивание'),
+
+  BOT_SET_WEBHOOK_ON_BOOT: booleanFromEnv(true),
+
+  DATABASE_URL: z.string().min(1).startsWith('postgres', 'должен начинаться с postgres://'),
+  REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+/** Ошибка конфигурации со списком всех проблем сразу, а не первой попавшейся. */
+export class EnvValidationError extends Error {
+  public readonly issues: readonly string[];
+
+  constructor(issues: readonly string[]) {
+    super(`Некорректная конфигурация окружения:\n${issues.map((i) => `  ${i}`).join('\n')}`);
+    this.name = 'EnvValidationError';
+    this.issues = issues;
+  }
+}
+
+/** Чистый разбор: ничего не читает из глобального состояния и не завершает процесс. */
+export function parseEnv(source: Record<string, string | undefined>): Env {
+  const parsed = envSchema.safeParse(source);
+
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => {
+      const path = issue.path.join('.');
+      return `${path === '' ? '(корень)' : path}: ${issue.message}`;
+    });
+    throw new EnvValidationError(issues);
+  }
+
+  return parsed.data;
+}
+
+let cached: Env | undefined;
+
+/**
+ * Конфигурация процесса. Разбирается один раз при первом обращении:
+ * переменные окружения за время работы не меняются, а повторный разбор
+ * означал бы, что часть кода видит одну конфигурацию, а часть другую.
+ */
+export function getEnv(): Env {
+  cached ??= parseEnv(process.env);
+  return cached;
+}
+
+/** Сброс кэша. Нужен только тестам. */
+export function resetEnvCache(): void {
+  cached = undefined;
+}
+
+/** Путь вебхука. Вынесен сюда, чтобы регистрация и обработчик не разошлись. */
+export const WEBHOOK_PATH = '/telegram/webhook';
+
+export function webhookUrl(env: Env): string {
+  return new URL(WEBHOOK_PATH, env.PUBLIC_URL).toString();
+}
