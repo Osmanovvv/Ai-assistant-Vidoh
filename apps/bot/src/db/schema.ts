@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   index,
+  integer,
   pgEnum,
   pgTable,
   text,
@@ -175,9 +176,71 @@ export const messagesRaw = pgTable(
   ],
 );
 
+/** §5.1 ТЗ, справочник batch.status. */
+export const batchStatus = pgEnum('batch_status', [
+  'open',
+  'queued',
+  'processing',
+  'awaiting_answer',
+  'done',
+  'failed',
+]);
+
+/**
+ * Выгрузка: склейка нескольких сообщений в одну мысль (задачи 1.12, 1.13).
+ *
+ * §9.1 правило 2 ТЗ: сообщения копятся в открытую выгрузку, она закрывается,
+ * когда пользователь замолчал на заданное время. Несколько голосовых подряд
+ * дают один разбор и один ответ.
+ */
+export const batches = pgTable(
+  'batches',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    status: batchStatus('status').notNull().default('open'),
+
+    /** Склейка расшифровок и текстов в порядке получения (задача 1.13). */
+    combinedText: text('combined_text'),
+
+    /** Счётчик нужен для жёсткого потолка выгрузки в 15 сообщений. */
+    messageCount: integer('message_count').notNull().default(0),
+
+    openedAt: createdAt('opened_at'),
+    /** От этой отметки отсчитывается окно тишины. */
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+
+    error: text('error'),
+  },
+  (table) => [
+    /**
+     * Не более одной открытой выгрузки на пользователя — гарантия базы,
+     * а не проверка в коде. Два воркера, одновременно принявшие сообщения
+     * одного пользователя, иначе создали бы две выгрузки, и §9.1 сломался бы.
+     */
+    uniqueIndex('batches_one_open_per_user_uq')
+      .on(table.userId)
+      .where(sql`${table.status} = 'open'`),
+
+    // Выборка выгрузок, ждущих обработки, и поиск зависших при перезапуске.
+    index('batches_status_opened_idx').on(table.status, table.openedAt),
+    index('batches_user_opened_idx').on(table.userId, table.openedAt),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
 export type MessageRaw = typeof messagesRaw.$inferSelect;
 export type NewMessageRaw = typeof messagesRaw.$inferInsert;
 export type MessageKind = (typeof messageKind.enumValues)[number];
+export type Batch = typeof batches.$inferSelect;
+export type BatchStatus = (typeof batchStatus.enumValues)[number];
