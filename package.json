@@ -24,7 +24,10 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "infra:reset": "docker compose -f docker-compose.dev.yml down -v",
-    "infra:logs": "docker compose -f docker-compose.dev.yml logs -f"
+    "infra:logs": "docker compose -f docker-compose.dev.yml logs -f",
+    "test:int": "npm run test:int --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace @vydoh/bot",
+    "db:migrate": "npm run db:migrate --workspace @vydoh/bot"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
