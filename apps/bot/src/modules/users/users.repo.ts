@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Executor } from '../../infra/db.js';
 import { userSettings, users, type User } from '../../db/schema.js';
@@ -68,6 +68,24 @@ export async function recordConsent(db: Executor, userId: string): Promise<void>
     .update(users)
     .set({ consentAt: sql`now()` })
     .where(eq(users.id, userId));
+}
+
+/**
+ * Фиксирует согласие, если его ещё не было (§16 ТЗ).
+ *
+ * Согласием считается первое сообщение после экрана первого запуска, где
+ * показана ссылка на политику. Отметка ставится один раз: повторные
+ * сообщения не должны сдвигать дату, иначе непонятно, когда человек
+ * согласился на самом деле.
+ */
+export async function recordConsentIfAbsent(db: Executor, userId: string): Promise<boolean> {
+  const updated = await db
+    .update(users)
+    .set({ consentAt: sql`now()` })
+    .where(and(eq(users.id, userId), isNull(users.consentAt)))
+    .returning({ id: users.id });
+
+  return updated.length > 0;
 }
 
 export async function findByTgId(db: Executor, tgId: number): Promise<User | undefined> {
