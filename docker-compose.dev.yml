@@ -1,0 +1,48 @@
+# Локальная разработка: только хранилища.
+# Приложение запускается на хосте через `npm run dev`.
+#
+# Порты публикуются на 127.0.0.1, а не на 0.0.0.0: база с расшифровками
+# не должна быть доступна из сети даже на машине разработчика (§16 ТЗ).
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: vydoh-postgres-dev
+    environment:
+      POSTGRES_USER: vydoh
+      POSTGRES_PASSWORD: vydoh
+      POSTGRES_DB: vydoh
+      # Ускоряет старт и делает сравнение строк предсказуемым.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Расширения (vector, pgcrypto) создаются первой миграцией, а не скриптом
+    # инициализации: миграция отрабатывает в любом окружении, включая боевое,
+    # и не зависит от того, смонтировалась ли папка с хоста.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vydoh -d vydoh']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: vydoh-redis-dev
+    # appendonly: очередь и открытые выгрузки должны переживать перезапуск
+    # контейнера, иначе теряется гарантия §9 ТЗ.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres-data:
+  redis-data:
