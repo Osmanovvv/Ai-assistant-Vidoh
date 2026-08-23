@@ -80,7 +80,7 @@ export function testDb(): Database {
 export async function truncateAll(): Promise<void> {
   const db = testDb();
   await db.execute(
-    sql`truncate table ${schema.messagesRaw}, ${schema.batches}, ${schema.telegramUpdates}, ${schema.userSettings}, ${schema.users} restart identity cascade`,
+    sql`truncate table ${schema.aiCalls}, ${schema.messagesRaw}, ${schema.batches}, ${schema.telegramUpdates}, ${schema.userSettings}, ${schema.users} restart identity cascade`,
   );
 }
 
