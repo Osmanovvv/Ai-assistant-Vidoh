@@ -18,6 +18,7 @@
     "test:all": "vitest run"
   },
   "dependencies": {
+    "bullmq": "^6.2.0",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
     "grammy": "^1.45.1",
