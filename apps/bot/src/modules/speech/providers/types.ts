@@ -1,3 +1,5 @@
+import { PermanentError, TransientError } from '../../../infra/failures.js';
+
 /**
  * Провайдер расшифровки за интерфейсом (задача 1.15).
  *
@@ -27,20 +29,24 @@ export interface SpeechProvider {
   transcribe(request: TranscriptionRequest): Promise<TranscriptionResult>;
 }
 
-/** Ошибка, которую имеет смысл повторить: сеть, таймаут, перегрузка. */
-export class TransientSpeechError extends Error {
+/**
+ * Ошибки распознавания — частные случаи общих (см. infra/failures.ts).
+ *
+ * Отдельные классы нужны, чтобы в логе было видно, что сломалось именно
+ * распознавание. Различение «повторять или нет» при этом остаётся общим
+ * для всех внешних обращений, и конвейеру не приходится знать про каждый
+ * провайдер отдельно.
+ */
+export class TransientSpeechError extends TransientError {
   constructor(message: string, cause?: unknown) {
-    // Штатный cause из ES2022: своё поле затенило бы его и сломало
-    // вывод причины в логах и отладчиках.
-    super(message, cause === undefined ? undefined : { cause });
+    super(message, cause);
     this.name = 'TransientSpeechError';
   }
 }
 
-/** Ошибка, которую повторять бессмысленно: битый файл, отказ в доступе. */
-export class PermanentSpeechError extends Error {
+export class PermanentSpeechError extends PermanentError {
   constructor(message: string, cause?: unknown) {
-    super(message, cause === undefined ? undefined : { cause });
+    super(message, cause);
     this.name = 'PermanentSpeechError';
   }
 }

@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 
-import { speechEnvSchema } from '../config/env.js';
+import { modelEnvSchema } from '../config/env.js';
 import {
   DEFAULT_AUDIO_LIMITS,
   prepareAudio,
@@ -32,7 +32,7 @@ if (filePath === undefined) {
   process.exit(2);
 }
 
-const env = speechEnvSchema.parse(process.env);
+const env = modelEnvSchema.parse(process.env);
 const provider = createSpeechProvider(env);
 
 process.stdout.write(`Провайдер: ${provider.name}\nФайл: ${basename(filePath)}\n\n`);

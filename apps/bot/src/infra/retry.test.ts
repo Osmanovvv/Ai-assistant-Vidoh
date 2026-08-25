@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { PermanentSpeechError, TransientSpeechError } from './providers/types.js';
+import { PermanentError, TransientError } from './failures.js';
 import { backoffDelayMs, withRetry, withTimeout } from './retry.js';
 
 /** Мгновенное ожидание: тесты не должны спать по-настоящему. */
@@ -30,7 +30,7 @@ describe('withRetry', () => {
     let calls = 0;
     const fn = () => {
       calls++;
-      if (calls < 3) return Promise.reject(new TransientSpeechError('провайдер занят'));
+      if (calls < 3) return Promise.reject(new TransientError('провайдер занят'));
       return Promise.resolve('получилось');
     };
 
@@ -39,7 +39,7 @@ describe('withRetry', () => {
   });
 
   it('сдаётся после исчерпания попыток и пробрасывает последнюю ошибку', async () => {
-    const fn = () => Promise.reject(new TransientSpeechError('провайдер недоступен'));
+    const fn = () => Promise.reject(new TransientError('провайдер недоступен'));
 
     await expect(withRetry(fn, { attempts: 3, sleep: noSleep })).rejects.toThrow(
       'провайдер недоступен',
@@ -51,7 +51,7 @@ describe('withRetry', () => {
     let calls = 0;
     const fn = () => {
       calls++;
-      return Promise.reject(new PermanentSpeechError('файл повреждён'));
+      return Promise.reject(new PermanentError('файл повреждён'));
     };
 
     await expect(withRetry(fn, { sleep: noSleep })).rejects.toThrow('файл повреждён');
@@ -72,7 +72,7 @@ describe('withRetry', () => {
 
   it('выдерживает растущую паузу между попытками', async () => {
     const delays: number[] = [];
-    const fn = () => Promise.reject(new TransientSpeechError('занято'));
+    const fn = () => Promise.reject(new TransientError('занято'));
 
     await expect(
       withRetry(fn, {
@@ -90,7 +90,7 @@ describe('withRetry', () => {
 
   it('сообщает о каждом повторе', async () => {
     const retries: number[] = [];
-    const fn = () => Promise.reject(new TransientSpeechError('занято'));
+    const fn = () => Promise.reject(new TransientError('занято'));
 
     await expect(
       withRetry(fn, {
@@ -107,7 +107,7 @@ describe('withRetry', () => {
     const seen: number[] = [];
     const fn = (attempt: number) => {
       seen.push(attempt);
-      if (attempt < 3) return Promise.reject(new TransientSpeechError('занято'));
+      if (attempt < 3) return Promise.reject(new TransientError('занято'));
       return Promise.resolve('ок');
     };
 

@@ -1,4 +1,4 @@
-import type { SpeechEnv } from '../../../config/env.js';
+import type { ModelEnv } from '../../../config/env.js';
 import { MockSpeechProvider } from './mock.js';
 import { OpenAiSpeechProvider } from './openai.js';
 import type { SpeechProvider } from './types.js';
@@ -16,7 +16,7 @@ import { YandexSpeechProvider } from './yandex.js';
  * снаружи уже всё проверил, иначе отсутствие ключа обернётся невнятным
  * падением где-то посреди обработки чужого голосового.
  */
-export function createSpeechProvider(env: SpeechEnv): SpeechProvider {
+export function createSpeechProvider(env: ModelEnv): SpeechProvider {
   switch (env.SPEECH_PROVIDER) {
     case 'yandex': {
       if (env.YANDEX_API_KEY === undefined) {

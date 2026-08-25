@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PermanentLlmError, TransientLlmError } from '../modules/ai/providers/types.js';
 import { PermanentSpeechError, TransientSpeechError } from '../modules/speech/providers/types.js';
 import { isTransientFailure } from './errors.js';
 
@@ -39,6 +40,13 @@ describe('isTransientFailure', () => {
   it('доверяет разделению, которое сделал провайдер', () => {
     expect(isTransientFailure(new TransientSpeechError('распознаватель занят'))).toBe(true);
     expect(isTransientFailure(new PermanentSpeechError('битый файл'))).toBe(false);
+  });
+
+  it('так же доверяет провайдеру языковой модели', () => {
+    // Это и есть та связка, из-за которой недоступность модели не теряет
+    // выгрузку: временная ошибка возвращает её в очередь, а не хоронит.
+    expect(isTransientFailure(new TransientLlmError('модель занята'))).toBe(true);
+    expect(isTransientFailure(new PermanentLlmError('ключ не тот'))).toBe(false);
   });
 
   it('постоянная ошибка провайдера не становится временной из-за причины', () => {
