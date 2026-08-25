@@ -83,13 +83,16 @@ export const envSchema = z.object({
 });
 
 /**
- * Настройки расшифровки (задача 1.15) — отдельной схемой, а не частью
- * общей. Провайдеру не нужны ни токен бота, ни адрес базы, а служебному
- * скрипту проверки речи не нужно поднимать конфигурацию всего бота
- * целиком: иначе для одного вызова распознавания пришлось бы заполнять
- * десяток переменных, к речи не относящихся.
+ * Настройки внешних моделей — распознавания речи и языковой (задачи 1.15
+ * и 2.3). Отдельной схемой, а не частью общей: провайдеру не нужны ни
+ * токен бота, ни адрес базы, а служебному скрипту проверки не нужно
+ * поднимать конфигурацию всего бота целиком.
+ *
+ * Ключ и каталог Yandex общие для речи и языковой модели: это один
+ * сервисный аккаунт с обеими областями действия. Дублировать их двумя
+ * парами переменных значило бы однажды поменять одну и забыть другую.
  */
-const speechFields = z.object({
+const modelFields = z.object({
   /**
    * По умолчанию заглушка, а не живой провайдер: разработку и тесты
    * нельзя ставить в зависимость от чужого ключа и чужого счёта.
@@ -109,9 +112,27 @@ const speechFields = z.object({
   /** Адрес, если запросы идут не напрямую, а через посредника. */
   OPENAI_BASE_URL: z.string().min(1).optional(),
   OPENAI_SPEECH_MODEL: z.string().min(1).default('whisper-1'),
+
+  /**
+   * Задача 2.3: провайдер языковой модели. По умолчанию заглушка —
+   * разработку и тесты нельзя ставить в зависимость от чужого счёта.
+   * В бою заглушка запрещена: бот отвечал бы на выдуманный разбор.
+   */
+  AI_PROVIDER: z.enum(['yandex', 'mock']).default('mock'),
+  YANDEX_LLM_MODEL: z.string().min(1).default('yandexgpt/latest'),
+
+  /**
+   * Лёгкая модель. Ею работает маршрутизатор намерений (§7.1, задача 2.4):
+   * там надо не понять смысл, а различить семь видов намерения, и полная
+   * модель для этого дороже без выигрыша.
+   *
+   * На задаче 2.22 на неё же переключаются остальные этапы при превышении
+   * мягкого лимита расхода.
+   */
+  YANDEX_LLM_MODEL_LIGHT: z.string().min(1).default('yandexgpt-lite/latest'),
 });
 
-export type SpeechEnv = z.infer<typeof speechFields>;
+export type ModelEnv = z.infer<typeof modelFields>;
 
 /** Какой ключ обязателен для какого провайдера расшифровки. */
 const SPEECH_KEYS = {
@@ -120,42 +141,70 @@ const SPEECH_KEYS = {
 } as const;
 
 /**
- * Ключ обязателен, но какой именно — зависит от выбранного провайдера.
+ * Ключи обязательны, но какие именно — зависит от выбранных провайдеров.
  * В схеме поля это не выразить, поэтому отдельной проверкой.
  */
-function checkSpeechKey(env: SpeechEnv, ctx: z.RefinementCtx): void {
-  if (env.SPEECH_PROVIDER === 'mock') return;
+function checkModelKeys(env: ModelEnv, ctx: z.RefinementCtx): void {
+  if (env.SPEECH_PROVIDER !== 'mock') {
+    const required = SPEECH_KEYS[env.SPEECH_PROVIDER];
+    if (env[required] === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [required],
+        message: `обязателен при SPEECH_PROVIDER=${env.SPEECH_PROVIDER}`,
+      });
+    }
+  }
 
-  const required = SPEECH_KEYS[env.SPEECH_PROVIDER];
-  if (env[required] === undefined) {
-    ctx.addIssue({
-      code: 'custom',
-      path: [required],
-      message: `обязателен при SPEECH_PROVIDER=${env.SPEECH_PROVIDER}`,
-    });
+  if (env.AI_PROVIDER === 'yandex') {
+    if (env.YANDEX_API_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['YANDEX_API_KEY'],
+        message: 'обязателен при AI_PROVIDER=yandex',
+      });
+    }
+    // Каталог языковой модели нужен обязательно: из него собирается
+    // modelUri. Распознаванию речи он не нужен, поэтому проверка здесь.
+    if (env.YANDEX_FOLDER_ID === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['YANDEX_FOLDER_ID'],
+        message: 'обязателен при AI_PROVIDER=yandex: из него собирается modelUri',
+      });
+    }
   }
 }
 
-export const speechEnvSchema = speechFields.superRefine(checkSpeechKey);
+export const modelEnvSchema = modelFields.superRefine(checkModelKeys);
 
-const envSchemaWithSpeech = envSchema.extend(speechFields.shape);
+const envSchemaWithModels = envSchema.extend(modelFields.shape);
 
 /** Проверки, затрагивающие несколько переменных сразу. */
-const envWithChecks = envSchemaWithSpeech.superRefine((env, ctx) => {
-  checkSpeechKey(env, ctx);
+const envWithChecks = envSchemaWithModels.superRefine((env, ctx) => {
+  checkModelKeys(env, ctx);
 
-  // Заглушка в бою — это бот, который отвечает на выдуманные расшифровки
-  // и молчит об этом. Такое лучше не запускать вовсе.
-  if (env.SPEECH_PROVIDER === 'mock' && env.NODE_ENV === 'production') {
+  if (env.NODE_ENV !== 'production') return;
+
+  // Заглушка в бою — это бот, который отвечает на выдуманный разбор и
+  // молчит об этом. Такое лучше не запускать вовсе.
+  if (env.SPEECH_PROVIDER === 'mock') {
     ctx.addIssue({
       code: 'custom',
       path: ['SPEECH_PROVIDER'],
       message: 'заглушка расшифровки недопустима в боевом окружении',
     });
   }
+  if (env.AI_PROVIDER === 'mock') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['AI_PROVIDER'],
+      message: 'заглушка языковой модели недопустима в боевом окружении',
+    });
+  }
 });
 
-export type Env = z.infer<typeof envSchemaWithSpeech>;
+export type Env = z.infer<typeof envSchemaWithModels>;
 
 /** Ошибка конфигурации со списком всех проблем сразу, а не первой попавшейся. */
 export class EnvValidationError extends Error {
