@@ -2,8 +2,10 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -11,6 +13,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  vector,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -262,6 +265,249 @@ export const aiStage = pgEnum('ai_stage', [
 ]);
 
 /**
+ * Версии промптов (задачи 2.1 и 2.2).
+ *
+ * Источник истины — эта таблица, а не файлы в репозитории. Причина не в
+ * удобстве: репозиторий публичный, а промпты и есть основное ноу-хау
+ * продукта — не код решает, насколько хорошо бот разбирает кашу в голове.
+ *
+ * §10.4 требует версионирования, §15 — правки без выкладки. Таблица даёт
+ * и то и другое: активную версию можно переключить одним запросом, а на
+ * этапе 4 её правит админка.
+ *
+ * Схема ответа хранится рядом с промптом намеренно. Откат промпта без
+ * откката схемы ломает разбор ответа, и обнаружить это надо при загрузке,
+ * а не в середине обработки чужого голосового.
+ */
+export const promptVersions = pgTable(
+  'prompt_versions',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    stage: aiStage('stage').notNull(),
+    /** Читаемая метка версии: extractor@3. Уникальна внутри этапа. */
+    version: text('version').notNull(),
+
+    prompt: text('prompt').notNull(),
+
+    /**
+     * Имя Zod-схемы в коде. По нему регистр находит валидатор: сам
+     * валидатор в базе не сохранить, а без него ответ модели проверять
+     * нечем.
+     */
+    schemaName: text('schema_name').notNull(),
+
+    /**
+     * JSON Schema, которую отправляем модели. Хранится не для красоты:
+     * при загрузке она сверяется с тем, что порождает Zod-схема из кода,
+     * и расхождение означает, что промпт откатили, а схему нет.
+     */
+    schemaJson: jsonb('schema_json').notNull(),
+
+    /** Зачем эта версия появилась. Пригодится через полгода. */
+    note: text('note'),
+
+    isActive: boolean('is_active').notNull().default(false),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('prompt_versions_stage_version_uq').on(table.stage, table.version),
+    // Ровно одна активная версия на этап. Две активные — это разбор,
+    // который ведёт себя по-разному от вызова к вызову, и найти такое
+    // потом почти невозможно.
+    uniqueIndex('prompt_versions_one_active_per_stage_uq')
+      .on(table.stage)
+      .where(sql`${table.isActive}`),
+  ],
+);
+
+/** §5.1 ТЗ, справочник type. */
+export const itemType = pgEnum('item_type', ['TASK', 'DESIRE', 'IDEA', 'INFO', 'EMOTION']);
+
+/** §5.1 ТЗ, справочник status. */
+export const itemStatus = pgEnum('item_status', [
+  'new',
+  'active',
+  'in_progress',
+  'waiting',
+  'delegated',
+  'done',
+  'snoozed',
+  'cancelled',
+]);
+
+/** §5.1 ТЗ, справочник priority. */
+export const itemPriority = pgEnum('item_priority', ['NOW', 'SOON', 'LATER', 'NONE']);
+
+/**
+ * Точность срока (задача 2.7). «В четверг» — день, «на следующей неделе» —
+ * неделя. Без точности напоминание про неделю сработало бы в конкретный
+ * день и не в тот.
+ */
+export const deadlineAccuracy = pgEnum('deadline_accuracy', ['day', 'week', 'month']);
+
+/**
+ * Записи — то, во что превращается поток мыслей (задачи 2.6 и 2.8).
+ *
+ * §5 ТЗ плюс `source_batch_id`: запись рождается из выгрузки, то есть из
+ * склейки нескольких сообщений, а не из одного сообщения.
+ *
+ * §5.1 ТЗ, важное правило: **проект — это поле у записи типа TASK, а не
+ * отдельный тип**. Так задача может дорасти до проекта по мере накопления
+ * контекста, без миграции сущности. Делегируемость — тоже поле, а не тип.
+ *
+ * Черновик — запись, которую не удалось разобрать (§17 ТЗ, задача 2.3).
+ * У него нет ни типа, ни приоритета, ни темы: модель дважды ответила не
+ * по схеме, и выдумывать за неё нельзя. Зато текст сохранён, а значит
+ * человек ничего не потерял, и разобрать это можно руками из админки.
+ */
+export const items = pgTable(
+  'items',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /**
+     * Выгрузка, из которой родилась запись. При удалении выгрузки запись
+     * остаётся: она уже живёт своей жизнью, а связь нужна только для
+     * разбора жалоб.
+     */
+    sourceBatchId: uuid('source_batch_id').references(() => batches.id, { onDelete: 'set null' }),
+
+    text: text('text').notNull(),
+
+    /** У черновика типа нет: см. проверку ниже. */
+    type: itemType('type'),
+    priority: itemPriority('priority'),
+
+    /**
+     * Название темы. Пока строкой: темы у каждого человека свои и
+     * создаются на онбординге (§6.4), а таблица тем появится на задаче
+     * 2.15 вместе с ветками в личном чате.
+     */
+    topic: text('topic'),
+
+    status: itemStatus('status').notNull().default('new'),
+
+    /** §5.1: проект — поле у TASK, а не отдельный тип. */
+    isProject: boolean('is_project').notNull().default(false),
+
+    /**
+     * Кому можно передать дело. §6.3 учитывает делегируемость при расчёте
+     * приоритета, но сценария делегирования в ТЗ нет — поэтому пока это
+     * поле-заметка, без механики.
+     */
+    assignee: text('assignee'),
+
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    deadlineAccuracy: deadlineAccuracy('deadline_accuracy'),
+
+    /**
+     * Смысловое представление текста записи (задача 2.9).
+     *
+     * Ровно 256 измерений: столько отдаёт Yandex. В плане изначально
+     * стояло 1536 от OpenAI — с такой колонкой ничего бы не сошлось,
+     * и выяснилось бы это на первой же записи.
+     *
+     * Считается моделью `text-search-doc`, а искать надо вектором от
+     * `text-search-query`: у Яндекса это разные модели, и перепутать их
+     * означает получить вектора из разных пространств. Поиск при этом не
+     * упадёт, а будет тихо возвращать случайное.
+     */
+    embedding: vector('embedding', { dimensions: 256 }),
+
+    /** Разобрать не удалось, запись ждёт ручного разбора. */
+    isDraft: boolean('is_draft').notNull().default(false),
+    /** Чем именно не удалось: текст ошибки и сырой ответ модели. */
+    draftReason: text('draft_reason'),
+
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /**
+     * Разобранная запись обязана иметь тип, приоритет и тему, черновик —
+     * не иметь. Проверка живёт в базе, а не только в коде: запись без типа
+     * ломает и выдачу, и напоминания, и найти такое потом почти
+     * невозможно — она просто тихо не показывается.
+     */
+    check(
+      'items_draft_or_classified',
+      sql`(${table.isDraft} = true) or (${table.type} is not null and ${table.priority} is not null and ${table.topic} is not null)`,
+    ),
+    /** Срок без точности и точность без срока одинаково бесполезны. */
+    check(
+      'items_deadline_with_accuracy',
+      sql`(${table.deadlineAt} is null) = (${table.deadlineAccuracy} is null)`,
+    ),
+    // Выдача берёт активные записи пользователя по приоритету (задача 2.10).
+    index('items_user_status_priority_idx').on(table.userId, table.status, table.priority),
+    // Напоминания ищут по сроку (этап 3).
+    index('items_user_deadline_idx').on(table.userId, table.deadlineAt),
+    index('items_source_batch_idx').on(table.sourceBatchId),
+    // Черновиков мало, а разбирать их надо отдельно: частичный индекс.
+    index('items_drafts_idx')
+      .on(table.createdAt)
+      .where(sql`${table.isDraft} = true`),
+    /**
+     * Индекса по вектору здесь намеренно нет.
+     *
+     * HNSW проверен на десяти тысячах записей 25.08.2026 и оказался не
+     * просто бесполезен, а **неверен** для нашего поиска. Он ищет
+     * ближайших по всей таблице, а `user_id` применяется фильтром после:
+     * в опыте индекс просмотрел 9928 чужих записей, отбросил все и вернул
+     * ноль — при том что у человека подходящая запись была. Настройка
+     * `hnsw.iterative_scan` этого не исправляет, она тоже останавливается.
+     *
+     * Точный поиск в пределах одного человека при этом занял 9 мс на тех
+     * же десяти тысячах: сортировка по расстоянию с фильтром по
+     * пользователю идёт через индекс `items_user_status_priority_idx`.
+     *
+     * Смысл искать по всей таблице у нас и не появится: §16 запрещает
+     * смешивать данные людей. А если у одного человека когда-нибудь
+     * станет сто тысяч записей, правильный ответ — секционирование по
+     * пользователю, а не общий приблизительный индекс.
+     */
+  ],
+);
+
+/**
+ * Изменчивое состояние человека (задача 2.10).
+ *
+ * Уровень сил — не настройка, а сегодняшнее самочувствие: от него зависит,
+ * сколько дел показать. В §5 ТЗ такого поля нет, есть только значение по
+ * умолчанию в настройках, и этого мало: «я на нуле» сказанное утром не
+ * должно действовать вечно.
+ *
+ * Поэтому уровень живёт до конца суток человека, а потом выдача снова
+ * берёт значение по умолчанию из настроек. Смена суток считается по его
+ * часовому поясу, а не по нашему.
+ */
+export const userState = pgTable('user_state', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+
+  energy: energyLevel('energy').notNull(),
+
+  /**
+   * Когда уровень был назван. По этой отметке и часовому поясу человека
+   * решается, действует ли он ещё.
+   */
+  energyAt: timestamp('energy_at', { withTimezone: true }).notNull().defaultNow(),
+
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Валюта расхода. Приводить к одной нельзя: OpenAI выставляет счёт в
  * долларах, Yandex Cloud в рублях, а курс на дату вызова задним числом
  * не восстановить.
@@ -331,3 +577,12 @@ export type BatchStatus = (typeof batchStatus.enumValues)[number];
 export type AiCall = typeof aiCalls.$inferSelect;
 export type NewAiCall = typeof aiCalls.$inferInsert;
 export type AiStage = (typeof aiStage.enumValues)[number];
+export type UserState = typeof userState.$inferSelect;
+export type EnergyLevelValue = (typeof energyLevel.enumValues)[number];
+export type Item = typeof items.$inferSelect;
+export type NewItem = typeof items.$inferInsert;
+export type ItemTypeValue = (typeof itemType.enumValues)[number];
+export type ItemStatusValue = (typeof itemStatus.enumValues)[number];
+export type ItemPriorityValue = (typeof itemPriority.enumValues)[number];
+export type PromptVersion = typeof promptVersions.$inferSelect;
+export type NewPromptVersion = typeof promptVersions.$inferInsert;
