@@ -10,6 +10,7 @@ import {
   PRIORITIES,
 } from './classifier.js';
 import { extractorSchema, EXTRACTOR_SCHEMA_NAME } from './extractor.js';
+import { presenterSchema, PRESENTER_SCHEMA_NAME } from './presenter.js';
 import { INTENTS, routerSchema, ROUTER_SCHEMA_NAME } from './router.js';
 
 /**
@@ -32,6 +33,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [ROUTER_SCHEMA_NAME]: routerSchema,
   [EXTRACTOR_SCHEMA_NAME]: extractorSchema,
   [CLASSIFIER_SCHEMA_NAME]: classifierSchema,
+  [PRESENTER_SCHEMA_NAME]: presenterSchema,
 };
 
 export type SchemaName = keyof typeof SCHEMAS;
@@ -48,6 +50,7 @@ export const SCHEMA_BY_STAGE: Readonly<Partial<Record<AiStage, string>>> = {
   router: ROUTER_SCHEMA_NAME,
   extractor: EXTRACTOR_SCHEMA_NAME,
   classifier: CLASSIFIER_SCHEMA_NAME,
+  presenter: PRESENTER_SCHEMA_NAME,
 };
 
 export class UnknownSchemaError extends Error {
@@ -103,6 +106,8 @@ export function canonicalJson(value: unknown): string {
 export { extractorSchema, EXTRACTOR_SCHEMA_NAME };
 export { routerSchema, ROUTER_SCHEMA_NAME, INTENTS };
 export { classifierSchema, CLASSIFIER_SCHEMA_NAME, ITEM_TYPES, PRIORITIES, DEADLINE_ACCURACY };
+export { presenterSchema, PRESENTER_SCHEMA_NAME };
 export type { ExtractedUnits } from './extractor.js';
 export type { Intent, RoutedSegments } from './router.js';
 export type { ClassifiedItems, DeadlineAccuracy, ItemType, Priority } from './classifier.js';
+export type { PresenterAcknowledgement } from './presenter.js';

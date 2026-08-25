@@ -106,6 +106,17 @@ export const userSettings = pgTable('user_settings', {
 
   energyDefault: energyLevel('energy_default').notNull().default('normal'),
 
+  /**
+   * Профиль текстов (§13.8 ТЗ, задача 2.11). В первой версии значение
+   * одно — `reserved`.
+   *
+   * Текстом, а не перечислением: перечисление в базе означало бы, что
+   * второй профиль требует миграции, то есть правки вне папки `texts`,
+   * а условие готовности задачи 2.11 говорит обратное. Неизвестное имя
+   * не роняет ответ — берётся профиль по умолчанию.
+   */
+  textProfile: text('text_profile').notNull().default('reserved'),
+
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

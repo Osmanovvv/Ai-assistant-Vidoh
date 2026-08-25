@@ -1,6 +1,6 @@
 import { InlineKeyboard, type Bot } from 'grammy';
 
-import { texts } from '../../texts/ru.js';
+import { defaultTexts } from '../../texts/index.js';
 
 /**
  * Экран первого запуска (задача 1.10).
@@ -18,12 +18,16 @@ import { texts } from '../../texts/ru.js';
  * писать текстом или прислать голосовое, ничего не нажимая.
  */
 export function registerStartHandlers(bot: Bot, privacyPolicyUrl: string): void {
+  // Профиль по умолчанию, а не выбранный человеком: этот экран
+  // показывается до регистрации, и выбирать ещё некому (§13.1).
+  const texts = defaultTexts;
+
   const keyboard = new InlineKeyboard()
     .text(texts.start.buttonVoice, 'start:voice')
     .text(texts.start.buttonText, 'start:text');
 
   bot.command('start', async (ctx) => {
-    await ctx.reply(`${texts.start.greeting}\n\n${texts.start.consentNotice(privacyPolicyUrl)}`, {
+    await ctx.reply(texts.start.screen(privacyPolicyUrl), {
       reply_markup: keyboard,
       parse_mode: 'Markdown',
       link_preview_options: { is_disabled: true },
