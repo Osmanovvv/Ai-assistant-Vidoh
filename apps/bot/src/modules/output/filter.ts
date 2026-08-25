@@ -112,6 +112,13 @@ function compareWithin(left: Item, right: Item): number {
   const byCreated = left.createdAt.getTime() - right.createdAt.getTime();
   if (byCreated !== 0) return byCreated;
 
+  // Записи одной выгрузки создаются одной вставкой, и `created_at` у них
+  // совпадает. Разрешает ничью порядок сказанного: из трёх названных дел
+  // показать надо первые, а не произвольные.
+  const byOrder =
+    (left.sourceOrder ?? Number.MAX_SAFE_INTEGER) - (right.sourceOrder ?? Number.MAX_SAFE_INTEGER);
+  if (byOrder !== 0) return byOrder;
+
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 

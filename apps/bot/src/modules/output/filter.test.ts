@@ -24,6 +24,7 @@ function item(overrides: Partial<Item> = {}): Item {
     id: `00000000-0000-0000-0000-${String(counter).padStart(12, '0')}`,
     userId: 'user',
     sourceBatchId: null,
+    sourceOrder: null,
     text: `дело ${String(counter)}`,
     type: 'TASK',
     priority: 'SOON',

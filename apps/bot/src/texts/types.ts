@@ -39,13 +39,6 @@ export interface TextProfile {
     readonly acknowledged: string;
     readonly working: string;
     readonly nothingHeard: string;
-    /**
-     * Временный ответ первого этапа: показать, что серия сообщений
-     * склеилась в одну мысль и расшифровка сработала. Уходит вместе со
-     * связкой конвейера — на его место встаёт ответ по §13.2, который
-     * собирает presenter.
-     */
-    readonly heard: (text: string) => string;
   };
 
   /**
@@ -94,6 +87,11 @@ export interface TextProfile {
 
     /** §17: разобрать не удалось, но текст сохранён. */
     readonly savedUnparsed: string;
+    /**
+     * Разбирать было нечего: человек поздоровался или наговорил только
+     * заполнение паузы. Реплика короткая (§13.9) и не выдаёт разбор.
+     */
+    readonly nothingToParse: string;
   };
 
   readonly limits: {

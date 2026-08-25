@@ -1,0 +1,744 @@
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { asc, eq } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  aiCalls,
+  batches,
+  items,
+  messagesRaw,
+  promptVersions,
+  userState,
+} from '../../db/schema.js';
+import { RedisLock } from '../../infra/lock.js';
+import { createRedis } from '../../infra/redis.js';
+import { testDb } from '../../test/db.js';
+import { defaultTexts } from '../../texts/index.js';
+import { PromptRegistry } from '../ai/prompts/registry.js';
+import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
+import { MockLlmProvider } from '../ai/providers/mock.js';
+import type { CompletionRequest } from '../ai/providers/types.js';
+import {
+  CLASSIFIER_SCHEMA_NAME,
+  EXTRACTOR_SCHEMA_NAME,
+  PRESENTER_SCHEMA_NAME,
+  ROUTER_SCHEMA_NAME,
+} from '../ai/schemas/index.js';
+import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
+import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
+import { countQuestions } from '../presenter/presenter.service.js';
+import type { StatusSender } from '../presenter/status.service.js';
+import { run } from '../speech/ffmpeg.js';
+import { MockSpeechProvider } from '../speech/providers/mock.js';
+import { PermanentSpeechError } from '../speech/providers/types.js';
+import { upsertUser } from '../users/users.repo.js';
+import { createDumpHandler } from './dump.handler.js';
+import { processUserBatches } from './pipeline.service.js';
+
+/**
+ * Разбор выгрузки целиком: настоящая база, настоящий ffmpeg, настоящий
+ * замок. Подменены провайдеры — распознавания, языковой модели и
+ * смысловых представлений: живые вызовы стоили бы денег и сделали бы
+ * тесты недетерминированными.
+ *
+ * Это проверка связки, а не отдельных шагов: каждый из них покрыт своими
+ * тестами. Здесь важно, что они соединены в правильном порядке и что
+ * текст человека не теряется ни на одном обрыве.
+ */
+
+const redis: Redis = createRedis(process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379', {
+  maxReconnectAttempts: 3,
+});
+const lock = new RedisLock(redis, 'test-dump:');
+
+const pricing = { mock: { kind: 'audio', currency: 'usd', perMinute: 0.006 } } as const;
+
+const T0 = new Date('2026-08-24T10:00:00.000Z');
+const at = (ms: number) => new Date(T0.getTime() + ms);
+
+let fixtureDir = '';
+let audioPath = '';
+let userId: string;
+let seq = 0;
+
+/**
+ * Промпты помечены словами-маркерами: подменённая модель по ним понимает,
+ * какой этап её спрашивает. Настоящие тексты промптов лежат вне
+ * репозитория, и тесту они не нужны.
+ */
+const MARKERS = {
+  router: 'МАРШРУТ',
+  extractor: 'ЕДИНИЦЫ',
+  classifier: 'КЛАССЫ',
+  presenter: 'ПРИЗНАНИЕ',
+} as const;
+
+type Stage = keyof typeof MARKERS;
+
+function stageOf(request: CompletionRequest): Stage | undefined {
+  for (const [stage, marker] of Object.entries(MARKERS)) {
+    if (request.prompt.includes(marker)) return stage as Stage;
+  }
+  return undefined;
+}
+
+/** Единицы из входа классификации: «1. текст» построчно. */
+function unitsFromInput(input: string): string[] {
+  return input
+    .split('\n')
+    .map((line) => /^\d+\.\s*(?<text>.+)$/u.exec(line)?.groups?.['text'])
+    .filter((text): text is string => text !== undefined);
+}
+
+/**
+ * Модель-эхо: всё сказанное проходит цепочку насквозь.
+ *
+ * Так видно, что шаги соединены: заголовок дела в ответе — это текст,
+ * который человек наговорил, а не выдумка теста.
+ */
+function echoingLlm(overrides: Partial<Record<Stage, string>> = {}): MockLlmProvider {
+  return new MockLlmProvider({
+    respond: (request) => {
+      const stage = stageOf(request);
+      if (stage === undefined) return '{}';
+
+      const override = overrides[stage];
+      if (override !== undefined) return override;
+
+      switch (stage) {
+        case 'router':
+          return JSON.stringify({ segments: [{ intent: 'DUMP', text: request.input }] });
+        case 'extractor':
+          return JSON.stringify({
+            units: request.input
+              .split('\n')
+              .filter((line) => line.trim() !== '')
+              .map((line) => ({ text: line, isProject: false, isEmotion: false })),
+          });
+        case 'classifier':
+          return JSON.stringify({
+            items: unitsFromInput(request.input).map((text) => ({
+              text,
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'личное',
+              isProject: false,
+              deadline: '',
+              deadlineAccuracy: 'none',
+            })),
+          });
+        case 'presenter':
+          return JSON.stringify({ acknowledgement: 'Я тебя услышала.' });
+      }
+    },
+  });
+}
+
+async function seedPrompts(): Promise<PromptRegistry> {
+  const stages = [
+    { stage: 'router', schema: ROUTER_SCHEMA_NAME, marker: MARKERS.router },
+    { stage: 'extractor', schema: EXTRACTOR_SCHEMA_NAME, marker: MARKERS.extractor },
+    { stage: 'classifier', schema: CLASSIFIER_SCHEMA_NAME, marker: MARKERS.classifier },
+    { stage: 'presenter', schema: PRESENTER_SCHEMA_NAME, marker: MARKERS.presenter },
+  ] as const;
+
+  for (const { stage, schema, marker } of stages) {
+    await seedPrompt(testDb(), {
+      stage,
+      version: `${stage}@test`,
+      prompt: marker,
+      schemaName: schema,
+    });
+    await activatePrompt(testDb(), stage, `${stage}@test`);
+  }
+
+  return new PromptRegistry(testDb(), 60_000);
+}
+
+interface HandlerOptions {
+  readonly speech: MockSpeechProvider;
+  readonly llm?: MockLlmProvider;
+  readonly prompts: PromptRegistry;
+  readonly sender?: StatusSender | undefined;
+  readonly embedder?: MockEmbeddingProvider | undefined;
+  readonly now?: Date | undefined;
+}
+
+function handler(options: HandlerOptions) {
+  return createDumpHandler({
+    speech: { provider: options.speech, download, pricing },
+    ai: {
+      provider: options.llm ?? echoingLlm(),
+      prompts: options.prompts,
+      retry: { attempts: 1, sleep: () => Promise.resolve() },
+    },
+    ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
+    ...(options.sender === undefined ? {} : { sender: options.sender }),
+    now: () => options.now ?? at(60_000),
+  });
+}
+
+beforeAll(async () => {
+  fixtureDir = await mkdtemp(join(tmpdir(), 'vydoh-dump-'));
+  audioPath = join(fixtureDir, 'voice.wav');
+  await run('ffmpeg', [
+    '-hide_banner',
+    '-y',
+    '-f',
+    'lavfi',
+    '-t',
+    '2',
+    '-i',
+    'sine=frequency=440:sample_rate=16000',
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    audioPath,
+  ]);
+}, 120_000);
+
+afterAll(async () => {
+  await rm(fixtureDir, { recursive: true, force: true });
+  await redis.quit();
+});
+
+beforeEach(async () => {
+  const keys = await redis.keys('test-dump:*');
+  if (keys.length > 0) await redis.del(...keys);
+
+  await testDb().delete(promptVersions);
+
+  const user = await upsertUser(testDb(), { tgId: 700, firstName: 'Аня' });
+  userId = user.id;
+  seq = 0;
+});
+
+/** Скачивание подменяется копированием готового файла. */
+const download = async (_fileId: string, dest: string): Promise<void> => {
+  await copyFile(audioPath, dest);
+};
+
+interface Incoming {
+  readonly kind: 'text' | 'voice';
+  readonly text?: string;
+  readonly offsetMs: number;
+  readonly transcript?: string;
+}
+
+/** Кладёт сообщения в одну выгрузку и закрывает её по тишине. */
+async function queuedBatchOf(messages: readonly Incoming[]): Promise<string> {
+  let batchId = '';
+
+  for (const message of messages) {
+    seq++;
+    const [row] = await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 7000 + seq,
+        tgChatId: 700,
+        tgMessageId: seq,
+        kind: message.kind,
+        text: message.text ?? null,
+        fileId: message.kind === 'voice' ? `voice-${String(seq)}` : null,
+        audioDurationSec: message.kind === 'voice' ? 2 : null,
+        transcript: message.transcript ?? null,
+        receivedAt: at(message.offsetMs),
+      })
+      .returning({ id: messagesRaw.id });
+
+    const attached = await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: row!.id,
+      now: at(message.offsetMs),
+    });
+    batchId = attached.batchId;
+  }
+
+  const last = messages.at(-1)?.offsetMs ?? 0;
+  await closeBatchOnSilence(testDb(), batchId, { now: at(last + 31_000) });
+
+  return batchId;
+}
+
+async function combinedTextOf(batchId: string): Promise<string | null> {
+  const [row] = await testDb()
+    .select({ text: batches.combinedText })
+    .from(batches)
+    .where(eq(batches.id, batchId));
+  return row?.text ?? null;
+}
+
+describe('расшифровка внутри разбора', () => {
+  it('расшифровывает голосовые и склеивает их с текстом в порядке получения', async () => {
+    // §9.1 правило 2 ТЗ: серия сообщений — это одна мысль.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([
+      { kind: 'voice', offsetMs: 0 },
+      { kind: 'text', text: 'и ещё забрать вещи', offsetMs: 5_000 },
+      { kind: 'voice', offsetMs: 10_000 },
+    ]);
+
+    const speech = new MockSpeechProvider({
+      responses: ['записать сына к врачу', 'купить продукты'],
+    });
+
+    const result = await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts }) },
+      userId,
+    );
+
+    expect(result.processed).toBe(1);
+    expect(await combinedTextOf(batchId)).toBe(
+      'записать сына к врачу\nи ещё забрать вещи\nкупить продукты',
+    );
+  });
+
+  it('доводит выгрузку до состояния «готово»', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['текст'] });
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts }) },
+      userId,
+    );
+
+    const [batch] = await testDb().select().from(batches);
+    expect(batch?.status).toBe('done');
+    expect(batch?.error).toBeNull();
+  });
+
+  it('убирает ссылку на аудио: §16 ТЗ запрещает хранить файл после обработки', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['текст'] });
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts }) },
+      userId,
+    );
+
+    const [row] = await testDb().select().from(messagesRaw);
+    expect(row?.transcript).toBe('текст');
+    expect(row?.fileId).toBeNull();
+  });
+
+  it('не расшифровывает заново то, что уже расшифровано', async () => {
+    // Повторный заход бывает после сбоя посреди выгрузки, и платить
+    // за одну и ту же секунду дважды нельзя — это чужие деньги.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([
+      { kind: 'voice', offsetMs: 0, transcript: 'уже расшифровано' },
+      { kind: 'voice', offsetMs: 5_000 },
+    ]);
+
+    const speech = new MockSpeechProvider({ responses: ['новое'] });
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts }) },
+      userId,
+    );
+
+    expect(speech.callCount).toBe(1);
+    expect(await combinedTextOf(batchId)).toBe('уже расшифровано\nновое');
+  });
+
+  it('не трогает провайдера речи, если голосовых в выгрузке нет', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'просто текст', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider();
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts }) },
+      userId,
+    );
+
+    expect(speech.callCount).toBe(0);
+  });
+
+  it('сбойную выгрузку помечает сбойной, а не теряет', async () => {
+    // §9 ТЗ запрещает терять сообщения. Пропустить нерасшифрованное
+    // голосовое и склеить остальное было бы тише, но молча съело бы
+    // часть сказанного.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+
+    const speech = new MockSpeechProvider({
+      failFirst: { times: 1, error: new PermanentSpeechError('битый файл') },
+    });
+
+    await expect(
+      processUserBatches({ db: testDb(), lock, handleBatch: handler({ speech, prompts }) }, userId),
+    ).rejects.toThrow(/битый файл/u);
+
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.status).toBe('failed');
+    expect(batch?.error).toContain('битый файл');
+
+    // Сообщение осталось на месте вместе со ссылкой на файл: выгрузку
+    // можно перезапустить.
+    const [row] = await testDb().select().from(messagesRaw);
+    expect(row?.fileId).not.toBeNull();
+  });
+});
+
+describe('разбор', () => {
+  it('создаёт записи из сказанного и считает им векторы', async () => {
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([
+      { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
+      { kind: 'text', text: 'купить продукты', offsetMs: 1_000 },
+    ]);
+
+    const embedder = new MockEmbeddingProvider();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, embedder }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
+    expect(saved.map((item) => item.text)).toEqual(['записать сына к врачу', 'купить продукты']);
+    expect(saved.every((item) => item.sourceBatchId === batchId)).toBe(true);
+    expect(saved.every((item) => item.topic === 'личное')).toBe(true);
+    expect(saved.every((item) => item.embedding !== null)).toBe(true);
+    expect(saved.some((item) => item.isDraft)).toBe(false);
+  });
+
+  it('пишет расход на каждый этап: речь, намерения, единицы, классы, признание', async () => {
+    // §10.5 ТЗ и инвариант 6. Без полного учёта себестоимость выгрузки
+    // на задаче 2.21 окажется занижена.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['купить продукты'] });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech, prompts, embedder: new MockEmbeddingProvider() }),
+      },
+      userId,
+    );
+
+    const calls = await testDb().select().from(aiCalls);
+    const stages = new Set(calls.map((call) => call.stage));
+
+    expect(stages).toEqual(
+      new Set(['speech', 'router', 'extractor', 'classifier', 'embedder', 'presenter']),
+    );
+    expect(calls.every((call) => call.ok)).toBe(true);
+    expect(calls.every((call) => call.batchId !== null)).toBe(true);
+  });
+
+  it('правку сказанного откладывает черновиком, а не превращает в задачу', async () => {
+    // §7 ТЗ: правка требует резолвера, а он приходит на третьем этапе.
+    // Задача «хотя нет, в пятницу» была бы задачей без задачи.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'записать сына к врачу в четверг, хотя нет, в пятницу', offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        segments: [
+          { intent: 'DUMP', text: 'записать сына к врачу в четверг' },
+          { intent: 'PATCH', text: 'хотя нет, в пятницу' },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
+    const drafts = saved.filter((item) => item.isDraft);
+    const parsed = saved.filter((item) => !item.isDraft);
+
+    expect(parsed.map((item) => item.text)).toEqual(['записать сына к врачу в четверг']);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.text).toBe('хотя нет, в пятницу');
+    expect(drafts[0]?.draftReason).toContain('PATCH');
+  });
+
+  it('на «привет» не разбирает ничего и отвечает коротко', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({ segments: [{ intent: 'SMALLTALK', text: 'привет' }] }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(await testDb().select().from(items)).toHaveLength(0);
+    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+
+  it('сбой извлечения сохраняет текст черновиком и говорит об этом', async () => {
+    // §17 ТЗ: терять текст нельзя, сохранить его неразобранным можно.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты и врача', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({ extractor: 'это не JSON' });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.isDraft).toBe(true);
+    expect(saved[0]?.text).toBe('надо продукты и врача');
+    expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
+  });
+
+  it('высказанное состояние снижает уровень сил и укорачивает выдачу', async () => {
+    // §13.7 ТЗ: эмоция влияет ровно на одно — на число действий в выдаче.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'дела и усталость', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          ...['первое дело', 'второе дело', 'третье дело'].map((text) => ({
+            text,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+          })),
+          {
+            text: 'я ничего не успеваю',
+            type: 'EMOTION',
+            priority: 'NONE',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+          },
+        ],
+      }),
+      presenter: JSON.stringify({ acknowledgement: 'Поняла. Сегодня тяжело.' }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [state] = await testDb().select().from(userState);
+    expect(state?.energy).toBe('low');
+
+    // При «сил мало» выдача — два дела, а не три, и это первые два
+    // сказанных, а не произвольные: порядок внутри выгрузки сохранён.
+    const reply = all.at(-1) ?? '';
+    expect(reply).toContain('первое дело');
+    expect(reply).toContain('второе дело');
+    expect(reply).not.toContain('третье дело');
+    expect(reply).toContain(defaultTexts.answer.closingTired);
+  });
+
+  it('в выдачу идут и записи прошлых выгрузок, а не только новые', async () => {
+    // §13.2 спрашивает «что взять на сегодня», а не «что ты сказала
+    // последним»: срочное дело вчерашней выгрузки важнее нового «когда-нибудь».
+    const prompts = await seedPrompts();
+
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'просроченное дело',
+        type: 'TASK',
+        priority: 'NOW',
+        topic: 'личное',
+        deadlineAt: at(-86_400_000),
+        deadlineAccuracy: 'day',
+      });
+
+    await queuedBatchOf([{ kind: 'text', text: 'новое дело', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toContain('просроченное дело');
+  });
+});
+
+/** Считает отправки и правки вместо обращений к Telegram. */
+function recordingSender(): {
+  sender: StatusSender;
+  sent: string[];
+  edited: string[];
+  all: string[];
+} {
+  const sent: string[] = [];
+  const edited: string[] = [];
+  const all: string[] = [];
+
+  return {
+    sent,
+    edited,
+    all,
+    sender: {
+      send: ({ text }) => {
+        sent.push(text);
+        all.push(text);
+        return Promise.resolve(1000 + sent.length);
+      },
+      edit: ({ text }) => {
+        edited.push(text);
+        all.push(text);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+describe('ответ пользователю', () => {
+  it('правит статусное сообщение, а не шлёт новое', async () => {
+    // §9.2 ТЗ: одна реплика на выгрузку. Подтверждение приёма уже ушло
+    // из обработчика входящих, конвейер только правит его.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender, sent, edited } = recordingSender();
+
+    await testDb()
+      .update(batches)
+      .set({ statusMessageId: 777, statusUpdatedAt: at(-60_000) })
+      .where(eq(batches.id, batchId));
+
+    const speech = new MockSpeechProvider({ responses: ['купить продукты'] });
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts, sender }) },
+      userId,
+    );
+
+    expect(sent).toEqual([]);
+    // Промежуточная реплика на время расшифровки и итоговый разбор.
+    expect(edited).toHaveLength(2);
+    expect(edited.at(-1)).toContain('купить продукты');
+  });
+
+  it('отвечает по §13.2: признание, список, сохранённое, один вопрос', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
+      { kind: 'text', text: 'и ещё забрать вещи', offsetMs: 5_000 },
+    ]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply.startsWith('Я тебя услышала.')).toBe(true);
+    expect(reply).toContain('записать сына к врачу');
+    expect(reply).toContain('и ещё забрать вещи');
+    expect(reply).toContain(defaultTexts.answer.question);
+    expect(countQuestions(reply)).toBe(1);
+  });
+
+  it('на пустой расшифровке честно говорит, что не разобрала', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const speech = new MockSpeechProvider({ responses: [''] });
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts, sender }) },
+      userId,
+    );
+
+    expect(all.at(-1)).toContain('Не разобрала');
+    expect(await testDb().select().from(items)).toHaveLength(0);
+  });
+
+  it('несостоявшийся ответ не мешает разбору', async () => {
+    // Человек мог заблокировать бота, пока шла расшифровка. Ответ важен,
+    // но выгрузка важнее: её терять нельзя из-за недоставленной реплики.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['текст'] });
+
+    const silentSender: StatusSender = {
+      // Ноль означает «отправить не удалось».
+      send: () => Promise.resolve(0),
+      edit: () => Promise.resolve(),
+    };
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech, prompts, sender: silentSender }) },
+      userId,
+    );
+
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.status).toBe('done');
+    expect(batch?.combinedText).toBe('текст');
+    // Записи созданы: ответ не доехал, а разбор состоялся.
+    expect(await testDb().select().from(items)).toHaveLength(1);
+    // Несуществующее сообщение не запомнено: следующая попытка отправит заново.
+    expect(batch?.statusMessageId).toBeNull();
+  });
+
+  it('без отправителя работает молча и не падает', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['текст'] });
+
+    await expect(
+      processUserBatches({ db: testDb(), lock, handleBatch: handler({ speech, prompts }) }, userId),
+    ).resolves.toMatchObject({ processed: 1 });
+  });
+});

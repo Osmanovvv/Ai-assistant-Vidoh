@@ -435,6 +435,17 @@ export const items = pgTable(
      */
     embedding: vector('embedding', { dimensions: 256 }),
 
+    /**
+     * Место записи внутри своей выгрузки: первое сказанное — ноль.
+     *
+     * Нужно выдаче. Записи одной выгрузки создаются одной вставкой, то
+     * есть с одинаковым `created_at`, и без этого поля порядок равных по
+     * важности дел определялся бы идентификатором, то есть случайно. Из
+     * трёх названных дел человек увидел бы произвольные два — и не понял,
+     * почему пропало то, что он сказал первым.
+     */
+    sourceOrder: integer('source_order'),
+
     /** Разобрать не удалось, запись ждёт ручного разбора. */
     isDraft: boolean('is_draft').notNull().default(false),
     /** Чем именно не удалось: текст ошибки и сырой ответ модели. */
@@ -519,6 +530,59 @@ export const userState = pgTable('user_state', {
 });
 
 /**
+ * Темы — сферы жизни человека (§5, §6.4 ТЗ).
+ *
+ * В плане таблица стояла на задаче 2.15 вместе с ветками в личном чате,
+ * но рождаются темы раньше: на онбординге (2.13), по ответам человека о
+ * том, какие сферы жизни для него важны. Без списка тем не работает
+ * классификация, поэтому таблица приходит здесь, а 2.15 добавит к ней
+ * только связь с веткой Telegram.
+ *
+ * `tg_thread_id` заведён сразу и пустым: заводить его отдельной миграцией
+ * через две задачи — работа ради работы. Наружу он не показывается.
+ */
+export const topics = pgTable(
+  'topics',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    /** §12.4: эмодзи как маркер темы, не как украшение. */
+    emoji: text('emoji'),
+    sortOrder: integer('sort_order').notNull().default(0),
+
+    /** Ветка личного чата. Появится на 2.15, до тех пор пусто. */
+    tgThreadId: integer('tg_thread_id'),
+    /** Закреплённая сводка темы (2.16). */
+    summaryMessageId: integer('summary_message_id'),
+
+    /** §6.4: запись, не попавшая ни в одну тему, уходит в тему по умолчанию. */
+    isDefault: boolean('is_default').notNull().default(false),
+    isArchived: boolean('is_archived').notNull().default(false),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    /**
+     * Одно название темы на человека. Две «Работы» у одного человека —
+     * это не гибкость, а хаос, который продукт должен убирать (§6.4).
+     */
+    uniqueIndex('topics_user_name_uq').on(table.userId, table.name),
+    /** §8 ТЗ: пара пользователь–ветка уникальна. Пустые не мешают. */
+    uniqueIndex('topics_user_thread_uq')
+      .on(table.userId, table.tgThreadId)
+      .where(sql`${table.tgThreadId} is not null`),
+    index('topics_user_sort_idx').on(table.userId, table.sortOrder),
+  ],
+);
+
+/**
  * Валюта расхода. Приводить к одной нельзя: OpenAI выставляет счёт в
  * долларах, Yandex Cloud в рублях, а курс на дату вызова задним числом
  * не восстановить.
@@ -597,3 +661,5 @@ export type ItemStatusValue = (typeof itemStatus.enumValues)[number];
 export type ItemPriorityValue = (typeof itemPriority.enumValues)[number];
 export type PromptVersion = typeof promptVersions.$inferSelect;
 export type NewPromptVersion = typeof promptVersions.$inferInsert;
+export type Topic = typeof topics.$inferSelect;
+export type NewTopic = typeof topics.$inferInsert;

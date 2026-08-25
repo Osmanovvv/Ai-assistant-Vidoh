@@ -34,9 +34,6 @@ export const reserved: TextProfile = {
     acknowledged: 'Слушаю.',
     working: 'Секунду, слушаю запись.',
     nothingHeard: 'Не разобрала ни слова — похоже, запись пустая. Попробуешь ещё раз?',
-    heard: (text) => `Записала. Вот что услышала:
-
-${text}`,
   },
 
   answer: {
@@ -60,6 +57,7 @@ ${text}`,
     buttonLater: 'Оставить на потом',
 
     savedUnparsed: 'Сохранила целиком. Разберу позже — ничего не потерялось.',
+    nothingToParse: 'Я здесь. Расскажешь, что в голове?',
   },
 
   limits: {
