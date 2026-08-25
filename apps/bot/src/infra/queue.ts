@@ -17,9 +17,15 @@ export type PipelineJob =
   /** Обработать накопившиеся выгрузки пользователя. */
   | { readonly kind: 'process-user'; readonly userId: string };
 
-export function createQueue(connection: Redis): Queue<PipelineJob> {
+/** Префикс ключей. Нужен тестам, чтобы не топтаться по рабочей очереди. */
+export interface QueueOptions {
+  readonly prefix?: string | undefined;
+}
+
+export function createQueue(connection: Redis, options: QueueOptions = {}): Queue<PipelineJob> {
   return new Queue<PipelineJob>(PIPELINE_QUEUE, {
     connection: connection as unknown as ConnectionOptions,
+    ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     defaultJobOptions: {
       // История нужна для разбора инцидентов, но не бесконечная.
       removeOnComplete: { count: 200 },
@@ -33,17 +39,26 @@ export function createQueue(connection: Redis): Queue<PipelineJob> {
 export function createWorker(
   connection: Redis,
   processor: Processor<PipelineJob>,
-  concurrency = 5,
+  options: QueueOptions & { readonly concurrency?: number } = {},
 ): Worker<PipelineJob> {
   return new Worker<PipelineJob>(PIPELINE_QUEUE, processor, {
     connection: connection as unknown as ConnectionOptions,
-    concurrency,
+    ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+    concurrency: options.concurrency ?? 5,
   });
 }
 
-/** Идентификатор задания закрытия. Один на выгрузку, чтобы их не плодилось. */
+/**
+ * Идентификатор задания закрытия. Один на выгрузку, чтобы их не плодилось.
+ *
+ * Разделитель — дефис, а не двоеточие. BullMQ строит из идентификатора
+ * ключ Redis, где двоеточие разделяет части ключа, и на своём двоеточии
+ * внутри идентификатора падает с «Custom Id cannot contain :». Проверка
+ * ниже в тестах не косметическая: с двоеточием бот падал на первом же
+ * входящем сообщении — так и обнаружилось, на боевом сервере.
+ */
 export function closeJobId(batchId: string): string {
-  return `close:${batchId}`;
+  return `close-${batchId}`;
 }
 
 /**

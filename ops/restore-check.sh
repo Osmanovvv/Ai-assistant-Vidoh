@@ -13,6 +13,17 @@ set -euo pipefail
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/vydoh}"
 CHECK_DB="${RESTORE_CHECK_DB:-vydoh_restore_check}"
 
+# См. пояснение в backup.sh: на сервере база живёт в контейнере, и сюда
+# подставляется «docker compose exec -T postgres psql» и то же для
+# pg_restore. Локально это обычные psql и pg_restore.
+PSQL_CMD="${PSQL_CMD:-psql}"
+PG_RESTORE_CMD="${PG_RESTORE_CMD:-pg_restore}"
+
+psql_run() {
+  # shellcheck disable=SC2086
+  $PSQL_CMD "$@"
+}
+
 LATEST="$(find "$BACKUP_DIR" -name 'vydoh-*.dump*' -type f -print0 \
   | xargs -0 ls -1t 2>/dev/null | head -1 || true)"
 
@@ -26,7 +37,7 @@ echo "Проверяю копию: ${LATEST}"
 WORK_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$WORK_DIR"
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${CHECK_DB}\";" >/dev/null
+  psql_run "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${CHECK_DB}\";" >/dev/null
 }
 trap cleanup EXIT
 
@@ -39,8 +50,8 @@ if [[ "$LATEST" == *.gpg ]]; then
       --output "$DUMP" "$LATEST"
 fi
 
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${CHECK_DB}\";" >/dev/null
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${CHECK_DB}\";" >/dev/null
+psql_run "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${CHECK_DB}\";" >/dev/null
+psql_run "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${CHECK_DB}\";" >/dev/null
 
 # Подмена имени базы в адресе средствами шелла: лишняя зависимость на
 # python3 внутри контейнера базы нам ни к чему.
@@ -51,12 +62,15 @@ if [ "$BASE" != "$DATABASE_URL" ]; then
 fi
 RESTORE_URL="${BASE%/*}/${CHECK_DB}${QUERY}"
 
-pg_restore --dbname="$RESTORE_URL" --no-owner --no-privileges "$DUMP"
+# Дамп подаётся потоком: файл лежит на хосте, а pg_restore может работать
+# внутри контейнера, которому этот путь не виден.
+# shellcheck disable=SC2086
+$PG_RESTORE_CMD --dbname="$RESTORE_URL" --no-owner --no-privileges < "$DUMP"
 
 EXPECTED_TABLES="ai_calls batches messages_raw telegram_updates user_settings users"
 MISSING=""
 for table in $EXPECTED_TABLES; do
-  if ! psql "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | grep -q "$table"; then
+  if ! psql_run "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | grep -q "$table"; then
     MISSING="${MISSING} ${table}"
   fi
 done
@@ -68,7 +82,7 @@ fi
 
 echo "Таблицы на месте. Строк в основных:"
 for table in users messages_raw batches; do
-  COUNT="$(psql "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};")"
+  COUNT="$(psql_run "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};")"
   printf '  %-16s %s\n' "$table" "$COUNT"
 done
 

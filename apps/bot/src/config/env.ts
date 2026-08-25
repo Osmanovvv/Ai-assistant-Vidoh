@@ -58,6 +58,13 @@ export const envSchema = z.object({
   BOT_SET_WEBHOOK_ON_BOOT: booleanFromEnv(true),
 
   /**
+   * Открытая часть самоподписанного сертификата. Задаётся, когда вебхук
+   * стоит на голом IP: домена нет, Let's Encrypt на адрес сертификат не
+   * выдаёт, а Telegram допускает свой — если прислать его при регистрации.
+   */
+  WEBHOOK_CERTIFICATE_PATH: z.string().min(1).optional(),
+
+  /**
    * §16 ТЗ: согласие на обработку данных показывается при первом запуске
    * одним экраном со ссылкой. Переменная обязательная намеренно — иначе
    * про политику вспомнят на приёмке, а не при выкладке.
@@ -75,7 +82,80 @@ export const envSchema = z.object({
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });
 
-export type Env = z.infer<typeof envSchema>;
+/**
+ * Настройки расшифровки (задача 1.15) — отдельной схемой, а не частью
+ * общей. Провайдеру не нужны ни токен бота, ни адрес базы, а служебному
+ * скрипту проверки речи не нужно поднимать конфигурацию всего бота
+ * целиком: иначе для одного вызова распознавания пришлось бы заполнять
+ * десяток переменных, к речи не относящихся.
+ */
+const speechFields = z.object({
+  /**
+   * По умолчанию заглушка, а не живой провайдер: разработку и тесты
+   * нельзя ставить в зависимость от чужого ключа и чужого счёта.
+   * В бою заглушка запрещена — см. проверку ниже.
+   */
+  SPEECH_PROVIDER: z.enum(['yandex', 'openai', 'mock']).default('mock'),
+
+  /** Язык распознавания. Приводится к коду провайдера внутри провайдера. */
+  SPEECH_LANGUAGE: z.string().min(2).max(10).default('ru'),
+
+  YANDEX_API_KEY: z.string().min(1).optional(),
+  /** Каталог Yandex Cloud. Понадобится языковым моделям на этапе 2. */
+  YANDEX_FOLDER_ID: z.string().min(1).optional(),
+  YANDEX_SPEECH_MODEL: z.string().min(1).default('general'),
+
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  /** Адрес, если запросы идут не напрямую, а через посредника. */
+  OPENAI_BASE_URL: z.string().min(1).optional(),
+  OPENAI_SPEECH_MODEL: z.string().min(1).default('whisper-1'),
+});
+
+export type SpeechEnv = z.infer<typeof speechFields>;
+
+/** Какой ключ обязателен для какого провайдера расшифровки. */
+const SPEECH_KEYS = {
+  yandex: 'YANDEX_API_KEY',
+  openai: 'OPENAI_API_KEY',
+} as const;
+
+/**
+ * Ключ обязателен, но какой именно — зависит от выбранного провайдера.
+ * В схеме поля это не выразить, поэтому отдельной проверкой.
+ */
+function checkSpeechKey(env: SpeechEnv, ctx: z.RefinementCtx): void {
+  if (env.SPEECH_PROVIDER === 'mock') return;
+
+  const required = SPEECH_KEYS[env.SPEECH_PROVIDER];
+  if (env[required] === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: [required],
+      message: `обязателен при SPEECH_PROVIDER=${env.SPEECH_PROVIDER}`,
+    });
+  }
+}
+
+export const speechEnvSchema = speechFields.superRefine(checkSpeechKey);
+
+const envSchemaWithSpeech = envSchema.extend(speechFields.shape);
+
+/** Проверки, затрагивающие несколько переменных сразу. */
+const envWithChecks = envSchemaWithSpeech.superRefine((env, ctx) => {
+  checkSpeechKey(env, ctx);
+
+  // Заглушка в бою — это бот, который отвечает на выдуманные расшифровки
+  // и молчит об этом. Такое лучше не запускать вовсе.
+  if (env.SPEECH_PROVIDER === 'mock' && env.NODE_ENV === 'production') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['SPEECH_PROVIDER'],
+      message: 'заглушка расшифровки недопустима в боевом окружении',
+    });
+  }
+});
+
+export type Env = z.infer<typeof envSchemaWithSpeech>;
 
 /** Ошибка конфигурации со списком всех проблем сразу, а не первой попавшейся. */
 export class EnvValidationError extends Error {
@@ -90,7 +170,7 @@ export class EnvValidationError extends Error {
 
 /** Чистый разбор: ничего не читает из глобального состояния и не завершает процесс. */
 export function parseEnv(source: Record<string, string | undefined>): Env {
-  const parsed = envSchema.safeParse(source);
+  const parsed = envWithChecks.safeParse(source);
 
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => {

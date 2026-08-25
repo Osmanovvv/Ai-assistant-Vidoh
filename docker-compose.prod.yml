@@ -1,0 +1,116 @@
+# Боевая конфигурация (задача 1.23).
+#
+# Запускается на сервере командой ./ops/deploy.sh с машины разработчика.
+# Порт Postgres наружу не публикуется вообще: §16 ТЗ, база с расшифровками
+# доступна только контейнерам этой сети.
+
+name: vydoh
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?нужен POSTGRES_USER в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нужен POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: ${POSTGRES_DB:?нужен POSTGRES_DB в .env}
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly: очередь и отложенные задания должны переживать перезапуск,
+    # иначе теряется гарантия §9 ТЗ о неоставленных без ответа сообщениях.
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Отдельный одноразовый контейнер, а не миграции при старте приложения:
+  # при нескольких репликах одновременный накат из каждой — источник
+  # взаимных блокировок.
+  migrate:
+    build:
+      context: .
+    image: vydoh-bot:latest
+    command: ['node', 'apps/bot/dist/db/migrate.js']
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  bot:
+    build:
+      context: .
+    image: vydoh-bot:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Открытая часть сертификата нужна самому боту: при регистрации
+      # вебхука на голом IP она отправляется Telegram.
+      - ./ops/caddy/certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health отвечает без обращения к базе: это проверка живости
+      # процесса, а не готовности всей системы.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      # Домен или IP, на который Telegram шлёт вебхук.
+      SITE_ADDRESS: ${SITE_ADDRESS:?нужен SITE_ADDRESS в .env}
+    # Какой файл конфигурации взять, решает CADDYFILE в .env: на домене
+    # работает автоматический сертификат Let's Encrypt, на голом IP — свой.
+    command:
+      ['caddy', 'run', '--config', '/etc/caddy/${CADDYFILE:-Caddyfile}', '--adapter', 'caddyfile']
+    volumes:
+      # Монтируется папка, а не отдельный файл. Одиночный файл Docker
+      # привязывает по inode, а выкладка распаковывает архив и создаёт
+      # файл заново — контейнер продолжал бы читать старую копию.
+      # Ровно на это и напоролись при первой выкладке.
+      - ./ops/caddy:/etc/caddy:ro
+      - ./ops/caddy/certs:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - bot
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

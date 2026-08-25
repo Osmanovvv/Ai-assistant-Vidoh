@@ -1,5 +1,6 @@
-import { ALLOWED_UPDATES, createBot } from '../bot/bot.js';
-import { getEnv, webhookUrl } from '../config/env.js';
+import { createBot } from '../bot/bot.js';
+import { registerWebhook } from '../bot/register-webhook.js';
+import { getEnv } from '../config/env.js';
 
 /**
  * Регистрация вебхука отдельной командой (задача 1.7).
@@ -10,13 +11,8 @@ import { getEnv, webhookUrl } from '../config/env.js';
 
 const env = getEnv();
 const bot = createBot(env.BOT_TOKEN);
-const url = webhookUrl(env);
 
-await bot.api.setWebhook(url, {
-  secret_token: env.BOT_WEBHOOK_SECRET,
-  drop_pending_updates: false,
-  allowed_updates: [...ALLOWED_UPDATES],
-});
+const url = await registerWebhook(bot.api, env);
 
-const info = await bot.api.getWebhookInfo();
-process.stdout.write(`Вебхук зарегистрирован: ${url}\n${JSON.stringify(info, null, 2)}\n`);
+process.stdout.write(`Вебхук зарегистрирован: ${url}
+`);

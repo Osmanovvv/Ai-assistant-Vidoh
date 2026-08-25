@@ -20,6 +20,9 @@ export interface TextProfile {
   };
   readonly listening: {
     readonly acknowledged: string;
+    readonly working: string;
+    readonly heard: (text: string) => string;
+    readonly nothingHeard: string;
   };
   readonly limits: {
     readonly tooManyDumps: string;
@@ -58,6 +61,14 @@ const reserved: TextProfile = {
 
   listening: {
     acknowledged: 'Слушаю.',
+    working: 'Секунду, слушаю запись.',
+    // Временный текст первого этапа: показать, что серия сообщений
+    // склеилась в одну мысль и расшифровка сработала. На втором этапе
+    // сюда встанет настоящий ответ — темы и следующие действия.
+    heard: (text) => `Записала. Вот что услышала:
+
+${text}`,
+    nothingHeard: 'Не разобрала ни слова — похоже, запись пустая. Попробуешь ещё раз?',
   },
 
   limits: {

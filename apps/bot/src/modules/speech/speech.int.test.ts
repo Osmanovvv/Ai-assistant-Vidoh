@@ -19,7 +19,7 @@ import { transcribeMessage } from './speech.service.js';
  * делал бы тесты недетерминированными.
  */
 
-const pricing = { mock: { kind: 'audio', perMinuteUsd: 0.006 } } as const;
+const pricing = { mock: { kind: 'audio', currency: 'usd', perMinute: 0.006 } } as const;
 
 let fixtureDir = '';
 let shortAudio = '';

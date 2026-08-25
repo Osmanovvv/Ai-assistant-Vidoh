@@ -3,13 +3,15 @@ import type { Server } from 'node:http';
 import type { Worker } from 'bullmq';
 import type { Api } from 'grammy';
 
-import { ALLOWED_UPDATES, createBot } from './bot/bot.js';
+import { createBot } from './bot/bot.js';
+import { publishCommands } from './bot/commands.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
+import { registerWebhook } from './bot/register-webhook.js';
 import { createWebhookHandler } from './bot/webhook.js';
-import { WEBHOOK_PATH, getEnv, productionWarnings, webhookUrl } from './config/env.js';
+import { WEBHOOK_PATH, getEnv, productionWarnings } from './config/env.js';
 import { closeDb, getDb, pingDb } from './infra/db.js';
 import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
@@ -23,8 +25,14 @@ import {
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
 import { createServer } from './http/server.js';
 import { DEFAULT_LIMITS, closeBatchOnSilence } from './modules/buffer/buffer.service.js';
+import { modelsWithoutPrice } from './modules/metering/pricing.js';
+import { createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
+import { startRecoverySweep } from './modules/pipeline/sweeper.js';
+import { createStage1Handler } from './modules/pipeline/stage1.handler.js';
+import { downloadTelegramFile } from './modules/speech/audio.service.js';
+import { createSpeechProvider } from './modules/speech/providers/factory.js';
 
 /** Точка входа. */
 
@@ -85,12 +93,58 @@ async function main(): Promise<void> {
     'Бот инициализирован',
   );
 
+  // §16 ТЗ: выгрузка и удаление данных должны быть доступны, а не спрятаны
+  // за командой, которую надо знать наизусть. Отказ не мешает работе:
+  // меню — удобство, приём сообщений — суть.
+  try {
+    await publishCommands(bot.api);
+    logger.info('Меню команд опубликовано');
+  } catch (error) {
+    logger.error({ err: error }, 'Не удалось опубликовать меню команд');
+  }
+
   const monitor = new Monitor({ sink: createAlertSink(bot.api, env.MONITORING_CHAT_ID) });
+
+  const speech = createSpeechProvider(env);
+  logger.info({ provider: speech.name }, 'Провайдер расшифровки выбран');
+
+  // §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
+  // цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
+  // при старте, а не из отчёта через месяц.
+  const unpriced = modelsWithoutPrice([speech.name]);
+  if (unpriced.length > 0) {
+    logger.warn({ models: unpriced }, 'Цена модели неизвестна: расход будет считаться неполным');
+  }
+
+  // Один отправитель на оба конца разговора: подтверждение приёма шлёт
+  // обработчик входящих, результат — конвейер, но правят они одно и то
+  // же сообщение (§9.2 и §10.2 ТЗ).
+  const sender = createTelegramSender({ api: bot.api, db, logger });
+
+  const handleBatch = createStage1Handler({
+    provider: speech,
+    download: (fileId, destPath) => downloadTelegramFile(bot.api, fileId, destPath),
+    language: env.SPEECH_LANGUAGE,
+    logger,
+    sender,
+  });
 
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
   // свои клиенты: общий с приложением они бы заняли надолго.
   const queueConnection = createRedis(env.REDIS_URL);
   const workerConnection = createRedis(env.REDIS_URL);
+
+  // Без своего обработчика ioredis печатает «Unhandled error event»
+  // мимо структурного лога, и обрыв связи теряется среди прочего вывода.
+  for (const [name, connection] of [
+    ['app', getRedis()],
+    ['queue', queueConnection],
+    ['worker', workerConnection],
+  ] as const) {
+    connection.on('error', (error: unknown) => {
+      logger.warn({ err: error, connection: name }, 'Обрыв связи с Redis');
+    });
+  }
   const queue = createQueue(queueConnection);
   const lock = new RedisLock(getRedis());
 
@@ -124,10 +178,20 @@ async function main(): Promise<void> {
       return;
     }
 
-    const result = await processUserBatches({ db, lock }, data.userId);
+    const result = await processUserBatches({ db, lock, handleBatch }, data.userId);
     if (result.skipped) {
       logger.debug({ userId: data.userId }, 'Пользователь уже обрабатывается');
     }
+  });
+
+  // Последний рубеж на случай, если задание в очереди потерялось.
+  // Перезапуск Redis на боевом сервере показал, что воркер BullMQ после
+  // него отложенные задания больше не разбирает: выгрузка остаётся
+  // открытой навсегда, человек получает «Слушаю.» и тишину.
+  const stopSweep = startRecoverySweep({
+    db,
+    logger,
+    process: (userId) => processUserBatches({ db, lock, handleBatch }, userId),
   });
 
   worker.on('completed', () => {
@@ -139,7 +203,7 @@ async function main(): Promise<void> {
   });
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
-  bot.use(incomingMiddleware({ db, queue }));
+  bot.use(incomingMiddleware({ db, queue, sender }));
   registerStartHandlers(bot, env.PRIVACY_POLICY_URL);
   registerPrivacyHandlers(bot, db, logger);
   registerMembershipHandlers(bot, db, logger);
@@ -150,13 +214,11 @@ async function main(): Promise<void> {
   });
 
   if (env.BOT_SET_WEBHOOK_ON_BOOT) {
-    await bot.api.setWebhook(webhookUrl(env), {
-      secret_token: env.BOT_WEBHOOK_SECRET,
-      // §9 ТЗ запрещает терять сообщения, в том числе накопившиеся.
-      drop_pending_updates: false,
-      allowed_updates: [...ALLOWED_UPDATES],
-    });
-    logger.info({ webhookUrl: webhookUrl(env) }, 'Вебхук зарегистрирован');
+    const url = await registerWebhook(bot.api, env);
+    logger.info(
+      { webhookUrl: url, selfSigned: env.WEBHOOK_CERTIFICATE_PATH !== undefined },
+      'Вебхук зарегистрирован',
+    );
   }
 
   const rawWebhook = createWebhookHandler(bot, env.BOT_WEBHOOK_SECRET);
@@ -168,10 +230,14 @@ async function main(): Promise<void> {
     ],
     webhookPath: WEBHOOK_PATH,
     // Сквозной идентификатор запроса на весь конвейер обработки (§18 ТЗ).
-    webhookHandler: (req, res, next) => {
-      withRequestId(() => {
-        rawWebhook(req, res, next);
-      });
+    //
+    // Промис возвращается наружу намеренно: express пятой версии сам
+    // отправляет отказ в обработчик ошибок. Если его проглотить, отказ
+    // становится необработанным и роняет процесс — так и было.
+    webhookHandler: (req, res, next) => withRequestId(() => rawWebhook(req, res, next)),
+    onError: (error) => {
+      logger.error({ err: error }, 'Сбой обработки апдейта');
+      void monitor.recordOutcome(false);
     },
   });
 
@@ -179,16 +245,21 @@ async function main(): Promise<void> {
     logger.info({ port: env.PORT }, 'HTTP-сервер слушает');
   });
 
-  installShutdownHandlers(server, worker);
+  installShutdownHandlers(server, worker, stopSweep);
 }
 
-function installShutdownHandlers(server: Server, worker: Worker<PipelineJob>): void {
+function installShutdownHandlers(
+  server: Server,
+  worker: Worker<PipelineJob>,
+  stopSweep: () => void,
+): void {
   let shuttingDown = false;
 
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Останавливаюсь');
+    stopSweep();
 
     const forceExit = setTimeout(() => {
       logger.warn('Штатная остановка не уложилась в срок, выхожу принудительно');

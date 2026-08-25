@@ -7,8 +7,9 @@ import { meterCall, recordAiCall, spendByUser } from './ai-calls.repo.js';
 import type { ModelPricing } from './pricing.js';
 
 const pricing: Readonly<Record<string, ModelPricing>> = {
-  'main-model': { kind: 'tokens', inputPerMillionUsd: 3, outputPerMillionUsd: 15 },
-  'speech-model': { kind: 'audio', perMinuteUsd: 0.006 },
+  'main-model': { kind: 'tokens', currency: 'usd', inputPerMillion: 3, outputPerMillion: 15 },
+  'speech-model': { kind: 'audio', currency: 'usd', perMinute: 0.006 },
+  'rub-model': { kind: 'tokens', currency: 'rub', inputPerMillion: 200, outputPerMillion: 600 },
 };
 
 let userId: string;
@@ -32,6 +33,8 @@ describe('recordAiCall', () => {
     expect(row?.stage).toBe('classifier');
     expect(row?.tokensIn).toBe(4_300);
     expect(row?.costMicros).toBe(30_150);
+    // Сумма без валюты бессмысленна, поэтому пишутся обе или ни одна.
+    expect(row?.costCurrency).toBe('usd');
     expect(row?.ok).toBe(true);
     expect(row?.error).toBeNull();
   });
@@ -61,6 +64,25 @@ describe('recordAiCall', () => {
 
     const [row] = await testDb().select().from(aiCalls);
     expect(row?.costMicros).toBeNull();
+    // Валюта тоже пустая: иначе в отчёте появился бы нулевой расход
+    // в конкретной валюте вместо честного «неизвестно».
+    expect(row?.costCurrency).toBeNull();
+  });
+
+  it('записывает расход в рублях, не приводя его к долларам', async () => {
+    // Курс на дату вызова задним числом не восстановить, поэтому валюта
+    // хранится как есть.
+    await recordAiCall(testDb(), {
+      context: { stage: 'router', model: 'rub-model', userId },
+      usage: { tokensIn: 1_000_000 },
+      latencyMs: 10,
+      ok: true,
+      pricing,
+    });
+
+    const [row] = await testDb().select().from(aiCalls);
+    expect(row?.costMicros).toBe(200_000_000);
+    expect(row?.costCurrency).toBe('rub');
   });
 
   it('вызов без пользователя допустим', async () => {
@@ -156,7 +178,31 @@ describe('spendByUser', () => {
 
     expect(summary.calls).toBe(2);
     expect(summary.failed).toBe(0);
-    expect(summary.costMicros).toBe(6_000_000);
+    expect(summary.totals).toEqual({ usd: 6_000_000 });
+    expect(summary.complete).toBe(true);
+  });
+
+  it('не складывает разные валюты в одно число', async () => {
+    await recordAiCall(testDb(), {
+      context: { stage: 'classifier', model: 'main-model', userId },
+      usage: { tokensIn: 1_000_000 },
+      latencyMs: 100,
+      ok: true,
+      pricing,
+    });
+    await recordAiCall(testDb(), {
+      context: { stage: 'router', model: 'rub-model', userId },
+      usage: { tokensIn: 1_000_000 },
+      latencyMs: 100,
+      ok: true,
+      pricing,
+    });
+
+    const summary = await spendByUser(testDb(), userId, since);
+
+    // Три доллара плюс двести рублей — это не «двести три чего-то».
+    expect(summary.totals).toEqual({ usd: 3_000_000, rub: 200_000_000 });
+    expect(summary.complete).toBe(true);
   });
 
   it('считает неуспешные вызовы отдельно', async () => {
@@ -173,8 +219,10 @@ describe('spendByUser', () => {
 
     expect(summary.calls).toBe(1);
     expect(summary.failed).toBe(1);
-    // Хотя бы одна неизвестная цена делает всю сумму недостоверной.
-    expect(summary.costMicros).toBeNull();
+    // Хотя бы одна неизвестная цена делает итог нижней оценкой,
+    // а не расходом.
+    expect(summary.complete).toBe(false);
+    expect(summary.totals).toEqual({});
   });
 
   it('не учитывает вызовы старше границы', async () => {
@@ -195,7 +243,8 @@ describe('spendByUser', () => {
     await expect(spendByUser(testDb(), userId, since)).resolves.toEqual({
       calls: 0,
       failed: 0,
-      costMicros: 0,
+      totals: {},
+      complete: true,
     });
   });
 });

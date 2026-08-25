@@ -165,3 +165,121 @@ describe('монтирование вебхука', () => {
     expect(received).toEqual({ update_id: 1 });
   });
 });
+
+describe('сбой в обработчике вебхука', () => {
+  it('не роняет процесс, а отвечает 500', async () => {
+    // В режиме вебхука grammY не пропускает ошибки через bot.catch, и без
+    // обработчика ошибок express отказ промиса убивал весь процесс: бот
+    // перезапускался на каждом входящем сообщении.
+    const seen: unknown[] = [];
+
+    const app = createServer({
+      healthChecks: [],
+      webhookPath: '/telegram/webhook',
+      webhookHandler: () => Promise.reject(new Error('очередь не приняла задание')),
+      onError: (error) => seen.push(error),
+    });
+    const base = await listen(app);
+
+    const response = await fetch(`${base}/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ update_id: 1 }),
+    });
+
+    // 500, а не 200: Telegram повторит доставку, а апдейт дедуплицируется
+    // по update_id, поэтому повтор безопасен.
+    expect(response.status).toBe(500);
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as Error).message).toBe('очередь не приняла задание');
+  });
+
+  it('ловит и синхронное исключение', async () => {
+    const seen: unknown[] = [];
+
+    const app = createServer({
+      healthChecks: [],
+      webhookPath: '/telegram/webhook',
+      webhookHandler: () => {
+        throw new Error('разбор тела упал');
+      },
+      onError: (error) => seen.push(error),
+    });
+    const base = await listen(app);
+
+    const response = await fetch(`${base}/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ update_id: 1 }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('продолжает обслуживать следующие запросы', async () => {
+    let shouldFail = true;
+
+    const app = createServer({
+      healthChecks: [],
+      webhookPath: '/telegram/webhook',
+      webhookHandler: (_req, res) => {
+        if (shouldFail) throw new Error('первый апдейт не повезло');
+        res.sendStatus(200);
+      },
+      onError: () => undefined,
+    });
+    const base = await listen(app);
+
+    const send = () =>
+      fetch(`${base}/telegram/webhook`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ update_id: 1 }),
+      });
+
+    expect((await send()).status).toBe(500);
+
+    shouldFail = false;
+    expect((await send()).status).toBe(200);
+    // И проверки живости продолжают отвечать.
+    expect((await fetch(`${base}/health`)).status).toBe(200);
+  });
+});
+
+describe('зависшая зависимость', () => {
+  it('не подвешивает проверку готовности, а отвечает 503', async () => {
+    // Клиент ioredis при недоступном сервере копит команды и не отвечает
+    // отказом. Без срока ответа запрос к /health/ready висел пять минут —
+    // проверено остановкой Redis на боевом сервере.
+    const app = createServer({
+      healthChecks: [
+        { name: 'redis', check: () => new Promise<void>(() => undefined) },
+        { name: 'postgres', check: () => Promise.resolve() },
+      ],
+      healthCheckTimeoutMs: 100,
+    });
+    const base = await listen(app);
+
+    const startedAt = Date.now();
+    const response = await fetch(`${base}/health/ready`);
+    const body = (await response.json()) as { ok: boolean; checks: Record<string, string> };
+
+    expect(response.status).toBe(503);
+    expect(body.ok).toBe(false);
+    // Видно, что именно упало, а не просто «не готов».
+    expect(body.checks['redis']).toContain('не ответил');
+    expect(body.checks['postgres']).toBe('ok');
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  });
+
+  it('исправная зависимость успевает ответить', async () => {
+    const app = createServer({
+      healthChecks: [{ name: 'postgres', check: () => Promise.resolve() }],
+      healthCheckTimeoutMs: 100,
+    });
+    const base = await listen(app);
+
+    expect((await fetch(`${base}/health/ready`)).status).toBe(200);
+  });
+});
