@@ -14,7 +14,8 @@ import {
 import type { AudioLimits } from '../speech/audio.service.js';
 import type { SpeechProvider } from '../speech/providers/types.js';
 import { transcribeMessage } from '../speech/speech.service.js';
-import { texts } from '../../texts/ru.js';
+import { textProfileOf } from '../users/settings.repo.js';
+import { textsFor } from '../../texts/index.js';
 import type { BatchHandler } from './pipeline.service.js';
 
 /**
@@ -95,6 +96,7 @@ export function createStage1Handler(deps: Stage1Deps): BatchHandler {
   return async (db, batch) => {
     const voices = await pendingVoices(db, batch.id);
     const target = deps.sender ? await statusTarget(db, batch.id) : undefined;
+    const texts = textsFor(await textProfileOf(db, batch.userId));
 
     // Расшифровка идёт примерно в реальном времени: минутная запись
     // распознаётся около минуты. Молчать всё это время невежливо.

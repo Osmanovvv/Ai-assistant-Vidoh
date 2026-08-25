@@ -13,7 +13,8 @@ import {
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
-import { texts } from '../../texts/ru.js';
+import { textProfileOf } from '../../modules/users/settings.repo.js';
+import { textsFor } from '../../texts/index.js';
 
 /**
  * Приём входящего (задачи 1.9, 1.10, 1.12).
@@ -82,6 +83,10 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
     // §10.5 ТЗ: ограничение частоты. Сообщение уже сохранено — мы просто
     // не заводим по нему разбор, а не выбрасываем текст.
     if (await isOverDumpLimit(deps.db, outcome.userId, { limits })) {
+      // Профиль спрашивается только там, где реплика действительно
+      // уходит: это горячий путь, и лишний запрос на каждое сообщение
+      // ради текста, который отправляется редко, не нужен.
+      const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
       await ctx.reply(texts.limits.tooManyDumps);
       return;
     }
@@ -113,6 +118,8 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
     // конвейер, а сбой отправки не должен мешать разбору.
     const chatId = ctx.chat?.id;
     if (deps.sender && chatId !== undefined && attached.messageCount === 1) {
+      const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
+
       await showStatus(
         { db: deps.db, sender: deps.sender },
         {

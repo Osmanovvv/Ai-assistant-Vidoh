@@ -50,6 +50,35 @@ export default tseslint.config(
   },
 
   {
+    // Инвариант 4 и §12.3 ТЗ: ни одной реплики бота в коде. Условие
+    // готовности задачи 2.11 требует проверять это линтером, а не глазами.
+    //
+    // Проверяются места, через которые текст попадает человеку: методы
+    // отправки Telegram и подписи кнопок. Это точнее, чем запрет строк с
+    // кириллицей вообще: сообщения в журнал и тексты исключений тоже
+    // по-русски, и такой запрет дал бы десятки ложных срабатываний, а
+    // правило, которое врёт, отключают целиком.
+    files: ['apps/bot/src/**/*.ts'],
+    ignores: ['apps/bot/src/texts/**', '**/*.test.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'CallExpression[callee.property.name=/^(reply|replyWithDocument|sendMessage|sendDocument|editMessageText|answerCallbackQuery)$/] > :matches(Literal[value.length>0], TemplateLiteral)',
+          message:
+            'Реплика человеку — только из словаря текстов (инвариант 4, §12.3 ТЗ). Добавь строку в apps/bot/src/texts и возьми её через textsFor.',
+        },
+        {
+          selector: 'CallExpression[callee.property.name=/^(text|url)$/] > Literal:nth-child(1)',
+          message:
+            'Подпись кнопки — только из словаря текстов (инвариант 4, §12.3 ТЗ). Идентификатор в callback_data остаётся строкой в коде, подпись — нет.',
+        },
+      ],
+    },
+  },
+
+  {
     // Конфигурационные файлы на JavaScript вне типизированного проекта.
     files: ['**/*.js'],
     extends: [tseslint.configs.disableTypeChecked],

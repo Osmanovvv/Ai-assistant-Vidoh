@@ -78,6 +78,13 @@
       "when": 1787681615329,
       "tag": "0010_drop_hnsw",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787685646590,
+      "tag": "0011_text_profile",
+      "breakpoints": true
     }
   ]
 }

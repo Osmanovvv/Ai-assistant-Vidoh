@@ -3,8 +3,9 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
+import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
-import { texts } from '../../texts/ru.js';
+import { textsFor, type TextProfile } from '../../texts/index.js';
 
 /**
  * Удаление и экспорт данных (задача 1.20).
@@ -19,7 +20,17 @@ export const DELETE_STEP_TWO = 'privacy:delete:2';
 export const DELETE_CANCEL = 'privacy:delete:cancel';
 
 export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger): void {
+  /**
+   * Профиль текстов человека (§13.8). Отдельный запрос на команду: команды
+   * приходят редко, а тащить настройки через весь поток сообщений ради
+   * двух реплик дороже, чем спросить у базы.
+   */
+  const textsOf = async (tgId: number | undefined): Promise<TextProfile> =>
+    textsFor(tgId === undefined ? null : await textProfileByTgId(db, tgId));
+
   bot.command('delete_my_data', async (ctx) => {
+    const texts = await textsOf(ctx.from?.id);
+
     await ctx.reply(texts.privacy.deleteFirstStep, {
       reply_markup: new InlineKeyboard()
         .text(texts.privacy.deleteConfirmButton, DELETE_STEP_ONE)
@@ -30,6 +41,8 @@ export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger):
   bot.command('export_my_data', async (ctx) => {
     const tgId = ctx.from?.id;
     if (tgId === undefined) return;
+
+    const texts = await textsOf(tgId);
 
     const user = await findByTgId(db, tgId);
     if (!user) {
@@ -52,6 +65,8 @@ export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger):
   // Первый шаг: предупреждение о необратимости.
   bot.callbackQuery(DELETE_STEP_ONE, async (ctx) => {
     await ctx.answerCallbackQuery();
+    const texts = await textsOf(ctx.from.id);
+
     await ctx.editMessageText(texts.privacy.deleteSecondStep, {
       reply_markup: new InlineKeyboard()
         .text(texts.privacy.deleteFinalButton, DELETE_STEP_TWO)
@@ -64,6 +79,7 @@ export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger):
     await ctx.answerCallbackQuery();
 
     const tgId = ctx.from.id;
+    const texts = await textsOf(tgId);
     const user = await findByTgId(db, tgId);
     if (!user) {
       await ctx.editMessageText(texts.privacy.nothingToDelete);
@@ -81,6 +97,8 @@ export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger):
 
   bot.callbackQuery(DELETE_CANCEL, async (ctx) => {
     await ctx.answerCallbackQuery();
+    const texts = await textsOf(ctx.from.id);
+
     await ctx.editMessageText(texts.privacy.deleteCancelled);
   });
 }

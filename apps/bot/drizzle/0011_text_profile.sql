@@ -1,0 +1,1 @@
+ALTER TABLE "user_settings" ADD COLUMN "text_profile" text DEFAULT 'reserved' NOT NULL;
