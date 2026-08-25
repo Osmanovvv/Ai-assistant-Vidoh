@@ -55,6 +55,7 @@ describe('разбор намерений', () => {
     const provider = new MockLlmProvider({
       responses: [
         JSON.stringify({
+          crisis: false,
           segments: [
             { intent: 'COMPLETE', text: 'Продукты купила' },
             { intent: 'DUMP', text: 'а ещё надо к врачу записаться' },
@@ -78,6 +79,7 @@ describe('разбор намерений', () => {
     const provider = new MockLlmProvider({
       responses: [
         JSON.stringify({
+          crisis: false,
           segments: [
             { intent: 'PATCH', text: 'хотя нет, в пятницу' },
             { intent: 'DUMP', text: 'Записать сына к врачу в четверг' },
@@ -97,7 +99,9 @@ describe('разбор намерений', () => {
     // первым, иначе «в четверг» станет задачей без задачи.
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [JSON.stringify({ segments: [{ intent: 'ANSWER', text: 'в четверг' }] })],
+      responses: [
+        JSON.stringify({ crisis: false, segments: [{ intent: 'ANSWER', text: 'в четверг' }] }),
+      ],
     });
 
     await routeIntents(deps(provider, prompts), {
@@ -112,7 +116,9 @@ describe('разбор намерений', () => {
   it('без открытого вопроса лишнего в запрос не добавляет', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [JSON.stringify({ segments: [{ intent: 'DUMP', text: 'надо к врачу' }] })],
+      responses: [
+        JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: 'надо к врачу' }] }),
+      ],
     });
 
     await routeIntents(deps(provider, prompts), { input: 'надо к врачу' });
@@ -136,7 +142,9 @@ describe('когда намерения не разобрались', () => {
 
   it('пустой список сегментов тоже становится одной мыслью', async () => {
     const prompts = await prepare();
-    const provider = new MockLlmProvider({ responses: [JSON.stringify({ segments: [] })] });
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [] })],
+    });
 
     const result = await routeIntents(deps(provider, prompts), { input: 'просто мысль' });
 
@@ -162,7 +170,7 @@ describe('учёт расхода', () => {
   it('вызов записан с этапом router и версией промпта', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [JSON.stringify({ segments: [{ intent: 'DUMP', text: 'мысль' }] })],
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: 'мысль' }] })],
     });
 
     await routeIntents(deps(provider, prompts), { input: 'мысль' });

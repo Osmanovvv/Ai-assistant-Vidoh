@@ -111,7 +111,10 @@ function echoingLlm(overrides: Partial<Record<Stage, string>> = {}): MockLlmProv
 
       switch (stage) {
         case 'router':
-          return JSON.stringify({ segments: [{ intent: 'DUMP', text: request.input }] });
+          return JSON.stringify({
+            crisis: false,
+            segments: [{ intent: 'DUMP', text: request.input }],
+          });
         case 'extractor':
           return JSON.stringify({
             units: request.input
@@ -451,6 +454,7 @@ describe('разбор', () => {
 
     const llm = echoingLlm({
       router: JSON.stringify({
+        crisis: false,
         segments: [
           { intent: 'DUMP', text: 'записать сына к врачу в четверг' },
           { intent: 'PATCH', text: 'хотя нет, в пятницу' },
@@ -483,7 +487,10 @@ describe('разбор', () => {
     const { sender, all } = recordingSender();
 
     const llm = echoingLlm({
-      router: JSON.stringify({ segments: [{ intent: 'SMALLTALK', text: 'привет' }] }),
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+      }),
     });
 
     await processUserBatches(
@@ -606,6 +613,93 @@ describe('разбор', () => {
     );
 
     expect(all.at(-1)).toContain('просроченное дело');
+  });
+});
+
+describe('острый кризис', () => {
+  it('маркер останавливает разбор до первого обращения к модели', async () => {
+    // §13.7 и задача 2.12. Первый контур считается в коде, поэтому на
+    // настоящем кризисе не тратится ни одной копейки на разбор.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'надо продукты, и вообще я не хочу жить', offsetMs: 0 },
+    ]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(llm.callCount).toBe(0);
+    expect(await testDb().select().from(items)).toHaveLength(0);
+    expect(all.at(-1)).toBe(defaultTexts.safety.crisis);
+  });
+
+  it('признак модели останавливает разбор после маршрутизатора', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'всё это больше не имеет смысла', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: true,
+        segments: [{ intent: 'DUMP', text: 'всё это больше не имеет смысла' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Маршрутизатор спрошен, дальше — нет: ни единиц, ни классов,
+    // ни признания.
+    expect(llm.callCount).toBe(1);
+    const stages = new Set((await testDb().select().from(aiCalls)).map((call) => call.stage));
+    expect(stages).toEqual(new Set(['router']));
+
+    expect(await testDb().select().from(items)).toHaveLength(0);
+    expect(all.at(-1)).toBe(defaultTexts.safety.crisis);
+  });
+
+  it('выгрузка доведена до «готово», а не оставлена висеть', async () => {
+    // Иначе досмотр будет подбирать её вечно и раз за разом отвечать
+    // человеку одним и тем же.
+    const prompts = await seedPrompts();
+    const batchId = await queuedBatchOf([{ kind: 'text', text: 'хочу умереть', offsetMs: 0 }]);
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech: new MockSpeechProvider(), prompts }) },
+      userId,
+    );
+
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.status).toBe('done');
+  });
+
+  it('текст сказанного остаётся на месте', async () => {
+    // Инвариант 1: сообщение сохранено до всякого разбора. Записей нет, но
+    // и потери нет.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'я не хочу жить', offsetMs: 0 }]);
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech: new MockSpeechProvider(), prompts }) },
+      userId,
+    );
+
+    const [row] = await testDb().select().from(messagesRaw);
+    expect(row?.text).toBe('я не хочу жить');
   });
 });
 
