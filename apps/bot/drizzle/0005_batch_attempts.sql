@@ -1,0 +1,1 @@
+ALTER TABLE "batches" ADD COLUMN "attempts" integer DEFAULT 0 NOT NULL;

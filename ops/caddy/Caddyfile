@@ -1,0 +1,28 @@
+# Боевой прокси на своём домене (задача 1.23).
+#
+# Сертификат Caddy получает и продлевает сам через Let's Encrypt. Для этого
+# наружу должны быть открыты 80 и 443: проверка владения доменом идёт по 80.
+#
+# Переключение с самоподписанного варианта — это CADDYFILE=Caddyfile в .env
+# сервера и SITE_ADDRESS с доменом вместо адреса. Сам сертификат из
+# ops/caddy/certs после перехода не нужен, и WEBHOOK_CERTIFICATE_PATH
+# из .env надо убрать, иначе Telegram продолжит проверять цепочку по нему.
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# В журнал не должно попадать тело запроса: там текст человека.
+	log {
+		output stdout
+		format console
+	}
+
+	# Наружу открыт ровно один путь — см. пояснение в Caddyfile.selfsigned.
+	handle /telegram/webhook {
+		reverse_proxy bot:3000
+	}
+
+	handle {
+		respond 404
+	}
+}

@@ -11,6 +11,7 @@ import {
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
+import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
 import { texts } from '../../texts/ru.js';
 
@@ -26,12 +27,23 @@ export interface IncomingDeps {
   readonly db: Database;
   readonly queue: Queue<PipelineJob>;
   readonly limits?: BufferLimits;
+  /**
+   * Отправитель статусного сообщения (задача 1.17). Без него бот молча
+   * копит выгрузку и ничего не отвечает — так и было, пока модуль
+   * существовал, но не был подключён.
+   */
+  readonly sender?: StatusSender | undefined;
 }
 
-/** Команда, после которой согласие ещё не считается данным. */
-function isStartCommand(ctx: Context): boolean {
-  const text = ctx.message?.text;
-  return text !== undefined && /^\/start(?:@\w+)?(?:\s|$)/u.test(text);
+/**
+ * Команда — это управление ботом, а не мысль.
+ *
+ * Признак берётся из служебной разметки Telegram, а не из первого символа
+ * текста: человек может начать мысль со слэша, и это будет мысль.
+ */
+function isCommand(ctx: Context): boolean {
+  const entities = ctx.message?.entities;
+  return entities?.some((entity) => entity.type === 'bot_command' && entity.offset === 0) ?? false;
 }
 
 export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
@@ -51,11 +63,21 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       return;
     }
 
-    // §16 ТЗ: согласие — это первое сообщение после экрана с ссылкой
-    // на политику, а не сам факт нажатия кнопки «Начать».
-    if (!isStartCommand(ctx)) {
-      await recordConsentIfAbsent(deps.db, outcome.userId);
+    // Команда сохранена — она нужна для журнала и дедупликации, — но
+    // дальше буфера не идёт. Иначе бот отвечает «Слушаю.» на
+    // /delete_my_data, открывает под неё выгрузку и потом зачитывает
+    // эту команду обратно как расшифровку. Так и было видно в чате.
+    //
+    // Согласием команда тоже не считается: §16 ТЗ говорит о первом
+    // сообщении после экрана с политикой, а не о нажатии кнопки меню.
+    if (isCommand(ctx)) {
+      await next();
+      return;
     }
+
+    // §16 ТЗ: согласие — это первое сообщение после экрана с ссылкой
+    // на политику.
+    await recordConsentIfAbsent(deps.db, outcome.userId);
 
     // §10.5 ТЗ: ограничение частоты. Сообщение уже сохранено — мы просто
     // не заводим по нему разбор, а не выбрасываем текст.
@@ -82,6 +104,24 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
         userId: outcome.userId,
         delayMs: limits.silenceWindowMs,
       });
+    }
+
+    // §10.2 ТЗ: приём подтверждается сразу, не дожидаясь разбора.
+    // §9.2 ТЗ: пока идёт ожидание тишины, бот молчит — поэтому реплика
+    // одна на выгрузку, а не на каждое сообщение. Ставится после
+    // постановки заданий: медленный Telegram не должен задерживать
+    // конвейер, а сбой отправки не должен мешать разбору.
+    const chatId = ctx.chat?.id;
+    if (deps.sender && chatId !== undefined && attached.messageCount === 1) {
+      await showStatus(
+        { db: deps.db, sender: deps.sender },
+        {
+          batchId: attached.batchId,
+          chatId,
+          threadId: ctx.message?.message_thread_id,
+        },
+        texts.listening.acknowledged,
+      );
     }
 
     await next();

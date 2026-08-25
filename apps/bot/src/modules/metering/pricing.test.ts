@@ -1,84 +1,139 @@
 import { describe, expect, it } from 'vitest';
 
-import { costMicros, formatUsd, microsToUsd, type ModelPricing } from './pricing.js';
+import {
+  callCost,
+  formatCost,
+  microsToUnits,
+  modelsWithoutPrice,
+  type ModelPricing,
+} from './pricing.js';
 
 const pricing: Readonly<Record<string, ModelPricing>> = {
-  'main-model': { kind: 'tokens', inputPerMillionUsd: 3, outputPerMillionUsd: 15 },
-  'light-model': { kind: 'tokens', inputPerMillionUsd: 0.15, outputPerMillionUsd: 0.6 },
-  'speech-model': { kind: 'audio', perMinuteUsd: 0.006 },
+  'main-model': { kind: 'tokens', currency: 'usd', inputPerMillion: 3, outputPerMillion: 15 },
+  'light-model': { kind: 'tokens', currency: 'usd', inputPerMillion: 0.15, outputPerMillion: 0.6 },
+  'speech-model': { kind: 'audio', currency: 'usd', perMinute: 0.006 },
+  'speech-blocks': { kind: 'audio', currency: 'rub', perMinute: 0.6, billingBlockSec: 15 },
+  'rub-model': { kind: 'tokens', currency: 'rub', inputPerMillion: 200, outputPerMillion: 600 },
 };
 
-describe('costMicros: токены', () => {
+describe('callCost: токены', () => {
   it('считает стоимость входа и выхода', () => {
     // 1 000 000 входных по $3 плюс 1 000 000 выходных по $15 = $18.
-    expect(costMicros('main-model', { tokensIn: 1_000_000, tokensOut: 1_000_000 }, pricing)).toBe(
-      18_000_000,
-    );
+    expect(callCost('main-model', { tokensIn: 1_000_000, tokensOut: 1_000_000 }, pricing)).toEqual({
+      micros: 18_000_000,
+      currency: 'usd',
+    });
   });
 
   it('считает типичный вызов разбора', () => {
     // 4300 входных и 1150 выходных: $0.0129 + $0.01725 = $0.03015.
-    const micros = costMicros('main-model', { tokensIn: 4_300, tokensOut: 1_150 }, pricing);
+    const cost = callCost('main-model', { tokensIn: 4_300, tokensOut: 1_150 }, pricing);
 
-    expect(micros).toBe(30_150);
-    expect(microsToUsd(micros!)).toBeCloseTo(0.03015, 6);
+    expect(cost?.micros).toBe(30_150);
+    expect(microsToUnits(cost?.micros ?? 0)).toBeCloseTo(0.03015, 6);
   });
 
   it('лёгкая модель дешевле основной на тех же токенах', () => {
     const usage = { tokensIn: 1_800, tokensOut: 450 };
 
-    const light = costMicros('light-model', usage, pricing);
-    const main = costMicros('main-model', usage, pricing);
+    const light = callCost('light-model', usage, pricing);
+    const main = callCost('main-model', usage, pricing);
 
-    expect(light).toBeLessThan(main!);
+    expect(light?.micros).toBeLessThan(main?.micros ?? 0);
   });
 
   it('считает, даже если известен только вход', () => {
-    expect(costMicros('main-model', { tokensIn: 1_000_000 }, pricing)).toBe(3_000_000);
+    expect(callCost('main-model', { tokensIn: 1_000_000 }, pricing)?.micros).toBe(3_000_000);
   });
 
   it('нулевой расход даёт нулевую стоимость, а не null', () => {
-    expect(costMicros('main-model', { tokensIn: 0, tokensOut: 0 }, pricing)).toBe(0);
+    expect(callCost('main-model', { tokensIn: 0, tokensOut: 0 }, pricing)?.micros).toBe(0);
   });
 
   it('без данных о расходе стоимость неизвестна', () => {
-    expect(costMicros('main-model', {}, pricing)).toBeNull();
+    expect(callCost('main-model', {}, pricing)).toBeNull();
   });
 });
 
-describe('costMicros: аудио', () => {
+describe('callCost: аудио', () => {
   it('считает по минутам', () => {
     // Две минуты по $0.006 = $0.012.
-    expect(costMicros('speech-model', { audioSeconds: 120 }, pricing)).toBe(12_000);
+    expect(callCost('speech-model', { audioSeconds: 120 }, pricing)?.micros).toBe(12_000);
   });
 
   it('считает неполную минуту пропорционально', () => {
-    expect(costMicros('speech-model', { audioSeconds: 30 }, pricing)).toBe(3_000);
+    expect(callCost('speech-model', { audioSeconds: 30 }, pricing)?.micros).toBe(3_000);
   });
 
   it('без длительности стоимость неизвестна', () => {
-    expect(costMicros('speech-model', { tokensIn: 100 }, pricing)).toBeNull();
+    expect(callCost('speech-model', { tokensIn: 100 }, pricing)).toBeNull();
   });
 });
 
-describe('costMicros: неизвестная модель', () => {
+describe('callCost: блочная тарификация', () => {
+  it('округляет вверх до оплачиваемого блока', () => {
+    // Три секунды тарифицируются как пятнадцать: 0,25 минуты по 0,6 ₽.
+    // Без округления вышло бы 0,03 ₽ — впятеро меньше настоящей цены.
+    expect(callCost('speech-blocks', { audioSeconds: 3 }, pricing)).toEqual({
+      micros: 150_000,
+      currency: 'rub',
+    });
+  });
+
+  it('не округляет то, что уже кратно блоку', () => {
+    expect(callCost('speech-blocks', { audioSeconds: 30 }, pricing)?.micros).toBe(300_000);
+  });
+
+  it('секунда сверх блока переводит в следующий блок', () => {
+    expect(callCost('speech-blocks', { audioSeconds: 16 }, pricing)?.micros).toBe(300_000);
+  });
+});
+
+describe('callCost: валюта', () => {
+  it('возвращает валюту прайс-листа, а не приводит к одной', () => {
+    // Курс на дату вызова задним числом не восстановить, поэтому валюта
+    // хранится рядом с суммой.
+    expect(callCost('rub-model', { tokensIn: 1_000_000 }, pricing)).toEqual({
+      micros: 200_000_000,
+      currency: 'rub',
+    });
+  });
+});
+
+describe('callCost: неизвестная модель', () => {
   it('возвращает null, а не ноль', () => {
     // Молчаливый ноль превратил бы «не знаем цену» в «бесплатно»
     // и занизил бы себестоимость пользователя.
-    expect(costMicros('модель-которой-нет', { tokensIn: 1_000_000 }, pricing)).toBeNull();
+    expect(callCost('модель-которой-нет', { tokensIn: 1_000_000 }, pricing)).toBeNull();
   });
 });
 
-describe('formatUsd', () => {
-  it('показывает сумму с точностью до микродоллара', () => {
-    expect(formatUsd(30_150)).toBe('$0.030150');
+describe('formatCost', () => {
+  it('показывает доллары с точностью до микродоллара', () => {
+    expect(formatCost({ micros: 30_150, currency: 'usd' })).toBe('$0.030150');
+  });
+
+  it('показывает рубли со знаком рубля', () => {
+    expect(formatCost({ micros: 150_000, currency: 'rub' })).toBe('0.150000 ₽');
   });
 
   it('честно говорит, когда цена неизвестна', () => {
-    expect(formatUsd(null)).toBe('цена неизвестна');
+    expect(formatCost(null)).toBe('цена неизвестна');
   });
 
   it('показывает ноль как ноль', () => {
-    expect(formatUsd(0)).toBe('$0.000000');
+    expect(formatCost({ micros: 0, currency: 'usd' })).toBe('$0.000000');
+  });
+});
+
+describe('modelsWithoutPrice', () => {
+  it('перечисляет модели, для которых цена не задана', () => {
+    expect(modelsWithoutPrice(['main-model', 'yandex:general'], pricing)).toEqual([
+      'yandex:general',
+    ]);
+  });
+
+  it('на полном прайс-листе возвращает пусто', () => {
+    expect(modelsWithoutPrice(['main-model', 'speech-model'], pricing)).toEqual([]);
   });
 });

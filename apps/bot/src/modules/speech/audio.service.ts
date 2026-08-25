@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Api } from 'grammy';
 
 import { convertToWav, detectSilence, probeDurationSec } from './ffmpeg.js';
+import { withRetry, withTimeout } from './retry.js';
 import { parseSilence, planSegments } from './silence.js';
 
 /**
@@ -25,8 +26,29 @@ export interface AudioLimits {
   readonly maxSingleDurationSec: number;
 }
 
+/** Байт в секунде записи после конвертации: моно, 16 кГц, 16 бит. */
+const WAV_BYTES_PER_SEC = 16_000 * 2;
+
+/**
+ * Потолок тела запроса к распознавателю.
+ *
+ * Измерен живыми запросами к SpeechKit 24.08.2026: тело в 4 МБ принимается,
+ * тело в 8 МБ обрывается по соединению без внятного кода ошибки. Берём
+ * 3,5 МБ, чтобы не жить на самой границе.
+ *
+ * Из этого числа считается длина части, а не наоборот: без такого расчёта
+ * пятиминутная часть весила бы 12,8 МБ и распознавание длинного голосового
+ * падало бы всегда — при том что короткое работало бы прекрасно.
+ */
+const MAX_UPLOAD_BYTES = 3_500_000;
+
+/** base64 раздувает тело запроса на треть. */
+const BASE64_OVERHEAD = 4 / 3;
+
+export const MAX_SEGMENT_SEC = Math.floor(MAX_UPLOAD_BYTES / BASE64_OVERHEAD / WAV_BYTES_PER_SEC);
+
 export const DEFAULT_AUDIO_LIMITS: AudioLimits = {
-  maxSegmentSec: 300,
+  maxSegmentSec: MAX_SEGMENT_SEC,
   maxSingleDurationSec: 600,
 };
 
@@ -83,29 +105,49 @@ export async function prepareAudio(
   return { durationSec, parts, truncated };
 }
 
+/** Сколько ждать один заход за файлом и сколько раз пробовать. */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+const DOWNLOAD_ATTEMPTS = 3;
+
 /**
  * Скачивает голосовое из Telegram во временный файл.
  *
  * Сам файл остаётся у Telegram независимо от нашего решения, но у себя
  * мы его не храним: копия живёт только на время обработки.
+ *
+ * Повтор и таймаут здесь не для симметрии с вызовом распознавания.
+ * На первой же настоящей записи скачивание однажды упёрлось в ETIMEDOUT,
+ * и вся выгрузка встала намертво — при том что через минуту тот же файл
+ * качался за семь десятых секунды. Сеть до Telegram ничем не надёжнее
+ * сети до распознавателя, и относиться к ней надо так же.
  */
 export async function downloadTelegramFile(
   api: Api,
   fileId: string,
   destPath: string,
 ): Promise<void> {
-  const file = await api.getFile(fileId);
-  if (file.file_path === undefined) {
-    throw new Error(`Telegram не вернул путь к файлу ${fileId}`);
-  }
+  await withRetry(
+    async () => {
+      await withTimeout(
+        async () => {
+          const file = await api.getFile(fileId);
+          if (file.file_path === undefined) {
+            throw new Error(`Telegram не вернул путь к файлу ${fileId}`);
+          }
 
-  const token = api.token;
-  const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+          const url = `https://api.telegram.org/file/bot${api.token}/${file.file_path}`;
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Не удалось скачать файл: HTTP ${String(response.status)}`);
-  }
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`Не удалось скачать файл: HTTP ${String(response.status)}`);
+          }
 
-  await writeFile(destPath, Buffer.from(await response.arrayBuffer()));
+          await writeFile(destPath, Buffer.from(await response.arrayBuffer()));
+        },
+        DOWNLOAD_TIMEOUT_MS,
+        'скачивание файла',
+      );
+    },
+    { attempts: DOWNLOAD_ATTEMPTS },
+  );
 }

@@ -191,3 +191,52 @@ describe('productionWarnings', () => {
     expect(productionWarnings(env)).toHaveLength(2);
   });
 });
+
+describe('провайдер расшифровки', () => {
+  it('по умолчанию заглушка: разработка не должна зависеть от чужого ключа', () => {
+    expect(parseEnv(valid).SPEECH_PROVIDER).toBe('mock');
+  });
+
+  it('заглушке ключ не нужен', () => {
+    expect(() => parseWith({ SPEECH_PROVIDER: 'mock' })).not.toThrow();
+  });
+
+  it('в боевом окружении заглушка запрещена', () => {
+    // Иначе бот отвечал бы на выдуманные расшифровки и молчал об этом.
+    expect(() => parseWith({ NODE_ENV: 'production', SPEECH_PROVIDER: 'mock' })).toThrow(
+      /заглушка расшифровки/u,
+    );
+  });
+
+  it('яндексу нужен ключ', () => {
+    expect(() => parseWith({ SPEECH_PROVIDER: 'yandex' })).toThrow(/YANDEX_API_KEY/u);
+  });
+
+  it('с ключом яндекс проходит', () => {
+    const env = parseWith({ SPEECH_PROVIDER: 'yandex', YANDEX_API_KEY: 'ключ' });
+
+    expect(env.SPEECH_PROVIDER).toBe('yandex');
+    expect(env.YANDEX_SPEECH_MODEL).toBe('general');
+    expect(env.SPEECH_LANGUAGE).toBe('ru');
+  });
+
+  it('openai нужен свой ключ, а не яндексовый', () => {
+    expect(() => parseWith({ SPEECH_PROVIDER: 'openai', YANDEX_API_KEY: 'ключ' })).toThrow(
+      /OPENAI_API_KEY/u,
+    );
+  });
+
+  it('незнакомый провайдер отвергается', () => {
+    expect(() => parseWith({ SPEECH_PROVIDER: 'sber' })).toThrow(EnvValidationError);
+  });
+
+  it('в сообщении об ошибке видно имя недостающей переменной', () => {
+    try {
+      parseWith({ SPEECH_PROVIDER: 'yandex' });
+      expect.unreachable('разбор должен был упасть');
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvValidationError);
+      expect((error as EnvValidationError).issues.join(' ')).toContain('YANDEX_API_KEY');
+    }
+  });
+});

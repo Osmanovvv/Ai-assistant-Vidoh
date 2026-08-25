@@ -10,6 +10,7 @@ import { createRedis } from '../../infra/redis.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
+import { TransientSpeechError } from '../speech/providers/types.js';
 import { processUserBatches } from './pipeline.service.js';
 
 const redis: Redis = createRedis(process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379', {
@@ -190,5 +191,95 @@ describe('processUserBatches', () => {
 
     expect(mine.skipped).toBe(false);
     expect(theirs.skipped).toBe(false);
+  });
+});
+
+describe('судьба сбойной выгрузки', () => {
+  const failWith = (error: Error) => () => Promise.reject(error);
+
+  it('временный сбой возвращает выгрузку в очередь, а не хоронит её', async () => {
+    // Один ETIMEDOUT при скачивании файла раньше означал, что человек
+    // не получит ответа никогда: сбойные выгрузки не переподхватываются,
+    // а админки, из которой их перезапускают, до этапа 4 нет.
+    const batchId = await queuedBatch('мысль', 0);
+
+    await expect(
+      processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: failWith(
+            new TypeError('fetch failed', {
+              cause: Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+            }),
+          ),
+        },
+        userId,
+      ),
+    ).rejects.toThrow(/fetch failed/u);
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('queued');
+    expect(batch?.attempts).toBe(1);
+    expect(batch?.error).toContain('fetch failed');
+  });
+
+  it('временную ошибку распознавателя тоже повторяет', async () => {
+    const batchId = await queuedBatch('мысль', 0);
+
+    await expect(
+      processUserBatches(
+        { db: testDb(), lock, handleBatch: failWith(new TransientSpeechError('модель занята')) },
+        userId,
+      ),
+    ).rejects.toThrow(/модель занята/u);
+
+    expect((await batchById(batchId))?.status).toBe('queued');
+  });
+
+  it('непонятную ошибку помечает сбойной и не крутит в повторах', async () => {
+    // Ошибка в нашем коде не станет правильной от третьей попытки.
+    const batchId = await queuedBatch('мысль', 0);
+
+    await expect(
+      processUserBatches(
+        { db: testDb(), lock, handleBatch: failWith(new Error('не нашёл выгрузку')) },
+        userId,
+      ),
+    ).rejects.toThrow(/не нашёл выгрузку/u);
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('failed');
+    expect(batch?.attempts).toBe(1);
+  });
+
+  it('исчерпав попытки, сдаётся и помечает сбойной', async () => {
+    // Иначе выгрузка крутилась бы в повторах вечно, а человек так и
+    // не узнал бы, что что-то не так.
+    const batchId = await queuedBatch('мысль', 0);
+    await testDb().update(batches).set({ attempts: 4 }).where(eq(batches.id, batchId));
+
+    await expect(
+      processUserBatches(
+        { db: testDb(), lock, handleBatch: failWith(new TransientSpeechError('всё ещё занята')) },
+        userId,
+      ),
+    ).rejects.toThrow();
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('failed');
+    expect(batch?.attempts).toBe(5);
+  });
+
+  it('успешная обработка обнуляет счётчик попыток', async () => {
+    // Иначе одна давняя заминка постепенно съедала бы запас повторов.
+    const batchId = await queuedBatch('мысль', 0);
+    await testDb().update(batches).set({ attempts: 3 }).where(eq(batches.id, batchId));
+
+    await processUserBatches({ db: testDb(), lock }, userId);
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('done');
+    expect(batch?.attempts).toBe(0);
   });
 });

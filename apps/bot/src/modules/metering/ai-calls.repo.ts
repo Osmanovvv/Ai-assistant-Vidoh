@@ -2,7 +2,7 @@ import { and, eq, gte, sql } from 'drizzle-orm';
 
 import { aiCalls, type AiCall, type AiStage } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { costMicros, type ModelPricing, type UsageAmount } from './pricing.js';
+import { callCost, type Currency, type ModelPricing, type UsageAmount } from './pricing.js';
 
 /**
  * Учёт обращений к моделям (задача 1.16).
@@ -36,7 +36,7 @@ export async function recordAiCall(
     readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   },
 ): Promise<void> {
-  const cost = costMicros(input.context.model, input.usage, input.pricing);
+  const cost = callCost(input.context.model, input.usage, input.pricing);
 
   await db.insert(aiCalls).values({
     userId: input.context.userId ?? null,
@@ -47,7 +47,8 @@ export async function recordAiCall(
     tokensIn: input.usage.tokensIn ?? null,
     tokensOut: input.usage.tokensOut ?? null,
     audioSeconds: input.usage.audioSeconds ?? null,
-    costMicros: cost,
+    costMicros: cost?.micros ?? null,
+    costCurrency: cost?.currency ?? null,
     latencyMs: input.latencyMs,
     ok: input.ok,
     error: input.error ?? null,
@@ -96,8 +97,17 @@ export async function meterCall<T>(
 export interface SpendSummary {
   readonly calls: number;
   readonly failed: number;
-  /** null, если хотя бы у одного вызова цена модели неизвестна. */
-  readonly costMicros: number | null;
+  /**
+   * Итог по каждой валюте в микроединицах. Валюты не складываются: курс
+   * на дату вызова задним числом не восстановить, а сумма долларов с
+   * рублями не значит ничего.
+   */
+  readonly totals: Readonly<Partial<Record<Currency, number>>>;
+  /**
+   * false, если хотя бы у одного вызова цена модели неизвестна. Тогда
+   * итог — нижняя оценка, а не расход.
+   */
+  readonly complete: boolean;
 }
 
 /** Расход пользователя за период. Нужен мягкому лимиту из §10.5 ТЗ. */
@@ -106,8 +116,9 @@ export async function spendByUser(
   userId: string,
   since: Date,
 ): Promise<SpendSummary> {
-  const [row] = await db
+  const rows = await db
     .select({
+      currency: aiCalls.costCurrency,
       calls: sql<number>`count(*)::int`,
       failed: sql<number>`count(*) filter (where ${aiCalls.ok} = false)::int`,
       unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
@@ -116,16 +127,27 @@ export async function spendByUser(
       total: sql<string>`coalesce(sum(${aiCalls.costMicros}), 0)::bigint`,
     })
     .from(aiCalls)
-    .where(and(eq(aiCalls.userId, userId), gte(aiCalls.createdAt, since)));
+    .where(and(eq(aiCalls.userId, userId), gte(aiCalls.createdAt, since)))
+    // Группировка по валюте, а не общая сумма: иначе доллары сложились бы
+    // с рублями в число, не означающее ничего.
+    .groupBy(aiCalls.costCurrency);
 
-  if (!row) return { calls: 0, failed: 0, costMicros: 0 };
+  const totals: Partial<Record<Currency, number>> = {};
+  let calls = 0;
+  let failed = 0;
+  let unknown = 0;
 
-  return {
-    calls: row.calls,
-    failed: row.failed,
-    // Хотя бы одна неизвестная цена делает всю сумму недостоверной.
-    costMicros: row.unknownPrices > 0 ? null : Number(row.total),
-  };
+  for (const row of rows) {
+    calls += row.calls;
+    failed += row.failed;
+    unknown += row.unknownPrices;
+
+    if (row.currency !== null) {
+      totals[row.currency] = (totals[row.currency] ?? 0) + Number(row.total);
+    }
+  }
+
+  return { calls, failed, totals, complete: unknown === 0 };
 }
 
 export async function callsForBatch(db: Executor, batchId: string): Promise<AiCall[]> {

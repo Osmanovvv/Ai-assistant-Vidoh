@@ -82,6 +82,12 @@ export async function showStatus(
       text,
     });
 
+    // Ноль означает, что отправка не удалась — например, человек
+    // заблокировал бота. Запоминать несуществующее сообщение нельзя:
+    // следующая правка ушла бы в пустоту, а так следующий вызов
+    // попробует отправить заново.
+    if (messageId === 0) return false;
+
     await deps.db
       .update(batches)
       .set({ statusMessageId: messageId, statusUpdatedAt: now })

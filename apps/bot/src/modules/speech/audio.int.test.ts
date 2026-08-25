@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { run } from './ffmpeg.js';
-import { DEFAULT_AUDIO_LIMITS, prepareAudio, withTempDir } from './audio.service.js';
+import {
+  DEFAULT_AUDIO_LIMITS,
+  MAX_SEGMENT_SEC,
+  prepareAudio,
+  withTempDir,
+} from './audio.service.js';
 
 /**
  * Тесты против настоящего ffmpeg. Файлы синтезируются на лету, поэтому
@@ -213,8 +218,17 @@ describe('prepareAudio', () => {
     });
   }, 120_000);
 
-  it('значения лимитов по умолчанию разумны для голосовых Telegram', () => {
-    expect(DEFAULT_AUDIO_LIMITS.maxSegmentSec).toBe(300);
+  it('длина части укладывается в потолок тела запроса к распознавателю', () => {
+    // Не круглое число, а расчёт: WAV моно 16 кГц весит 32 кБ в секунду,
+    // base64 добавляет треть, а SpeechKit обрывает соединение на теле в
+    // 8 МБ (проверено живыми запросами 24.08.2026). Пятиминутная часть
+    // весила бы 12,8 МБ, и распознавание длинного голосового падало бы
+    // всегда — при том что короткое работало бы прекрасно.
+    expect(DEFAULT_AUDIO_LIMITS.maxSegmentSec).toBe(MAX_SEGMENT_SEC);
+
+    const bodyBytes = MAX_SEGMENT_SEC * 16_000 * 2 * (4 / 3);
+    expect(bodyBytes).toBeLessThan(4_000_000);
+
     expect(DEFAULT_AUDIO_LIMITS.maxSingleDurationSec).toBe(600);
   });
 });

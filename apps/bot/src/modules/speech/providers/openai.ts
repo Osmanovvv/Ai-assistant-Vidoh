@@ -38,7 +38,7 @@ interface TranscriptionResponse {
 }
 
 export class OpenAiSpeechProvider implements SpeechProvider {
-  readonly name = 'openai';
+  readonly name: string;
 
   private readonly baseUrl: string;
   private readonly model: string;
@@ -50,6 +50,9 @@ export class OpenAiSpeechProvider implements SpeechProvider {
     }
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/u, '');
     this.model = options.model ?? DEFAULT_MODEL;
+    // В учёте расхода это поле становится названием модели, поэтому
+    // одного «openai» недостаточно: модели стоят по-разному.
+    this.name = `openai:${this.model}`;
     this.doFetch = options.fetchImpl ?? fetch;
   }
 

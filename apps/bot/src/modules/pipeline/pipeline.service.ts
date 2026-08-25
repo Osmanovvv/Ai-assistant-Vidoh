@@ -2,6 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 
 import { batches, type Batch } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
+import { isTransientFailure } from '../../infra/errors.js';
 import type { RedisLock } from '../../infra/lock.js';
 import { combineBatch } from '../buffer/buffer.service.js';
 
@@ -16,6 +17,15 @@ import { combineBatch } from '../buffer/buffer.service.js';
  * выгрузки по возрастанию времени открытия. Поэтому перестановка заданий
  * в очереди не может нарушить порядок разбора.
  */
+
+/**
+ * Сколько раз пробовать выгрузку при временных сбоях.
+ *
+ * Больше — значит дольше держать человека без ответа при настоящей
+ * поломке. Меньше — значит сдаваться на первой же сетевой заминке.
+ * Пять попыток с паузами досмотра дают около пяти минут запаса.
+ */
+const MAX_ATTEMPTS = 5;
 
 /** Что делать с закрытой выгрузкой. На этапе 2 сюда встанет разбор. */
 export type BatchHandler = (db: Database, batch: Batch) => Promise<void>;
@@ -74,18 +84,31 @@ export async function processUserBatches(
           await handle(db, batch);
           await db
             .update(batches)
-            .set({ status: 'done', processedAt: new Date(), error: null })
+            .set({ status: 'done', processedAt: new Date(), error: null, attempts: 0 })
             .where(eq(batches.id, batch.id));
         } catch (error) {
-          // Выгрузка помечается сбойной, но не теряется: её видно
-          // в админке и можно перезапустить (§17 ТЗ).
+          const attempts = batch.attempts + 1;
+          const message = error instanceof Error ? error.message : String(error);
+
+          // Временный сбой — сеть моргнула, распознаватель был занят —
+          // не повод похоронить выгрузку. Она возвращается в очередь, и
+          // её подберёт либо очередь, либо периодический досмотр.
+          //
+          // Без этого разделения одного ETIMEDOUT при скачивании файла
+          // хватало, чтобы человек не получил ответа никогда: сбойные
+          // выгрузки намеренно не переподхватываются, а админки, из
+          // которой их перезапускают, до четвёртого этапа нет.
+          const retryable = isTransientFailure(error) && attempts < MAX_ATTEMPTS;
+
           await db
             .update(batches)
             .set({
-              status: 'failed',
-              error: error instanceof Error ? error.message : String(error),
+              status: retryable ? 'queued' : 'failed',
+              attempts,
+              error: message,
             })
             .where(eq(batches.id, batch.id));
+
           throw error;
         }
 

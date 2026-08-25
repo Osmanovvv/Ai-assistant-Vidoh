@@ -15,22 +15,35 @@ KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP="${BACKUP_DIR}/vydoh-${STAMP}.dump"
 
+# Чем снимать дамп. На машине разработчика это обычный pg_dump, на сервере
+# база живёт в контейнере и порт наружу не публикуется, поэтому туда
+# подставляется «docker compose exec -T postgres pg_dump». Так и локально,
+# и в бою работает один и тот же проверенный скрипт.
+PG_DUMP_CMD="${PG_DUMP_CMD:-pg_dump}"
+
 mkdir -p "$BACKUP_DIR"
 
-echo "Снимаю дамп: ${DUMP}"
+# Дамп идёт потоком, а не через промежуточный файл: на диск никогда не
+# ложится незашифрованная копия расшифровок (§16 ТЗ). Раньше файл писался
+# и затирался shred, но между записью и затиранием оставалось окно, а на
+# SSD затирание к тому же ничего не гарантирует.
 # -Fc: сжатый формат, восстанавливается выборочно и параллельно.
-pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-privileges --file="$DUMP"
+dump_stream() {
+  # shellcheck disable=SC2086
+  $PG_DUMP_CMD --dbname="$DATABASE_URL" --format=custom --no-owner --no-privileges
+}
 
 if [ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]; then
-  echo "Шифрую дамп"
-  gpg --batch --yes --symmetric --cipher-algo AES256 \
+  echo "Снимаю и шифрую дамп: ${DUMP}.gpg"
+  dump_stream | gpg --batch --yes --symmetric --cipher-algo AES256 \
       --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
-      --output "${DUMP}.gpg" "$DUMP"
-  shred -u "$DUMP" 2>/dev/null || rm -f "$DUMP"
+      --output "${DUMP}.gpg"
   DUMP="${DUMP}.gpg"
 else
   # Незашифрованный дамп с расшифровками — нарушение §16 ТЗ.
   echo "ВНИМАНИЕ: BACKUP_ENCRYPTION_PASSPHRASE не задан, дамп не зашифрован" >&2
+  echo "Снимаю дамп: ${DUMP}"
+  dump_stream > "$DUMP"
 fi
 
 SIZE="$(du -h "$DUMP" | cut -f1)"

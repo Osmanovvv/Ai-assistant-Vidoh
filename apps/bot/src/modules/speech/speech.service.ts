@@ -53,7 +53,16 @@ export interface TranscribeOutcome {
   readonly durationSec: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Таймаут на одну часть. Заведомо больше собственного потолка ожидания
+ * у провайдера: тогда при затянувшемся распознавании сработает его
+ * проверка с внятным сообщением, а не безымянный таймаут отсюда.
+ *
+ * Величина взята из замера: восемьдесят секунд записи распознаются
+ * шестьдесят три секунды (живой прогон SpeechKit 24.08.2026). Часть
+ * длиннее восьмидесяти двух секунд не бывает — см. MAX_SEGMENT_SEC.
+ */
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 export async function transcribeMessage(
   deps: TranscribeDeps,
