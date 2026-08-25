@@ -1,0 +1,1 @@
+DROP INDEX "items_embedding_idx";
