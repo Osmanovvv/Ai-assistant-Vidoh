@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 
 import { items, type Item, type NewItem } from '../../db/schema.js';
 import type { Database, Executor } from '../../infra/db.js';
@@ -42,10 +42,11 @@ export interface SaveDraftParams {
   readonly reason: string;
 }
 
-function toRow(params: SaveItemsParams, item: ItemToSave): NewItem {
+function toRow(params: SaveItemsParams, item: ItemToSave, order: number): NewItem {
   return {
     userId: params.userId,
     sourceBatchId: params.batchId,
+    sourceOrder: order,
     text: item.text,
     type: item.type,
     priority: item.priority,
@@ -70,7 +71,7 @@ export async function saveItems(db: Database, params: SaveItemsParams): Promise<
   return await db.transaction(async (tx) => {
     return await tx
       .insert(items)
-      .values(params.items.map((item) => toRow(params, item)))
+      .values(params.items.map((item, order) => toRow(params, item, order)))
       .returning();
   });
 }
@@ -90,6 +91,32 @@ export async function saveDraft(db: Executor, params: SaveDraftParams): Promise<
   if (!row) throw new Error('Черновик не сохранился');
 
   return row;
+}
+
+/**
+ * Открытые записи человека — то, из чего фильтр выдачи выбирает действия.
+ *
+ * Выдача смотрит на весь бэклог, а не только на последнюю выгрузку: §13.2
+ * спрашивает «что взять на сегодня», и дело, названное вчера и срочное
+ * сегодня, важнее только что упомянутого «когда-нибудь».
+ *
+ * Потолок нужен, чтобы один человек с тысячей записей не тянул их все в
+ * память на каждый разбор. Порядок — от свежих: годность и важность
+ * проверяет фильтр, а вот отсечение по потолку должно быть предсказуемым.
+ */
+export async function openItemsFor(db: Executor, userId: string, limit = 300): Promise<Item[]> {
+  return await db
+    .select()
+    .from(items)
+    .where(
+      and(
+        eq(items.userId, userId),
+        eq(items.isDraft, false),
+        inArray(items.status, ['new', 'active', 'in_progress', 'waiting']),
+      ),
+    )
+    .orderBy(desc(items.createdAt), asc(items.sourceOrder), desc(items.id))
+    .limit(limit);
 }
 
 /** Записи выгрузки в порядке создания. Нужно ответу человеку и тестам. */

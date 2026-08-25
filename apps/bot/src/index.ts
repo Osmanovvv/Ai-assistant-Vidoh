@@ -30,9 +30,12 @@ import { createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
-import { createStage1Handler } from './modules/pipeline/stage1.handler.js';
+import { createDumpHandler } from './modules/pipeline/dump.handler.js';
 import { downloadTelegramFile } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
+import { PromptRegistry } from './modules/ai/prompts/registry.js';
+import { createLlmProvider } from './modules/ai/providers/factory.js';
+import { createEmbeddingProvider } from './modules/embedder/providers/factory.js';
 
 /** Точка входа. */
 
@@ -108,6 +111,21 @@ async function main(): Promise<void> {
   const speech = createSpeechProvider(env);
   logger.info({ provider: speech.name }, 'Провайдер расшифровки выбран');
 
+  // Полная модель разбирает смысл, лёгкая различает намерения (§7.1):
+  // семь видов намерения проще, чем понять мысль, и полная модель здесь
+  // дороже без выигрыша.
+  const llm = createLlmProvider(env);
+  const llmLight = createLlmProvider(env, { light: true });
+  const embedder = createEmbeddingProvider(env);
+  logger.info(
+    { llm: llm.name, light: llmLight.name, embedder: embedder.name },
+    'Провайдеры разбора выбраны',
+  );
+
+  // Один реестр промптов на процесс: он кэширует активные версии, и
+  // отдельный на каждую выгрузку сводил бы кэш к нулю.
+  const prompts = new PromptRegistry(db);
+
   // §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
   // цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
   // при старте, а не из отчёта через месяц.
@@ -121,10 +139,18 @@ async function main(): Promise<void> {
   // же сообщение (§9.2 и §10.2 ТЗ).
   const sender = createTelegramSender({ api: bot.api, db, logger });
 
-  const handleBatch = createStage1Handler({
-    provider: speech,
-    download: (fileId, destPath) => downloadTelegramFile(bot.api, fileId, destPath),
-    language: env.SPEECH_LANGUAGE,
+  const handleBatch = createDumpHandler({
+    speech: {
+      provider: speech,
+      download: (fileId, destPath) => downloadTelegramFile(bot.api, fileId, destPath),
+      language: env.SPEECH_LANGUAGE,
+      logger,
+    },
+    // Один реестр промптов на процесс: он кэширует активные версии, и
+    // отдельный на каждую выгрузку сводил бы кэш к нулю.
+    ai: { provider: llm, prompts, logger },
+    aiLight: { provider: llmLight, prompts, logger },
+    embedder,
     logger,
     sender,
   });
