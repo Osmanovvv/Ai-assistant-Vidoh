@@ -1,4 +1,4 @@
-import { PermanentSpeechError, TransientSpeechError } from '../modules/speech/providers/types.js';
+import { PermanentError, TransientError } from './failures.js';
 
 /**
  * Различение временных и постоянных сбоев (задачи 1.11 и 1.18).
@@ -57,9 +57,9 @@ function codeOf(value: unknown): string | undefined {
 export function isTransientFailure(error: unknown, depth = 0): boolean {
   if (depth > MAX_CAUSE_DEPTH || typeof error !== 'object' || error === null) return false;
 
-  // Провайдер расшифровки уже разделил свои ошибки сам.
-  if (error instanceof PermanentSpeechError) return false;
-  if (error instanceof TransientSpeechError) return true;
+  // Провайдер уже разделил свои ошибки сам — верим ему.
+  if (error instanceof PermanentError) return false;
+  if (error instanceof TransientError) return true;
 
   const code = codeOf(error);
   if (code !== undefined && TRANSIENT_CODES.has(code)) return true;

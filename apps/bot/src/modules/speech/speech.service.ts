@@ -13,7 +13,7 @@ import {
   type AudioLimits,
 } from './audio.service.js';
 import type { SpeechProvider } from './providers/types.js';
-import { withRetry, withTimeout, type RetryOptions } from './retry.js';
+import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
 
 /**
  * Расшифровка голосового (задача 1.15).

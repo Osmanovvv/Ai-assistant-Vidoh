@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Api } from 'grammy';
 
 import { convertToWav, detectSilence, probeDurationSec } from './ffmpeg.js';
-import { withRetry, withTimeout } from './retry.js';
+import { withRetry, withTimeout } from '../../infra/retry.js';
 import { parseSilence, planSegments } from './silence.js';
 
 /**

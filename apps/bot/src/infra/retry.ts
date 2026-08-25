@@ -1,7 +1,7 @@
-import { PermanentSpeechError } from './providers/types.js';
+import { PermanentError } from './failures.js';
 
 /**
- * Повтор с растущей паузой (задача 1.15).
+ * Повтор с растущей паузой и таймаут (задачи 1.15, 2.3).
  *
  * §10.2 ТЗ: каждый вызов оборачивается таймаутом и повтором с увеличением
  * паузы. §17: при недоступности модели выгрузка сохраняется в очередь и
@@ -54,7 +54,7 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error;
 
-      if (error instanceof PermanentSpeechError) {
+      if (error instanceof PermanentError) {
         throw error;
       }
       if (attempt === attempts) {
