@@ -18,6 +18,7 @@ import {
   type StatusTarget,
 } from '../presenter/status.service.js';
 import { routeIntents, type Segment } from '../router/router.service.js';
+import { detectByMarkers, detectCrisis, type CrisisOutcome } from '../safety/crisis.js';
 import { topicsFor } from '../topics/topics.repo.js';
 import { lowerEnergy, outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -172,12 +173,46 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       return;
     }
 
+    /**
+     * §13.7, острый кризис. Первый контур считается здесь — до первого
+     * обращения к модели: он ничего не стоит, а значит на настоящем
+     * кризисе разбор останавливается до первой потраченной копейки.
+     */
+    const stopOnCrisis = async (outcome: CrisisOutcome): Promise<boolean> => {
+      if (!outcome.detected) return false;
+
+      // В журнал идёт факт и сработавший маркер, но не сказанное:
+      // частоту ложных срабатываний оценить надо, читать чужую беду в
+      // логах — нет.
+      deps.logger?.warn(
+        {
+          event: 'crisis_detected',
+          batchId: batch.id,
+          userId: batch.userId,
+          contour: outcome.contour,
+          marker: outcome.marker,
+        },
+        'Сработал контур острого кризиса, разбор остановлен',
+      );
+
+      // Ни записей, ни черновиков, ни уточняющих вопросов. Текст человека
+      // при этом на месте: он сохранён до всякого разбора (инвариант 1).
+      await reply(db, deps, target, texts.safety.crisis);
+      return true;
+    };
+
+    if (await stopOnCrisis(detectByMarkers(combined))) return;
+
     // ── Намерения ───────────────────────────────────────────────────────
     const routed = await routeIntents(aiLight, {
       input: combined,
       userId: batch.userId,
       batchId: batch.id,
     });
+
+    // Второй контур: признак от модели. Маркеры уже проверены, поэтому
+    // здесь решает только он.
+    if (await stopOnCrisis(detectCrisis(combined, routed.crisis))) return;
 
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];

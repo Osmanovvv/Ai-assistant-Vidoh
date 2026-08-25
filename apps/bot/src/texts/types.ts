@@ -94,6 +94,17 @@ export interface TextProfile {
     readonly nothingToParse: string;
   };
 
+  /**
+   * Острый кризис (§13.7, задача 2.12).
+   *
+   * Единственный текст, который модель не видит вовсе: она о нём не
+   * знает, не генерирует его и не переписывает. Формулировка
+   * согласуется с заказчиком отдельно — §13.7 говорит это прямо.
+   */
+  readonly safety: {
+    readonly crisis: string;
+  };
+
   readonly limits: {
     readonly tooManyDumps: string;
   };

@@ -131,6 +131,7 @@ describe('canonicalJson', () => {
 
 describe('схема маршрутизатора', () => {
   const valid = {
+    crisis: false,
     segments: [
       { intent: 'COMPLETE', text: 'Продукты купила' },
       { intent: 'DUMP', text: 'надо к врачу' },
@@ -151,17 +152,25 @@ describe('схема маршрутизатора', () => {
 
   it('каждое намерение из списка проходит', () => {
     for (const intent of INTENTS) {
-      expect(routerSchema.safeParse({ segments: [{ intent, text: 'текст' }] }).success).toBe(true);
+      expect(
+        routerSchema.safeParse({ crisis: false, segments: [{ intent, text: 'текст' }] }).success,
+      ).toBe(true);
     }
   });
 
   const broken: readonly [string, unknown][] = [
-    ['нет поля segments', {}],
-    ['segments не массив', { segments: 'DUMP' }],
-    ['выдуманное намерение', { segments: [{ intent: 'РАЗБОР', text: 'текст' }] }],
-    ['намерение в нижнем регистре', { segments: [{ intent: 'dump', text: 'текст' }] }],
-    ['нет текста', { segments: [{ intent: 'DUMP' }] }],
-    ['пустой текст', { segments: [{ intent: 'DUMP', text: '' }] }],
+    ['нет поля segments', { crisis: false }],
+    ['segments не массив', { crisis: false, segments: 'DUMP' }],
+    ['выдуманное намерение', { crisis: false, segments: [{ intent: 'РАЗБОР', text: 'текст' }] }],
+    [
+      'намерение в нижнем регистре',
+      { crisis: false, segments: [{ intent: 'dump', text: 'текст' }] },
+    ],
+    ['нет текста', { crisis: false, segments: [{ intent: 'DUMP' }] }],
+    ['пустой текст', { crisis: false, segments: [{ intent: 'DUMP', text: '' }] }],
+    // Признак кризиса обязателен: без него ответ модели не проходит, и
+    // второй контур §13.7 не может тихо исчезнуть из-за правки промпта.
+    ['нет признака кризиса', { segments: [{ intent: 'DUMP', text: 'текст' }] }],
   ];
 
   for (const [what, payload] of broken) {
@@ -171,7 +180,7 @@ describe('схема маршрутизатора', () => {
   }
 
   it('пустой список сегментов допустим: разбирать может быть нечего', () => {
-    expect(routerSchema.safeParse({ segments: [] }).success).toBe(true);
+    expect(routerSchema.safeParse({ crisis: false, segments: [] }).success).toBe(true);
   });
 
   it('отвергает неправдоподобное дробление', () => {

@@ -40,6 +40,11 @@ export interface RouteParams {
 
 export interface RouteResult {
   readonly segments: readonly Segment[];
+  /**
+   * §13.7: модель увидела признаки острого кризиса. Второй контур из
+   * двух — решение принимает не этот флаг сам по себе, а модуль safety.
+   */
+  readonly crisis: boolean;
   readonly promptVersion: string;
   /**
    * Модель вернула сегменты не в порядке текста, и порядок был исправлен.
@@ -142,6 +147,9 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
 
     return {
       segments: [{ intent: 'DUMP', text: params.input }],
+      // Модель не ответила — признака кризиса от неё нет. Второй контур
+      // при этом остаётся: маркеры считаются в коде и без неё.
+      crisis: false,
       promptVersion: outcome.promptVersion,
       reordered: false,
       fallback: true,
@@ -153,6 +161,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
   if (outcome.value.segments.length === 0) {
     return {
       segments: [{ intent: 'DUMP', text: params.input }],
+      crisis: outcome.value.crisis,
       promptVersion: outcome.promptVersion,
       reordered: false,
       fallback: true,
@@ -168,5 +177,11 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
-  return { segments, promptVersion: outcome.promptVersion, reordered, fallback: false };
+  return {
+    segments,
+    crisis: outcome.value.crisis,
+    promptVersion: outcome.promptVersion,
+    reordered,
+    fallback: false,
+  };
 }
