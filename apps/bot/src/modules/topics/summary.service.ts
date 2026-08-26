@@ -6,7 +6,12 @@ import { items, topics, type Item } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDateParts } from '../classifier/dates.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { isThreadGone, isTopicsUnavailable, type TopicGateway } from './gateway.js';
+import {
+  isThreadGone,
+  isTopicsUnavailable,
+  retryAfterSeconds,
+  type TopicGateway,
+} from './gateway.js';
 import { ensureThread, forgetThread } from './topics.service.js';
 
 /**
@@ -253,11 +258,38 @@ export async function refreshSummary(
 /**
  * Обновляет сводки перечисленных тем.
  *
- * Отказ на одной теме не отменяет остальные: сводка — это удобство, а не
- * данные, и терять из-за неё разбор нельзя.
+ * **Темп важнее скорости.** Telegram пускает примерно одно сообщение в
+ * секунду на чат, а конец онбординга — это залп: у женщины, выбравшей
+ * девять сфер, создаётся девять веток, в каждую уходит сводка и каждая
+ * закрепляется. Двадцать семь обращений подряд платформа обрежет отказом
+ * 429, и часть веток просто не появится — тихо, потому что отказ на одной
+ * теме мы не считаем поломкой.
+ *
+ * Поэтому между темами пауза, а на 429 — ожидание ровно столько, сколько
+ * Telegram попросил, и один повтор. Просьбу подождать нельзя ни
+ * проигнорировать, ни угадать: она приходит числом.
+ *
+ * Отказ на одной теме не отменяет остальные: сводка — удобство, а записи
+ * — суть, и терять из-за неё разбор нельзя.
  */
+
+/** Пауза между темами. Ниже одного сообщения в секунду на чат. */
+const DEFAULT_PAUSE_MS = 400;
+
+export interface RefreshManyDeps extends SummaryDeps {
+  readonly pauseMs?: number | undefined;
+  /** Подменяется в тестах, чтобы не ждать по-настоящему. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+}
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    // Ожидание не должно держать процесс при остановке.
+    setTimeout(resolve, ms).unref();
+  });
+
 export async function refreshSummaries(
-  deps: SummaryDeps,
+  deps: RefreshManyDeps,
   params: {
     readonly userId: string;
     readonly chatId: number;
@@ -266,13 +298,41 @@ export async function refreshSummaries(
     readonly profile?: string | null | undefined;
   },
 ): Promise<number> {
+  const sleep = deps.sleep ?? realSleep;
+  const pause = deps.pauseMs ?? DEFAULT_PAUSE_MS;
+
+  const names = [...new Set(params.topicNames)];
   let touched = 0;
 
-  for (const topicName of new Set(params.topicNames)) {
+  for (const [index, topicName] of names.entries()) {
+    if (index > 0 && pause > 0) await sleep(pause);
+
     try {
       const result = await refreshSummary(deps, { ...params, topicName });
       if (result.sent || result.edited) touched++;
     } catch (error) {
+      const wait = retryAfterSeconds(error);
+
+      if (wait !== undefined) {
+        // Просьба подождать: ждём сколько сказано и пробуем ещё раз. Один
+        // повтор, не цикл — если и он упрётся, значит темп надо снижать
+        // не здесь, а в самом продукте.
+        deps.logger?.warn({ topic: topicName, секунд: wait }, 'Telegram просит подождать');
+        await sleep(wait * 1000);
+
+        try {
+          const retry = await refreshSummary(deps, { ...params, topicName });
+          if (retry.sent || retry.edited) touched++;
+          continue;
+        } catch (again) {
+          deps.logger?.error(
+            { err: again, topic: topicName },
+            'Сводка не обновилась и после паузы',
+          );
+          continue;
+        }
+      }
+
       deps.logger?.error({ err: error, topic: topicName }, 'Не удалось обновить сводку темы');
     }
   }

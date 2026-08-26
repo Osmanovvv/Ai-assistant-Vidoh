@@ -461,3 +461,78 @@ describe('закреплённая сводка', () => {
     expect(broken.sent.map((message) => message.text.includes('молоко'))).toContain(true);
   });
 });
+
+describe('темп обращений к Telegram', () => {
+  /** Считает ожидания вместо того, чтобы ждать по-настоящему. */
+  function pacing(gateway: FakeTopicGateway) {
+    const waited: number[] = [];
+    return {
+      waited,
+      deps: {
+        db: testDb(),
+        gateway,
+        logger,
+        pauseMs: 400,
+        sleep: (ms: number) => {
+          waited.push(ms);
+          return Promise.resolve();
+        },
+      },
+    };
+  }
+
+  it('между темами есть пауза: залп в конце онбординга Telegram обрежет', async () => {
+    // Девять сфер — это девять веток, девять сводок и девять закреплений.
+    // Двадцать семь обращений подряд платформа не пустит.
+    await seedTopics(['семья', 'здоровье', 'покупки']);
+    const gateway = new FakeTopicGateway();
+    const { waited, deps: paced } = pacing(gateway);
+
+    await refreshSummaries(paced, {
+      userId,
+      chatId: CHAT,
+      topicNames: ['семья', 'здоровье', 'покупки'],
+      timeZone: MOSCOW,
+    });
+
+    // Пауза между темами, но не перед первой и не после последней.
+    expect(waited).toEqual([400, 400]);
+    expect(gateway.sent).toHaveLength(3);
+  });
+
+  it('на просьбу подождать ждёт ровно столько, сколько сказано, и повторяет', async () => {
+    // 429 — не поломка, а просьба сбавить темп. Угадывать тут нечего:
+    // Telegram присылает число.
+    await seedTopics(['покупки']);
+    const gateway = new FakeTopicGateway({ throttleFirst: { times: 1, retryAfterSec: 3 } });
+    const { waited, deps: paced } = pacing(gateway);
+
+    const touched = await refreshSummaries(paced, {
+      userId,
+      chatId: CHAT,
+      topicNames: ['покупки'],
+      timeZone: MOSCOW,
+    });
+
+    expect(waited).toEqual([3000]);
+    expect(touched).toBe(1);
+    expect(gateway.sent).toHaveLength(1);
+  });
+
+  it('если и после паузы отказ — тема пропускается, остальные идут', async () => {
+    await seedTopics(['покупки', 'здоровье']);
+    const gateway = new FakeTopicGateway({ throttleFirst: { times: 10, retryAfterSec: 1 } });
+    const { deps: paced } = pacing(gateway);
+
+    const touched = await refreshSummaries(paced, {
+      userId,
+      chatId: CHAT,
+      topicNames: ['покупки', 'здоровье'],
+      timeZone: MOSCOW,
+    });
+
+    expect(touched).toBe(0);
+    // Обе темы попробованы, ни одна не уронила заход.
+    expect(gateway.sent).toHaveLength(0);
+  });
+});

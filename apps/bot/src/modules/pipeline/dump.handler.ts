@@ -342,28 +342,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const toSave = await withEmbeddings(db, deps, batch, classified.items);
     await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
 
-    /**
-     * §8.2: сводка темы обновляется правкой закреплённого сообщения.
-     *
-     * Обновляются только затронутые темы, а не все: правка сводки — это
-     * обращение к Telegram, и трогать девять веток из-за одной новой
-     * записи значит без нужды упираться в ограничение частоты.
-     *
-     * Отказ здесь разбор не роняет: сводка — удобство, записи — суть.
-     */
-    if (deps.topics && target) {
-      await refreshSummaries(
-        { db, gateway: deps.topics, logger: deps.logger },
-        {
-          userId: batch.userId,
-          chatId: target.chatId,
-          topicNames: toSave.map((item) => item.topic),
-          timeZone: context.timeZone,
-          profile: context.textProfile,
-        },
-      );
-    }
-
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(classified.items);
     const energyNow = await applyEmotion(
@@ -434,6 +412,32 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     );
 
     await reply(db, deps, target, presented.reply.text);
+
+    /**
+     * §8.2: сводка темы обновляется правкой закреплённого сообщения.
+     *
+     * **После ответа человеку, а не до.** Обновление сводок — это до трёх
+     * обращений к Telegram с паузами между ними, и заставлять человека
+     * ждать их, чтобы увидеть свой разбор, — значит перепутать главное с
+     * подсобным. Ответ уходит первым.
+     *
+     * Обновляются только затронутые темы: трогать девять веток из-за
+     * одной новой записи значит без нужды упираться в ограничение частоты.
+     *
+     * Отказ здесь разбор не роняет: сводка — удобство, записи — суть.
+     */
+    if (deps.topics && target) {
+      await refreshSummaries(
+        { db, gateway: deps.topics, logger: deps.logger },
+        {
+          userId: batch.userId,
+          chatId: target.chatId,
+          topicNames: toSave.map((item) => item.topic),
+          timeZone: context.timeZone,
+          profile: context.textProfile,
+        },
+      );
+    }
 
     if (startOnboarding) {
       const question = questionFor(startOnboarding.step, { texts, name: onboarding.name });

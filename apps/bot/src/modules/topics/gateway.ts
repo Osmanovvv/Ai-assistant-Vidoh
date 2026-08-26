@@ -18,11 +18,6 @@ export interface CreateThreadParams {
 
 export interface TopicGateway {
   createThread(params: CreateThreadParams): Promise<number>;
-  renameThread(params: {
-    readonly chatId: number;
-    readonly threadId: number;
-    readonly name: string;
-  }): Promise<void>;
 
   /**
    * Допустимые иконки: эмодзи → идентификатор.
@@ -47,6 +42,21 @@ export interface TopicGateway {
   }): Promise<void>;
 
   pin(params: { readonly chatId: number; readonly messageId: number }): Promise<void>;
+}
+
+/**
+ * Telegram попросил подождать.
+ *
+ * Отдельно от прочих отказов: это не поломка, а просьба сбавить темп, и
+ * единственно верный ответ на неё — подождать столько, сколько сказано.
+ * Сколько именно, Telegram сообщает в `retry_after`.
+ */
+export function retryAfterSeconds(error: unknown): number | undefined {
+  if (!(error instanceof GrammyError)) return undefined;
+  if (error.error_code !== 429) return undefined;
+
+  const seconds = error.parameters.retry_after;
+  return typeof seconds === 'number' ? seconds : 1;
 }
 
 /**
@@ -104,10 +114,6 @@ export function createTopicGateway(api: Api): TopicGateway {
         ...(iconEmojiId === undefined ? {} : { icon_custom_emoji_id: iconEmojiId }),
       });
       return created.message_thread_id;
-    },
-
-    async renameThread({ chatId, threadId, name }) {
-      await api.editForumTopic(chatId, threadId, { name });
     },
 
     async allowedIcons() {
