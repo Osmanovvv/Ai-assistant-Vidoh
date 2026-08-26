@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @vydoh/bot",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tests/visual && tsc -p .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -27,10 +27,13 @@
     "infra:logs": "docker compose -f docker-compose.dev.yml logs -f",
     "test:int": "npm run test:int --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace @vydoh/bot",
-    "db:migrate": "npm run db:migrate --workspace @vydoh/bot"
+    "db:migrate": "npm run db:migrate --workspace @vydoh/bot",
+    "visual:login": "tsx tests/visual/save-session.ts",
+    "visual": "playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0",
     "eslint": "^10.9.0",
     "globals": "^17.11.0",

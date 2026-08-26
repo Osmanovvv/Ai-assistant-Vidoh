@@ -4,7 +4,17 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '.data/**', 'docs/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/coverage/**',
+      '.data/**',
+      'docs/**',
+      // Отчёты Playwright — сгенерированный код, а не наш: без этого
+      // линтер выдал бы девять тысяч замечаний к чужому бандлу.
+      'playwright-report/**',
+      'test-results/**',
+    ],
   },
 
   js.configs.recommended,

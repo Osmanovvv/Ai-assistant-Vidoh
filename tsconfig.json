@@ -1,0 +1,12 @@
+{
+  // Файлы уровня корня: настройка Playwright и всё, что ляжет рядом.
+  // Без своего tsconfig линтер их не видит — «projectService» ищет
+  // конфигурацию вверх по дереву, а в корне её не было.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["playwright.config.ts", "eslint.config.js"],
+  "exclude": ["node_modules", "apps", "tests"]
+}
