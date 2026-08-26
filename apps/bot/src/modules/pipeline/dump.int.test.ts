@@ -43,6 +43,7 @@ import { run } from '../speech/ffmpeg.js';
 import { MockSpeechProvider } from '../speech/providers/mock.js';
 import { PermanentSpeechError } from '../speech/providers/types.js';
 import { upsertUser } from '../users/users.repo.js';
+import type { SpendLimit } from '../metering/limits.js';
 import { createDumpHandler } from './dump.handler.js';
 import { processUserBatches } from './pipeline.service.js';
 
@@ -107,8 +108,13 @@ function unitsFromInput(input: string): string[] {
  * Так видно, что шаги соединены: заголовок дела в ответе — это текст,
  * который человек наговорил, а не выдумка теста.
  */
-function echoingLlm(overrides: Partial<Record<Stage, string>> = {}): MockLlmProvider {
+function echoingLlm(
+  overrides: Partial<Record<Stage, string>> = {},
+  /** Название модели: по нему в учёте видно, полная работала или лёгкая. */
+  model?: string,
+): MockLlmProvider {
   return new MockLlmProvider({
+    ...(model === undefined ? {} : { model }),
     respond: (request) => {
       const stage = stageOf(request);
       if (stage === undefined) return '{}';
@@ -176,6 +182,9 @@ interface HandlerOptions {
   readonly speech: MockSpeechProvider;
   readonly topics?: FakeTopicGateway | undefined;
   readonly llm?: MockLlmProvider;
+  /** Лёгкая модель: на неё переходят тяжёлые стадии при превышении лимита. */
+  readonly llmLight?: MockLlmProvider | undefined;
+  readonly spendLimit?: SpendLimit | undefined;
   readonly prompts: PromptRegistry;
   readonly sender?: StatusSender | undefined;
   readonly embedder?: MockEmbeddingProvider | undefined;
@@ -206,6 +215,16 @@ function handler(options: HandlerOptions) {
       prompts: options.prompts,
       retry: { attempts: 1, sleep: () => Promise.resolve() },
     },
+    ...(options.llmLight === undefined
+      ? {}
+      : {
+          aiLight: {
+            provider: options.llmLight,
+            prompts: options.prompts,
+            retry: { attempts: 1, sleep: () => Promise.resolve() },
+          },
+        }),
+    ...(options.spendLimit === undefined ? {} : { spendLimit: options.spendLimit }),
     ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
     ...(options.sender === undefined ? {} : { sender: options.sender }),
     ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
@@ -1232,5 +1251,181 @@ describe('онбординг: края', () => {
 
     // И второй вопрос онбординга не задан: человек ещё на прежнем шаге.
     expect(questions.asked).toHaveLength(0);
+  });
+});
+
+describe('мягкий лимит расхода', () => {
+  /**
+   * §10.5 ТЗ, задача 2.22. Требования не было ни в одном этапе плана
+   * работ ТЗ, а оно важное: как только продуктом начинают пользоваться
+   * живые люди, один нетипичный пользователь может съесть месячный
+   * бюджет за день, и узнаем мы об этом из счёта.
+   */
+
+  const LIMIT: SpendLimit = { micros: 10_000_000, currency: 'rub' };
+
+  /** Уже потраченное за расчётный период. */
+  async function spend(micros: number, options: { known: boolean } = { known: true }) {
+    await testDb()
+      .insert(aiCalls)
+      .values({
+        userId,
+        stage: 'classifier',
+        model: 'mock:full',
+        latencyMs: 10,
+        ok: true,
+        tokensIn: 1000,
+        tokensOut: 500,
+        ...(options.known ? { costMicros: micros, costCurrency: 'rub' as const } : {}),
+      });
+  }
+
+  async function modelsByStage(): Promise<Map<string, string[]>> {
+    const rows = await testDb()
+      .select({ stage: aiCalls.stage, model: aiCalls.model })
+      .from(aiCalls)
+      .orderBy(asc(aiCalls.createdAt));
+
+    const byStage = new Map<string, string[]>();
+    for (const row of rows) {
+      byStage.set(row.stage, [...(byStage.get(row.stage) ?? []), row.model]);
+    }
+    return byStage;
+  }
+
+  it('в пределах лимита тяжёлые стадии идут на полной модели', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    await spend(1_000_000);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({}, 'mock:full'),
+          llmLight: echoingLlm({}, 'mock:light'),
+          spendLimit: LIMIT,
+        }),
+      },
+      userId,
+    );
+
+    const byStage = await modelsByStage();
+    expect(byStage.get('extractor')).toEqual(['mock:full']);
+    expect(byStage.get('classifier')).toContain('mock:full');
+  });
+
+  it('при превышении извлечение и классификация переходят на лёгкую модель', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    await spend(12_000_000);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({}, 'mock:full'),
+          llmLight: echoingLlm({}, 'mock:light'),
+          spendLimit: LIMIT,
+        }),
+      },
+      userId,
+    );
+
+    const byStage = await modelsByStage();
+    expect(byStage.get('extractor')).toEqual(['mock:light']);
+    // Маршрутизатор и так на лёгкой (§7.1), а представление остаётся на
+    // полной: §10.5 называет тяжёлыми извлечение, классификацию и
+    // резолвер, а одна фраза признания стоит копейки.
+    expect(byStage.get('router')).toEqual(['mock:light']);
+    expect(byStage.get('presenter')).toEqual(['mock:full']);
+  });
+
+  it('человек ничего не замечает: ответ тот же и лишних сообщений нет', async () => {
+    // §17 ТЗ: деградация не объясняется пользователю. Он не виноват, что
+    // его выгрузки дороже среднего, и знать об этом ему незачем.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    await spend(12_000_000);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({}, 'mock:full'),
+          llmLight: echoingLlm({}, 'mock:light'),
+          spendLimit: LIMIT,
+          sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(all).toHaveLength(1);
+    expect(all[0]).toContain('купить продукты');
+    expect(all.join(' ')).not.toMatch(/лимит|модель|дешевл|ограничен/iu);
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved).toHaveLength(1);
+  });
+
+  it('без известной цены лимит не срабатывает вслепую', async () => {
+    // Ключевое свойство. Расход с неизвестной ценой — нижняя оценка;
+    // деградировать по ней значило бы понизить качество разбора из-за
+    // незаполненного прайс-листа, а не из-за расхода человека. В журнале
+    // при этом остаётся предупреждение: молча не работающий лимит хуже
+    // отсутствующего, на него надеются.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    await spend(0, { known: false });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({}, 'mock:full'),
+          llmLight: echoingLlm({}, 'mock:light'),
+          spendLimit: LIMIT,
+        }),
+      },
+      userId,
+    );
+
+    expect((await modelsByStage()).get('extractor')).toEqual(['mock:full']);
+  });
+
+  it('лимит не задан — ограничения нет', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    await spend(999_000_000);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({}, 'mock:full'),
+          llmLight: echoingLlm({}, 'mock:light'),
+        }),
+      },
+      userId,
+    );
+
+    expect((await modelsByStage()).get('extractor')).toEqual(['mock:full']);
   });
 });
