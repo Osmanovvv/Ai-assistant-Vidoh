@@ -387,6 +387,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       energy: energyNow,
       now,
       timeZone: context.timeZone,
+      /**
+       * §13.7 и §21 п.7: если человек сказал о своём состоянии, действие
+       * в ответе ровно одно — «короткое признание, сокращение объёма,
+       * одно действие». Не два, как даёт уровень «сил мало»: два дела
+       * человеку, который только что сказал «сил нет», — это спор с ним.
+       */
+      ...(composition.emotions > 0 ? { cap: 1 } : {}),
     });
 
     /**

@@ -88,7 +88,9 @@ async function main(): Promise<void> {
   await Promise.all([pingDb(db), pingRedis(getRedis())]);
   logger.info('Postgres и Redis отвечают');
 
-  const bot = createBot(env.BOT_TOKEN);
+  // TELEGRAM_API_ROOT задаётся только сквозным тестом (2.23); в бою
+  // конфигурация его запрещает.
+  const bot = createBot(env.BOT_TOKEN, { apiRoot: env.TELEGRAM_API_ROOT });
   await bot.init();
   logger.info(
     {

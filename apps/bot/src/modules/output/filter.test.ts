@@ -303,3 +303,38 @@ describe('effectiveEnergy', () => {
     expect(effectiveEnergy(state, 'normal', { now, timeZone: 'Asia/Vladivostok' })).toBe('normal');
   });
 });
+
+describe('предел на выдачу (§13.7)', () => {
+  /**
+   * Найдено сквозным тестом этапа 2. Каждый модуль был прав по своему
+   * тесту: фильтр показывал два дела при «сил мало», обработчик снижал
+   * уровень до «мало» при состоянии в выгрузке. А требование §21 п.7 —
+   * «выдача сокращена до одного действия» — не выполнял никто.
+   */
+
+  it('сокращает выдачу до одного действия', () => {
+    const items = [
+      item({ text: 'оплатить садик', priority: 'NOW', sourceOrder: 1 }),
+      item({ text: 'записаться к врачу', priority: 'NOW', sourceOrder: 2 }),
+      item({ text: 'купить корм', priority: 'SOON', sourceOrder: 3 }),
+    ];
+
+    const result = selectForOutput(items, { ...context, energy: 'low', cap: 1 });
+
+    expect(result.shown).toHaveLength(1);
+    expect(result.hidden).toBe(2);
+  });
+
+  it('не расширяет выдачу, если предел мягче уровня сил', () => {
+    // Предел — это ограничение, а не разрешение: «на нуле» остаётся одним
+    // делом, даже если попросить показать пять.
+    const items = [
+      item({ text: 'оплатить садик', priority: 'NOW', sourceOrder: 1 }),
+      item({ text: 'записаться к врачу', priority: 'NOW', sourceOrder: 2 }),
+    ];
+
+    const result = selectForOutput(items, { ...context, energy: 'empty', cap: 5 });
+
+    expect(result.shown).toHaveLength(1);
+  });
+});
