@@ -1,5 +1,7 @@
 import type { Logger } from 'pino';
 
+import { batches } from '../db/schema.js';
+
 import type { AiClientDeps } from '../modules/ai/client.js';
 import { classifyUnits } from '../modules/classifier/classifier.service.js';
 import { extractUnits } from '../modules/extractor/extractor.service.js';
@@ -42,6 +44,32 @@ export interface RunnerDeps {
   /** Лёгкая модель для маршрутизатора, если она отличается (задача 2.4). */
   readonly aiLight?: AiClientDeps | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Пользователь, от имени которого идёт прогон.
+   *
+   * Задан — и каждый случай получает свою выгрузку в базе, а расход
+   * ложится в учёт так же, как в бою: с привязкой к выгрузке. Без этого
+   * себестоимость выгрузки (2.21) из учёта не собрать — вызовы есть, а
+   * чьи они, неизвестно. Поймано отчётом себестоимости: «выгрузок: 0».
+   */
+  readonly owner?: string | undefined;
+}
+
+/** Выгрузка под один случай набора: к ней привяжется расход. */
+async function openBatch(deps: RunnerDeps, item: EvalCase): Promise<string | undefined> {
+  if (deps.owner === undefined) return undefined;
+
+  const [row] = await deps.ai.db
+    .insert(batches)
+    .values({
+      userId: deps.owner,
+      status: 'processing',
+      combinedText: item.text,
+      messageCount: 1,
+    })
+    .returning({ id: batches.id });
+
+  return row?.id;
 }
 
 /**
@@ -54,6 +82,8 @@ export interface RunnerDeps {
 export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOutcome> {
   const now = new Date(item.now);
   const versions: { router?: string; extractor?: string; classifier?: string } = {};
+  const batchId = await openBatch(deps, item);
+  const owner = { userId: deps.owner, batchId };
 
   /** §13.7: при срабатывании кризисного контура разбор прекращается. */
   const stopped = (): CaseOutcome => ({
@@ -75,7 +105,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
      */
     if (detectByMarkers(item.text).detected) return stopped();
 
-    const routed = await routeIntents(deps.aiLight ?? deps.ai, { input: item.text });
+    const routed = await routeIntents(deps.aiLight ?? deps.ai, { input: item.text, ...owner });
     versions.router = routed.promptVersion;
 
     if (detectCrisis(item.text, routed.crisis).detected) return stopped();
@@ -87,6 +117,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
 
     const extracted = await extractUnits(deps.ai, {
       input: dumpText === '' ? item.text : dumpText,
+      ...owner,
     });
     versions.extractor = extracted.promptVersion;
 
@@ -107,6 +138,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       defaultTopic: item.defaultTopic,
       timeZone: item.timeZone,
       now,
+      ...owner,
     });
     versions.classifier = classified.promptVersion;
 

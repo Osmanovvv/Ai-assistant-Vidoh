@@ -9,6 +9,7 @@ import { closeDb, getDb } from '../infra/db.js';
 import { createLogger } from '../infra/logger.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
+import { upsertUser } from '../modules/users/users.repo.js';
 
 /**
  * Прогон контрольного набора (задачи 2.19 и 2.20).
@@ -65,11 +66,22 @@ try {
 
   logger.info({ полная: full.name, лёгкая: light.name }, 'Провайдеры выбраны');
 
+  /**
+   * Пользователь стенда: от его имени открываются выгрузки, к которым
+   * привязывается расход. Без привязки себестоимость выгрузки (2.21) из
+   * учёта не собирается — вызовы есть, а к чему они относятся, нет.
+   *
+   * Идентификатор заведомо не занят живым человеком: у Telegram таких
+   * не бывает. Тот же приём, что в сквозном тесте первого этапа.
+   */
+  const owner = await upsertUser(db, { tgId: 999_000_777, firstName: 'стенд' });
+
   const outcomes = await runDataset(
     {
       ai: { db, provider: full, prompts, logger },
       aiLight: { db, provider: light, prompts, logger },
       logger,
+      owner: owner.id,
     },
     cases,
   );
