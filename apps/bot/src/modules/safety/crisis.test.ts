@@ -107,7 +107,7 @@ describe('ответ на кризис', () => {
     }
   });
 
-  it('короткий: §13.9 отводит на реплику вне разбора одно-два предложения', () => {
+  it('короткий: одна реплика, а не разговор (§13.7, выход из разговора)', () => {
     for (const profile of Object.values(profiles)) {
       expect(profile.safety.crisis.length).toBeLessThanOrEqual(200);
     }

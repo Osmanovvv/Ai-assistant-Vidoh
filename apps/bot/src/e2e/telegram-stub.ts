@@ -27,6 +27,15 @@ export interface TelegramStub {
   /** Тексты, ушедшие человеку: sendMessage и editMessageText по порядку. */
   texts(): readonly string[];
   callsOf(method: string): readonly Record<string, unknown>[];
+  /**
+   * Отвечать на создание ветки так, как отвечает Telegram, когда режим
+   * тем у бота выключен.
+   *
+   * Нужно для §8.2: плоский режим — резервный путь продукта, и проверять
+   * его надо тем же отказом, который придёт в бою, а не подменой шлюза
+   * на пустой. Тогда проверяется и наше распознавание отказа.
+   */
+  setTopicsEnabled(enabled: boolean): void;
   reset(): void;
   close(): Promise<void>;
 }
@@ -40,6 +49,10 @@ interface StubState {
 export async function startTelegramStub(): Promise<TelegramStub> {
   const calls: StubCall[] = [];
   const state: StubState = { messageId: 1000, threadId: 100 };
+  let topicsEnabled = true;
+
+  /** Отказ Telegram, по которому продукт переходит в плоский режим. */
+  const topicsOff = { code: 400, description: 'Bad Request: TOPICS_ARE_NOT_ENABLED' };
 
   const respond = (method: string, payload: Record<string, unknown>): unknown => {
     switch (method) {
@@ -59,6 +72,7 @@ export async function startTelegramStub(): Promise<TelegramStub> {
       }
 
       case 'createForumTopic': {
+        if (!topicsEnabled) return topicsOff;
         state.threadId += 10;
         return { message_thread_id: state.threadId, name: payload['name'] };
       }
@@ -108,12 +122,24 @@ export async function startTelegramStub(): Promise<TelegramStub> {
 
       const result = respond(method, payload);
 
+      /**
+       * Отказ отдаётся в том же виде, в каком его отдаёт Telegram: с
+       * кодом и описанием. Иначе наш разбор ошибок проверялся бы на
+       * выдуманной форме отказа, а в бою встретил бы настоящую.
+       */
+      const refusal =
+        result !== null && typeof result === 'object' && 'description' in result
+          ? (result as { code: number; description: string })
+          : undefined;
+
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
         JSON.stringify(
-          result === undefined
-            ? { ok: false, error_code: 400, description: `заглушка не знает метода ${method}` }
-            : { ok: true, result },
+          refusal !== undefined
+            ? { ok: false, error_code: refusal.code, description: refusal.description }
+            : result === undefined
+              ? { ok: false, error_code: 400, description: `заглушка не знает метода ${method}` }
+              : { ok: true, result },
         ),
       );
     });
@@ -134,6 +160,9 @@ export async function startTelegramStub(): Promise<TelegramStub> {
         .filter((call) => call.method === 'sendMessage' || call.method === 'editMessageText')
         .map((call) => (typeof call.payload['text'] === 'string' ? call.payload['text'] : '')),
     callsOf: (method) => calls.filter((call) => call.method === method).map((call) => call.payload),
+    setTopicsEnabled: (enabled) => {
+      topicsEnabled = enabled;
+    },
     reset: () => {
       calls.length = 0;
     },
