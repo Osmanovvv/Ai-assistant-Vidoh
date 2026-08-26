@@ -98,6 +98,15 @@ try {
     for (const item of outcome.result.extra) {
       process.stdout.write(`  лишнее [${outcome.id}] «${item.text}»\n`);
     }
+    // Двоякое ожидание — это наша ошибка разметки, и она искажает счёт:
+    // одно ожидание забирает запись, которую ждало другое, и второе
+    // считается потерянным. Поэтому надо назвать виновника, а не только
+    // сообщить, что он есть.
+    for (const unit of outcome.result.ambiguous) {
+      process.stdout.write(
+        `  двояко [${outcome.id}] ${unit.keywords.join(' + ')} — корни подошли больше чем одной записи\n`,
+      );
+    }
     if (outcome.failed !== undefined) {
       process.stdout.write(`  отказ [${outcome.id}] ${outcome.failed}\n`);
     }
