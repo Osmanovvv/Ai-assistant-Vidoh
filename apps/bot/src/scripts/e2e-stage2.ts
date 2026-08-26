@@ -204,25 +204,61 @@ async function waitForReady(): Promise<void> {
   throw new Error('бот не стал готов за тридцать секунд');
 }
 
-/** Ждёт, пока выгрузка дойдёт до конечного состояния. */
-async function waitForBatch(userId: string, seconds = 120): Promise<string | undefined> {
+/**
+ * Ждёт, пока выгрузки дойдут до конечного состояния.
+ *
+ * `expected` — сколько их должно быть завершено: во втором сообщении
+ * сценария выгрузка вторая, и ждать надо её, а не первую, которая уже
+ * готова.
+ */
+async function waitForBatch(
+  userId: string,
+  seconds = 120,
+  expected = 1,
+): Promise<string | undefined> {
   for (let attempt = 0; attempt < seconds * 2; attempt++) {
-    const [row] = await db
+    const rows = await db
       .select({ status: batches.status })
       .from(batches)
       .where(eq(batches.userId, userId));
 
-    if (row?.status === 'done' || row?.status === 'failed') return row.status;
+    const finished = rows.filter((row) => row.status === 'done' || row.status === 'failed');
+    if (finished.length >= expected) return finished.at(-1)?.status;
     await sleep(500);
   }
 
   return undefined;
 }
 
+/** Идентификатор ветки первой темы, у которой он есть. */
+async function threadIdOf(userId: string): Promise<number | undefined> {
+  const rows = await db
+    .select({ threadId: topics.tgThreadId })
+    .from(topics)
+    .where(eq(topics.userId, userId));
+
+  return rows.map((row) => row.threadId).find((id): id is number => id !== null);
+}
+
 async function send(text: string, messageId: number): Promise<void> {
   const status = await postUpdate(
     { baseUrl: `http://127.0.0.1:${String(PORT)}`, secret: SECRET },
     textUpdate({ chatId: CHAT_ID, messageId, firstName: 'Сквозной' }, text),
+  );
+
+  if (status < 200 || status >= 300) throw new Error(`вебхук ответил ${String(status)}`);
+}
+
+/** Сообщение, отправленное человеком внутрь ветки темы. */
+async function sendToThread(text: string, messageId: number, threadId: number): Promise<void> {
+  const update = textUpdate({ chatId: CHAT_ID, messageId, firstName: 'Сквозной' }, text);
+  const message = update['message'] as Record<string, unknown>;
+  message['message_thread_id'] = threadId;
+  message['is_topic_message'] = true;
+
+  const status = await postUpdate(
+    { baseUrl: `http://127.0.0.1:${String(PORT)}`, secret: SECRET },
+    update,
   );
 
   if (status < 200 || status >= 300) throw new Error(`вебхук ответил ${String(status)}`);
@@ -379,6 +415,84 @@ try {
     saved2.length >= 4,
     `записей: ${String(saved2.length)}`,
   );
+
+  // ── Сценарий 3: сообщение в ветку ──────────────────────────────────────
+  say('Сценарий 3: сообщение, отправленное в ветку, обработано в её контексте');
+
+  await cleanup(userId);
+  userId = await seedUser();
+  stub.reset();
+
+  // Первая выгрузка создаёт ветки: без них писать некуда.
+  await send('купить продукты и записаться к врачу', 701);
+  await waitForBatch(userId);
+
+  const threads = stub
+    .callsOf('createForumTopic')
+    .map((call) => call['name'])
+    .filter((name): name is string => typeof name === 'string');
+
+  check(
+    'ветки тем созданы',
+    threads.length > 0,
+    `создано: ${threads.length ? threads.join(', ') : 'ни одной'}`,
+  );
+
+  const threadId = await threadIdOf(userId);
+  if (threadId === undefined) {
+    no('у темы есть ветка в базе');
+  } else {
+    ok('у темы есть ветка в базе');
+
+    stub.reset();
+    await sendToThread('и ещё оплатить садик', 702, threadId);
+    await waitForBatch(userId, 120, 2);
+
+    const answered = stub.calls.filter(
+      (call) =>
+        (call.method === 'sendMessage' || call.method === 'editMessageText') &&
+        call.payload['message_thread_id'] === threadId,
+    );
+
+    check(
+      'ответ пришёл в ту же ветку, а не в общий чат',
+      answered.length > 0,
+      `ответов в ветку ${String(threadId)}: ${String(answered.length)}`,
+    );
+  }
+
+  // ── Сценарий 4: плоский режим ──────────────────────────────────────────
+  say('Сценарий 4: при выключенных темах разбор работает целиком (§8.2)');
+
+  await cleanup(userId);
+  userId = await seedUser();
+  stub.reset();
+  stub.setTopicsEnabled(false);
+
+  await send('купить продукты, записаться к врачу и сверить кассу', 801);
+  const flatStatus = await waitForBatch(userId);
+
+  check(
+    'выгрузка дошла до «готово» и без тем',
+    flatStatus === 'done',
+    `состояние: ${String(flatStatus)}`,
+  );
+
+  const flatItems = await db.select().from(items).where(eq(items.userId, userId));
+  check(
+    'записи сохранены и разложены по темам в базе',
+    flatItems.length >= 3 && flatItems.every((item) => item.topic !== null),
+    `записей: ${String(flatItems.length)}`,
+  );
+
+  const flatAnswer = answerToPerson();
+  check(
+    'человек получил обычный ответ, без упоминания веток',
+    actionsIn(flatAnswer) > 0 && !/ветк|тем[аы]\s+telegram/iu.test(flatAnswer),
+    `действий: ${String(actionsIn(flatAnswer))}`,
+  );
+
+  stub.setTopicsEnabled(true);
 
   // ── Итог ───────────────────────────────────────────────────────────────
   process.stdout.write(`\n[1mПройдено ${String(passed)}, провалено ${String(failed)}[0m\n`);

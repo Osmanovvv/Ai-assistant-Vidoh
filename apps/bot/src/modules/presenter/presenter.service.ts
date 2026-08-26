@@ -191,6 +191,23 @@ export interface SanitizedAcknowledgement {
   readonly reason?: string;
 }
 
+/**
+ * Запрещённая формулировка в тексте, если она там есть.
+ *
+ * Вынесено отдельно от проверки признания, потому что это два разных
+ * правила. «Никаких рассуждений про ресурс и выгорание» (§13.8 и прямое
+ * требование заказчика) относится к любой реплике бота — в том числе к
+ * той, что написана нами в словаре. А «признание в одну короткую фразу»
+ * относится только к ответу модели.
+ *
+ * Разделить их пришлось на 2.12: проверка кризисной реплики отвергала её
+ * за длину, хотя длина там законная — три предложения.
+ */
+export function forbiddenPhraseIn(text: string): string | undefined {
+  const normalized = normalize(text);
+  return FORBIDDEN.find((phrase) => normalized.includes(phrase));
+}
+
 export function sanitizeAcknowledgement(
   raw: string,
   texts: TextProfile,
@@ -220,8 +237,7 @@ export function sanitizeAcknowledgement(
   // тексте реплики.
   if (/\p{Extended_Pictographic}/u.test(text)) return reject('эмодзи в признании');
 
-  const normalized = normalize(text);
-  const found = FORBIDDEN.find((phrase) => normalized.includes(phrase));
+  const found = forbiddenPhraseIn(text);
   if (found !== undefined) return reject(`запрещённая формулировка §13.7: «${found}»`);
 
   return { text, replaced: false };
