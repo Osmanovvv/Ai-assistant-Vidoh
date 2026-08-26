@@ -7,6 +7,7 @@ import { createBot } from './bot/bot.js';
 import { publishCommands } from './bot/commands.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
+import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
 import { registerWebhook } from './bot/register-webhook.js';
@@ -26,7 +27,7 @@ import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
 import { createServer } from './http/server.js';
 import { DEFAULT_LIMITS, closeBatchOnSilence } from './modules/buffer/buffer.service.js';
 import { modelsWithoutPrice } from './modules/metering/pricing.js';
-import { createTelegramSender } from './modules/presenter/telegram-sender.js';
+import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
@@ -139,6 +140,11 @@ async function main(): Promise<void> {
   // же сообщение (§9.2 и §10.2 ТЗ).
   const sender = createTelegramSender({ api: bot.api, db, logger });
 
+  // Вопросы онбординга живут своей репликой с кнопками, поэтому у них свой
+  // отправитель: статусное сообщение правится по ходу разбора, и
+  // клавиатура на нём мигала бы (§12.2, задача 2.13).
+  const questions = createQuestionSender({ api: bot.api, db, logger });
+
   const handleBatch = createDumpHandler({
     speech: {
       provider: speech,
@@ -153,6 +159,7 @@ async function main(): Promise<void> {
     embedder,
     logger,
     sender,
+    onboarding: questions,
   });
 
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
@@ -233,6 +240,7 @@ async function main(): Promise<void> {
   registerStartHandlers(bot, env.PRIVACY_POLICY_URL);
   registerPrivacyHandlers(bot, db, logger);
   registerMembershipHandlers(bot, db, logger);
+  registerOnboardingHandlers(bot, db, logger);
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');

@@ -10,7 +10,15 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
+import {
+  firstStep,
+  onboardingStateOf,
+  questionFor,
+  setStep,
+  STEP,
+} from '../onboarding/onboarding.service.js';
 import { composeOf, presentDump } from '../presenter/presenter.service.js';
+import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
   showStatus,
@@ -74,6 +82,13 @@ export interface DumpHandlerDeps {
    */
   readonly embedder?: EmbeddingProvider | undefined;
   readonly sender?: StatusSender | undefined;
+  /**
+   * Отправитель вопросов онбординга (§12.2, задача 2.13).
+   *
+   * Онбординг начинается здесь, а не в обработчике команд, потому что
+   * §12.2 привязывает его к первой выгрузке: спрашивать до неё запрещено.
+   */
+  readonly onboarding?: QuestionSender | undefined;
   readonly logger?: Logger | undefined;
   readonly now?: (() => Date) | undefined;
 }
@@ -312,6 +327,33 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       timeZone: context.timeZone,
     });
 
+    /**
+     * §12.2: онбординг идёт после первой выгрузки. Начинается он, когда
+     * разбор действительно состоялся: спрашивать сферы жизни у человека,
+     * чья первая выгрузка оказалась «привет», рано.
+     *
+     * Свой вопрос ответ при этом не задаёт: его место занимает первый
+     * вопрос онбординга, иначе у человека окажется два открытых вопроса
+     * подряд, чего §13.9 не допускает.
+     */
+    const onboarding = await onboardingStateOf(db, batch.userId);
+
+    // Отправитель и адресат забираются сразу вместе: разбирать их по
+    // отдельности ниже пришлось бы второй раз, и проверка задвоилась бы.
+    const startOnboarding =
+      onboarding.step === 0 && deps.onboarding !== undefined && target !== undefined
+        ? { sender: deps.onboarding, target, step: firstStep(onboarding.name) }
+        : undefined;
+
+    /**
+     * Пока опрос идёт, разбор своего вопроса не задаёт.
+     *
+     * Человек мог наговорить ещё раз, не ответив на предыдущий вопрос
+     * онбординга. Тот вопрос никуда не делся, и добавить к нему второй
+     * значит нарушить §13.9 — пусть и двумя репликами, а не одной.
+     */
+    const onboardingOpen = onboarding.step > 0 && onboarding.step < STEP.done;
+
     const presented = await presentDump(ai, {
       composition,
       actions: selection.shown.map((item) => item.text),
@@ -319,6 +361,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       profile: context.textProfile,
       userId: batch.userId,
       batchId: batch.id,
+      omitQuestion: startOnboarding !== undefined || onboardingOpen,
     });
 
     deps.logger?.info(
@@ -337,5 +380,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     );
 
     await reply(db, deps, target, presented.reply.text);
+
+    if (startOnboarding) {
+      const question = questionFor(startOnboarding.step, { texts, name: onboarding.name });
+
+      if (question) {
+        await setStep(db, batch.userId, startOnboarding.step);
+        await startOnboarding.sender.ask({
+          chatId: startOnboarding.target.chatId,
+          threadId: startOnboarding.target.threadId,
+          text: question.text,
+          rows: question.rows,
+        });
+      }
+    }
   };
 }

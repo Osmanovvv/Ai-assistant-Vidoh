@@ -60,6 +60,28 @@ export const reserved: TextProfile = {
     nothingToParse: 'Я здесь. Расскажешь, что в голове?',
   },
 
+  onboarding: {
+    nameConfirm: (name) => `Ещё пара вопросов, чтобы я лучше раскладывала. Называть тебя ${name}?`,
+    buttonNameYes: 'Да',
+    buttonNameLater: 'Поправлю потом',
+
+    timezoneMoscow: 'Ты во времени Москвы?',
+    buttonTimezoneMoscow: 'Да, Москва',
+    buttonTimezoneOther: 'Другой город',
+    timezoneChoose: 'Выбери, где ты.',
+
+    morning: 'Во сколько удобно напоминание утром?',
+    evening: 'А вечером?',
+    buttonEveningOff: 'Не надо вечером',
+
+    topics: 'Какие сферы жизни у тебя главные? Отметь свои и нажми «Готово».',
+    buttonTopicsDone: 'Готово',
+    topicChosen: (name) => `✓ ${name}`,
+
+    finished: 'Всё, больше не спрашиваю. Дальше просто говори.',
+    finishedDefault: 'Хорошо, разложу по обычным сферам. Дальше просто говори.',
+  },
+
   safety: {
     /**
      * ВРЕМЕННАЯ ФОРМУЛИРОВКА. Ждёт ответа заказчика на пункт 12 письма.
