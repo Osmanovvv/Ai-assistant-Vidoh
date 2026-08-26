@@ -57,6 +57,15 @@ export interface EvalReport {
 
   readonly cases: number;
   readonly promptVersions: Readonly<Record<string, string>>;
+  /**
+   * Какими моделями сделан прогон.
+   *
+   * Без этого два прогона в истории неразличимы, а разница между ними
+   * может быть не в промпте, а в модели: ветки `latest` и `rc` — это
+   * разные поколения с разной ценой и разным качеством. Отчёт, по
+   * которому нельзя сказать, что именно сравнивали, сравнивать нельзя.
+   */
+  readonly models?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface Shares {
@@ -188,6 +197,13 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     `Версии промптов: ${Object.entries(report.promptVersions)
       .map(([stage, version]) => `${stage}=${version}`)
       .join(', ')}`,
+    ...(report.models === undefined
+      ? []
+      : [
+          `Модели: ${Object.entries(report.models)
+            .map(([kind, model]) => `${kind}=${model}`)
+            .join(', ')}`,
+        ]),
     '',
     `Найдено единиц:      ${percent(now.recall)}${delta(now.recall, was?.recall)}   (${String(report.found)} из ${String(report.expected)})`,
     `Потеряно:            ${String(report.missed)}${deltaCount(report.missed, previous?.missed)}`,

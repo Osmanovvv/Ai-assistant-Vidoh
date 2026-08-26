@@ -23,6 +23,14 @@ export interface AiCallContext {
 export interface MeteredResult<T> {
   readonly value: T;
   readonly usage: UsageAmount;
+  /**
+   * Версия модели, которой ответил провайдер, если он её сообщил.
+   *
+   * Пишется рядом с расходом: `latest` — это ветка, и поколение за ней
+   * однажды поменяется. Тогда изменятся и цена, и качество, и без записи
+   * версии связать это будет нечем.
+   */
+  readonly modelVersion?: string | undefined;
 }
 
 export async function recordAiCall(
@@ -30,6 +38,7 @@ export async function recordAiCall(
   input: {
     readonly context: AiCallContext;
     readonly usage: UsageAmount;
+    readonly modelVersion?: string | undefined;
     readonly latencyMs: number;
     readonly ok: boolean;
     readonly error?: string | undefined;
@@ -43,6 +52,7 @@ export async function recordAiCall(
     batchId: input.context.batchId ?? null,
     stage: input.context.stage,
     model: input.context.model,
+    modelVersion: input.modelVersion ?? null,
     promptVersion: input.context.promptVersion ?? null,
     tokensIn: input.usage.tokensIn ?? null,
     tokensOut: input.usage.tokensOut ?? null,
@@ -76,6 +86,7 @@ export async function meterCall<T>(
     await recordAiCall(db, {
       context,
       usage: outcome.usage,
+      ...(outcome.modelVersion === undefined ? {} : { modelVersion: outcome.modelVersion }),
       latencyMs: Date.now() - startedAt,
       ok: true,
       pricing: options.pricing,

@@ -148,12 +148,16 @@ export class YandexLlmProvider implements LlmProvider {
     }
 
     const usage = asRecord(result?.['usage']);
+    const version = result?.['modelVersion'];
 
     return {
       text,
       model: this.model,
       tokensIn: toCount(usage?.['inputTextTokens']),
       tokensOut: toCount(usage?.['completionTokens']),
+      // Версия приходит датой сборки: у ветки latest это 09.02.2025
+      // (YandexGPT Pro 5), у rc — yagpt-5.1-2025-08. Проверено 27.08.2026.
+      ...(typeof version === 'string' && version !== '' ? { modelVersion: version } : {}),
     };
   }
 }
