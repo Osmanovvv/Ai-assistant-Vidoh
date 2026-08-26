@@ -285,13 +285,42 @@ export async function finish(db: Executor, userId: string, at: Date): Promise<vo
     .where(eq(userSettings.userId, userId));
 }
 
-export async function setTimezone(db: Executor, userId: string, zone: string): Promise<void> {
-  // Подтверждённый пояс отличается от значения по умолчанию: по нему
-  // задача 2.14 решает, надо ли пересчитывать сроки первой выгрузки.
+export interface TimezoneChange {
+  readonly from: string;
+  readonly to: string;
+  /**
+   * Пояс подтверждён впервые.
+   *
+   * По этому признаку задача 2.14 решает, пересчитывать ли сроки. Только
+   * при первом подтверждении: если человек потом переедет и сменит пояс в
+   * настройках, сдвигать старые сроки нельзя — они были верны, когда он
+   * их называл. Разница между «мы угадали неверно» и «человек переехал»
+   * принципиальная.
+   */
+  readonly firstConfirmation: boolean;
+}
+
+export async function setTimezone(
+  db: Executor,
+  userId: string,
+  zone: string,
+): Promise<TimezoneChange> {
+  const [before] = await db
+    .select({ zone: users.timezone, confirmed: users.timezoneConfirmed })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
   await db
     .update(users)
     .set({ timezone: zone, timezoneConfirmed: true })
     .where(eq(users.id, userId));
+
+  return {
+    from: before?.zone ?? 'Europe/Moscow',
+    to: zone,
+    firstConfirmation: before?.confirmed !== true,
+  };
 }
 
 export async function setMorning(db: Executor, userId: string, time: string): Promise<void> {

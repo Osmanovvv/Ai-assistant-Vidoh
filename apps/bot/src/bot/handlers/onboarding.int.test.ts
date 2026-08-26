@@ -4,8 +4,9 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { topics, users, userSettings } from '../../db/schema.js';
+import { items, topics, users, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
+import { localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import {
   ACTION,
@@ -481,5 +482,113 @@ describe('вечернее напоминание отдельно от оста
     const settings = await settingsOf();
     expect(settings?.eveningOn).toBe(true);
     expect(settings?.eveningTime).toBe('20:00:00');
+  });
+});
+
+describe('домиграция первой выгрузки', () => {
+  /** Запись первой выгрузки: срок разобран по московскому допущению. */
+  async function firstDumpItem(topic: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'записать сына к врачу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic,
+        sourceOrder: 0,
+        deadlineAt: startOfDayInZone({ year: 2026, month: 8, day: 27 }, 'Europe/Moscow'),
+        deadlineAccuracy: 'day',
+        createdAt: new Date('2026-08-25T09:00:00.000Z'),
+      })
+      .returning({ id: items.id });
+
+    return row!.id;
+  }
+
+  async function localDeadline(itemId: string, zone: string): Promise<string> {
+    const [row] = await testDb()
+      .select({ deadlineAt: items.deadlineAt })
+      .from(items)
+      .where(eq(items.id, itemId));
+
+    const parts = localDateParts(row!.deadlineAt!, zone);
+    return `${String(parts.year)}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
+
+  it('полный путь: выгрузка, онбординг, пересчёт срока, перенос темы', async () => {
+    // Тест из условия задачи 2.14. Первая выгрузка разобрана по
+    // допущениям — московский пояс и базовый набор тем, — а человек
+    // отвечает иначе.
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await firstDumpItem('здоровье');
+    await startedAt(STEP.timezone);
+
+    // Пояс: Владивосток.
+    await bot.handleUpdate(callbackUpdate(`${ACTION.timezonePrefix}Asia/Vladivostok`));
+
+    expect((await timezoneOf())?.zone).toBe('Asia/Vladivostok');
+    // День остался тем же днём — уже в её поясе, а не в московском.
+    expect(await localDeadline(itemId, 'Asia/Vladivostok')).toBe('2026-08-27');
+
+    // Дальше по опросу до сфер жизни.
+    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
+
+    // Выбирает «дети» и «деньги» — «здоровья» среди них нет.
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['дети', 'деньги'])),
+    );
+
+    // Порядок — как сортирует JS по кодам символов: «деньги» раньше «дети».
+    expect(await topicNames()).toEqual(['деньги', 'дети', 'личное']);
+
+    // §6.4: запись из темы, которой у неё нет, уехала в тему по умолчанию.
+    const [row] = await testDb()
+      .select({ topic: items.topic })
+      .from(items)
+      .where(eq(items.id, itemId));
+    expect(row?.topic).toBe('личное');
+  });
+
+  it('выбранная тема сохраняется, срок всё равно пересчитан', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await firstDumpItem('здоровье');
+    await startedAt(STEP.timezone);
+
+    await bot.handleUpdate(callbackUpdate(`${ACTION.timezonePrefix}Asia/Omsk`));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
+    await bot.handleUpdate(callbackUpdate(ACTION.eveningOff));
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['здоровье'])),
+    );
+
+    expect(await localDeadline(itemId, 'Asia/Omsk')).toBe('2026-08-27');
+
+    const [row] = await testDb()
+      .select({ topic: items.topic })
+      .from(items)
+      .where(eq(items.id, itemId));
+    expect(row?.topic).toBe('здоровье');
+  });
+
+  it('«Да, Москва» ничего не пересчитывает, но подтверждает пояс', async () => {
+    // Пояс тот же, что действовал по умолчанию: пересчёта нет, а признак
+    // подтверждения нужен — по нему 2.14 отличает «мы угадали неверно» от
+    // «человек переехал».
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await firstDumpItem('здоровье');
+    await startedAt(STEP.timezone);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
+
+    expect(await timezoneOf()).toEqual({ zone: 'Europe/Moscow', confirmed: true });
+    expect(await localDeadline(itemId, 'Europe/Moscow')).toBe('2026-08-27');
   });
 });
