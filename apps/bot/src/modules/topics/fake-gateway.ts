@@ -28,13 +28,19 @@ export interface FakeGatewayOptions {
   readonly goneMessages?: ReadonlySet<number>;
   /** Правка тем же текстом отвечает «не изменено», как настоящий Telegram. */
   readonly rejectUnchangedEdits?: boolean;
+  /** Первые столько отправок отвечают 429 с просьбой подождать. */
+  readonly throttleFirst?: { readonly times: number; readonly retryAfterSec: number };
 }
 
-/** Отказ Telegram нужной формы: код и текст, как у настоящего. */
-function telegramError(code: number, description: string): GrammyError {
+/** Отказ Telegram нужной формы: код, текст и параметры, как у настоящего. */
+function telegramError(
+  code: number,
+  description: string,
+  parameters: Record<string, unknown> = {},
+): GrammyError {
   return new GrammyError(
     `Call to method failed: ${description}`,
-    { ok: false, error_code: code, description },
+    { ok: false, error_code: code, description, parameters },
     'sendMessage',
     {},
   );
@@ -55,7 +61,6 @@ export class FakeTopicGateway implements TopicGateway {
   readonly sent: SentMessage[] = [];
   readonly edited: { messageId: number; text: string }[] = [];
   readonly pinned: number[] = [];
-  readonly renamed: { threadId: number; name: string }[] = [];
 
   private readonly lastText = new Map<number, string>();
 
@@ -76,18 +81,29 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve(nextThreadId);
   }
 
-  renameThread(params: { chatId: number; threadId: number; name: string }): Promise<void> {
-    this.renamed.push({ threadId: params.threadId, name: params.name });
-    return Promise.resolve();
-  }
-
   allowedIcons(): Promise<ReadonlyMap<string, string>> {
     return Promise.resolve(this.options.icons ?? new Map());
   }
 
+  private throttled = 0;
+
   send(params: { chatId: number; threadId?: number | undefined; text: string }): Promise<number> {
     if (params.threadId !== undefined && this.options.goneThreads?.has(params.threadId) === true) {
       return Promise.reject(telegramError(400, 'Bad Request: message thread not found'));
+    }
+
+    const { throttleFirst } = this.options;
+    if (throttleFirst && this.throttled < throttleFirst.times) {
+      this.throttled++;
+      return Promise.reject(
+        telegramError(
+          429,
+          'Too Many Requests: retry after ' + String(throttleFirst.retryAfterSec),
+          {
+            retry_after: throttleFirst.retryAfterSec,
+          },
+        ),
+      );
     }
 
     this.sent.push({ chatId: params.chatId, threadId: params.threadId, text: params.text });
