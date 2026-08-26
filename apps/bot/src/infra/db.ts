@@ -3,7 +3,7 @@ import { drizzle, type NodePgDatabase, type NodePgQueryResultHKT } from 'drizzle
 import type { PgTransaction } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 
-import { getEnv } from '../config/env.js';
+import { dbEnvSchema } from '../config/env.js';
 import * as schema from '../db/schema.js';
 
 /**
@@ -42,8 +42,16 @@ export function createPool(connectionString: string): pg.Pool {
   });
 }
 
+/**
+ * Пул читает только адрес базы, а не всю конфигурацию бота.
+ *
+ * Разница видна не в бою, а в служебных скриптах: заливке промптов и
+ * прогону стенда база нужна, а токен бота и адрес вебхука — нет. Пока
+ * пул поднимался через `getEnv`, команда из рантбука падала на
+ * переменной, которая к базе отношения не имеет.
+ */
 export function getPool(): pg.Pool {
-  pool ??= createPool(getEnv().DATABASE_URL);
+  pool ??= createPool(dbEnvSchema.parse(process.env).DATABASE_URL);
   return pool;
 }
 

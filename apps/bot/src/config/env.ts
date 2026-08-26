@@ -32,6 +32,20 @@ const booleanFromEnv = (fallback: boolean) =>
     .optional()
     .transform((value) => (value === undefined ? fallback : value === 'true' || value === '1'));
 
+/**
+ * Адрес базы — отдельной схемой, по той же причине, по которой отдельно
+ * живут настройки моделей: пулу соединений не нужен ни токен бота, ни
+ * адрес вебхука. Служебный скрипт — заливка промптов, прогон стенда —
+ * обязан подниматься с одной переменной, а не с конфигурацией всего бота.
+ *
+ * **Поймано на первом прогоне стенда:** команда из рантбука падала на
+ * `PUBLIC_URL`, которого у неё и не должно быть. В бою этого не видно —
+ * там у контейнера есть всё окружение сразу.
+ */
+const databaseUrl = z.string().min(1).startsWith('postgres', 'должен начинаться с postgres://');
+
+export const dbEnvSchema = z.object({ DATABASE_URL: databaseUrl });
+
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -78,7 +92,7 @@ export const envSchema = z.object({
    */
   MONITORING_CHAT_ID: z.coerce.number().int().optional(),
 
-  DATABASE_URL: z.string().min(1).startsWith('postgres', 'должен начинаться с postgres://'),
+  DATABASE_URL: databaseUrl,
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });
 
