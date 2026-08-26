@@ -53,7 +53,7 @@ interface Harness {
 
 async function harness(): Promise<Harness> {
   const seen: string[] = [];
-  const bot = createBot(FAKE_TOKEN, BOT_INFO);
+  const bot = createBot(FAKE_TOKEN, { botInfo: BOT_INFO });
 
   bot.on('message:text', (ctx) => {
     seen.push(ctx.message.text);

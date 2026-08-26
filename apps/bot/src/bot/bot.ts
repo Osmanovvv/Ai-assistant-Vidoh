@@ -1,15 +1,34 @@
 import { Bot } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 
-/**
- * Экземпляр бота (задача 1.7).
- *
- * botInfo передаётся снаружи, если он уже известен: тогда bot.init() не
- * ходит в сеть. Это нужно и тестам, и быстрому старту вебхука, и вторым
- * репликам, которым незачем повторно спрашивать getMe.
- */
-export function createBot(token: string, botInfo?: UserFromGetMe): Bot {
-  return botInfo ? new Bot(token, { botInfo }) : new Bot(token);
+export interface BotOptions {
+  /**
+   * Известный botInfo: тогда bot.init() не ходит в сеть. Нужен и тестам,
+   * и быстрому старту вебхука, и вторым репликам, которым незачем
+   * повторно спрашивать getMe.
+   */
+  readonly botInfo?: UserFromGetMe | undefined;
+  /**
+   * Адрес Bot API вместо настоящего (задача 2.23).
+   *
+   * Нужен сквозному тесту: ответы бота проверяются целиком, а прочитать
+   * их у Telegram нельзя — бот не видит собственных сообщений, а войти
+   * пользователем значит вводить код из SMS. Подменяется здесь именно
+   * граница с Telegram, а не наш код, поэтому тест остаётся сквозным.
+   *
+   * В бою переменная обязана быть пустой — это проверяет конфигурация:
+   * подменённый адрес в бою означал бы бота, который «отвечает» в
+   * пустоту, и заметили бы это не мы, а живые люди.
+   */
+  readonly apiRoot?: string | undefined;
+}
+
+/** Экземпляр бота (задача 1.7). */
+export function createBot(token: string, options: BotOptions = {}): Bot {
+  return new Bot(token, {
+    ...(options.botInfo === undefined ? {} : { botInfo: options.botInfo }),
+    ...(options.apiRoot === undefined ? {} : { client: { apiRoot: options.apiRoot } }),
+  });
 }
 
 /**

@@ -36,6 +36,20 @@ export interface SelectContext {
   readonly energy: EnergyLevelValue;
   readonly now: Date;
   readonly timeZone: string;
+  /**
+   * Предел на эту выдачу, если он строже, чем даёт уровень сил.
+   *
+   * §13.7 и §2 сценарий 7: в выгрузке, где человек сказал о своём
+   * состоянии, действие ровно одно. Это про ответ на эту выгрузку, а не
+   * про уровень сил на весь день: «сил мало» так и остаётся «мало» —
+   * следующая выгрузка того же дня получит свои два дела.
+   *
+   * Найдено сквозным тестом этапа: каждый модуль был прав по своему
+   * тесту — фильтр показывал два дела при `low`, обработчик снижал
+   * уровень до `low`, — а требование ТЗ «выдача сокращена до одного
+   * действия» не выполнялось ни одним из них.
+   */
+  readonly cap?: number | undefined;
 }
 
 export interface SelectionResult {
@@ -148,7 +162,7 @@ export function selectForOutput(items: readonly Item[], context: SelectContext):
     return byBucket === 0 ? compareWithin(left, right) : byBucket;
   });
 
-  const limit = LIMIT_BY_ENERGY[context.energy];
+  const limit = Math.min(LIMIT_BY_ENERGY[context.energy], context.cap ?? Number.MAX_SAFE_INTEGER);
 
   return { shown: ranked.slice(0, limit), hidden: Math.max(0, ranked.length - limit) };
 }
