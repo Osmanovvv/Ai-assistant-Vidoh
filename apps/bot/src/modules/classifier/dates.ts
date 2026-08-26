@@ -34,7 +34,7 @@ const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/u;
 /** Дальше этого срока планов не бывает: это модель ошиблась в годе. */
 const MAX_YEARS_AHEAD = 5;
 
-interface DateParts {
+export interface DateParts {
   readonly year: number;
   readonly month: number;
   readonly day: number;

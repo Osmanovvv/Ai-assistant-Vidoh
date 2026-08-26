@@ -70,6 +70,12 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
     );
   }
 
+  // Регулярность показывается словами человека, а не нашим пересказом
+  // правила: «каждый вторник» он узнает, «weekly, интервал 1» — нет.
+  if (item.recurrenceText !== null) {
+    lines.push(`${card.recurrenceLabel}: ${item.recurrenceText}`);
+  }
+
   lines.push(`${card.statusLabel}: ${card.statusName(item.status)}`);
 
   return lines.join('\n');

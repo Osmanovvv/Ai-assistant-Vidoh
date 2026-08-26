@@ -83,6 +83,15 @@ export interface ExportedData {
     readonly deadlineAccuracy: string | null;
     readonly isDraft: boolean;
     readonly draftReason: string | null;
+    /**
+     * Регулярность (задача 2.18а): фраза человека, каким способом она
+     * появилась и правило, которое из неё вышло. Источник и правило — это
+     * вывод бота о человеке, и §16 требует отдавать их так же, как его
+     * собственные слова.
+     */
+    readonly recurrenceText: string | null;
+    readonly recurrenceSource: string | null;
+    readonly recurrenceRule: unknown;
     readonly createdAt: string;
     readonly updatedAt: string;
   }[];
@@ -186,6 +195,9 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       deadlineAccuracy: item.deadlineAccuracy,
       isDraft: item.isDraft,
       draftReason: item.draftReason,
+      recurrenceText: item.recurrenceText,
+      recurrenceSource: item.recurrenceSource,
+      recurrenceRule: item.recurrenceRule,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
     })),

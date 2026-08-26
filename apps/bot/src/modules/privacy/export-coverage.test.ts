@@ -131,6 +131,11 @@ const DECISIONS: readonly {
         'draftReason',
         'createdAt',
         'updatedAt',
+        // Задача 2.18а. Фраза — слова человека, источник и правило — вывод
+        // бота о нём, и §16 требует отдавать и то и другое.
+        'recurrenceText',
+        'recurrenceSource',
+        'recurrenceRule',
       ],
       internal: [
         'id',

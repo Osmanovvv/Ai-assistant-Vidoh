@@ -63,6 +63,11 @@ function toRow(params: SaveItemsParams, item: ItemToSave, order: number): NewIte
     isProject: item.isProject,
     deadlineAt: item.deadline?.at ?? null,
     deadlineAccuracy: item.deadline?.accuracy ?? null,
+    // Задача 2.18а: правило живёт рядом с фразой человека, и фраза
+    // сохраняется даже тогда, когда правило не получилось.
+    recurrenceRule: item.recurrence?.rule ?? null,
+    recurrenceText: item.recurrence?.text ?? null,
+    recurrenceSource: item.recurrence?.source ?? null,
     embedding: item.embedding === undefined ? null : [...item.embedding],
   };
 }

@@ -33,6 +33,9 @@ const answer = (
     isProject: boolean;
     deadline: string;
     deadlineAccuracy: string;
+    recurrenceKind: string;
+    recurrenceInterval: number;
+    recurrenceText: string;
   }>[],
 ) =>
   JSON.stringify({
@@ -44,6 +47,10 @@ const answer = (
       isProject: false,
       deadline: '',
       deadlineAccuracy: 'none',
+      // Задача 2.18а: три поля регулярности. По умолчанию дело разовое.
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
       ...item,
     })),
   });
@@ -297,5 +304,137 @@ describe('учёт расхода', () => {
     const [call] = await testDb().select().from(aiCalls);
     expect(call?.stage).toBe('classifier');
     expect(call?.promptVersion).toBe('classifier@1');
+  });
+});
+
+describe('регулярность (задача 2.18а)', () => {
+  it('«каждый вторник» даёт правило, а не разовую задачу', async () => {
+    // Условие готовности задачи. Раньше регулярность просто исчезала:
+    // запись создана, срок есть, тест зелёный — а бот через неделю
+    // ничего не помнит.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'возить сына на плавание',
+            deadline: '2026-09-08',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'weekly',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый вторник',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('каждый вторник плавание'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [item] = result.items;
+    expect(item?.recurrence?.rule).toEqual({
+      kind: 'weekly',
+      interval: 1,
+      anchor: '2026-09-08',
+    });
+    expect(item?.recurrence?.text).toBe('каждый вторник');
+    expect(item?.recurrence?.source).toBe('stated');
+    expect(result.corrections.recurrence).toBe(0);
+  });
+
+  it('непонятая регулярность сохраняется фразой и считается поправкой', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'танцы',
+            deadline: '2026-09-08',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'unclear',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый вторник и четверг',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('танцы'));
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence?.rule).toBeUndefined();
+    expect(result.items[0]?.recurrence?.text).toBe('каждый вторник и четверг');
+    // Ненулевой счётчик — повод посмотреть промпт, а не тихая норма.
+    expect(result.corrections.recurrence).toBe(1);
+  });
+
+  it('регулярность у не-задачи снимается в коде', async () => {
+    // §5.1: регулярность — поле у TASK, как проект и делегируемость.
+    // База это же запрещает ограничением, но полагаться на то, что до
+    // базы дойдёт правильное, нельзя: отказ вставки уронил бы всю
+    // выгрузку из-за одной записи.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'хочу бегать по утрам',
+            type: 'DESIRE',
+            priority: 'NONE',
+            recurrenceKind: 'daily',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждое утро',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('хочу бегать'));
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence).toBeUndefined();
+    expect(result.corrections.recurrence).toBe(1);
+  });
+
+  it('разовое дело регулярности не получает', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          { text: 'записать сына к врачу', deadline: '2026-09-03', deadlineAccuracy: 'day' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('к врачу в четверг'));
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence).toBeUndefined();
+    expect(result.corrections.recurrence).toBe(0);
+  });
+
+  it('регулярность без срока сохраняется фразой: правилу не на что опереться', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'оплатить садик',
+            recurrenceKind: 'monthly',
+            recurrenceInterval: 1,
+            recurrenceText: 'раз в месяц',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('садик раз в месяц'));
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence?.rule).toBeUndefined();
+    expect(result.items[0]?.recurrence?.text).toBe('раз в месяц');
+    expect(result.corrections.recurrence).toBe(1);
   });
 });
