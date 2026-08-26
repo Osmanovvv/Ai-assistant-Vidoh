@@ -137,3 +137,63 @@ describe('modelsWithoutPrice', () => {
     expect(modelsWithoutPrice(['main-model', 'speech-model'], pricing)).toEqual([]);
   });
 });
+
+describe('прайс-лист (задача 2.21)', () => {
+  /**
+   * Цена, которую никто не проверяет, однажды разойдётся со счётом.
+   * Здесь закреплено то, что взято из официальных правил тарификации
+   * Yandex от 27.08.2026 — с НДС, как их публикует Yandex.
+   */
+
+  it('распознавание считается блоками по пятнадцать секунд', () => {
+    // Главная особенность расхода на живых записях: короткое голосовое
+    // стоит столько же, сколько пятнадцатисекундное.
+    expect(callCost('yandex:general', { audioSeconds: 3 })).toEqual({
+      micros: 162_600,
+      currency: 'rub',
+    });
+
+    expect(callCost('yandex:general', { audioSeconds: 16 })).toEqual({
+      micros: 325_200,
+      currency: 'rub',
+    });
+  });
+
+  it('серия коротких голосовых дороже одной длинной записи той же длительности', () => {
+    // Восемь записей по 12 секунд — это 96 секунд звука и восемь блоков.
+    // Одна запись на 96 секунд — семь блоков. Разница и есть та
+    // переплата, ради которой стоит склеивать голосовые до распознавания.
+    const separate = 8 * (callCost('yandex:general', { audioSeconds: 12 })?.micros ?? 0);
+    const together = callCost('yandex:general', { audioSeconds: 96 })?.micros ?? 0;
+
+    expect(separate).toBeGreaterThan(together);
+  });
+
+  it('полная и лёгкая модели считаются по своим ценам', () => {
+    // Тысяча входящих и тысяча исходящих: у полной 1,6 ₽, у лёгкой 0,4 ₽.
+    expect(callCost('yandex:yandexgpt/latest', { tokensIn: 1000, tokensOut: 1000 })?.micros).toBe(
+      1_600_000,
+    );
+
+    expect(
+      callCost('yandex:yandexgpt-lite/latest', { tokensIn: 1000, tokensOut: 1000 })?.micros,
+    ).toBe(400_000);
+  });
+
+  it('эмбеддинги считаются только по входящим токенам', () => {
+    // Вектор в ответе токенами не тарифицируется.
+    expect(callCost('yandex:text-search', { tokensIn: 1000, tokensOut: 256 })?.micros).toBe(10_100);
+  });
+
+  it('у всех моделей, которыми мы работаем, цена есть', () => {
+    // Иначе расход уйдёт в «неизвестно», а мягкий лимит ослепнет.
+    expect(
+      modelsWithoutPrice([
+        'yandex:general',
+        'yandex:yandexgpt/latest',
+        'yandex:yandexgpt-lite/latest',
+        'yandex:text-search',
+      ]),
+    ).toEqual([]);
+  });
+});
