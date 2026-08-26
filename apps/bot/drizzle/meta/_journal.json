@@ -120,6 +120,13 @@
       "when": 1787750726427,
       "tag": "0016_item_recurrence",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787785546629,
+      "tag": "0017_ai_call_model_version",
+      "breakpoints": true
     }
   ]
 }

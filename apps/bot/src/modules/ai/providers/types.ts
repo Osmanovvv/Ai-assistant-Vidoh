@@ -30,6 +30,17 @@ export interface CompletionResult {
   readonly model: string;
   readonly tokensIn: number;
   readonly tokensOut: number;
+  /**
+   * Версия модели, которой ответил провайдер.
+   *
+   * Нужна потому, что `latest` — это ветка, а не модель: за ней стоит
+   * поколение, которое Yandex однажды поменяет. От поколения зависят и
+   * цена, и качество разбора, а мы мерили порог на конкретном. Пока
+   * версия не писалась в учёт, смена поколения выглядела бы как
+   * «модель вдруг стала хуже» и как расхождение расхода со счётом —
+   * без единого способа связать одно с другим.
+   */
+  readonly modelVersion?: string | undefined;
 }
 
 export interface LlmProvider {

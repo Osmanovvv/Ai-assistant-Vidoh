@@ -179,6 +179,7 @@ export async function requestStructured<T>(
         return {
           value: result,
           usage: { tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+          ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
         };
       },
       { pricing: deps.pricing },

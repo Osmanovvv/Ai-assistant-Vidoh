@@ -248,3 +248,40 @@ describe('spendByUser', () => {
     });
   });
 });
+
+describe('версия модели в учёте (хвост 9)', () => {
+  /**
+   * `latest` — это ветка, а не модель: за ней стоит поколение, которое
+   * провайдер однажды поменяет. От поколения зависят и цена, и качество
+   * разбора. Пока версия не писалась, смена поколения выглядела бы как
+   * «бот вдруг стал хуже» и как расхождение расхода со счётом — без
+   * единого способа связать одно с другим.
+   */
+
+  it('записывается, если провайдер её сообщил', async () => {
+    await meterCall(
+      testDb(),
+      { stage: 'classifier', model: 'yandex:yandexgpt/latest', userId },
+      () =>
+        Promise.resolve({
+          value: 'ответ',
+          usage: { tokensIn: 100, tokensOut: 50 },
+          modelVersion: '09.02.2025',
+        }),
+    );
+
+    const [row] = await testDb().select().from(aiCalls);
+    expect(row?.modelVersion).toBe('09.02.2025');
+  });
+
+  it('без версии запись всё равно появляется', async () => {
+    // Провайдер может её не сообщать — это не повод терять строку учёта.
+    await meterCall(testDb(), { stage: 'router', model: 'mock', userId }, () =>
+      Promise.resolve({ value: 'ответ', usage: { tokensIn: 10 } }),
+    );
+
+    const [row] = await testDb().select().from(aiCalls);
+    expect(row?.modelVersion).toBeNull();
+    expect(row?.tokensIn).toBe(10);
+  });
+});

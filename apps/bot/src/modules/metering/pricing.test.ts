@@ -170,14 +170,23 @@ describe('прайс-лист (задача 2.21)', () => {
   });
 
   it('полная и лёгкая модели считаются по своим ценам', () => {
-    // Тысяча входящих и тысяча исходящих: у полной 1,6 ₽, у лёгкой 0,4 ₽.
+    // Тысяча входящих и тысяча исходящих: у полной 2,4 ₽, у лёгкой 0,4 ₽.
     expect(callCost('yandex:yandexgpt/latest', { tokensIn: 1000, tokensOut: 1000 })?.micros).toBe(
-      1_600_000,
+      2_400_000,
     );
 
     expect(
       callCost('yandex:yandexgpt-lite/latest', { tokensIn: 1000, tokensOut: 1000 })?.micros,
     ).toBe(400_000);
+  });
+
+  it('ветка rc дешевле стабильной: там уже 5.1', () => {
+    // Проверено пробой 27.08.2026: latest отвечает версией 09.02.2025,
+    // rc — yagpt-5.1-2025-08. Разница в цене — треть расхода на модель.
+    const stable = callCost('yandex:yandexgpt/latest', { tokensIn: 1000 })?.micros ?? 0;
+    const candidate = callCost('yandex:yandexgpt/rc', { tokensIn: 1000 })?.micros ?? 0;
+
+    expect(candidate).toBeLessThan(stable);
   });
 
   it('эмбеддинги считаются только по входящим токенам', () => {
@@ -191,6 +200,7 @@ describe('прайс-лист (задача 2.21)', () => {
       modelsWithoutPrice([
         'yandex:general',
         'yandex:yandexgpt/latest',
+        'yandex:yandexgpt/rc',
         'yandex:yandexgpt-lite/latest',
         'yandex:text-search',
       ]),

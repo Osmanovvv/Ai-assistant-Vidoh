@@ -38,6 +38,7 @@ try {
       batchId: aiCalls.batchId,
       stage: aiCalls.stage,
       model: aiCalls.model,
+      modelVersion: aiCalls.modelVersion,
       tokensIn: aiCalls.tokensIn,
       tokensOut: aiCalls.tokensOut,
       audioSeconds: aiCalls.audioSeconds,
@@ -98,6 +99,26 @@ try {
     lines.push(
       `Выгрузок с неизвестной ценой хотя бы одного вызова: ${String(report.dumpsWithUnknownPrice)}`,
     );
+  }
+
+  /**
+   * Версии моделей — рядом с деньгами, а не в отдельном отчёте.
+   *
+   * `latest` — это ветка: за ней стоит поколение, которое провайдер
+   * однажды поменяет, и вместе с ним изменятся цена и качество разбора.
+   * Увидеть это надо там, куда смотрят из-за расхода.
+   */
+  const versions = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (row.modelVersion === null) continue;
+    versions.set(row.model, (versions.get(row.model) ?? new Set()).add(row.modelVersion));
+  }
+
+  if (versions.size > 0) {
+    lines.push('', 'Версии моделей в выборке:');
+    for (const [model, seen] of versions) {
+      lines.push(`  ${model} — ${[...seen].join(', ')}`);
+    }
   }
 
   lines.push('', 'На одну выгрузку по стадиям:');

@@ -86,7 +86,9 @@ try {
     cases,
   );
 
-  const report = collect(outcomes);
+  // Модели пишутся в отчёт вместе с версиями промптов: разница между
+  // двумя прогонами может быть не в промпте, а в поколении модели.
+  const report = { ...collect(outcomes), models: { полная: full.name, лёгкая: light.name } };
   const runs = join(directory, 'runs');
   const previous = await previousRun(runs);
 
