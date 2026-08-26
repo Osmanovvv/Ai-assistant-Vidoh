@@ -37,6 +37,7 @@ import { createSpeechProvider } from './modules/speech/providers/factory.js';
 import { PromptRegistry } from './modules/ai/prompts/registry.js';
 import { createLlmProvider } from './modules/ai/providers/factory.js';
 import { createEmbeddingProvider } from './modules/embedder/providers/factory.js';
+import { createTopicGateway } from './modules/topics/gateway.js';
 
 /** Точка входа. */
 
@@ -145,6 +146,11 @@ async function main(): Promise<void> {
   // клавиатура на нём мигала бы (§12.2, задача 2.13).
   const questions = createQuestionSender({ api: bot.api, db, logger });
 
+  // Ветки личного чата. Проба 0.3 подтвердила, что в ЛС это работает;
+  // если режим тем выключен в @BotFather, шлюз честно об этом скажет, и
+  // продукт перейдёт в плоский режим §8.2.
+  const topicGateway = createTopicGateway(bot.api);
+
   const handleBatch = createDumpHandler({
     speech: {
       provider: speech,
@@ -160,6 +166,7 @@ async function main(): Promise<void> {
     logger,
     sender,
     onboarding: questions,
+    topics: topicGateway,
   });
 
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
@@ -240,7 +247,7 @@ async function main(): Promise<void> {
   registerStartHandlers(bot, env.PRIVACY_POLICY_URL);
   registerPrivacyHandlers(bot, db, logger);
   registerMembershipHandlers(bot, db, logger);
-  registerOnboardingHandlers(bot, db, logger);
+  registerOnboardingHandlers(bot, db, logger, topicGateway);
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');

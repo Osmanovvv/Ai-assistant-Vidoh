@@ -60,6 +60,14 @@ export const reserved: TextProfile = {
     nothingToParse: 'Я здесь. Расскажешь, что в голове?',
   },
 
+  summary: {
+    header: (topic) => `${topic} — что здесь есть:`,
+    line: (text) => `— ${text}`,
+    lineWithDate: (text, date) => `— ${text} · ${date}`,
+    empty: 'Пока пусто.',
+    more: (count) => `И ещё ${String(count)}.`,
+  },
+
   onboarding: {
     nameConfirm: (name) => `Ещё пара вопросов, чтобы я лучше раскладывала. Называть тебя ${name}?`,
     buttonNameYes: 'Да',

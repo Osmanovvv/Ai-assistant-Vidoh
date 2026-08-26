@@ -95,6 +95,21 @@ export interface TextProfile {
   };
 
   /**
+   * Закреплённая сводка темы (§8.2 ТЗ, задача 2.16).
+   *
+   * Одно сообщение на ветку, обновляется редактированием. Вопросов в нём
+   * нет вовсе: сводка — это список, а не разговор.
+   */
+  readonly summary: {
+    readonly header: (topic: string) => string;
+    readonly line: (text: string) => string;
+    readonly lineWithDate: (text: string, date: string) => string;
+    readonly empty: string;
+    /** Сколько записей не показано: сводка не растёт бесконечно. */
+    readonly more: (count: number) => string;
+  };
+
+  /**
    * Онбординг (§12.2 ТЗ, задача 2.13).
    *
    * Идёт после первой выгрузки, не до неё, и весь состоит из кнопок:

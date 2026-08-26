@@ -27,7 +27,10 @@ import {
 } from '../presenter/status.service.js';
 import { routeIntents, type Segment } from '../router/router.service.js';
 import { detectByMarkers, detectCrisis, type CrisisOutcome } from '../safety/crisis.js';
+import type { TopicGateway } from '../topics/gateway.js';
+import { refreshSummaries } from '../topics/summary.service.js';
 import { topicsFor } from '../topics/topics.repo.js';
+import { topicByThread } from '../topics/topics.service.js';
 import { lowerEnergy, outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
@@ -89,6 +92,13 @@ export interface DumpHandlerDeps {
    * §12.2 привязывает его к первой выгрузке: спрашивать до неё запрещено.
    */
   readonly onboarding?: QuestionSender | undefined;
+  /**
+   * Ветки личного чата (§8, задачи 2.15 и 2.16).
+   *
+   * Без него разбор работает целиком, только сводки тем не обновляются —
+   * это и есть плоский режим §8.2. Данные от этого не страдают.
+   */
+  readonly topics?: TopicGateway | undefined;
   readonly logger?: Logger | undefined;
   readonly now?: (() => Date) | undefined;
 }
@@ -170,7 +180,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
   return async (db, batch) => {
     const now = clock();
-    const target = deps.sender ? await statusTarget(db, batch.id) : undefined;
+
+    // Считается всегда, а не только когда есть кому отвечать: из него
+    // берётся и ветка, в которой человек написал, и чат для сводок тем.
+    const target = await statusTarget(db, batch.id);
     const context = await outputContextOf(db, batch.userId);
     const texts = textsFor(context.textProfile);
     const ai = { ...deps.ai, db };
@@ -290,10 +303,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Классификация ───────────────────────────────────────────────────
     const topics = await topicsFor(db, batch.userId);
+
+    /**
+     * §8.1: сообщение внутри ветки обрабатывается в контексте её темы.
+     *
+     * Тема ветки становится темой по умолчанию — то есть тем, куда уйдёт
+     * запись, не попавшая ни в одну тему явно. Женщина, написавшая в
+     * ветку «здоровье», не должна получать своё дело в «личном» только
+     * потому, что не назвала сферу словами.
+     */
+    const threadTopic =
+      target?.threadId === undefined
+        ? undefined
+        : await topicByThread(db, batch.userId, target.threadId);
+
     const classified = await classifyUnits(ai, {
       units: extracted.units,
       topics: topics.names,
-      defaultTopic: topics.defaultName,
+      defaultTopic: threadTopic?.name ?? topics.defaultName,
       timeZone: context.timeZone,
       now,
       userId: batch.userId,
@@ -314,6 +341,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // ── Сохранение ──────────────────────────────────────────────────────
     const toSave = await withEmbeddings(db, deps, batch, classified.items);
     await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
+
+    /**
+     * §8.2: сводка темы обновляется правкой закреплённого сообщения.
+     *
+     * Обновляются только затронутые темы, а не все: правка сводки — это
+     * обращение к Telegram, и трогать девять веток из-за одной новой
+     * записи значит без нужды упираться в ограничение частоты.
+     *
+     * Отказ здесь разбор не роняет: сводка — удобство, записи — суть.
+     */
+    if (deps.topics && target) {
+      await refreshSummaries(
+        { db, gateway: deps.topics, logger: deps.logger },
+        {
+          userId: batch.userId,
+          chatId: target.chatId,
+          topicNames: toSave.map((item) => item.topic),
+          timeZone: context.timeZone,
+          profile: context.textProfile,
+        },
+      );
+    }
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(classified.items);
