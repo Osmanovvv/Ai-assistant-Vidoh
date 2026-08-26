@@ -34,6 +34,7 @@ import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
 import { createDumpHandler } from './modules/pipeline/dump.handler.js';
+import { limitFromEnv } from './modules/metering/limits.js';
 import { downloadTelegramFile } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
 import { PromptRegistry } from './modules/ai/prompts/registry.js';
@@ -164,6 +165,8 @@ async function main(): Promise<void> {
     // отдельный на каждую выгрузку сводил бы кэш к нулю.
     ai: { provider: llm, prompts, logger },
     aiLight: { provider: llmLight, prompts, logger },
+    // §10.5: мягкий лимит расхода. Не задан — ограничение выключено.
+    spendLimit: limitFromEnv(env.SPEND_LIMIT_RUB),
     embedder,
     logger,
     sender,

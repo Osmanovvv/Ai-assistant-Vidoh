@@ -4,6 +4,7 @@ import type { Batch, EnergyLevelValue } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
+import { decideDegradation, type SpendLimit } from '../metering/limits.js';
 import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.service.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
@@ -79,6 +80,14 @@ export interface DumpHandlerDeps {
    * недостоверной. Если не задана, маршрутизатор идёт на полной.
    */
   readonly aiLight?: Omit<AiClientDeps, 'db'> | undefined;
+  /**
+   * Мягкий лимит расхода на пользователя (§10.5 ТЗ, задача 2.22).
+   *
+   * Задан — и при превышении извлечение с классификацией идут на лёгкой
+   * модели. Человек этого не замечает (§17): ни отказа, ни
+   * предупреждения, ответ приходит как обычно.
+   */
+  readonly spendLimit?: SpendLimit | undefined;
   /**
    * Провайдер смысловых представлений. Без него записи сохраняются без
    * векторов: разбор дороже поиска, и терять его из-за эмбеддингов нельзя.
@@ -231,6 +240,27 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     if (await stopOnCrisis(detectByMarkers(combined))) return;
 
+    /**
+     * §10.5: мягкий лимит расхода (задача 2.22).
+     *
+     * Решение принимается один раз на выгрузку, а не перед каждым
+     * вызовом: расход внутри одной выгрузки лимит всё равно не догонит,
+     * а разбор, у которого извлечение прошло на полной модели, а
+     * классификация на лёгкой, объяснить в отчёте будет нечем.
+     *
+     * Считается после кризисного контура: на кризисе разбора нет вовсе,
+     * и лишний запрос к учёту там не нужен.
+     */
+    const limited = await decideDegradation(db, {
+      userId: batch.userId,
+      now,
+      limit: deps.spendLimit,
+      logger: deps.logger,
+    });
+
+    // Полная модель или лёгкая — решается здесь и дальше не меняется.
+    const heavy = limited.degrade ? aiLight : ai;
+
     // ── Намерения ───────────────────────────────────────────────────────
     const routed = await routeIntents(aiLight, {
       input: combined,
@@ -279,7 +309,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const dumpText = parsed.map((segment) => segment.text).join('\n');
 
     // ── Единицы ─────────────────────────────────────────────────────────
-    const extracted = await extractUnits(ai, {
+    const extracted = await extractUnits(heavy, {
       input: dumpText,
       userId: batch.userId,
       batchId: batch.id,
@@ -317,7 +347,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         ? undefined
         : await topicByThread(db, batch.userId, target.threadId);
 
-    const classified = await classifyUnits(ai, {
+    const classified = await classifyUnits(heavy, {
       units: extracted.units,
       topics: topics.names,
       defaultTopic: threadTopic?.name ?? topics.defaultName,
