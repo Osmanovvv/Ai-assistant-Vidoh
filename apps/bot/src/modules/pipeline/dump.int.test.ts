@@ -33,6 +33,8 @@ import {
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
+import { FakeTopicGateway } from '../topics/fake-gateway.js';
+import { ensureThread } from '../topics/topics.service.js';
 import { STEP } from '../onboarding/onboarding.service.js';
 import { countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
@@ -169,6 +171,7 @@ async function seedPrompts(): Promise<PromptRegistry> {
 
 interface HandlerOptions {
   readonly speech: MockSpeechProvider;
+  readonly topics?: FakeTopicGateway | undefined;
   readonly llm?: MockLlmProvider;
   readonly prompts: PromptRegistry;
   readonly sender?: StatusSender | undefined;
@@ -203,6 +206,7 @@ function handler(options: HandlerOptions) {
     ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
     ...(options.sender === undefined ? {} : { sender: options.sender }),
     ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
+    ...(options.topics === undefined ? {} : { topics: options.topics }),
     now: () => options.now ?? at(60_000),
   });
 }
@@ -253,6 +257,8 @@ interface Incoming {
   readonly text?: string;
   readonly offsetMs: number;
   readonly transcript?: string;
+  /** Сообщение пришло внутри ветки темы (§8.1). */
+  readonly threadId?: number | undefined;
 }
 
 /** Кладёт сообщения в одну выгрузку и закрывает её по тишине. */
@@ -270,6 +276,7 @@ async function queuedBatchOf(messages: readonly Incoming[]): Promise<string> {
         tgMessageId: seq,
         kind: message.kind,
         text: message.text ?? null,
+        tgThreadId: message.threadId ?? null,
         fileId: message.kind === 'voice' ? `voice-${String(seq)}` : null,
         audioDurationSec: message.kind === 'voice' ? 2 : null,
         transcript: message.transcript ?? null,
@@ -776,6 +783,151 @@ describe('онбординг после первой выгрузки', () => {
     expect(classifierInput).toContain('дети');
     expect(classifierInput).toContain('бизнес');
     expect(classifierInput).not.toContain('покупки');
+  });
+});
+
+describe('ветки тем в разборе', () => {
+  it('сообщение внутри ветки разбирается в контексте её темы (§8.1)', async () => {
+    // Женщина, написавшая в ветку «здоровье», не должна получать дело в
+    // «личном» только потому, что не назвала сферу словами.
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'личное', sortOrder: 1, isDefault: true },
+      ]);
+
+    const [health] = await testDb().select().from(topics).where(eq(topics.name, 'здоровье'));
+    const thread = await ensureThread(
+      { db: testDb(), gateway },
+      { topicId: health!.id, chatId: 700 },
+    );
+
+    await queuedBatchOf([{ kind: 'text', text: 'дело', offsetMs: 0, threadId: thread.threadId }]);
+
+    // Модель отдаёт тему, которой у человека нет: код обязан заменить её
+    // темой по умолчанию, а по умолчанию здесь — тема ветки.
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'дело',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'выдуманная',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+          },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const [saved] = await testDb().select().from(items).where(eq(items.isDraft, false));
+    expect(saved?.topic).toBe('здоровье');
+  });
+
+  it('после разбора обновляются сводки затронутых тем, и только они', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'покупки', sortOrder: 1 },
+        { userId, name: 'личное', sortOrder: 2, isDefault: true },
+      ]);
+
+    await queuedBatchOf([{ kind: 'text', text: 'к врачу', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'к врачу',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'здоровье',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+          },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, topics: gateway }),
+      },
+      userId,
+    );
+
+    // Затронута одна тема — значит и ветка создана одна, и сводка одна.
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
+    expect(gateway.sent).toHaveLength(1);
+    expect(gateway.sent[0]?.text).toContain('к врачу');
+  });
+
+  it('без шлюза тем разбор работает целиком: плоский режим', async () => {
+    // §8.2: плоский режим резервный, но он должен работать.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'к врачу', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(await testDb().select().from(items)).toHaveLength(1);
+    expect(all.at(-1)).toContain('к врачу');
+  });
+
+  it('пропавшая ветка не роняет разбор', async () => {
+    // §17: человек удалил ветку руками, пока шла обработка.
+    const prompts = await seedPrompts();
+
+    await testDb()
+      .insert(topics)
+      .values([{ userId, name: 'личное', sortOrder: 0, isDefault: true, tgThreadId: 4242 }]);
+
+    await queuedBatchOf([{ kind: 'text', text: 'дело', offsetMs: 0 }]);
+    const gone = new FakeTopicGateway({ goneThreads: new Set([4242]) });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, topics: gone }),
+      },
+      userId,
+    );
+
+    // Запись сохранена, а ветка забыта — пересоздастся при надобности.
+    expect(await testDb().select().from(items)).toHaveLength(1);
+    const [topic] = await testDb().select().from(topics).where(eq(topics.name, 'личное'));
+    expect(topic?.tgThreadId).toBeNull();
+    expect(topic?.isArchived).toBe(false);
   });
 });
 

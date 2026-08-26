@@ -21,7 +21,10 @@ import {
   type OnboardingState,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
-import { topicsFor } from '../../modules/topics/topics.repo.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { refreshSummaries } from '../../modules/topics/summary.service.js';
+import { listTopics, topicsFor } from '../../modules/topics/topics.repo.js';
+import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 
 /**
@@ -66,7 +69,17 @@ function labelsOf(ctx: CallbackQueryContext<Context>): string[] {
     .map((button) => button.text);
 }
 
-export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logger): void {
+export function registerOnboardingHandlers(
+  bot: Bot,
+  db: Database,
+  logger: Logger,
+  /**
+   * Ветки личного чата (§8, задачи 2.15 и 2.16). Без него онбординг
+   * работает целиком — просто веток и сводок не появится, а это и есть
+   * плоский режим §8.2.
+   */
+  gateway?: TopicGateway,
+): void {
   async function show(
     ctx: CallbackQueryContext<Context>,
     question: Question | undefined,
@@ -281,8 +294,33 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
       logger.error({ err: error, userId }, 'Не удалось перенести записи в темы человека');
     }
 
+    /**
+     * §8.2 и §12.2: по ответам человека появляются ветки и закреплённые
+     * сводки в них. Делается здесь, а не отдельным обходом: сводка сама
+     * создаёт ветку, если её нет.
+     *
+     * Пустая тема тоже получает ветку со сводкой «пока пусто» — человек
+     * должен увидеть свою структуру целиком, а не только те сферы, куда
+     * уже что-то попало.
+     */
+    let summaries = 0;
+    const chatId = ctx.chat?.id;
+    if (gateway && chatId !== undefined) {
+      const context = await outputContextOf(db, userId);
+      summaries = await refreshSummaries(
+        { db, gateway, logger },
+        {
+          userId,
+          chatId,
+          topicNames: (await listTopics(db, userId)).map((topic) => topic.name),
+          timeZone: context.timeZone,
+          profile: context.textProfile,
+        },
+      );
+    }
+
     logger.info(
-      { userId, created: result.created, fallback: result.fallback, moved, orphaned },
+      { userId, created: result.created, fallback: result.fallback, moved, orphaned, summaries },
       'Онбординг пройден',
     );
 

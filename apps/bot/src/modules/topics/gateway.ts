@@ -1,0 +1,148 @@
+import { GrammyError, type Api } from 'grammy';
+
+/**
+ * Ветки Telegram за интерфейсом (задача 2.15).
+ *
+ * Отдельным интерфейсом по той же причине, что провайдер расшифровки и
+ * отправитель статуса: тесты не должны ходить в Telegram. Проба 0.3
+ * подтвердила, что все нужные методы в личном чате работают, — здесь
+ * остаётся только наш код, и проверять надо его.
+ */
+
+export interface CreateThreadParams {
+  readonly chatId: number;
+  readonly name: string;
+  /** `icon_custom_emoji_id` из набора, который отдаёт Telegram. */
+  readonly iconEmojiId?: string | undefined;
+}
+
+export interface TopicGateway {
+  createThread(params: CreateThreadParams): Promise<number>;
+  renameThread(params: {
+    readonly chatId: number;
+    readonly threadId: number;
+    readonly name: string;
+  }): Promise<void>;
+
+  /**
+   * Допустимые иконки: эмодзи → идентификатор.
+   *
+   * Произвольный эмодзи Telegram не принимает — проба 0.3 показала набор
+   * из 112 штук. Поэтому в коде живёт соответствие «сфера жизни → эмодзи»,
+   * а идентификатор ищется по нему здесь: набор Telegram может смениться,
+   * а символ останется символом.
+   */
+  allowedIcons(): Promise<ReadonlyMap<string, string>>;
+
+  send(params: {
+    readonly chatId: number;
+    readonly threadId?: number | undefined;
+    readonly text: string;
+  }): Promise<number>;
+
+  edit(params: {
+    readonly chatId: number;
+    readonly messageId: number;
+    readonly text: string;
+  }): Promise<void>;
+
+  pin(params: { readonly chatId: number; readonly messageId: number }): Promise<void>;
+}
+
+/**
+ * Ветка пропала: человек удалил её руками.
+ *
+ * §17 ТЗ называет этот сценарий, и он вполне житейский — свернуть чат,
+ * почистить лишнее. Отличать его от прочих отказов обязательно: на этот
+ * надо пересоздать ветку, на остальные — просто отступить.
+ */
+const THREAD_GONE_DESCRIPTIONS = [
+  'message thread not found',
+  'topic_deleted',
+  'topic deleted',
+  'topic_closed',
+  'thread not found',
+];
+
+export function isThreadGone(error: unknown): boolean {
+  if (!(error instanceof GrammyError)) return false;
+  if (error.error_code !== 400) return false;
+
+  const description = error.description.toLowerCase();
+  return THREAD_GONE_DESCRIPTIONS.some((known) => description.includes(known));
+}
+
+/**
+ * Режим тем выключен у бота целиком.
+ *
+ * §8.2 ТЗ требует плоского режима как запасного. Признак приходит из
+ * `getMe()`, но настройку в @BotFather можно снять на работающем боте —
+ * тогда правду скажет только отказ от API.
+ */
+const TOPICS_OFF_DESCRIPTIONS = [
+  'topics are not enabled',
+  'the chat is not a forum',
+  'not enough rights to manage topics',
+  'method is available only for forum',
+];
+
+export function isTopicsUnavailable(error: unknown): boolean {
+  if (!(error instanceof GrammyError)) return false;
+  if (error.error_code !== 400 && error.error_code !== 403) return false;
+
+  const description = error.description.toLowerCase();
+  return TOPICS_OFF_DESCRIPTIONS.some((known) => description.includes(known));
+}
+
+export function createTopicGateway(api: Api): TopicGateway {
+  /** Набор иконок запрашивается один раз на процесс: он не меняется. */
+  let icons: ReadonlyMap<string, string> | undefined;
+
+  return {
+    async createThread({ chatId, name, iconEmojiId }) {
+      const created = await api.createForumTopic(chatId, name, {
+        ...(iconEmojiId === undefined ? {} : { icon_custom_emoji_id: iconEmojiId }),
+      });
+      return created.message_thread_id;
+    },
+
+    async renameThread({ chatId, threadId, name }) {
+      await api.editForumTopic(chatId, threadId, { name });
+    },
+
+    async allowedIcons() {
+      if (icons) return icons;
+
+      const stickers = await api.getForumTopicIconStickers();
+      const map = new Map<string, string>();
+
+      for (const sticker of stickers) {
+        // У иконки есть и эмодзи, и идентификатор; нужны оба, иначе
+        // сопоставить не по чему.
+        if (sticker.emoji !== undefined && sticker.custom_emoji_id !== undefined) {
+          map.set(sticker.emoji, sticker.custom_emoji_id);
+        }
+      }
+
+      icons = map;
+      return map;
+    },
+
+    async send({ chatId, threadId, text }) {
+      const message = await api.sendMessage(chatId, text, {
+        ...(threadId === undefined ? {} : { message_thread_id: threadId }),
+      });
+      return message.message_id;
+    },
+
+    async edit({ chatId, messageId, text }) {
+      await api.editMessageText(chatId, messageId, text);
+    },
+
+    async pin({ chatId, messageId }) {
+      // Без оповещения: закреплённая сводка обновляется часто, и звать
+      // человека к каждому обновлению — раздражать его.
+      await api.pinChatMessage(chatId, messageId, { disable_notification: true });
+    },
+  };
+}
