@@ -14,6 +14,7 @@ import type { BotCommand } from 'grammy/types';
  */
 export const BOT_COMMANDS: readonly BotCommand[] = [
   { command: 'start', description: 'с чего начать' },
+  { command: 'menu', description: 'меню' },
   { command: 'export_my_data', description: 'выгрузить мои данные' },
   { command: 'delete_my_data', description: 'удалить все мои данные' },
 ];

@@ -95,6 +95,56 @@ export interface TextProfile {
   };
 
   /**
+   * Меню и карточка записи (§12.1, §12.2 ТЗ, задача 2.18).
+   *
+   * Пунктов меньше, чем в §12.1: показывать кнопку, за которой ничего
+   * нет, хуже, чем не показывать её вовсе. «Проекты», «Настройки» и
+   * «Подписка» появятся вместе со своими задачами.
+   */
+  readonly menu: {
+    readonly title: string;
+    readonly buttonVoice: string;
+    readonly buttonText: string;
+    readonly buttonAll: string;
+    readonly buttonToday: string;
+    readonly buttonHelp: string;
+    readonly buttonDeleteData: string;
+    readonly buttonBack: string;
+
+    readonly topicsTitle: string;
+    readonly noTopics: string;
+    readonly todayTitle: string;
+    readonly todayEmpty: string;
+    readonly help: string;
+  };
+
+  /** Карточка записи по §12.2: заголовок, тема, срок, статус, кнопки. */
+  readonly card: {
+    readonly topicLabel: string;
+    readonly deadlineLabel: string;
+    /** Срок с неточной датой: «на следующей неделе» — это не число. */
+    readonly deadlineApprox: (date: string) => string;
+    readonly statusLabel: string;
+    readonly statusName: (status: string) => string;
+    readonly noDeadline: string;
+
+    readonly buttonDone: string;
+    readonly buttonSnooze: string;
+    readonly buttonEdit: string;
+    readonly buttonDelete: string;
+
+    readonly done: string;
+    readonly snoozed: string;
+    readonly deleted: string;
+    /**
+     * Правка голосом, а не кнопками: §7 ТЗ строит её на речи, и учить
+     * человека формам вместо разговора значит идти против продукта.
+     */
+    readonly editHint: string;
+    readonly gone: string;
+  };
+
+  /**
    * Закреплённая сводка темы (§8.2 ТЗ, задача 2.16).
    *
    * Одно сообщение на ветку, обновляется редактированием. Вопросов в нём
