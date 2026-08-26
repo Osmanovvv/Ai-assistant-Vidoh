@@ -1,3 +1,5 @@
+import type { Logger } from 'pino';
+
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type {
   ClassifiedItems,
@@ -108,6 +110,137 @@ function buildInput(params: ClassifyParams, now: Date): string {
   ].join('\n');
 }
 
+/** Что нужно поправкам, кроме самого ответа модели. */
+export interface CorrectionContext {
+  readonly topics: readonly string[];
+  readonly defaultTopic: string;
+  readonly timeZone: string;
+  readonly now: Date;
+  /** Идёт в предупреждения: без версии непонятно, какой промпт виноват. */
+  readonly promptVersion: string;
+  readonly logger?: Logger | undefined;
+}
+
+/**
+ * Поправки за моделью — отдельной функцией, а не внутри вызова.
+ *
+ * Понадобилось на 2.20: §10.1 разрешает объединить извлечение и
+ * классификацию в один вызов, но сравнивать пути можно только при
+ * одинаковых правилах после модели. Правила §6.2, §6.3, §5.1 и §6.4 не
+ * зависят от того, одним вызовом получен ответ или двумя, — значит и код
+ * не должен от этого зависеть.
+ */
+export function correctItems(
+  raw: ClassifiedItems,
+  ctx: CorrectionContext,
+): { readonly items: readonly ClassifiedItem[]; readonly corrections: Corrections } {
+  const { now, promptVersion, logger } = ctx;
+
+  // Сверка тем идёт по нормализованному виду, а возвращается название из
+  // списка человека: в базе должно лежать ровно то, что он видит.
+  const byNormalized = new Map(ctx.topics.map((topic) => [normalizeTopic(topic), topic]));
+
+  const corrections: { -readonly [K in keyof Corrections]: Corrections[K] } = {
+    priority: 0,
+    topic: 0,
+    deadline: 0,
+    project: 0,
+    recurrence: 0,
+  };
+
+  const items: ClassifiedItem[] = [];
+
+  for (const item of raw.items) {
+    const type = item.type;
+
+    // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не
+    // попадают. Это то самое правило, которое модели нарушают чаще всего.
+    let priority: Priority = item.priority;
+    if (!isActionable(type) && priority !== 'NONE') {
+      priority = 'NONE';
+      corrections.priority++;
+    }
+
+    // §5.1 ТЗ: проект — поле у TASK. У остальных типов оно не значит ничего.
+    let isProject = item.isProject;
+    if (isProject && !isActionable(type)) {
+      isProject = false;
+      corrections.project++;
+    }
+
+    // §6.4 ТЗ: создавать темы без спроса запрещено.
+    const topic = byNormalized.get(normalizeTopic(item.topic));
+    if (topic === undefined) corrections.topic++;
+
+    const accuracy: DeadlineAccuracy = item.deadlineAccuracy;
+    const resolved = resolveDeadline(
+      { deadline: item.deadline, accuracy },
+      { now, timeZone: ctx.timeZone },
+    );
+
+    let deadline: ResolvedDeadline | undefined;
+    if (resolved.ok) {
+      deadline = resolved.deadline;
+    } else {
+      corrections.deadline++;
+      logger?.warn(
+        { promptVersion, reason: resolved.reason },
+        'Срок не прошёл проверку, запись сохраняется без срока',
+      );
+    }
+
+    /**
+     * §5.1 и задача 2.18а: регулярность — поле у `TASK`. У желания,
+     * идеи, факта и эмоции она не значит ничего, и база это же запрещает
+     * ограничением — но полагаться на то, что до базы дойдёт правильное,
+     * нельзя: отказ вставки уронил бы всю выгрузку из-за одной записи.
+     */
+    let recurrence: ResolvedRecurrence | undefined;
+    if (isActionable(type)) {
+      const resolvedRecurrence = resolveRecurrence({
+        kind: item.recurrenceKind,
+        interval: item.recurrenceInterval,
+        text: item.recurrenceText,
+        deadline: item.deadline,
+      });
+
+      if (resolvedRecurrence.text !== undefined) recurrence = resolvedRecurrence;
+
+      if (resolvedRecurrence.problem !== undefined) {
+        corrections.recurrence++;
+        logger?.warn(
+          { promptVersion, reason: resolvedRecurrence.problem },
+          'Регулярность названа, но правило не получилось — сохраняю фразой',
+        );
+      }
+    } else if (item.recurrenceKind !== 'none') {
+      corrections.recurrence++;
+    }
+
+    items.push({
+      text: item.text,
+      type,
+      priority,
+      topic: topic ?? ctx.defaultTopic,
+      isProject,
+      deadline,
+      recurrence,
+    });
+  }
+
+  const total =
+    corrections.priority +
+    corrections.topic +
+    corrections.deadline +
+    corrections.project +
+    corrections.recurrence;
+  if (total > 0) {
+    logger?.info({ promptVersion, ...corrections }, 'Ответ классификации пришлось поправить');
+  }
+
+  return { items, corrections };
+}
+
 export async function classifyUnits(
   deps: AiClientDeps,
   params: ClassifyParams,
@@ -135,110 +268,14 @@ export async function classifyUnits(
     };
   }
 
-  // Сверка тем идёт по нормализованному виду, а возвращается название из
-  // списка человека: в базе должно лежать ровно то, что он видит.
-  const byNormalized = new Map(params.topics.map((topic) => [normalizeTopic(topic), topic]));
-
-  const corrections: { -readonly [K in keyof Corrections]: Corrections[K] } = {
-    priority: 0,
-    topic: 0,
-    deadline: 0,
-    project: 0,
-    recurrence: 0,
-  };
-
-  const items: ClassifiedItem[] = [];
-
-  for (const item of outcome.value.items) {
-    const type = item.type;
-
-    // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не
-    // попадают. Это то самое правило, которое модели нарушают чаще всего.
-    let priority: Priority = item.priority;
-    if (!isActionable(type) && priority !== 'NONE') {
-      priority = 'NONE';
-      corrections.priority++;
-    }
-
-    // §5.1 ТЗ: проект — поле у TASK. У остальных типов оно не значит ничего.
-    let isProject = item.isProject;
-    if (isProject && !isActionable(type)) {
-      isProject = false;
-      corrections.project++;
-    }
-
-    // §6.4 ТЗ: создавать темы без спроса запрещено.
-    const topic = byNormalized.get(normalizeTopic(item.topic));
-    if (topic === undefined) corrections.topic++;
-
-    const accuracy: DeadlineAccuracy = item.deadlineAccuracy;
-    const resolved = resolveDeadline(
-      { deadline: item.deadline, accuracy },
-      { now, timeZone: params.timeZone },
-    );
-
-    let deadline: ResolvedDeadline | undefined;
-    if (resolved.ok) {
-      deadline = resolved.deadline;
-    } else {
-      corrections.deadline++;
-      deps.logger?.warn(
-        { promptVersion: outcome.promptVersion, reason: resolved.reason },
-        'Срок не прошёл проверку, запись сохраняется без срока',
-      );
-    }
-
-    /**
-     * §5.1 и задача 2.18а: регулярность — поле у `TASK`. У желания,
-     * идеи, факта и эмоции она не значит ничего, и база это же запрещает
-     * ограничением — но полагаться на то, что до базы дойдёт правильное,
-     * нельзя: отказ вставки уронил бы всю выгрузку из-за одной записи.
-     */
-    let recurrence: ResolvedRecurrence | undefined;
-    if (isActionable(type)) {
-      const resolvedRecurrence = resolveRecurrence({
-        kind: item.recurrenceKind,
-        interval: item.recurrenceInterval,
-        text: item.recurrenceText,
-        deadline: item.deadline,
-      });
-
-      if (resolvedRecurrence.text !== undefined) recurrence = resolvedRecurrence;
-
-      if (resolvedRecurrence.problem !== undefined) {
-        corrections.recurrence++;
-        deps.logger?.warn(
-          { promptVersion: outcome.promptVersion, reason: resolvedRecurrence.problem },
-          'Регулярность названа, но правило не получилось — сохраняю фразой',
-        );
-      }
-    } else if (item.recurrenceKind !== 'none') {
-      corrections.recurrence++;
-    }
-
-    items.push({
-      text: item.text,
-      type,
-      priority,
-      topic: topic ?? params.defaultTopic,
-      isProject,
-      deadline,
-      recurrence,
-    });
-  }
-
-  const total =
-    corrections.priority +
-    corrections.topic +
-    corrections.deadline +
-    corrections.project +
-    corrections.recurrence;
-  if (total > 0) {
-    deps.logger?.info(
-      { promptVersion: outcome.promptVersion, ...corrections },
-      'Ответ классификации пришлось поправить',
-    );
-  }
+  const { items, corrections } = correctItems(outcome.value, {
+    topics: params.topics,
+    defaultTopic: params.defaultTopic,
+    timeZone: params.timeZone,
+    now,
+    promptVersion: outcome.promptVersion,
+    logger: deps.logger,
+  });
 
   return { ok: true, items, promptVersion: outcome.promptVersion, corrections };
 }
