@@ -2,6 +2,7 @@ import { InlineKeyboard, type Bot, type CallbackQueryContext, type Context } fro
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
+import { moveItemsToOwnTopics, recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
   ACTION,
   chosenFromLabels,
@@ -20,6 +21,7 @@ import {
   type OnboardingState,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
+import { topicsFor } from '../../modules/topics/topics.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 
 /**
@@ -38,6 +40,12 @@ import { findByTgId } from '../../modules/users/users.repo.js';
  * текущим шагом такое нажатие вернуло бы человека к вопросу про утро и
  * заодно перезаписало бы уже выбранный пояс. Поэтому каждый обработчик
  * начинается с проверки: тот ли сейчас шаг.
+ *
+ * **Два ответа тянут за собой домиграцию первой выгрузки** (задача 2.14).
+ * Пояс — пересчёт сроков, сферы жизни — перенос записей в темы человека.
+ * Делается сразу на ответе, а не отложенно: человек в этот момент как раз
+ * смотрит на бота, и если что-то пойдёт не так, это будет видно сейчас,
+ * а не через неделю в виде напоминания не в тот день.
  */
 
 function keyboardOf(question: Question): InlineKeyboard {
@@ -90,6 +98,32 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
     return { userId: user.id, state };
   }
 
+  /**
+   * Пересчёт сроков после первого подтверждения пояса (задача 2.14).
+   *
+   * Отказ пересчёта не должен ронять онбординг: человек уже ответил, его
+   * ответ сохранён, и следующий вопрос он получить обязан. Кривые сроки
+   * хуже, чем правильные, но лучше, чем застрявший опрос.
+   */
+  async function backfillDeadlines(
+    userId: string,
+    change: { from: string; to: string; firstConfirmation: boolean },
+  ): Promise<void> {
+    if (!change.firstConfirmation || change.from === change.to) return;
+
+    try {
+      const result = await recalcDeadlines(db, userId, change);
+      if (result.recalculated > 0) {
+        logger.info(
+          { userId, ...change, ...result },
+          'Сроки первой выгрузки пересчитаны под настоящий пояс',
+        );
+      }
+    } catch (error) {
+      logger.error({ err: error, userId, ...change }, 'Не удалось пересчитать сроки');
+    }
+  }
+
   async function advance(
     ctx: CallbackQueryContext<Context>,
     active: { userId: string; state: OnboardingState },
@@ -120,7 +154,11 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
     const active = await acting(ctx.from.id, STEP.timezone);
     if (!active) return;
 
-    await setTimezone(db, active.userId, 'Europe/Moscow');
+    // Пояс тот же, что действовал по умолчанию: пересчитывать нечего,
+    // но признак подтверждения всё равно ставится — он нужен 2.14, чтобы
+    // не пересчитывать сроки при переезде в настройках.
+    const change = await setTimezone(db, active.userId, 'Europe/Moscow');
+    await backfillDeadlines(active.userId, change);
     await advance(ctx, active, STEP.morning);
   });
 
@@ -148,7 +186,8 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
       return;
     }
 
-    await setTimezone(db, active.userId, zone);
+    const change = await setTimezone(db, active.userId, zone);
+    await backfillDeadlines(active.userId, change);
     await advance(ctx, active, STEP.morning);
   });
 
@@ -223,8 +262,27 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
     const result = await createChosenTopics(db, userId, chosen);
     await finish(db, userId, new Date());
 
+    /**
+     * Задача 2.14: до этой минуты классификация шла по базовому набору
+     * §6.4. Записи в темах, которых человек не выбрал, переезжают в его
+     * тему по умолчанию — §6.4 предписывает ровно это.
+     *
+     * Отказ переноса не должен ронять завершение опроса: темы созданы,
+     * пояс подтверждён, и человек обязан увидеть, что всё закончилось.
+     * Запись не в той теме — беда меньшая, чем застрявший опрос.
+     */
+    let moved = 0;
+    let orphaned: readonly string[] = [];
+    try {
+      const retopic = await moveItemsToOwnTopics(db, userId, await topicsFor(db, userId));
+      moved = retopic.moved;
+      orphaned = retopic.orphaned;
+    } catch (error) {
+      logger.error({ err: error, userId }, 'Не удалось перенести записи в темы человека');
+    }
+
     logger.info(
-      { userId, created: result.created, fallback: result.fallback },
+      { userId, created: result.created, fallback: result.fallback, moved, orphaned },
       'Онбординг пройден',
     );
 
