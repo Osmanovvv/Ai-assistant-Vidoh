@@ -1,5 +1,5 @@
 import type { AiStage } from '../../db/schema.js';
-import type { Currency } from './pricing.js';
+import { callCost, PRICING, type Currency, type ModelPricing } from './pricing.js';
 
 /**
  * Себестоимость одной выгрузки (задача 2.21).
@@ -141,6 +141,46 @@ function emptyStage(): StageTotals {
     currency: undefined,
     unknownPrices: 0,
   };
+}
+
+/**
+ * Досчитывает стоимость вызовов, у которых её не было.
+ *
+ * Стоимость пишется в учёт в момент вызова — и это правильно для
+ * бухгалтерии: расход считается по цене, которая действовала тогда.
+ * Но себестоимость отвечает на другой вопрос — «сколько выгрузка стоит
+ * **сейчас**», и на него старые записи без цены отвечать мешают.
+ *
+ * Поэтому объёмы (токены и секунды) пересчитываются по нынешнему
+ * прайс-листу. Записи в базе не меняются: досчёт живёт только в отчёте.
+ * Модель, которой в прайсе нет, так и остаётся без цены.
+ */
+export function withCurrentPrices(
+  calls: readonly DumpCall[],
+  pricing: Readonly<Record<string, ModelPricing>> = PRICING,
+): { readonly calls: readonly DumpCall[]; readonly repriced: number } {
+  let repriced = 0;
+
+  const result = calls.map((call) => {
+    if (call.costMicros !== null) return call;
+
+    const cost = callCost(
+      call.model,
+      {
+        ...(call.tokensIn === null ? {} : { tokensIn: call.tokensIn }),
+        ...(call.tokensOut === null ? {} : { tokensOut: call.tokensOut }),
+        ...(call.audioSeconds === null ? {} : { audioSeconds: call.audioSeconds }),
+      },
+      pricing,
+    );
+
+    if (cost === null) return call;
+
+    repriced++;
+    return { ...call, costMicros: cost.micros, costCurrency: cost.currency };
+  });
+
+  return { calls: result, repriced };
 }
 
 export function collectCost(calls: readonly DumpCall[]): CostReport {

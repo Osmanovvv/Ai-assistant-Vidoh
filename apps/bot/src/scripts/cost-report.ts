@@ -2,7 +2,7 @@ import { gte } from 'drizzle-orm';
 
 import { aiCalls } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
-import { collectCost } from '../modules/metering/cost-per-dump.js';
+import { collectCost, withCurrentPrices } from '../modules/metering/cost-per-dump.js';
 import { formatCost, PRICING } from '../modules/metering/pricing.js';
 
 /**
@@ -47,10 +47,17 @@ try {
     .from(aiCalls)
     .where(since === undefined ? undefined : gte(aiCalls.createdAt, since));
 
-  // Колонка объявлена bigint в режиме числа, преобразование делает
-  // drizzle: микроединицы расхода в число двойной точности укладываются
-  // с запасом в четыре порядка.
-  const report = collectCost(rows);
+  /**
+   * Колонка объявлена bigint в режиме числа, преобразование делает
+   * drizzle: микроединицы расхода в число двойной точности укладываются
+   * с запасом в четыре порядка.
+   *
+   * Вызовы без стоимости досчитываются по нынешнему прайс-листу: в учёте
+   * лежит цена на момент вызова, а себестоимость отвечает на вопрос
+   * «сколько это стоит сейчас».
+   */
+  const { calls, repriced } = withCurrentPrices(rows);
+  const report = collectCost(calls);
 
   const number = (value: number): string => value.toFixed(0);
   const period = days === undefined ? 'весь учёт' : `последние ${String(days)} дн.`;
@@ -78,6 +85,12 @@ try {
       `  средняя:      ${money(report.cost.average)}`,
       `  90-й проц.:   ${money(report.cost.p90)}`,
       `  максимум:     ${money(report.cost.max)}`,
+    );
+  }
+
+  if (repriced > 0) {
+    lines.push(
+      `Досчитано по нынешнему прайсу: ${String(repriced)} вызовов из ${String(rows.length)}`,
     );
   }
 

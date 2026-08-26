@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { collectCost, type DumpCall } from './cost-per-dump.js';
+import { collectCost, withCurrentPrices, type DumpCall } from './cost-per-dump.js';
 
 /**
  * Себестоимость выгрузки (задача 2.21).
@@ -161,5 +161,65 @@ describe('разбивка по стадиям', () => {
 
     expect(report.byStage[0]?.micros).toBeUndefined();
     expect(report.byStage[0]?.unknownPrices).toBe(1);
+  });
+});
+
+describe('досчёт по нынешнему прайсу', () => {
+  /**
+   * В учёте лежит цена на момент вызова — это верно для бухгалтерии.
+   * Себестоимость отвечает на другой вопрос: сколько выгрузка стоит
+   * сейчас. Поэтому объёмы пересчитываются по нынешнему прайсу, а записи
+   * в базе не трогаются.
+   */
+
+  const pricing = {
+    модель: {
+      kind: 'tokens' as const,
+      currency: 'rub' as const,
+      inputPerMillion: 800,
+      outputPerMillion: 800,
+    },
+  };
+
+  it('вызов без цены получает её из прайса', () => {
+    const { calls, repriced } = withCurrentPrices(
+      [
+        call({
+          model: 'модель',
+          tokensIn: 1000,
+          tokensOut: 500,
+          costMicros: null,
+          costCurrency: null,
+        }),
+      ],
+      pricing,
+    );
+
+    expect(repriced).toBe(1);
+    // 1500 токенов по 800 ₽ за миллион — 1,2 ₽, то есть 1 200 000 микрорублей.
+    expect(calls[0]?.costMicros).toBe(1_200_000);
+    expect(calls[0]?.costCurrency).toBe('rub');
+  });
+
+  it('уже посчитанную цену не трогает', () => {
+    // Иначе прошлый расход задним числом пересчитался бы по новой цене,
+    // и учёт разошёлся бы с выставленным счётом.
+    const { calls, repriced } = withCurrentPrices(
+      [call({ model: 'модель', costMicros: 7, costCurrency: 'rub' })],
+      pricing,
+    );
+
+    expect(repriced).toBe(0);
+    expect(calls[0]?.costMicros).toBe(7);
+  });
+
+  it('модель не из прайса остаётся без цены', () => {
+    const { calls, repriced } = withCurrentPrices(
+      [call({ model: 'чужая', costMicros: null, costCurrency: null })],
+      pricing,
+    );
+
+    expect(repriced).toBe(0);
+    expect(calls[0]?.costMicros).toBeNull();
   });
 });
