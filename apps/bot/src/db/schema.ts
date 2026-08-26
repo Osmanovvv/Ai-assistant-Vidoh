@@ -102,6 +102,15 @@ export const userSettings = pgTable('user_settings', {
   eveningTime: time('evening_time').notNull().default('21:00'),
 
   notificationsOn: boolean('notifications_on').notNull().default(true),
+  /**
+   * Вечернее напоминание отдельным выключателем (задача 2.13).
+   *
+   * В §11 ТЗ выключатель один, общий. Этого мало: на онбординге человек
+   * может сказать «не надо вечером», и выключать ему заодно утренние —
+   * значит понять его неверно. Одна колонка сейчас дешевле, чем
+   * недоумение «я же просила только вечером не писать».
+   */
+  eveningOn: boolean('evening_on').notNull().default(true),
   quietHoursOn: boolean('quiet_hours_on').notNull().default(true),
 
   energyDefault: energyLevel('energy_default').notNull().default('normal'),
@@ -116,6 +125,16 @@ export const userSettings = pgTable('user_settings', {
    * не роняет ответ — берётся профиль по умолчанию.
    */
   textProfile: text('text_profile').notNull().default('reserved'),
+
+  /**
+   * Шаг онбординга (§12.2 ТЗ, задача 2.13). Ноль — не начинался.
+   *
+   * §12.2 требует, чтобы онбординг шёл после первой выгрузки, а не до
+   * неё, поэтому состояние нужно хранить: спросить сразу нельзя, а
+   * забывать, на чём остановились, нельзя тем более.
+   */
+  onboardingStep: integer('onboarding_step').notNull().default(0),
+  onboardingDoneAt: timestamp('onboarding_done_at', { withTimezone: true }),
 
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

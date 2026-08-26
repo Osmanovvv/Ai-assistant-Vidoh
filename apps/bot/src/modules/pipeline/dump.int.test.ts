@@ -12,6 +12,9 @@ import {
   items,
   messagesRaw,
   promptVersions,
+  topics,
+  users,
+  userSettings,
   userState,
 } from '../../db/schema.js';
 import { RedisLock } from '../../infra/lock.js';
@@ -30,8 +33,10 @@ import {
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
+import { STEP } from '../onboarding/onboarding.service.js';
 import { countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
+import type { QuestionSender } from '../presenter/telegram-sender.js';
 import { run } from '../speech/ffmpeg.js';
 import { MockSpeechProvider } from '../speech/providers/mock.js';
 import { PermanentSpeechError } from '../speech/providers/types.js';
@@ -168,7 +173,23 @@ interface HandlerOptions {
   readonly prompts: PromptRegistry;
   readonly sender?: StatusSender | undefined;
   readonly embedder?: MockEmbeddingProvider | undefined;
+  readonly onboarding?: QuestionSender | undefined;
   readonly now?: Date | undefined;
+}
+
+/** Считает заданные вопросы онбординга вместо обращений к Telegram. */
+function recordingQuestions(): { sender: QuestionSender; asked: string[] } {
+  const asked: string[] = [];
+
+  return {
+    asked,
+    sender: {
+      ask: ({ text }) => {
+        asked.push(text);
+        return Promise.resolve(2000 + asked.length);
+      },
+    },
+  };
 }
 
 function handler(options: HandlerOptions) {
@@ -181,6 +202,7 @@ function handler(options: HandlerOptions) {
     },
     ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
     ...(options.sender === undefined ? {} : { sender: options.sender }),
+    ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
     now: () => options.now ?? at(60_000),
   });
 }
@@ -616,6 +638,147 @@ describe('разбор', () => {
   });
 });
 
+describe('онбординг после первой выгрузки', () => {
+  it('первая разобранная выгрузка запускает опрос', async () => {
+    // §12.2: онбординг идёт после первой выгрузки, не до неё. До этого
+    // момента бот не задал ни одного вопроса — это проверяется в тестах
+    // обработчиков.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына к врачу', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const questions = recordingQuestions();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(questions.asked).toHaveLength(1);
+    expect(questions.asked[0]).toContain('Аня');
+
+    const [settings] = await testDb()
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.onboardingStep).toBe(STEP.name);
+
+    // Свой вопрос ответ при этом не задал: его место занял первый вопрос
+    // онбординга. Иначе у человека было бы два открытых вопроса подряд.
+    const reply = all.at(-1) ?? '';
+    expect(reply).toContain('записать сына к врачу');
+    expect(reply).not.toContain(defaultTexts.answer.question);
+    expect(countQuestions(reply)).toBe(0);
+  });
+
+  it('вторая выгрузка опрос не повторяет', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.done })
+      .where(eq(userSettings.userId, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const questions = recordingQuestions();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(questions.asked).toHaveLength(0);
+    // И свой вопрос вернулся на место.
+    expect(all.at(-1)).toContain(defaultTexts.answer.question);
+  });
+
+  it('выгрузка без разбора опрос не запускает', async () => {
+    // Спрашивать сферы жизни у человека, чья первая выгрузка оказалась
+    // «привет», рано.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const questions = recordingQuestions();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender: recordingSender().sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(questions.asked).toHaveLength(0);
+
+    const [settings] = await testDb()
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.onboardingStep).toBe(0);
+  });
+
+  it('темы человека берутся из его списка, а не из базового набора', async () => {
+    // §6.4: список тем создаётся онбордингом, и классификация обязана
+    // работать по нему.
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'дети', sortOrder: 0 },
+        { userId, name: 'бизнес', sortOrder: 1, isDefault: true },
+      ]);
+
+    await queuedBatchOf([{ kind: 'text', text: 'дело', offsetMs: 0 }]);
+    const llm = echoingLlm();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const classifierInput =
+      llm.requests.find((request) => request.prompt.includes(MARKERS.classifier))?.input ?? '';
+
+    expect(classifierInput).toContain('дети');
+    expect(classifierInput).toContain('бизнес');
+    expect(classifierInput).not.toContain('покупки');
+  });
+});
+
 describe('острый кризис', () => {
   it('маркер останавливает разбор до первого обращения к модели', async () => {
     // §13.7 и задача 2.12. Первый контур считается в коде, поэтому на
@@ -834,5 +997,73 @@ describe('ответ пользователю', () => {
     await expect(
       processUserBatches({ db: testDb(), lock, handleBatch: handler({ speech, prompts }) }, userId),
     ).resolves.toMatchObject({ processed: 1 });
+  });
+});
+
+describe('онбординг: края', () => {
+  it('без имени в профиле опрос начинается с часового пояса', async () => {
+    // У части аккаунтов Telegram имени нет: подтверждать нечего.
+    const prompts = await seedPrompts();
+    await testDb().update(users).set({ firstName: null }).where(eq(users.id, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'дело', offsetMs: 0 }]);
+    const questions = recordingQuestions();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender: recordingSender().sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(questions.asked).toEqual([defaultTexts.onboarding.timezoneMoscow]);
+
+    const [settings] = await testDb()
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.onboardingStep).toBe(STEP.timezone);
+  });
+
+  it('пока опрос не закончен, разбор своего вопроса не задаёт', async () => {
+    // Человек мог наговорить ещё раз, не ответив. Тот вопрос никуда не
+    // делся, и второй к нему добавлять нельзя (§13.9).
+    const prompts = await seedPrompts();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.morning })
+      .where(eq(userSettings.userId, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'ещё одно дело', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const questions = recordingQuestions();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply).toContain('ещё одно дело');
+    expect(countQuestions(reply)).toBe(0);
+
+    // И второй вопрос онбординга не задан: человек ещё на прежнем шаге.
+    expect(questions.asked).toHaveLength(0);
   });
 });

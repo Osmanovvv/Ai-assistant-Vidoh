@@ -79,6 +79,14 @@ export interface BuildReplyParams {
    * сокращается, а разговор закрывается вместо вопроса.
    */
   readonly tired: boolean;
+  /**
+   * Не задавать свой вопрос.
+   *
+   * Нужно одному случаю: сразу после этого ответа начинается онбординг
+   * (§12.2), и его первый вопрос станет единственным. Иначе у человека
+   * оказалось бы два открытых вопроса подряд, чего §13.9 не допускает.
+   */
+  readonly omitQuestion?: boolean | undefined;
 }
 
 /**
@@ -94,7 +102,7 @@ export function buildReply(params: BuildReplyParams): Reply {
     // Разбирать было что, но срочного нет. Вопрос «с чего начнём» здесь
     // бессмысленен, поэтому спрашиваем о другом — но всё равно один раз.
     lines.push('', hidden > 0 ? answer.nothingUrgent : answer.nothingHidden);
-    lines.push('', answer.questionEmotionOnly);
+    if (params.omitQuestion !== true) lines.push('', answer.questionEmotionOnly);
 
     return {
       text: lines.join('\n'),
@@ -124,7 +132,7 @@ export function buildReply(params: BuildReplyParams): Reply {
   }
 
   lines.push('', hidden > 0 ? answer.restSaved : answer.nothingHidden);
-  lines.push('', answer.question);
+  if (params.omitQuestion !== true) lines.push('', answer.question);
 
   return {
     text: lines.join('\n'),
@@ -227,6 +235,8 @@ export interface PresentParams {
   readonly profile?: string | null | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
+  /** См. `BuildReplyParams.omitQuestion`. */
+  readonly omitQuestion?: boolean | undefined;
 }
 
 export interface PresentResult {
@@ -314,6 +324,7 @@ export async function presentDump(
       actions: params.actions,
       hidden: params.hidden,
       tired,
+      omitQuestion: params.omitQuestion,
     }),
     promptVersion,
     replaced: checked.replaced,

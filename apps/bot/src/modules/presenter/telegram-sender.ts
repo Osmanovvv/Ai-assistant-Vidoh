@@ -1,4 +1,4 @@
-import type { Api } from 'grammy';
+import { InlineKeyboard, type Api } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Executor } from '../../infra/db.js';
@@ -18,6 +18,51 @@ import type { StatusSender } from './status.service.js';
  * человек может вернуться и прочитать разбор позже, а потерянная мысль
  * не вернётся. Поэтому ошибка логируется, а конвейер идёт дальше.
  */
+
+/**
+ * Отправка вопроса с кнопками (задача 2.13).
+ *
+ * Отдельно от статусного отправителя: у статуса кнопок нет и не должно
+ * быть — он правится по ходу разбора, а клавиатура на правящемся
+ * сообщении мигала бы. Вопрос онбординга наоборот живёт своей репликой.
+ */
+export interface QuestionSender {
+  ask(params: {
+    readonly chatId: number;
+    readonly threadId?: number | undefined;
+    readonly text: string;
+    readonly rows: readonly (readonly { readonly label: string; readonly action: string }[])[];
+  }): Promise<number>;
+}
+
+export function createQuestionSender(deps: TelegramSenderDeps): QuestionSender {
+  return {
+    async ask({ chatId, threadId, text, rows }) {
+      const keyboard = new InlineKeyboard();
+      for (const row of rows) {
+        for (const button of row) keyboard.text(button.label, button.action);
+        keyboard.row();
+      }
+
+      try {
+        const message = await deps.api.sendMessage(chatId, text, {
+          reply_markup: keyboard,
+          ...(threadId === undefined ? {} : { message_thread_id: threadId }),
+        });
+        return message.message_id;
+      } catch (error) {
+        // Недоставленный вопрос не должен ронять разбор: он важнее.
+        if (isBlockedError(error)) {
+          deps.logger.info({ chatId }, 'Пользователь заблокировал бота, помечаю');
+          await markBlocked(deps.db, chatId);
+        } else {
+          deps.logger.error({ err: error, chatId }, 'Не удалось отправить вопрос');
+        }
+        return 0;
+      }
+    },
+  };
+}
 
 export interface TelegramSenderDeps {
   readonly api: Api;

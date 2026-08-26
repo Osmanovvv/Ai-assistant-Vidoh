@@ -95,6 +95,40 @@ export interface TextProfile {
   };
 
   /**
+   * Онбординг (§12.2 ТЗ, задача 2.13).
+   *
+   * Идёт после первой выгрузки, не до неё, и весь состоит из кнопок:
+   * свободный ответ пришёл бы обычным сообщением и попал в буфер
+   * выгрузки, то есть либо потерялась бы мысль, либо именем стало бы
+   * «надо купить продукты».
+   *
+   * В каждой реплике ровно один вопрос — §13.9.
+   */
+  readonly onboarding: {
+    readonly nameConfirm: (name: string) => string;
+    readonly buttonNameYes: string;
+    readonly buttonNameLater: string;
+
+    readonly timezoneMoscow: string;
+    readonly buttonTimezoneMoscow: string;
+    readonly buttonTimezoneOther: string;
+    readonly timezoneChoose: string;
+
+    readonly morning: string;
+    readonly evening: string;
+    readonly buttonEveningOff: string;
+
+    readonly topics: string;
+    readonly buttonTopicsDone: string;
+    /** Отметка выбранной сферы. §12.4: эмодзи как маркер, не украшение. */
+    readonly topicChosen: (name: string) => string;
+
+    readonly finished: string;
+    /** Ни одной сферы не выбрано: берём базовый набор §6.4 и не спорим. */
+    readonly finishedDefault: string;
+  };
+
+  /**
    * Острый кризис (§13.7, задача 2.12).
    *
    * Единственный текст, который модель не видит вовсе: она о нём не
