@@ -237,14 +237,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
     }
 
-    for (const segment of deferred) {
+    for (const [order, segment] of deferred.entries()) {
       // Текст не теряется и виден в админке: разберёт его резолвер на
       // третьем этапе, когда появится, к чему применять правку.
+      //
+      // Порядок внутри выгрузки сохраняется: без него черновики одной
+      // выгрузки лежали бы в случайном порядке — время создания у них
+      // совпадает.
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
         text: segment.text,
         reason: `намерение ${segment.intent} — ждёт резолвера (этап 3)`,
+        order,
       });
     }
 

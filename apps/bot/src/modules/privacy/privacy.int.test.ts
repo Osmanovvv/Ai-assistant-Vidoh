@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { aiCalls, batches, messagesRaw, userSettings, users } from '../../db/schema.js';
+import {
+  aiCalls,
+  batches,
+  items,
+  messagesRaw,
+  topics,
+  userSettings,
+  users,
+  userState,
+} from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { recordAiCall } from '../metering/ai-calls.repo.js';
@@ -44,6 +53,43 @@ async function seedUser(tgId: number): Promise<string> {
     ok: true,
   });
 
+  // Темы, записи и уровень сил: всё, что появилось после задачи 1.20 и
+  // однажды не попало в выгрузку.
+  await testDb()
+    .insert(topics)
+    .values([
+      { userId: user.id, name: 'здоровье', sortOrder: 0 },
+      { userId: user.id, name: 'личное', sortOrder: 1, isDefault: true },
+    ]);
+
+  await testDb()
+    .insert(items)
+    .values([
+      {
+        userId: user.id,
+        text: 'записать сына к врачу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        // Порядок внутри выгрузки конвейер проставляет всегда: время
+        // создания у записей одной вставки совпадает, и без него
+        // сортировка разрешала бы ничью идентификатором, то есть случайно.
+        sourceOrder: 0,
+        embedding: new Array<number>(256).fill(0.1),
+      },
+      {
+        userId: user.id,
+        text: 'непонятная фраза',
+        sourceOrder: 1,
+        isDraft: true,
+        draftReason: 'извлечение не удалось',
+      },
+    ]);
+
+  await testDb()
+    .insert(userState)
+    .values({ userId: user.id, energy: 'low', energyAt: new Date('2026-08-26T06:00:00.000Z') });
+
   return user.id;
 }
 
@@ -63,6 +109,53 @@ describe('exportUserData', () => {
     expect(data?.settings?.energyDefault).toBe('normal');
     expect(data?.messages).toHaveLength(2);
     expect(data?.dumps).toHaveLength(1);
+  });
+
+  it('отдаёт записи человека, включая черновики', async () => {
+    // §16 ТЗ: человек имеет право на свои данные, а дела — это они и
+    // есть. Экспорт их не отдавал, и заметить это было неоткуда.
+    const data = await exportUserData(testDb(), userId);
+
+    expect(data?.items.map((item) => item.text)).toEqual([
+      'записать сына к врачу',
+      'непонятная фраза',
+    ]);
+
+    const [task, draft] = data?.items ?? [];
+    expect(task?.type).toBe('TASK');
+    expect(task?.topic).toBe('здоровье');
+    expect(draft?.isDraft).toBe(true);
+    expect(draft?.draftReason).toBe('извлечение не удалось');
+  });
+
+  it('отдаёт темы человека', async () => {
+    const data = await exportUserData(testDb(), userId);
+
+    expect(data?.topics.map((topic) => topic.name)).toEqual(['здоровье', 'личное']);
+    expect(data?.topics.find((topic) => topic.name === 'личное')?.isDefault).toBe(true);
+  });
+
+  it('отдаёт то, что бот вывел сам: уровень сил', async () => {
+    // Это не слова человека, а вывод о нём. Тем более отдавать надо:
+    // иначе выгрузка показывает не всё, что о нём известно.
+    const data = await exportUserData(testDb(), userId);
+
+    expect(data?.state?.energy).toBe('low');
+    expect(data?.state?.energyAt).toMatch(/^2026-08-26T06:00/u);
+  });
+
+  it('отдаёт настройки, появившиеся после 1.20', async () => {
+    const data = await exportUserData(testDb(), userId);
+
+    expect(data?.settings?.eveningOn).toBe(true);
+    expect(data?.settings?.textProfile).toBe('reserved');
+    expect(data?.settings).toHaveProperty('onboardingDoneAt');
+  });
+
+  it('вектор в выгрузку не идёт: это машинное представление уже отданного текста', async () => {
+    const data = await exportUserData(testDb(), userId);
+
+    expect(JSON.stringify(data)).not.toContain('0.1,0.1');
   });
 
   it('сохраняет порядок сообщений', async () => {
@@ -93,7 +186,7 @@ describe('exportUserData', () => {
 });
 
 describe('deleteUserData', () => {
-  it('удаляет профиль, настройки, сообщения и выгрузки', async () => {
+  it('удаляет всё: профиль, настройки, сообщения, выгрузки, записи, темы, состояние', async () => {
     const report = await deleteUserData(testDb(), userId);
 
     expect(report.deleted).toBe(true);
@@ -104,6 +197,12 @@ describe('deleteUserData', () => {
     expect(await testDb().select().from(userSettings)).toHaveLength(0);
     expect(await testDb().select().from(messagesRaw)).toHaveLength(0);
     expect(await testDb().select().from(batches)).toHaveLength(0);
+
+    // Каскад по внешним ключам. Проверяется явно: таблицы добавляются по
+    // ходу проекта, и «ничего не осталось» должно оставаться правдой.
+    expect(await testDb().select().from(items)).toHaveLength(0);
+    expect(await testDb().select().from(topics)).toHaveLength(0);
+    expect(await testDb().select().from(userState)).toHaveLength(0);
   });
 
   it('после удаления бот начинает с нуля: критерий приёмки 13', async () => {

@@ -1,6 +1,14 @@
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 
-import { batches, messagesRaw, userSettings, users } from '../../db/schema.js';
+import {
+  batches,
+  items,
+  messagesRaw,
+  topics,
+  userSettings,
+  users,
+  userState,
+} from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 
 /**
@@ -12,6 +20,18 @@ import type { Database } from '../../infra/db.js';
  * Делается на первом этапе, а не на последнем: хранилище строится здесь,
  * и прикручивать удаление к готовой системе с десятком связанных таблиц
  * дороже, чем поддерживать его с самого начала.
+ *
+ * **Дополнено 26.08.2026: экспорт отдавал не всё.** Поля здесь
+ * перечисляются по именам, а таблиц `items`, `topics` и `user_state` на
+ * задаче 1.20 ещё не существовало — и человек по «Выгрузить мои данные»
+ * получал сообщения и настройки, но не свои дела и не свои сферы жизни.
+ * Ошибка тихая: экспорт работал, файл приходил, и что в нём чего-то нет,
+ * заметить было неоткуда.
+ *
+ * Чтобы это не повторилось с каждой новой таблицей, есть отдельная
+ * проверка: она сверяет колонки со списком решений «отдаём / не отдаём» и
+ * падает на любой новой колонке, пока её не отнесут к одному из двух.
+ * Забыть теперь нельзя — сборка не соберётся.
  */
 
 export interface ExportedData {
@@ -29,9 +49,43 @@ export interface ExportedData {
     readonly morningTime: string;
     readonly eveningTime: string;
     readonly notificationsOn: boolean;
+    readonly eveningOn: boolean;
     readonly quietHoursOn: boolean;
     readonly energyDefault: string;
+    readonly textProfile: string;
+    readonly onboardingDoneAt: string | null;
   } | null;
+  /**
+   * Сегодняшний уровень сил — вывод бота о человеке, а не его слова.
+   * §16 требует отдавать и это: иначе выгрузка показывает не всё, что о
+   * нём известно.
+   */
+  readonly state: {
+    readonly energy: string;
+    readonly energyAt: string;
+  } | null;
+  readonly topics: readonly {
+    readonly name: string;
+    readonly emoji: string | null;
+    readonly isDefault: boolean;
+    readonly isArchived: boolean;
+    readonly createdAt: string;
+  }[];
+  readonly items: readonly {
+    readonly text: string;
+    readonly type: string | null;
+    readonly priority: string | null;
+    readonly topic: string | null;
+    readonly status: string;
+    readonly isProject: boolean;
+    readonly assignee: string | null;
+    readonly deadlineAt: string | null;
+    readonly deadlineAccuracy: string | null;
+    readonly isDraft: boolean;
+    readonly draftReason: string | null;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  }[];
   readonly dumps: readonly {
     readonly openedAt: string;
     readonly status: string;
@@ -75,6 +129,20 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     .where(eq(messagesRaw.userId, userId))
     .orderBy(messagesRaw.receivedAt);
 
+  const [state] = await db.select().from(userState).where(eq(userState.userId, userId)).limit(1);
+
+  const ownTopics = await db
+    .select()
+    .from(topics)
+    .where(eq(topics.userId, userId))
+    .orderBy(asc(topics.sortOrder), asc(topics.name));
+
+  const ownItems = await db
+    .select()
+    .from(items)
+    .where(eq(items.userId, userId))
+    .orderBy(asc(items.createdAt), asc(items.sourceOrder), asc(items.id));
+
   return {
     exportedAt: new Date().toISOString(),
     profile: {
@@ -91,10 +159,36 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
           morningTime: settings.morningTime,
           eveningTime: settings.eveningTime,
           notificationsOn: settings.notificationsOn,
+          eveningOn: settings.eveningOn,
           quietHoursOn: settings.quietHoursOn,
           energyDefault: settings.energyDefault,
+          textProfile: settings.textProfile,
+          onboardingDoneAt: iso(settings.onboardingDoneAt),
         }
       : null,
+    state: state ? { energy: state.energy, energyAt: state.energyAt.toISOString() } : null,
+    topics: ownTopics.map((topic) => ({
+      name: topic.name,
+      emoji: topic.emoji,
+      isDefault: topic.isDefault,
+      isArchived: topic.isArchived,
+      createdAt: topic.createdAt.toISOString(),
+    })),
+    items: ownItems.map((item) => ({
+      text: item.text,
+      type: item.type,
+      priority: item.priority,
+      topic: item.topic,
+      status: item.status,
+      isProject: item.isProject,
+      assignee: item.assignee,
+      deadlineAt: iso(item.deadlineAt),
+      deadlineAccuracy: item.deadlineAccuracy,
+      isDraft: item.isDraft,
+      draftReason: item.draftReason,
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
+    })),
     dumps: dumps.map((dump) => ({
       openedAt: dump.openedAt.toISOString(),
       status: dump.status,
