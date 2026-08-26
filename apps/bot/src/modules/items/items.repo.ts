@@ -40,6 +40,15 @@ export interface SaveDraftParams {
   readonly text: string;
   /** Чем именно не удалось: пойдёт в админку к тому, кто будет разбирать. */
   readonly reason: string;
+  /**
+   * Место внутри выгрузки, как у разобранных записей.
+   *
+   * Нужно по той же причине: без него у записей одной выгрузки совпадает
+   * и время создания, и порядок, и любая сортировка разрешает ничью
+   * идентификатором — то есть случайно. Человек, открывший выгрузку своих
+   * данных, увидел бы свои же фразы в произвольном порядке.
+   */
+  readonly order?: number | undefined;
 }
 
 function toRow(params: SaveItemsParams, item: ItemToSave, order: number): NewItem {
@@ -82,6 +91,7 @@ export async function saveDraft(db: Executor, params: SaveDraftParams): Promise<
     .values({
       userId: params.userId,
       sourceBatchId: params.batchId,
+      sourceOrder: params.order ?? null,
       text: params.text,
       isDraft: true,
       draftReason: params.reason,
@@ -119,11 +129,16 @@ export async function openItemsFor(db: Executor, userId: string, limit = 300): P
     .limit(limit);
 }
 
-/** Записи выгрузки в порядке создания. Нужно ответу человеку и тестам. */
+/**
+ * Записи выгрузки в том порядке, в каком человек их назвал.
+ *
+ * Время создания у них одинаковое — они пишутся одной вставкой, — поэтому
+ * порядок держится на `source_order`, а не на нём.
+ */
 export async function itemsForBatch(db: Executor, batchId: string): Promise<Item[]> {
   return await db
     .select()
     .from(items)
     .where(eq(items.sourceBatchId, batchId))
-    .orderBy(asc(items.createdAt), asc(items.id));
+    .orderBy(asc(items.createdAt), asc(items.sourceOrder), asc(items.id));
 }
