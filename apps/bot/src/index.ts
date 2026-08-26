@@ -7,6 +7,8 @@ import { createBot } from './bot/bot.js';
 import { publishCommands } from './bot/commands.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
+import { registerCardHandlers } from './bot/handlers/card.js';
+import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
@@ -248,6 +250,8 @@ async function main(): Promise<void> {
   registerPrivacyHandlers(bot, db, logger);
   registerMembershipHandlers(bot, db, logger);
   registerOnboardingHandlers(bot, db, logger, topicGateway);
+  registerMenuHandlers(bot, db, logger);
+  registerCardHandlers(bot, { db, logger, topics: topicGateway }, MENU_ACTION.root);
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');

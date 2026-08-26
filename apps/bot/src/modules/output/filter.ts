@@ -174,3 +174,36 @@ export function effectiveEnergy(
 
   return sameDay ? state.energy : fallback;
 }
+
+/**
+ * Записи для пункта меню «Сегодня» (§12.1, задача 2.18).
+ *
+ * Отдельно от выдачи разбора, и это не дублирование. Выдача отвечает на
+ * вопрос «что взять сейчас» и потому ограничена уровнем сил: три дела,
+ * два, одно. Меню отвечает на другой вопрос — «что у меня на сегодня», —
+ * и урезать ответ на него значило бы прятать от человека его же дела.
+ *
+ * Состав по §12.1: просроченное, срок сегодня и всё с высшим приоритетом.
+ * Порядок — тот же, что в выдаче: он один на весь продукт, иначе одно и
+ * то же дело оказывалось бы в разных местах списка в разных экранах.
+ */
+export function selectForToday(items: readonly Item[], context: SelectContext): readonly Item[] {
+  const todayStart = startOfDayInZone(
+    localDateParts(context.now, context.timeZone),
+    context.timeZone,
+  );
+  const tomorrow = new Date(todayStart.getTime() + 24 * 60 * 60_000);
+  const tomorrowStart = startOfDayInZone(
+    localDateParts(tomorrow, context.timeZone),
+    context.timeZone,
+  );
+
+  return items
+    .filter((item) => isShowable(item))
+    .filter((item) => bucketOf(item, todayStart, tomorrowStart) <= BUCKET.now)
+    .sort((left, right) => {
+      const byBucket =
+        bucketOf(left, todayStart, tomorrowStart) - bucketOf(right, todayStart, tomorrowStart);
+      return byBucket === 0 ? compareWithin(left, right) : byBucket;
+    });
+}
