@@ -105,6 +105,7 @@ export const reserved: TextProfile = {
     deadlineLabel: 'Срок',
     deadlineApprox: (date) => `около ${date}`,
     statusLabel: 'Статус',
+    recurrenceLabel: 'Повторяется',
     statusName: (status) => STATUS_NAMES[status] ?? status,
     noDeadline: 'без срока',
 

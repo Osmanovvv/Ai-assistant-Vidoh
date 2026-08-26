@@ -380,6 +380,22 @@ export const itemPriority = pgEnum('item_priority', ['NOW', 'SOON', 'LATER', 'NO
 export const deadlineAccuracy = pgEnum('deadline_accuracy', ['day', 'week', 'month']);
 
 /**
+ * Каким из четырёх способов появилась регулярность (запрос на изменение
+ * №1, задача 2.18а).
+ *
+ * Отдельная колонка, а не признак «регулярное», потому что способы надо
+ * мерить по отдельности: если предложения бота отклоняются в девяти
+ * случаях из десяти, их надо выключить, а узнать это можно только считая
+ * по источнику.
+ */
+export const recurrenceSource = pgEnum('recurrence_source', [
+  'stated',
+  'asked',
+  'noticed',
+  'history',
+]);
+
+/**
  * Записи — то, во что превращается поток мыслей (задачи 2.6 и 2.8).
  *
  * §5 ТЗ плюс `source_batch_id`: запись рождается из выгрузки, то есть из
@@ -455,6 +471,16 @@ export const items = pgTable(
     embedding: vector('embedding', { dimensions: 256 }),
 
     /**
+     * Правило повторения (задача 2.18а). §5.1: регулярность — поле у
+     * `TASK`, а не отдельный тип, как проект и делегируемость. Так разовое
+     * дело становится регулярным без миграции сущности.
+     */
+    recurrenceRule: jsonb('recurrence_rule'),
+    /** Как человек это сказал: «каждый вторник». Живёт и без правила. */
+    recurrenceText: text('recurrence_text'),
+    recurrenceSource: recurrenceSource('recurrence_source'),
+
+    /**
      * Место записи внутри своей выгрузки: первое сказанное — ноль.
      *
      * Нужно выдаче. Записи одной выгрузки создаются одной вставкой, то
@@ -483,6 +509,19 @@ export const items = pgTable(
     check(
       'items_draft_or_classified',
       sql`(${table.isDraft} = true) or (${table.type} is not null and ${table.priority} is not null and ${table.topic} is not null)`,
+    ),
+    /**
+     * Правило повторения бывает только у задачи (§5.1), и любая
+     * регулярность обязана знать свой источник — иначе способы 3 и 4 из
+     * запроса на изменение нечем будет мерить.
+     */
+    check(
+      'items_recurrence_task_only',
+      sql`${table.recurrenceRule} is null or ${table.type} = 'TASK'`,
+    ),
+    check(
+      'items_recurrence_has_source',
+      sql`(${table.recurrenceRule} is null and ${table.recurrenceText} is null) or ${table.recurrenceSource} is not null`,
     ),
     /** Срок без точности и точность без срока одинаково бесполезны. */
     check(

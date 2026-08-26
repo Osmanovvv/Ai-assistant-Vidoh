@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { RECURRENCE_KINDS } from '../../recurrence/recurrence.js';
+
 /**
  * Схема ответа классификации (задачи 2.2, 2.6 и 2.7).
  *
@@ -37,7 +39,15 @@ export type ItemType = (typeof ITEM_TYPES)[number];
 export type Priority = (typeof PRIORITIES)[number];
 export type DeadlineAccuracy = (typeof DEADLINE_ACCURACY)[number];
 
-export const CLASSIFIER_SCHEMA_NAME = 'classifier.v1';
+/**
+ * Версия вторая: признак регулярности (задача 2.18а).
+ *
+ * Поля плоские и без null — по той же причине, что и остальные в этой
+ * схеме: строгие схемы у разных провайдеров по-разному переносят
+ * необязательные поля и объединения типов. «Нерегулярное» надёжнее
+ * выразить видом `none`, чем отсутствующим полем.
+ */
+export const CLASSIFIER_SCHEMA_NAME = 'classifier.v2';
 
 /** Столько записей за одну выгрузку не бывает — это модель сорвалась. */
 const MAX_ITEMS = 60;
@@ -75,6 +85,25 @@ export const classifierSchema = z.object({
         deadline: z.string().max(10),
 
         deadlineAccuracy: z.enum(DEADLINE_ACCURACY),
+
+        /**
+         * Вид повторения (задача 2.18а). `none` — дело разовое,
+         * `unclear` — человек назвал регулярность, которую закрытым
+         * набором не выразить.
+         */
+        recurrenceKind: z.enum(RECURRENCE_KINDS),
+
+        /** Через сколько периодов: «раз в две недели» — это два. */
+        recurrenceInterval: z.number().int().min(0).max(99),
+
+        /**
+         * Как человек это сказал, дословно: «каждый вторник», «раз в
+         * месяц». Пустая строка, если дело разовое.
+         *
+         * Дословно, а не пересказом: человек должен узнать свои слова в
+         * карточке записи.
+         */
+        recurrenceText: z.string().max(200),
       }),
     )
     .max(MAX_ITEMS),

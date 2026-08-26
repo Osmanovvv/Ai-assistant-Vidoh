@@ -125,6 +125,8 @@ export interface TextProfile {
     /** Срок с неточной датой: «на следующей неделе» — это не число. */
     readonly deadlineApprox: (date: string) => string;
     readonly statusLabel: string;
+    /** Регулярность — словами человека, а не нашим пересказом правила. */
+    readonly recurrenceLabel: string;
     readonly statusName: (status: string) => string;
     readonly noDeadline: string;
 

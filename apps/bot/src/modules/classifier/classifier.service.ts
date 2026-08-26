@@ -6,6 +6,7 @@ import type {
   Priority,
 } from '../ai/schemas/classifier.js';
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
+import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeNow, resolveDeadline, type ResolvedDeadline } from './dates.js';
 
 /**
@@ -50,6 +51,8 @@ export interface ClassifiedItem {
   readonly topic: string;
   readonly isProject: boolean;
   readonly deadline?: ResolvedDeadline | undefined;
+  /** Регулярность (задача 2.18а). Поле у `TASK`, как и признак проекта. */
+  readonly recurrence?: ResolvedRecurrence | undefined;
 }
 
 /** Что пришлось поправить за моделью. Ненулевое — повод к промпту. */
@@ -62,6 +65,8 @@ export interface Corrections {
   readonly deadline: number;
   /** Признак проекта у записи, которая не задача. */
   readonly project: number;
+  /** Регулярность у записи, которая не задача, либо без правила. */
+  readonly recurrence: number;
 }
 
 interface ClassifySuccess {
@@ -139,6 +144,7 @@ export async function classifyUnits(
     topic: 0,
     deadline: 0,
     project: 0,
+    recurrence: 0,
   };
 
   const items: ClassifiedItem[] = [];
@@ -182,6 +188,34 @@ export async function classifyUnits(
       );
     }
 
+    /**
+     * §5.1 и задача 2.18а: регулярность — поле у `TASK`. У желания,
+     * идеи, факта и эмоции она не значит ничего, и база это же запрещает
+     * ограничением — но полагаться на то, что до базы дойдёт правильное,
+     * нельзя: отказ вставки уронил бы всю выгрузку из-за одной записи.
+     */
+    let recurrence: ResolvedRecurrence | undefined;
+    if (isActionable(type)) {
+      const resolvedRecurrence = resolveRecurrence({
+        kind: item.recurrenceKind,
+        interval: item.recurrenceInterval,
+        text: item.recurrenceText,
+        deadline: item.deadline,
+      });
+
+      if (resolvedRecurrence.text !== undefined) recurrence = resolvedRecurrence;
+
+      if (resolvedRecurrence.problem !== undefined) {
+        corrections.recurrence++;
+        deps.logger?.warn(
+          { promptVersion: outcome.promptVersion, reason: resolvedRecurrence.problem },
+          'Регулярность названа, но правило не получилось — сохраняю фразой',
+        );
+      }
+    } else if (item.recurrenceKind !== 'none') {
+      corrections.recurrence++;
+    }
+
     items.push({
       text: item.text,
       type,
@@ -189,11 +223,16 @@ export async function classifyUnits(
       topic: topic ?? params.defaultTopic,
       isProject,
       deadline,
+      recurrence,
     });
   }
 
   const total =
-    corrections.priority + corrections.topic + corrections.deadline + corrections.project;
+    corrections.priority +
+    corrections.topic +
+    corrections.deadline +
+    corrections.project +
+    corrections.recurrence;
   if (total > 0) {
     deps.logger?.info(
       { promptVersion: outcome.promptVersion, ...corrections },

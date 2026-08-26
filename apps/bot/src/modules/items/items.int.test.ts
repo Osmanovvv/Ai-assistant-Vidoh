@@ -225,3 +225,91 @@ describe('связь с выгрузкой', () => {
     expect(afterBatch[0]?.sourceBatchId).toBeNull();
   });
 });
+
+describe('регулярность в базе (задача 2.18а)', () => {
+  it('правило, фраза и источник сохраняются вместе', async () => {
+    const saved = await saveItems(testDb(), {
+      userId,
+      batchId,
+      items: [
+        {
+          text: 'возить сына на плавание',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'семья',
+          isProject: false,
+          recurrence: {
+            rule: { kind: 'weekly', interval: 1, anchor: '2026-09-08' },
+            text: 'каждый вторник',
+            source: 'stated',
+          },
+        },
+      ],
+    });
+
+    expect(saved[0]?.recurrenceRule).toEqual({
+      kind: 'weekly',
+      interval: 1,
+      anchor: '2026-09-08',
+    });
+    expect(saved[0]?.recurrenceText).toBe('каждый вторник');
+    expect(saved[0]?.recurrenceSource).toBe('stated');
+  });
+
+  it('фраза без правила — законное состояние', async () => {
+    // Выдумать правило, которого мы не умеем воспроизвести, хуже, чем
+    // признаться, что не разобрали.
+    const saved = await saveItems(testDb(), {
+      userId,
+      batchId,
+      items: [
+        {
+          text: 'танцы',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'семья',
+          isProject: false,
+          recurrence: { text: 'каждый вторник и четверг', source: 'stated' },
+        },
+      ],
+    });
+
+    expect(saved[0]?.recurrenceRule).toBeNull();
+    expect(saved[0]?.recurrenceText).toBe('каждый вторник и четверг');
+    expect(saved[0]?.recurrenceSource).toBe('stated');
+  });
+
+  it('база не пускает правило к не-задаче', async () => {
+    // §5.1: регулярность — поле у TASK. Ограничение в базе превращает
+    // «не должно случиться» в «не может случиться».
+    await expectConstraint(
+      testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: 'хочу бегать',
+          type: 'DESIRE',
+          priority: 'NONE',
+          topic: 'личное',
+          recurrenceRule: { kind: 'daily', interval: 1, anchor: '2026-09-08' },
+          recurrenceSource: 'stated',
+        }),
+      'items_recurrence_task_only',
+    );
+  });
+
+  it('база не пускает регулярность без источника', async () => {
+    // Иначе способы 3 и 4 из запроса на изменение нечем будет мерить.
+    await expectConstraint(
+      testDb().insert(items).values({
+        userId,
+        text: 'оплатить садик',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        recurrenceText: 'раз в месяц',
+      }),
+      'items_recurrence_has_source',
+    );
+  });
+});
