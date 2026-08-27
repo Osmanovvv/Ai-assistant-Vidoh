@@ -52,8 +52,23 @@ describe('isBlockedError', () => {
     expect(isBlockedError(telegramError(429, 'Too Many Requests: retry after 30'))).toBe(false);
   });
 
-  it('400 не блокировка', () => {
+  it('400 сам по себе не блокировка: это обычно наша ошибка в запросе', () => {
     expect(isBlockedError(telegramError(400, 'Bad Request: message is too long'))).toBe(false);
+  });
+
+  it('«чат не найден» с кодом 400 — недоступный получатель', () => {
+    // Telegram отдаёт этот отказ именно с 400, а проверка требовала 403,
+    // и ветка не срабатывала никогда: человек, удаливший чат, давал
+    // ошибку уровня «сбой» вместо пометки «недоступен». Найдено на
+    // выкладке этапа 2 — мониторинг показал сто процентов ошибок, и все
+    // они были такими.
+    expect(isBlockedError(telegramError(400, 'Bad Request: chat not found'))).toBe(true);
+  });
+
+  it('недоступный получатель не повторяется', () => {
+    // Повтор отправки в удалённый чат — это бесконечный ретрай и, если
+    // отказ уронил задание, повторная оплата разбора той же выгрузки.
+    expect(isRetryableSendError(telegramError(400, 'Bad Request: chat not found'))).toBe(false);
   });
 
   it('403 по другой причине не считается блокировкой', () => {

@@ -34,11 +34,27 @@ const BLOCKED_DESCRIPTIONS = [
   'bot was kicked',
 ];
 
+/**
+ * «Чат не найден» приходит с кодом 400, а не 403.
+ *
+ * Проверка ниже требовала 403, и эта ветка не срабатывала никогда:
+ * человек, удаливший чат, давал ошибку уровня «сбой» вместо пометки
+ * «недоступен». Найдено на выкладке этапа 2 — оповещение мониторинга
+ * показало сто процентов ошибок, и все они были такими.
+ *
+ * Остальные 400 сюда не попадают намеренно: 400 — это обычно наша ошибка
+ * в запросе, и она обязана остаться громкой.
+ */
+const GONE_AT_400 = 'chat not found';
+
 export function isBlockedError(error: unknown): boolean {
   if (!(error instanceof GrammyError)) return false;
-  if (error.error_code !== 403) return false;
 
   const description = error.description.toLowerCase();
+
+  if (error.error_code === 400) return description.includes(GONE_AT_400);
+  if (error.error_code !== 403) return false;
+
   return BLOCKED_DESCRIPTIONS.some((known) => description.includes(known));
 }
 
