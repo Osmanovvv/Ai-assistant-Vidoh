@@ -9,6 +9,13 @@
 # в репозиторий не попадает.
 set -euo pipefail
 
+# Оповещение о провале: §18 ТЗ требует, чтобы об ошибках узнавали.
+# Без этого сломавшееся задание молчит до того дня, когда оно
+# понадобится, — то есть ведёт себя как отсутствующее.
+# shellcheck source=ops/notify.sh
+. "$(dirname "$0")/notify.sh"
+trap 'notify_failure "копия базы"' ERR
+
 : "${DATABASE_URL:?нужна переменная DATABASE_URL}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/vydoh}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
