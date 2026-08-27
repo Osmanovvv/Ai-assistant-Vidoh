@@ -116,6 +116,20 @@ export interface CorrectionContext {
   readonly defaultTopic: string;
   readonly timeZone: string;
   readonly now: Date;
+  /**
+   * Тексты единиц, пришедших на вход, в том же порядке (задача 2.7).
+   *
+   * Нужны проверке срока. Проверять только ответ модели нельзя: она
+   * перефразирует, и слово о времени из речи человека может в пересказе
+   * исчезнуть — тогда настоящий срок отбросился бы как выдуманный.
+   * Поймано тестом: подменённая модель вернула «дело», и проверка съела
+   * законный срок.
+   *
+   * Сопоставление по порядку: схема требует столько же записей, сколько
+   * пришло единиц, и в том же порядке. Если числа разошлись, входные
+   * тексты не используются — гадать, кто с кем, нельзя.
+   */
+  readonly said?: readonly string[] | undefined;
   /** Идёт в предупреждения: без версии непонятно, какой промпт виноват. */
   readonly promptVersion: string;
   readonly logger?: Logger | undefined;
@@ -150,7 +164,10 @@ export function correctItems(
 
   const items: ClassifiedItem[] = [];
 
-  for (const item of raw.items) {
+  // Входные тексты годятся только при совпадении числа записей.
+  const aligned = ctx.said?.length === raw.items.length;
+
+  for (const [index, item] of raw.items.entries()) {
     const type = item.type;
 
     // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не
@@ -175,12 +192,25 @@ export function correctItems(
     const accuracy: DeadlineAccuracy = item.deadlineAccuracy;
     const resolved = resolveDeadline(
       { deadline: item.deadline, accuracy },
-      { now, timeZone: ctx.timeZone },
+      {
+        now,
+        timeZone: ctx.timeZone,
+        // Слова человека и пересказ модели вместе: слово о времени хоть
+        // в одном из них — уже основание для срока.
+        said: `${aligned ? (ctx.said[index] ?? '') : ''} ${item.text}`,
+      },
     );
 
     let deadline: ResolvedDeadline | undefined;
     if (resolved.ok) {
       deadline = resolved.deadline;
+      if (resolved.deadline !== undefined && resolved.corrected === 'weekday') {
+        corrections.deadline++;
+        logger?.info(
+          { promptVersion },
+          'День недели у срока не совпал с названным, дата пересчитана',
+        );
+      }
     } else {
       corrections.deadline++;
       logger?.warn(
@@ -273,6 +303,7 @@ export async function classifyUnits(
     defaultTopic: params.defaultTopic,
     timeZone: params.timeZone,
     now,
+    said: params.units.map((unit) => unit.text),
     promptVersion: outcome.promptVersion,
     logger: deps.logger,
   });

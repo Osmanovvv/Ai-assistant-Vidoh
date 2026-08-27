@@ -239,9 +239,11 @@ describe('сроки', () => {
       respond: () => answer([{ deadline: '2026-09-10', deadlineAccuracy: 'day' }]),
     });
 
-    const moscow = await classifyUnits(deps(provider, prompts), params('к врачу'));
+    // Дата в тексте обязательна: с задачи 2.7 срок без слов о времени
+    // считается выдуманным и отбрасывается, и «к врачу» его бы потеряло.
+    const moscow = await classifyUnits(deps(provider, prompts), params('к врачу 10 сентября'));
     const vladivostok = await classifyUnits(deps(provider, prompts), {
-      ...params('к врачу'),
+      ...params('к врачу 10 сентября'),
       timeZone: 'Asia/Vladivostok',
     });
 

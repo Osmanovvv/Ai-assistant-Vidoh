@@ -111,6 +111,18 @@ try {
         );
       }
     }
+    for (const { expected, actual } of outcome.result.matched) {
+      const accuracy = actual.deadline?.accuracy ?? 'none';
+      if (expected.deadline === '*' || accuracy === expected.deadline) continue;
+
+      const date =
+        actual.deadline === undefined ? '' : ` ${actual.deadline.at.toISOString().slice(0, 10)}`;
+
+      process.stdout.write(
+        `  срок [${outcome.id}] «${actual.text}»: ожидался ${expected.deadline}, получен ${accuracy}${date}
+`,
+      );
+    }
     for (const item of outcome.result.extra) {
       process.stdout.write(`  лишнее [${outcome.id}] «${item.text}»\n`);
     }

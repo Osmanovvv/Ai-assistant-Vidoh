@@ -1,4 +1,5 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
+import { hasTimeWord, weekdaysIn } from './time-words.js';
 
 /**
  * Разрешение сроков (задача 2.7).
@@ -24,7 +25,15 @@ export interface ResolvedDeadline {
 }
 
 export type DeadlineOutcome =
-  | { readonly ok: true; readonly deadline: ResolvedDeadline }
+  | {
+      readonly ok: true;
+      readonly deadline: ResolvedDeadline;
+      /**
+       * Что пришлось поправить за моделью. Пока одно: день недели не
+       * совпал с названным человеком, и дата пересчитана кодом.
+       */
+      readonly corrected?: 'weekday' | undefined;
+    }
   | { readonly ok: false; readonly reason: string }
   /** Срока просто нет — это не ошибка. */
   | { readonly ok: true; readonly deadline: undefined };
@@ -128,6 +137,35 @@ export function describeNow(now: Date, timeZone: string): string {
   return `Сейчас ${formatted}, часовой пояс ${timeZone}.`;
 }
 
+/** День недели даты в поясе человека: 0 — воскресенье, как у JS. */
+export function weekdayOf(instant: Date, timeZone: string): number {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(instant);
+  const order = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return Math.max(0, order.indexOf(name));
+}
+
+/**
+ * Ближайшая дата с нужным днём недели, начиная с сегодня.
+ *
+ * «В четверг», сказанное в четверг, — это сегодня, а не через неделю:
+ * человек говорит о ближайшем, иначе он сказал бы «в следующий».
+ */
+export function nearestWeekday(
+  weekday: number,
+  context: { readonly now: Date; readonly timeZone: string },
+): Date {
+  const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
+
+  for (let shift = 0; shift < 7; shift++) {
+    const candidate = new Date(today.getTime() + shift * 24 * 60 * 60_000);
+    const parts = localDateParts(candidate, context.timeZone);
+    const at = startOfDayInZone(parts, context.timeZone);
+    if (weekdayOf(at, context.timeZone) === weekday) return at;
+  }
+
+  return today;
+}
+
 /**
  * Проверяет и привязывает к поясу то, что вернула модель.
  *
@@ -139,7 +177,27 @@ export function describeNow(now: Date, timeZone: string): string {
  */
 export function resolveDeadline(
   raw: { readonly deadline: string; readonly accuracy: DeadlineAccuracy },
-  context: { readonly now: Date; readonly timeZone: string },
+  context: {
+    readonly now: Date;
+    readonly timeZone: string;
+    /**
+     * Текст самого дела — то, что человек сказал про него.
+     *
+     * Только он, без остальной выгрузки. Сначала проверялась вся
+     * выгрузка тоже, и это оказалось дырой: одного слова «успеть» или
+     * одной цифры «1968 года» где-нибудь в потоке хватало, чтобы
+     * пропустить выдуманные сроки у двадцати других дел. Замер поймал
+     * это сразу: семь придуманных сроков вернулись.
+     *
+     * Плата за строгость: если модель вынесла дату в соседнюю единицу,
+     * настоящий срок потеряется. Это верный выбор — ТЗ прямо говорит,
+     * что неверный срок хуже отсутствующего, а потеря видна в отчёте
+     * стенда как точность срока.
+     *
+     * Не задан — проверка не работает, и срок принимается как раньше.
+     */
+    readonly said?: string | undefined;
+  },
 ): DeadlineOutcome {
   const text = raw.deadline.trim();
 
@@ -183,6 +241,50 @@ export function resolveDeadline(
   limit.setUTCFullYear(limit.getUTCFullYear() + MAX_YEARS_AHEAD);
   if (at.getTime() > limit.getTime()) {
     return { ok: false, reason: `срок «${text}» слишком далеко` };
+  }
+
+  /**
+   * Срок без слов о времени в речи человека — выдуманный (задача 2.7).
+   *
+   * Замер 27.08.2026: десять таких сроков из сорока трёх дел. Семи
+   * покупкам подряд модель поставила «на этой неделе», хотя человек не
+   * назвал ни одной даты, — и они вытеснили из выдачи ортопеда,
+   * стоматолога и витамины.
+   */
+  if (context.said !== undefined) {
+    if (!hasTimeWord(context.said)) {
+      return { ok: false, reason: `срок «${text}» человеком не назван` };
+    }
+
+    /**
+     * Если человек назвал день недели, дата обязана быть этим днём.
+     *
+     * Замер того же дня: на «записаться к стоматологу в четверг» модель
+     * вернула среду. Считать день недели — работа кода: он это делает
+     * точно, а модель ошибается молча.
+     */
+    const named = weekdaysIn(context.said);
+    if (named.length > 0 && !named.includes(weekdayOf(at, context.timeZone))) {
+      /**
+       * Дата обязана быть одним из названных дней.
+       *
+       * Названо два («вторник и четверг») — берём ближайший из них:
+       * выбрать за человека нельзя, но поставить дату на понедельник —
+       * тем более. Замер 27.08.2026: на «каждый вторник и четверг»
+       * модель вернула понедельник.
+       */
+      const nearest = named
+        .map((weekday) => nearestWeekday(weekday, context))
+        .sort((left, right) => left.getTime() - right.getTime())[0];
+
+      if (nearest !== undefined) {
+        return {
+          ok: true,
+          deadline: { at: nearest, accuracy: raw.accuracy },
+          corrected: 'weekday',
+        };
+      }
+    }
   }
 
   return { ok: true, deadline: { at, accuracy: raw.accuracy } };

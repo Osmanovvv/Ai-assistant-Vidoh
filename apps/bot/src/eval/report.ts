@@ -1,3 +1,4 @@
+import { localDateParts } from '../modules/classifier/dates.js';
 import type { CaseOutcome } from './runner.js';
 
 /**
@@ -36,6 +37,18 @@ export interface EvalReport {
   readonly priorityCorrect: number;
   readonly topicCorrect: number;
   readonly recurrenceCorrect: number;
+  /** Точность срока: совпала ли точность, а где задана — и сама дата. */
+  readonly deadlineCorrect: number;
+  /**
+   * Сроки, которых человек не называл (задача 2.7).
+   *
+   * Считается отдельным числом, а не долей, по той же причине, что ложные
+   * задачи: порог жёсткий. Выдуманный срок хуже отсутствующего — фильтр
+   * выдачи ставит дела «на сегодня» впереди всех, и мелочь с придуманной
+   * датой вытесняет важное без срока. Ровно это случилось на живой
+   * выгрузке 27.08.2026.
+   */
+  readonly falseDeadlines: number;
 
   /**
    * §6.2: правило, которое модели нарушают чаще всего. Порог по нему
@@ -74,6 +87,7 @@ export interface Shares {
   readonly priority: number;
   readonly topic: number;
   readonly recurrence: number;
+  readonly deadline: number;
 }
 
 export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
@@ -93,6 +107,8 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
   let crisisMissed = 0;
   let failed = 0;
   let ambiguous = 0;
+  let deadlineCorrect = 0;
+  let falseDeadlines = 0;
 
   const versions: Record<string, string> = {};
 
@@ -130,6 +146,25 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
           : actualRecurrence;
       if (asKind === unit.recurrence) recurrenceCorrect++;
 
+      /**
+       * Срок: сначала точность, потом дата.
+       *
+       * Дата сверяется только там, где разметка её задала: у «на 5 7
+       * сентября» она однозначна, у «на следующей неделе» — нет, и
+       * требовать конкретный день значило бы мерить нашу решительность.
+       */
+      const actualAccuracy = actual.deadline?.accuracy ?? 'none';
+      const accuracyFits = unit.deadline === ANY || actualAccuracy === unit.deadline;
+      const dateFits =
+        unit.deadlineDate === undefined ||
+        (actual.deadline !== undefined &&
+          isoDateIn(actual.deadline.at, outcome.timeZone) === unit.deadlineDate);
+
+      if (accuracyFits && dateFits) deadlineCorrect++;
+
+      // Срок, которого человек не называл. Отдельным числом: порог ноль.
+      if (unit.deadline === 'none' && actualAccuracy !== 'none') falseDeadlines++;
+
       // §6.2, главное правило: желание и эмоция не становятся задачей.
       if (unit.type === 'DESIRE' && actual.type === 'TASK') falseTasksFromDesires++;
       if (unit.type === 'EMOTION' && actual.type === 'TASK') falseTasksFromEmotions++;
@@ -145,6 +180,8 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     priorityCorrect,
     topicCorrect,
     recurrenceCorrect,
+    deadlineCorrect,
+    falseDeadlines,
     falseTasksFromDesires,
     falseTasksFromEmotions,
     crisisExpected,
@@ -158,6 +195,13 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
   };
 }
 
+/** Дата срока в поясе человека: сравнивать в UTC значило бы ошибаться на день. */
+function isoDateIn(at: Date, timeZone: string): string {
+  const parts = localDateParts(at, timeZone);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${String(parts.year)}-${pad(parts.month)}-${pad(parts.day)}`;
+}
+
 /** Доли считаются от найденного: тип у потерянной единицы не определён. */
 export function shares(report: EvalReport): Shares {
   const of = (part: number): number => (report.found === 0 ? 0 : part / report.found);
@@ -168,6 +212,7 @@ export function shares(report: EvalReport): Shares {
     priority: of(report.priorityCorrect),
     topic: of(report.topicCorrect),
     recurrence: of(report.recurrenceCorrect),
+    deadline: of(report.deadlineCorrect),
   };
 }
 
@@ -213,9 +258,11 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     `Точность важности:   ${percent(now.priority)}${delta(now.priority, was?.priority)}`,
     `Точность темы:       ${percent(now.topic)}${delta(now.topic, was?.topic)}`,
     `Точность повторения: ${percent(now.recurrence)}${delta(now.recurrence, was?.recurrence)}`,
+    `Точность срока:      ${percent(now.deadline)}${delta(now.deadline, was?.deadline)}`,
     '',
     `Ложных задач из желаний: ${String(report.falseTasksFromDesires)}${deltaCount(report.falseTasksFromDesires, previous?.falseTasksFromDesires)}`,
     `Ложных задач из эмоций:  ${String(report.falseTasksFromEmotions)}${deltaCount(report.falseTasksFromEmotions, previous?.falseTasksFromEmotions)}`,
+    `Выдуманных сроков:       ${String(report.falseDeadlines)}${deltaCount(report.falseDeadlines, previous?.falseDeadlines)}`,
     '',
     `Кризис: ожидался ${String(report.crisisExpected)}, сработал ${String(report.crisisDetected)}, ложных ${String(report.crisisFalse)}, пропущено ${String(report.crisisMissed)}`,
     `Разбор не удался: ${String(report.failed)}`,
@@ -241,9 +288,18 @@ export function format(report: EvalReport, previous?: EvalReport): string {
 export interface Threshold {
   readonly type: number;
   readonly falseTasks: number;
+  /**
+   * Сколько выдуманных сроков допустимо (задача 2.7).
+   *
+   * Ноль, как и у ложных задач, и по той же логике: фильтр выдачи ставит
+   * дела «на сегодня» впереди всех, поэтому одна придуманная дата
+   * вытесняет из выдачи важное дело без срока. Человек видит мелочь и
+   * решает, что бот не понял главного.
+   */
+  readonly falseDeadlines: number;
 }
 
-export const STAGE2_THRESHOLD: Threshold = { type: 0.85, falseTasks: 0 };
+export const STAGE2_THRESHOLD: Threshold = { type: 0.85, falseTasks: 0, falseDeadlines: 0 };
 
 export interface ThresholdVerdict {
   readonly passed: boolean;
@@ -267,6 +323,10 @@ export function checkThreshold(
 
   if (report.falseTasksFromEmotions > threshold.falseTasks) {
     failures.push(`ложных задач из эмоций: ${String(report.falseTasksFromEmotions)}`);
+  }
+
+  if (report.falseDeadlines > threshold.falseDeadlines) {
+    failures.push(`выдуманных сроков: ${String(report.falseDeadlines)}`);
   }
 
   if (report.failed > 0) {
