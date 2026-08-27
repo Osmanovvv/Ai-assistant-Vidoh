@@ -35,7 +35,7 @@ if (directory === undefined) {
 const activate = flags.includes('--activate');
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.
-const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY === true });
+const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY });
 
 /** `router@1.md` → этап `router`, версия `router@1`. */
 function parseName(fileName: string): { stage: AiStage; version: string } | undefined {

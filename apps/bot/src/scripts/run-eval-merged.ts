@@ -33,7 +33,7 @@ if (directory === undefined) {
 
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.
-const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY === true });
+const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY });
 const env = modelEnvSchema.parse(process.env);
 
 const PROMPT = join(directory, '..', 'prompts', 'experiments', 'merged@1.md');
