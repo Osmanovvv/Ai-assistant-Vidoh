@@ -17,15 +17,53 @@ export interface TranscriptionRequest {
   readonly durationSec: number;
 }
 
+/**
+ * Слово с его временем от начала файла.
+ *
+ * Нужно для склейки голосовых одной выгрузки в один запрос (задача 1.14):
+ * без времён склеенный текст не разложить обратно по сообщениям, и
+ * экономия на округлении блоков стоила бы потерей того, кто что сказал
+ * и в каком сообщении.
+ */
+export interface TimedWord {
+  readonly text: string;
+  readonly startMs: number;
+  readonly endMs: number;
+}
+
+/**
+ * Распознанная фраза: текст целиком и слова со временами.
+ *
+ * Две формы нужны обе. Пунктуация и заглавные буквы есть только у текста
+ * фразы — в словах приходят голые токены с маленькой буквы. А времена есть
+ * только у слов. Поэтому склейка раскладывает по сообщениям фразы, и лишь
+ * фразу, перескочившую границу, приходится делить по словам.
+ */
+export interface RecognizedUtterance {
+  readonly text: string;
+  readonly words: readonly TimedWord[];
+}
+
 export interface TranscriptionResult {
   readonly text: string;
   readonly model: string;
   /** Секунды аудио для учёта расхода (§10.5 ТЗ). */
   readonly audioSeconds: number;
+  /**
+   * Фразы со временами, если распознаватель их вернул. Провайдер, который
+   * их не отдаёт, остаётся полноценным — склейка просто не применяется.
+   */
+  readonly utterances?: readonly RecognizedUtterance[] | undefined;
 }
 
 export interface SpeechProvider {
   readonly name: string;
+  /**
+   * Возвращает ли провайдер времена слов. Только при true выгрузку можно
+   * расшифровывать одним запросом на все голосовые: иначе текст не
+   * разложить по сообщениям.
+   */
+  readonly timeline?: boolean | undefined;
   transcribe(request: TranscriptionRequest): Promise<TranscriptionResult>;
 }
 

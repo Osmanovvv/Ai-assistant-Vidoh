@@ -426,11 +426,11 @@ describe('parseRecognition', () => {
   it('пропускает пустые строки и незнакомые события', () => {
     const body = ['', eouLine(), finalLine(0, 'текст'), '  ', '{"result":{}}'].join('\n');
 
-    expect(parseRecognition(body)).toBe('текст');
+    expect(parseRecognition(body).text).toBe('текст');
   });
 
   it('пустой ответ даёт пустую строку', () => {
-    expect(parseRecognition('')).toBe('');
+    expect(parseRecognition('').text).toBe('');
   });
 });
 

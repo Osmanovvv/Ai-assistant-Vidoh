@@ -134,3 +134,51 @@ export async function convertToWav(
 
   await run('ffmpeg', args);
 }
+
+/**
+ * Склейка нескольких записей в один моно 16 кГц WAV с паузой между ними
+ * (задача 1.14, дополнено 27.08.2026).
+ *
+ * Зачем: SpeechKit берёт деньги блоками по 15 секунд **за запрос**. Девять
+ * голосовых одной выгрузки — девять запросов и девять округлений вверх:
+ * 172 секунды речи превращаются в 255 оплаченных. Склеенные в один файл,
+ * те же 172 секунды стоят 180.
+ *
+ * Пауза между записями нужна, чтобы слова на стыке не слиплись в одно.
+ * Она короткая намеренно: пауза — тоже оплаченное аудио, и по полсекунды
+ * на восемь стыков это четыре секунды, то есть ни одного лишнего блока.
+ */
+export async function concatToWav(
+  inputs: readonly string[],
+  output: string,
+  pauseSec: number,
+): Promise<void> {
+  if (inputs.length === 0) throw new Error('склеивать нечего');
+  if (inputs.length === 1) {
+    await convertToWav(inputs[0] ?? '', output);
+    return;
+  }
+
+  const args = ['-hide_banner', '-y'];
+  for (const input of inputs) args.push('-i', input);
+
+  // Каждый вход приводится к одному формату до склейки: concat требует
+  // совпадения частоты и числа каналов, а Telegram отдаёт и голосовые, и
+  // пересланные аудиофайлы, у которых они разные.
+  const chains: string[] = [];
+  const labels: string[] = [];
+
+  for (const [index] of inputs.entries()) {
+    const pad = index === inputs.length - 1 ? '' : `,apad=pad_dur=${pauseSec.toFixed(3)}`;
+    chains.push(
+      `[${String(index)}:a]aresample=16000,aformat=sample_fmts=s16:channel_layouts=mono${pad}[a${String(index)}]`,
+    );
+    labels.push(`[a${String(index)}]`);
+  }
+
+  const filter = `${chains.join(';')};${labels.join('')}concat=n=${String(inputs.length)}:v=0:a=1[out]`;
+
+  args.push('-filter_complex', filter, '-map', '[out]', '-c:a', 'pcm_s16le', output);
+
+  await run('ffmpeg', args);
+}

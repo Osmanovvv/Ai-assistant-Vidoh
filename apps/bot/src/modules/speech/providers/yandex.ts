@@ -6,6 +6,8 @@ import {
   type SpeechProvider,
   type TranscriptionRequest,
   type TranscriptionResult,
+  type RecognizedUtterance,
+  type TimedWord,
 } from './types.js';
 
 /**
@@ -109,10 +111,45 @@ function toIndex(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function firstAlternativeText(container: Record<string, unknown> | undefined): string | undefined {
+function firstAlternative(
+  container: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
   const alternatives = container?.['alternatives'];
   if (!Array.isArray(alternatives)) return undefined;
-  return asString(asRecord(alternatives[0])?.['text']);
+  return asRecord(alternatives[0]);
+}
+
+function firstAlternativeText(container: Record<string, unknown> | undefined): string | undefined {
+  return asString(firstAlternative(container)?.['text']);
+}
+
+/**
+ * Слова со временами из первой гипотезы.
+ *
+ * Времена нужны для склейки голосовых одной выгрузки в один запрос: по
+ * ним склеенный текст раскладывается обратно по сообщениям. Замер живого
+ * ответа 27.08.2026 показал, что верить надо именно словам: у самого
+ * отрезка startTimeMs равен концу предыдущего, а не началу речи — вторая
+ * фраза заявила старт на 2810 мс, тогда как её первое слово звучит с 5779.
+ */
+function alternativeWords(container: Record<string, unknown> | undefined): TimedWord[] {
+  const words = firstAlternative(container)?.['words'];
+  if (!Array.isArray(words)) return [];
+
+  const timed: TimedWord[] = [];
+  for (const entry of words) {
+    const word = asRecord(entry);
+    const text = asString(word?.['text']);
+    if (word === undefined || text === undefined) continue;
+
+    timed.push({
+      text,
+      startMs: toIndex(word['startTimeMs']),
+      endMs: toIndex(word['endTimeMs']),
+    });
+  }
+
+  return timed;
 }
 
 /**
@@ -131,6 +168,18 @@ interface Utterance {
   raw?: string;
   /** Нормализованный текст с пунктуацией — приходит следом, если включён. */
   normalized?: string;
+  /** Слова со временами: берутся из того же события, что и текст. */
+  rawWords?: TimedWord[];
+  normalizedWords?: TimedWord[];
+}
+
+export interface ParsedRecognition {
+  readonly text: string;
+  /**
+   * Фразы по порядку. Пусты, если SpeechKit не вернул времён — тогда
+   * склейка не применяется.
+   */
+  readonly utterances: readonly RecognizedUtterance[];
 }
 
 /**
@@ -142,7 +191,7 @@ interface Utterance {
  * различаются номером отрезка, поэтому склейка идёт по номеру, а не по
  * порядку строк.
  */
-export function parseRecognition(body: string): string {
+export function parseRecognition(body: string): ParsedRecognition {
   const byIndex = new Map<number, Utterance>();
 
   const at = (index: number): Utterance => {
@@ -169,8 +218,13 @@ export function parseRecognition(body: string): string {
 
     const refinement = asRecord(result['finalRefinement']);
     if (refinement) {
-      const text = firstAlternativeText(asRecord(refinement['normalizedText']));
-      if (text !== undefined) at(toIndex(refinement['finalIndex'])).normalized = text;
+      const normalized = asRecord(refinement['normalizedText']);
+      const text = firstAlternativeText(normalized);
+      if (text !== undefined) {
+        const utterance = at(toIndex(refinement['finalIndex']));
+        utterance.normalized = text;
+        utterance.normalizedWords = alternativeWords(normalized);
+      }
       continue;
     }
 
@@ -179,18 +233,29 @@ export function parseRecognition(body: string): string {
       const text = firstAlternativeText(final);
       // У события final своего номера нет, он лежит в курсорах.
       const index = toIndex(asRecord(result['audioCursors'])?.['finalIndex']);
-      if (text !== undefined) at(index).raw = text;
+      if (text !== undefined) {
+        const utterance = at(index);
+        utterance.raw = text;
+        utterance.rawWords = alternativeWords(final);
+      }
     }
   }
 
-  return (
-    [...byIndex.entries()]
-      .sort(([left], [right]) => left - right)
-      // Нормализованный текст предпочтительнее: он с пунктуацией.
-      .map(([, utterance]) => (utterance.normalized ?? utterance.raw ?? '').trim())
-      .filter((text) => text !== '')
-      .join(' ')
-  );
+  const ordered = [...byIndex.entries()].sort(([left], [right]) => left - right);
+
+  const utterances: RecognizedUtterance[] = [];
+  for (const [, utterance] of ordered) {
+    // Нормализованный текст предпочтительнее: он с пунктуацией.
+    const text = (utterance.normalized ?? utterance.raw ?? '').trim();
+    if (text === '') continue;
+
+    utterances.push({
+      text,
+      words: utterance.normalizedWords ?? utterance.rawWords ?? [],
+    });
+  }
+
+  return { text: utterances.map((item) => item.text).join(' '), utterances };
 }
 
 function operationFailure(error: Record<string, unknown>): Error {
@@ -205,6 +270,13 @@ function operationFailure(error: Record<string, unknown>): Error {
 
 export class YandexSpeechProvider implements SpeechProvider {
   readonly name: string;
+
+  /**
+   * SpeechKit v3 отдаёт время каждого слова — проверено живым запросом
+   * 27.08.2026. Поэтому голосовые одной выгрузки можно расшифровывать
+   * одним запросом и раскладывать текст обратно по сообщениям.
+   */
+  readonly timeline = true;
 
   private readonly baseUrl: string;
   private readonly operationsUrl: string;
@@ -242,12 +314,13 @@ export class YandexSpeechProvider implements SpeechProvider {
 
     const operationId = await this.startRecognition(audio, request.language);
     await this.awaitOperation(operationId);
-    const text = await this.fetchRecognition(operationId);
+    const recognition = await this.fetchRecognition(operationId);
 
     return {
-      text,
+      text: recognition.text,
       model: this.model,
       audioSeconds: Math.round(request.durationSec),
+      utterances: recognition.utterances,
     };
   }
 
@@ -320,7 +393,7 @@ export class YandexSpeechProvider implements SpeechProvider {
     }
   }
 
-  private async fetchRecognition(operationId: string): Promise<string> {
+  private async fetchRecognition(operationId: string): Promise<ParsedRecognition> {
     const body = await this.requestText(
       `${this.baseUrl}/stt/v3/getRecognition?operationId=${encodeURIComponent(operationId)}`,
     );

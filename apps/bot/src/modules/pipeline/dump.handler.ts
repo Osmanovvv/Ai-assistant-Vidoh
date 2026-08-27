@@ -198,15 +198,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const ai = { ...deps.ai, db };
     const aiLight = { ...(deps.aiLight ?? deps.ai), db };
 
-    const { combined } = await transcribeBatch(db, batch, deps.speech, {
+    const { combined, truncated } = await transcribeBatch(db, batch, deps.speech, {
       onStart: async () => {
         if (!deps.sender || !target) return;
         await showStatus({ db, sender: deps.sender }, target, texts.listening.working);
       },
     });
 
+    /**
+     * Обычный ответ, к которому договаривается предупреждение об обрезке
+     * (§10.5 ТЗ).
+     *
+     * Отдельной репликой это не отправляется: одна выгрузка — один ответ.
+     * И к кризисной реплике не договаривается тоже: там человеку не до
+     * длины записи (§13.7).
+     */
+    const answer = async (text: string): Promise<void> => {
+      const tail = `\n\n${texts.listening.tooLong}`;
+      await reply(db, deps, target, truncated ? `${text}${tail}` : text);
+    };
+
     if (combined === '') {
-      await reply(db, deps, target, texts.listening.nothingHeard);
+      await answer(texts.listening.nothingHeard);
       return;
     }
 
@@ -297,12 +310,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (parsed.length === 0) {
-      await reply(
-        db,
-        deps,
-        target,
-        deferred.length > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse,
-      );
+      await answer(deferred.length > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse);
       return;
     }
 
@@ -322,12 +330,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         text: dumpText,
         reason: `извлечение не удалось: ${extracted.problem}`,
       });
-      await reply(db, deps, target, texts.answer.savedUnparsed);
+      await answer(texts.answer.savedUnparsed);
       return;
     }
 
     if (extracted.units.length === 0) {
-      await reply(db, deps, target, texts.answer.nothingToParse);
+      await answer(texts.answer.nothingToParse);
       return;
     }
 
@@ -364,7 +372,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         text: dumpText,
         reason: `классификация не удалась: ${classified.problem}`,
       });
-      await reply(db, deps, target, texts.answer.savedUnparsed);
+      await answer(texts.answer.savedUnparsed);
       return;
     }
 
@@ -448,7 +456,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       'Выгрузка разобрана',
     );
 
-    await reply(db, deps, target, presented.reply.text);
+    await answer(presented.reply.text);
 
     /**
      * §8.2: сводка темы обновляется правкой закреплённого сообщения.
