@@ -115,8 +115,18 @@ try {
       const accuracy = actual.deadline?.accuracy ?? 'none';
       if (expected.deadline === '*' || accuracy === expected.deadline) continue;
 
+      /**
+       * Дата печатается в поясе человека, а не в UTC.
+       *
+       * В UTC московский срок выглядит на день раньше: «5 сентября»
+       * печаталось как 2026-09-04, и я чуть не пошёл искать ошибку
+       * off-by-one, которой не было. Сравнение всегда считалось в поясе —
+       * врал только вывод, то есть ровно то, на что смотрят.
+       */
       const date =
-        actual.deadline === undefined ? '' : ` ${actual.deadline.at.toISOString().slice(0, 10)}`;
+        actual.deadline === undefined
+          ? ''
+          : ` ${new Intl.DateTimeFormat('sv-SE', { timeZone: outcome.timeZone }).format(actual.deadline.at)}`;
 
       process.stdout.write(
         `  срок [${outcome.id}] «${actual.text}»: ожидался ${expected.deadline}, получен ${accuracy}${date}

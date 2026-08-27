@@ -106,19 +106,47 @@ test.describe('темы в Telegram Web', () => {
   test('сводка закреплена и содержит актуальный список', async ({ page }) => {
     await openChat(page);
 
+    /**
+     * Ветка открывается по-настоящему, а не читается из шапки чата.
+     *
+     * Первый вариант проверял закреплённое сообщение в шапке — и это
+     * оказалось слабее задуманного: шапка показывает сводку последней
+     * темы, а не той, в которую смотрит человек. Скриншот при этом
+     * получался тот же, что у первого сценария, то есть доказывал не то.
+     */
+    const topic = process.env['VISUAL_TOPIC'] ?? 'семья';
+
+    /**
+     * Ветку ищем сначала по превью сводки, потом по названию.
+     *
+     * Превью надёжнее: строка «тема — что здесь есть» есть только у
+     * ветки. Но оно живёт лишь до следующего сообщения в теме — стоит
+     * человеку написать туда, и в списке будет ответ бота. На этом
+     * проверка и упала в первый раз.
+     */
+    const byPreview = page.getByText(`${topic} — что здесь есть`, { exact: false }).first();
+    const byName = page.getByText(topic, { exact: true }).first();
+
+    const entry = (await byPreview.count()) > 0 ? byPreview : byName;
+
+    await expect(entry, `в списке нет ветки «${topic}»`).toBeVisible();
+    await entry.click();
+
     const summary = page.getByText(SUMMARY_MARK, { exact: false }).first();
     await expect(
       summary,
-      `на экране нет заголовка сводки «${SUMMARY_MARK}» — сводка не закреплена или не создана`,
+      `в ветке «${topic}» нет заголовка сводки «${SUMMARY_MARK}»`,
     ).toBeVisible();
 
-    // Сводка без списка — это заголовок, а не сводка: §6.4 требует
-    // актуального перечня дел темы, и пустой заголовок значил бы, что
-    // обновление редактированием не доехало.
-    const text = (await summary.locator('xpath=ancestor-or-self::*[3]').innerText()).trim();
-
+    await summary.scrollIntoViewIfNeeded();
+    // Пауза на дорисовку: снимок нужен как доказательство к приёмке, а
+    // не как отпечаток загрузочной крутилки.
+    await page.waitForTimeout(1500);
     await shot(page, '02-svodka');
 
+    // Сводка без списка — это заголовок, а не сводка: §6.4 требует
+    // актуального перечня дел темы.
+    const text = (await summary.locator('xpath=ancestor-or-self::*[3]').innerText()).trim();
     expect(text, 'в сводке нет ни одной строки списка').toContain(BULLET);
   });
 
@@ -134,19 +162,47 @@ test.describe('темы в Telegram Web', () => {
       `на экране нет ответа разбора («${defaultTexts.answer.actionsLead}»)`,
     ).toBeVisible();
 
-    const bubble = answer.locator('xpath=ancestor-or-self::*[3]');
-
-    const overflow = await bubble.evaluate((node: Element) => ({
-      scrollWidth: node.scrollWidth,
-      clientWidth: node.clientWidth,
-    }));
-
-    const pageOverflow = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-
+    // Снимок сначала, замер потом: в прошлый раз замер успевал вызвать
+    // перерисовку, и в приёмку попадал пустой экран с крутилкой.
+    await page.waitForTimeout(1500);
     await shot(page, '03-uzkiy-ekran');
+
+    /**
+     * Замер целиком внутри страницы, одним вызовом.
+     *
+     * Telegram перерисовывает список сообщений на ходу, и элемент,
+     * найденный снаружи, отваливается от страницы между проверкой и
+     * действием — так и упало в первый раз. Внутри страницы отваливаться
+     * нечему: поиск и измерение происходят в один момент.
+     */
+    const overflow = await page.evaluate((lead: string) => {
+      /**
+       * Ищем самый внутренний элемент с текстом ответа.
+       *
+       * Не `closest` по классам: «[class*=message]» ловит контейнер всего
+       * списка сообщений, и он в узком режиме шириной в два экрана. Мерить
+       * его — мерить вёрстку Telegram, а не наш ответ. Первый прогон так и
+       * соврал: 720 против 360.
+       */
+      const candidates = Array.from(document.querySelectorAll('div, span, p')).filter((element) =>
+        element.textContent.includes(lead),
+      );
+
+      const node = candidates.at(-1);
+      const rect = node?.getBoundingClientRect();
+
+      return {
+        found: node !== undefined,
+        scrollWidth: node?.scrollWidth ?? 0,
+        clientWidth: node?.clientWidth ?? 0,
+        right: Math.round(rect?.right ?? 0),
+        viewport: document.documentElement.clientWidth,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        pageClientWidth: document.documentElement.clientWidth,
+      };
+    }, defaultTexts.answer.actionsLead);
+
+    expect(overflow.found, 'ответ разбора не нашёлся на странице').toBe(true);
 
     // Единица допуска — округление точек браузером, а не наша вольность.
     expect(
@@ -154,9 +210,15 @@ test.describe('темы в Telegram Web', () => {
       `ответ шире своего места: ${String(overflow.scrollWidth)} против ${String(overflow.clientWidth)}`,
     ).toBeLessThanOrEqual(overflow.clientWidth + 1);
 
+    // И он целиком в экране: правый край не уехал за границу.
     expect(
-      pageOverflow.scrollWidth,
+      overflow.right,
+      `правый край ответа за экраном: ${String(overflow.right)} при ширине ${String(overflow.viewport)}`,
+    ).toBeLessThanOrEqual(overflow.viewport + 1);
+
+    expect(
+      overflow.pageScrollWidth,
       'страница прокручивается по горизонтали — значит что-то из нашего ответа её растянуло',
-    ).toBeLessThanOrEqual(pageOverflow.clientWidth + 1);
+    ).toBeLessThanOrEqual(overflow.pageClientWidth + 1);
   });
 });
