@@ -1,0 +1,17 @@
+# Резервные копии базы и проверка восстановления (задача 1.22).
+#
+# Оба задания сначала читают /opt/vydoh/.env — оттуда берётся токен бота
+# для оповещений о сбое (§18 ТЗ: об ошибках надо узнавать, а не
+# догадываться), — и только потом backup.env с настройками копий.
+#
+# Проверка восстановления идёт ежедневно, а не по воскресеньям, как было
+# сначала. Причина простая: расписание поставили в понедельник, и до
+# 27.08.2026 проверка не запускалась ни разу. На небольшой базе она стоит
+# секунды, а разница между «копия есть» и «копия восстанавливается» —
+# ровно та, из-за которой проверку и делают.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+20 3 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/backup.sh >> /var/log/vydoh-backup.log 2>&1
+
+0 4 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/restore-check.sh >> /var/log/vydoh-backup.log 2>&1

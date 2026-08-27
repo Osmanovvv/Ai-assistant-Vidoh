@@ -5,9 +5,16 @@
 # Непроверенный бэкап — это не бэкап: узнать, что он битый, в момент
 # аварии слишком поздно.
 #
-# Скрипт поднимает последний дамп на временной базе, сверяет, что все
-# таблицы на месте и в них есть строки, и удаляет временную базу.
+# Скрипт поднимает последний дамп на временной базе, сверяет состав
+# таблиц и число строк с живой базой и удаляет временную базу.
 set -euo pipefail
+
+# Оповещение о провале: §18 ТЗ требует, чтобы об ошибках узнавали.
+# Без этого сломавшееся задание молчит до того дня, когда оно
+# понадобится, — то есть ведёт себя как отсутствующее.
+# shellcheck source=ops/notify.sh
+. "$(dirname "$0")/notify.sh"
+trap 'notify_failure "проверка восстановления"' ERR
 
 : "${DATABASE_URL:?нужна переменная DATABASE_URL}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/vydoh}"
@@ -24,12 +31,16 @@ psql_run() {
   $PSQL_CMD "$@"
 }
 
-LATEST="$(find "$BACKUP_DIR" -name 'vydoh-*.dump*' -type f -print0 \
-  | xargs -0 ls -1t 2>/dev/null | head -1 || true)"
+# `-r` у xargs обязателен: без него на пустом вводе запускается `ls` без
+# аргументов, тот показывает текущий каталог, и скрипт принимает за копию
+# первую попавшуюся папку. Поймано 27.08.2026 на проверке оповещений:
+# вместо внятного «копий нет» приходил невнятный отказ pg_restore на
+# файле с именем «ops».
+LATEST="$(find "$BACKUP_DIR" -name 'vydoh-*.dump*' -type f -print0 2>/dev/null \
+  | xargs -0 -r ls -1t 2>/dev/null | head -1 || true)"
 
-if [ -z "$LATEST" ]; then
-  echo "В ${BACKUP_DIR} нет ни одной копии" >&2
-  exit 1
+if [ -z "$LATEST" ] || [ ! -f "$LATEST" ]; then
+  die "проверка восстановления" "в ${BACKUP_DIR} нет ни одной копии"
 fi
 
 echo "Проверяю копию: ${LATEST}"
@@ -67,23 +78,63 @@ RESTORE_URL="${BASE%/*}/${CHECK_DB}${QUERY}"
 # shellcheck disable=SC2086
 $PG_RESTORE_CMD --dbname="$RESTORE_URL" --no-owner --no-privileges < "$DUMP"
 
-EXPECTED_TABLES="ai_calls batches messages_raw telegram_updates user_settings users"
+# Список таблиц берётся из живой базы, а не пишется руками.
+#
+# Раньше он был вписан в скрипт и застыл на первом этапе: без items,
+# topics, prompt_versions и user_state. Копия без всех данных второго
+# этапа прошла бы проверку молча. Список из живой базы устареть не может:
+# появится таблица — она сама попадёт в ожидаемые.
+TABLES_QUERY="SELECT table_name FROM information_schema.tables
+  WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name;"
+
+LIVE_TABLES="$(psql_run "$DATABASE_URL" -tAc "$TABLES_QUERY" | tr -d '\r' | tr '\n' ' ')"
+
+if [ -z "$(printf '%s' "$LIVE_TABLES" | tr -d ' ')" ]; then
+  die "проверка восстановления" "в живой базе нет ни одной таблицы"
+fi
+
 MISSING=""
-for table in $EXPECTED_TABLES; do
-  if ! psql_run "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | grep -q "$table"; then
+for table in $LIVE_TABLES; do
+  FOUND="$(psql_run "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | tr -d ' ')"
+  if [ "$FOUND" != "$table" ]; then
     MISSING="${MISSING} ${table}"
   fi
 done
 
 if [ -n "$MISSING" ]; then
-  echo "В восстановленной копии нет таблиц:${MISSING}" >&2
-  exit 1
+  die "проверка восстановления" "в восстановленной копии нет таблиц:${MISSING}"
 fi
 
-echo "Таблицы на месте. Строк в основных:"
-for table in users messages_raw batches; do
-  COUNT="$(psql_run "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};")"
-  printf '  %-16s %s\n' "$table" "$COUNT"
+echo "Таблиц проверено по живой базе: $(printf '%s' "$LIVE_TABLES" | wc -w)"
+
+# Пустота копии при непустой базе — сломанная копия.
+#
+# Раньше строки печатались, и всё. На пустой базе проверка зеленела,
+# ничего не проверив, — именно так она и прошла 27.08.2026 сразу после
+# удаления тестовых данных. Печать без сравнения не проверка.
+LIVE_ROWS=0
+COPY_ROWS=0
+
+for table in $LIVE_TABLES; do
+  LIVE_COUNT="$(psql_run "$DATABASE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d ' ')"
+  COPY_COUNT="$(psql_run "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d ' ')"
+
+  LIVE_ROWS=$((LIVE_ROWS + LIVE_COUNT))
+  COPY_ROWS=$((COPY_ROWS + COPY_COUNT))
+
+  if [ "$LIVE_COUNT" != "0" ] || [ "$COPY_COUNT" != "0" ]; then
+    printf '  %-20s копия %-8s живая %s\n' "$table" "$COPY_COUNT" "$LIVE_COUNT"
+  fi
 done
+
+# Строк в копии меньше, чем в живой базе, — норма: между снимком и
+# проверкой люди продолжали писать. А вот пустая копия непустой базы — нет.
+if [ "$LIVE_ROWS" != "0" ] && [ "$COPY_ROWS" = "0" ]; then
+  die "проверка восстановления" "живая база не пуста (${LIVE_ROWS} строк), а копия пуста"
+fi
+
+if [ "$LIVE_ROWS" = "0" ]; then
+  echo "Внимание: живая база пуста, сверять строки не с чем." >&2
+fi
 
 echo "Копия восстанавливается."
