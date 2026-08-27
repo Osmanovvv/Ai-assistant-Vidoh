@@ -38,7 +38,9 @@ if (directory === undefined) {
   process.exit(2);
 }
 
-const logger = createLogger({ level: 'info', pretty: true });
+// Читаемый вывод — только в терминале человека: в контейнере
+// без `pino-pretty` он не нужен и раньше ронял скрипт.
+const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY === true });
 const env = modelEnvSchema.parse(process.env);
 const db = getDb();
 

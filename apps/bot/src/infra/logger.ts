@@ -78,13 +78,26 @@ export function createLogger(
   }
 
   if (pretty) {
-    return pino({
-      ...base,
-      transport: {
-        target: 'pino-pretty',
-        options: { translateTime: 'SYS:HH:MM:ss', ignore: 'pid,hostname,service' },
-      },
-    });
+    /**
+     * Читаемый вывод — удобство разработки, и его отсутствие не повод
+     * падать.
+     *
+     * `pino-pretty` стоит в devDependencies, а в боевом образе их нет. На
+     * этом сломалась заливка промптов на сервер: служебный скрипт, который
+     * работает только на машине разработчика, — не служебный скрипт.
+     * Поэтому здесь откат к обычному JSON, а не отказ.
+     */
+    try {
+      return pino({
+        ...base,
+        transport: {
+          target: 'pino-pretty',
+          options: { translateTime: 'SYS:HH:MM:ss', ignore: 'pid,hostname,service' },
+        },
+      });
+    } catch {
+      return pino(base);
+    }
   }
 
   return pino(base);
