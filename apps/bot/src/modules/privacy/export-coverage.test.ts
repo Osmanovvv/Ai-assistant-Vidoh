@@ -1,15 +1,8 @@
-import { getTableColumns } from 'drizzle-orm';
+import { getTableColumns, getTableName, is } from 'drizzle-orm';
+import { PgTable } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
-import {
-  batches,
-  items,
-  messagesRaw,
-  topics,
-  userSettings,
-  users,
-  userState,
-} from '../../db/schema.js';
+import * as schema from '../../db/schema.js';
 
 /**
  * Полнота выгрузки данных (§16 ТЗ, задача 1.20).
@@ -44,7 +37,7 @@ const DECISIONS: readonly {
 }[] = [
   {
     name: 'users',
-    columns: Object.keys(getTableColumns(users)),
+    columns: Object.keys(getTableColumns(schema.users)),
     decision: {
       exported: [
         'tgId',
@@ -70,7 +63,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'user_settings',
-    columns: Object.keys(getTableColumns(userSettings)),
+    columns: Object.keys(getTableColumns(schema.userSettings)),
     decision: {
       exported: [
         'morningTime',
@@ -92,7 +85,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'user_state',
-    columns: Object.keys(getTableColumns(userState)),
+    columns: Object.keys(getTableColumns(schema.userState)),
     decision: {
       exported: ['energy', 'energyAt'],
       internal: ['userId', 'updatedAt'],
@@ -100,7 +93,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'topics',
-    columns: Object.keys(getTableColumns(topics)),
+    columns: Object.keys(getTableColumns(schema.topics)),
     decision: {
       exported: ['name', 'emoji', 'isDefault', 'isArchived', 'createdAt'],
       internal: [
@@ -115,7 +108,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'items',
-    columns: Object.keys(getTableColumns(items)),
+    columns: Object.keys(getTableColumns(schema.items)),
     decision: {
       exported: [
         'text',
@@ -152,7 +145,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'batches',
-    columns: Object.keys(getTableColumns(batches)),
+    columns: Object.keys(getTableColumns(schema.batches)),
     decision: {
       exported: ['openedAt', 'status', 'combinedText'],
       internal: [
@@ -171,7 +164,7 @@ const DECISIONS: readonly {
   },
   {
     name: 'messages_raw',
-    columns: Object.keys(getTableColumns(messagesRaw)),
+    columns: Object.keys(getTableColumns(schema.messagesRaw)),
     decision: {
       exported: ['receivedAt', 'kind', 'text', 'transcript'],
       internal: [
@@ -212,4 +205,60 @@ describe('решение по каждой колонке принято', () =>
       expect(stale).toEqual([]);
     });
   }
+});
+
+/**
+ * Полнота самого списка таблиц.
+ *
+ * Проверка выше следит за колонками — но только тех таблиц, что
+ * перечислены здесь. Перечислены они руками, значит новая таблица с
+ * данными человека в список не попадёт, и сторож промолчит именно там,
+ * где должен закричать. Так уже и было: `items`, `topics` и `user_state`
+ * появились, а выгрузка о них не узнала — и заметить это было неоткуда.
+ *
+ * Теперь схема сверяется целиком: каждая таблица либо разобрана по
+ * колонкам выше, либо признана неличной — с причиной.
+ */
+const NOT_PERSONAL: readonly string[] = [
+  // Номер апдейта Telegram и время получения. Ни текста, ни привязки к
+  // человеку: удаление её не касается.
+  'telegram_updates',
+  // Наши промпты и их версии. Данные разработчика, не пользователя.
+  'prompt_versions',
+  // Учёт расхода: этап, модель, токены, стоимость, задержка. Ни строчки
+  // пользовательского текста; при удалении обезличивается (set null),
+  // потому что на этих числах держится история себестоимости.
+  'ai_calls',
+];
+
+function tablesInSchema(): readonly string[] {
+  // Через unknown: в модуле схемы лежат не только таблицы, но и
+  // перечисления, и объединение их точных типов сужению не поддаётся.
+  const values: readonly unknown[] = Object.values(schema);
+
+  return values
+    .filter((value): value is PgTable => is(value, PgTable))
+    .map((table) => getTableName(table))
+    .sort((first, second) => first.localeCompare(second));
+}
+
+describe('список таблиц полон', () => {
+  it('в схеме нет таблицы, о которой не принято решение', () => {
+    const known = new Set([...DECISIONS.map((table) => table.name), ...NOT_PERSONAL]);
+    const forgotten = tablesInSchema().filter((name) => !known.has(name));
+
+    expect(
+      forgotten,
+      'Новые таблицы. Есть данные человека — разбери по колонкам в DECISIONS и добавь в exportUserData; нет — впиши в NOT_PERSONAL с причиной.',
+    ).toEqual([]);
+  });
+
+  it('в списках нет таблиц, которых уже нет в схеме', () => {
+    const actual = new Set(tablesInSchema());
+    const stale = [...DECISIONS.map((table) => table.name), ...NOT_PERSONAL].filter(
+      (name) => !actual.has(name),
+    );
+
+    expect(stale).toEqual([]);
+  });
 });

@@ -74,13 +74,52 @@ export function testDb(): Database {
 }
 
 /**
+ * Список таблиц берётся из самой базы, а не пишется руками.
+ *
+ * Раньше он стоял здесь строкой и застыл на первом этапе: без `items`,
+ * `topics`, `user_state` и `prompt_versions`. Работало это случайно —
+ * `truncate ... cascade` заодно вычищает всё, что ссылается на `users`, —
+ * а `prompt_versions` ни на кого не ссылается и между тестами не
+ * очищалась. Пять тестов чистят её руками, то есть делают за помощника
+ * его работу.
+ *
+ * Ровно та же ошибка, что нашлась 27.08.2026 в проверке резервных копий:
+ * список, вписанный руками, устаревает молча — и тем опаснее, что до
+ * поломки ведёт себя как рабочий.
+ */
+let liveTables: readonly string[] | undefined;
+
+async function tablesOf(db: Database): Promise<readonly string[]> {
+  if (liveTables) return liveTables;
+
+  const result = await db.execute<{ table_name: string }>(sql`
+    select table_name from information_schema.tables
+    where table_schema = 'public' and table_type = 'BASE TABLE'
+    order by table_name
+  `);
+
+  const names = result.rows.map((row) => row.table_name);
+  if (names.length === 0) {
+    throw new Error('в тестовой базе нет ни одной таблицы: миграции не применились');
+  }
+
+  liveTables = names;
+  return names;
+}
+
+/**
  * Очистка между тестами. TRUNCATE с CASCADE и RESTART IDENTITY: быстрее
  * пересоздания и не оставляет висящих внешних ключей.
  */
 export async function truncateAll(): Promise<void> {
   const db = testDb();
+  const names = await tablesOf(db);
+
   await db.execute(
-    sql`truncate table ${schema.aiCalls}, ${schema.messagesRaw}, ${schema.batches}, ${schema.telegramUpdates}, ${schema.userSettings}, ${schema.users} restart identity cascade`,
+    sql`truncate table ${sql.join(
+      names.map((name) => sql.identifier(name)),
+      sql`, `,
+    )} restart identity cascade`,
   );
 }
 
@@ -89,5 +128,6 @@ export async function closeTestDatabase(): Promise<void> {
     await pool.end();
     pool = undefined;
     database = undefined;
+    liveTables = undefined;
   }
 }
