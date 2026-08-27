@@ -193,6 +193,19 @@ export interface TextProfile {
     readonly finished: string;
     /** Ни одной сферы не выбрано: берём базовый набор §6.4 и не спорим. */
     readonly finishedDefault: string;
+
+    /**
+     * §6.4: дела, не попавшие ни в одну выбранную сферу, уходят в тему по
+     * умолчанию, **а бот предлагает создать новую**. Предлагает, а не
+     * создаёт: создавать темы без спроса запрещено.
+     */
+    readonly offerTopics: (names: readonly string[]) => string;
+    readonly buttonAddTopics: string;
+    readonly buttonSkipTopics: string;
+    readonly topicsAdded: (names: readonly string[]) => string;
+    readonly topicsNotAdded: string;
+    /** Больше сфер, чем продукт готов держать (§6.4: количество ограничено). */
+    readonly topicsLimit: string;
   };
 
   /**

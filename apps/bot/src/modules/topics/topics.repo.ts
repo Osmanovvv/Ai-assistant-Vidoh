@@ -96,3 +96,64 @@ export async function createTopics(
 
   return rows.length;
 }
+
+/**
+ * Предел числа тем (§6.4: «количество тем ограничено, значение задаётся
+ * в настройках»).
+ *
+ * Пока константой: настройки продукта появятся в админке на четвёртом
+ * этапе, и тогда значение переедет туда. Восемь — не круглое число ради
+ * красоты: столько ветвей человек ещё различает в списке чата, а дальше
+ * структура сама становится тем хаосом, который продукт должен убирать.
+ */
+export const MAX_TOPICS = 8;
+
+export interface AppendResult {
+  readonly added: readonly string[];
+  /** Часть сфер не добавлена: упёрлись в предел. */
+  readonly limited: boolean;
+}
+
+/**
+ * Добавляет сферы к уже существующим (§6.4).
+ *
+ * Отдельно от `createTopics` из-за порядка: тот раскладывает список с
+ * нуля и годится только для онбординга. Здесь темы **дописываются** в
+ * конец, иначе новая сфера встала бы первой и перетасовала бы человеку
+ * весь список без его просьбы.
+ *
+ * Уже существующие имена молча пропускаются: повторное «добавить
+ * покупки» не должно ни падать, ни плодить двойников.
+ */
+export async function appendTopics(
+  db: Executor,
+  userId: string,
+  names: readonly string[],
+): Promise<AppendResult> {
+  const existing = await listTopics(db, userId);
+  const taken = new Set(existing.map((topic) => topic.name.toLowerCase()));
+
+  const fresh = names.filter((name) => !taken.has(name.toLowerCase()));
+  if (fresh.length === 0) return { added: [], limited: false };
+
+  const room = Math.max(0, MAX_TOPICS - existing.length);
+  const allowed = fresh.slice(0, room);
+
+  if (allowed.length === 0) return { added: [], limited: true };
+
+  const nextOrder = existing.reduce((max, topic) => Math.max(max, topic.sortOrder), -1) + 1;
+
+  const rows = await db
+    .insert(topics)
+    .values(
+      allowed.map((name, index) => ({
+        userId,
+        name,
+        sortOrder: nextOrder + index,
+      })),
+    )
+    .onConflictDoNothing()
+    .returning({ name: topics.name });
+
+  return { added: rows.map((row) => row.name), limited: allowed.length < fresh.length };
+}

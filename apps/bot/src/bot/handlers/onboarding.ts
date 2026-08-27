@@ -7,7 +7,9 @@ import {
   ACTION,
   chosenFromLabels,
   createChosenTopics,
+  decodeTopicOffer,
   finish,
+  offerTopicsQuestion,
   onboardingStateOf,
   questionFor,
   setEvening,
@@ -23,8 +25,9 @@ import {
 } from '../../modules/onboarding/onboarding.service.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
-import { listTopics, topicsFor } from '../../modules/topics/topics.repo.js';
+import { appendTopics, listTopics, topicsFor } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
+import { textsFor } from '../../texts/index.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 
 /**
@@ -324,8 +327,100 @@ export function registerOnboardingHandlers(
       'Онбординг пройден',
     );
 
-    await ctx.editMessageText(
-      result.fallback ? state.texts.onboarding.finishedDefault : state.texts.onboarding.finished,
-    );
+    /**
+     * §6.4: дела, не подошедшие ни к одной выбранной сфере, ушли в тему
+     * по умолчанию — **и бот предлагает создать новую**. Предлагает, а не
+     * создаёт: создавать темы без спроса запрещено.
+     *
+     * Это то самое «при следующем удобном случае» из §6.4, и удобнее
+     * случая нет: человек только что выбирал сферы и держит это в голове.
+     *
+     * Найдено на живой выкладке этапа 2: потерянные названия сфер
+     * записывались в журнал и больше никуда. У человека десять покупок
+     * ушло в «личное», а сказать ему об этом было некому.
+     */
+    const finishedText = result.fallback
+      ? state.texts.onboarding.finishedDefault
+      : state.texts.onboarding.finished;
+
+    const offer = orphaned.length > 0 ? offerTopicsQuestion(state.texts, orphaned) : undefined;
+
+    if (offer === undefined) {
+      await ctx.editMessageText(finishedText);
+      return;
+    }
+
+    /**
+     * Двумя сообщениями, а не одним склеенным: склейка в коде — это
+     * реплика, собранная не в словаре (инвариант 4). А по существу это и
+     * есть два разных высказывания: опрос закончен, и отдельно —
+     * единственный открытый вопрос, что §13.9 и допускает.
+     */
+    await ctx.editMessageText(finishedText);
+    await ctx.reply(offer.text, { reply_markup: keyboardOf(offer) });
+  });
+
+  /**
+   * Согласие добавить сферу (§6.4).
+   *
+   * Шаг онбординга уже «пройден», поэтому проверки шага здесь нет: это
+   * не вопрос опроса, а отдельное предложение после него. Но человек
+   * должен быть известен — иначе нажатие пришло из ниоткуда.
+   */
+  bot.callbackQuery(new RegExp(`^${ACTION.addTopicsPrefix}(?!no$)`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const user = await findByTgId(db, ctx.from.id);
+    if (!user) return;
+
+    const names = decodeTopicOffer(ctx.callbackQuery.data);
+    if (names.length === 0) return;
+
+    const context = await outputContextOf(db, user.id);
+    const texts = textsFor(context.textProfile);
+
+    const { added, limited } = await appendTopics(db, user.id, names);
+
+    if (added.length === 0) {
+      await ctx.editMessageText(
+        limited ? texts.onboarding.topicsLimit : texts.onboarding.topicsNotAdded,
+      );
+      return;
+    }
+
+    // Ветка и закреплённая сводка появляются сразу: человек согласился на
+    // сферу, а не на строчку в базе.
+    const chatId = ctx.chat?.id;
+    if (gateway && chatId !== undefined) {
+      try {
+        await refreshSummaries(
+          { db, gateway, logger },
+          {
+            userId: user.id,
+            chatId,
+            topicNames: added,
+            timeZone: context.timeZone,
+            profile: context.textProfile,
+          },
+        );
+      } catch (error) {
+        // Тема создана, а ветка — дело поправимое: она появится, когда в
+        // неё понадобится написать. Ронять согласие из-за этого нельзя.
+        logger.error({ err: error, userId: user.id }, 'Не удалось создать ветку новой сферы');
+      }
+    }
+
+    logger.info({ userId: user.id, added, limited }, 'Сферы добавлены по просьбе человека');
+    await ctx.editMessageText(texts.onboarding.topicsAdded(added));
+  });
+
+  bot.callbackQuery(ACTION.addTopicsSkip, async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const user = await findByTgId(db, ctx.from.id);
+    if (!user) return;
+
+    const context = await outputContextOf(db, user.id);
+    await ctx.editMessageText(textsFor(context.textProfile).onboarding.topicsNotAdded);
   });
 }

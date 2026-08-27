@@ -110,7 +110,78 @@ export const ACTION = {
   eveningOff: 'onb:evening:off',
   topicPrefix: 'onb:topic:',
   topicsDone: 'onb:topics:done',
+  /** `onb:add:3,6` — номера сфер в TOPIC_CHOICES, а не их названия. */
+  addTopicsPrefix: 'onb:add:',
+  addTopicsSkip: 'onb:add:no',
 } as const;
+
+/**
+ * Сколько сфер предлагать за раз (§6.4, предложение создать новую тему).
+ *
+ * Две. Не потому, что больше не влезет в кнопку, а потому что вопрос из
+ * четырёх сфер — это уже анкета, а разгрузка не должна в неё
+ * превращаться. Остальные предложатся, когда снова понадобятся.
+ */
+const MAX_OFFERED = 2;
+
+/**
+ * Названия сфер в кнопку кладутся **номерами**, а не текстом.
+ *
+ * `callback_data` ограничена 64 байтами, а кириллица весит по два байта
+ * на знак: «покупки» и «здоровье» вместе — уже 31 байт, и это без
+ * префикса. Номера в закрытом списке всегда короткие, а список закрытый:
+ * он в коде, а не в базе.
+ */
+export function encodeTopicOffer(names: readonly string[]): string | undefined {
+  const numbers = names
+    .map((name) => TOPIC_CHOICES.indexOf(name as (typeof TOPIC_CHOICES)[number]))
+    .filter((index) => index >= 0)
+    .slice(0, MAX_OFFERED);
+
+  if (numbers.length === 0) return undefined;
+
+  return `${ACTION.addTopicsPrefix}${numbers.join(',')}`;
+}
+
+/** Обратное преобразование. Мусор в данных даёт пустой список, а не отказ. */
+export function decodeTopicOffer(data: string): readonly string[] {
+  if (!data.startsWith(ACTION.addTopicsPrefix)) return [];
+
+  const tail = data.slice(ACTION.addTopicsPrefix.length);
+  if (tail === '' || tail === 'no') return [];
+
+  return tail
+    .split(',')
+    .map((part) => Number(part))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < TOPIC_CHOICES.length)
+    .map((index) => TOPIC_CHOICES[index] as string);
+}
+
+/**
+ * Предложение добавить сферу (§6.4).
+ *
+ * Возвращает `undefined`, если предлагать нечего: ни одного известного
+ * названия. Молчание тут правильнее пустого вопроса.
+ */
+export function offerTopicsQuestion(
+  texts: TextProfile,
+  names: readonly string[],
+): Question | undefined {
+  const action = encodeTopicOffer(names);
+  if (action === undefined) return undefined;
+
+  const offered = decodeTopicOffer(action);
+
+  return {
+    text: texts.onboarding.offerTopics(offered),
+    rows: [
+      [
+        { label: texts.onboarding.buttonAddTopics, action },
+        { label: texts.onboarding.buttonSkipTopics, action: ACTION.addTopicsSkip },
+      ],
+    ],
+  };
+}
 
 export interface QuestionContext {
   readonly texts: TextProfile;

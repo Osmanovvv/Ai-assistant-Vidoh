@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { Item } from '../db/schema.js';
 import {
   ACTION as ONBOARDING,
+  offerTopicsQuestion,
   timezoneQuestion,
   topicRows,
   questionFor,
@@ -98,6 +99,13 @@ function everyCallbackData(): { where: string; data: string }[] {
   }
   for (const data of Object.values(ONBOARDING)) {
     found.push({ where: 'onboarding:action', data });
+  }
+  // Предложение добавить сферу (§6.4). Худший случай — самые длинные
+  // названия из закрытого списка: в кнопку идут их номера, но проверить
+  // надо именно предел, а не веру в то, что номера коротки.
+  for (const button of offerTopicsQuestion(defaultTexts, ['здоровье', 'покупки'])?.rows.flat() ??
+    []) {
+    found.push({ where: 'onboarding:offer', data: button.action });
   }
 
   // Ответ на выгрузку (§13.2).
