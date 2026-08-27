@@ -191,14 +191,26 @@ export interface QuestionContext {
 }
 
 /**
+ * Есть ли в имени хоть одна буква.
+ *
+ * Имя приходит от Telegram, и там бывает что угодно: пусто, точка, одни
+ * эмодзи, «·». Подтверждать в таком имени нечего — вопрос «называть тебя
+ * .?» выглядит как сбой, а не как знакомство. Проверка на пустоту это не
+ * ловила: у живого человека 27.08.2026 имя оказалось одной точкой, и бот
+ * спросил ровно так.
+ */
+function hasLetters(name: string): boolean {
+  return /\p{L}/u.test(name);
+}
+
+/**
  * С какого шага начинать.
  *
- * Имя приходит от Telegram, но у части аккаунтов его нет — поле в базе
- * пустое. Подтверждать нечего, а вопрос «называть тебя ?» хуже, чем его
- * отсутствие, поэтому такой человек начинает сразу с пояса.
+ * Нечего подтверждать — начинаем сразу с пояса: лишний вопрос без смысла
+ * дороже пропущенного.
  */
 export function firstStep(name: string): StepNumber {
-  return name.trim() === '' ? STEP.timezone : STEP.name;
+  return hasLetters(name) ? STEP.name : STEP.timezone;
 }
 
 export function questionFor(step: number, context: QuestionContext): Question | undefined {
@@ -208,7 +220,7 @@ export function questionFor(step: number, context: QuestionContext): Question | 
   switch (step) {
     case STEP.name:
       // Подтверждать нечего: см. firstStep.
-      if (name.trim() === '') return undefined;
+      if (!hasLetters(name)) return undefined;
 
       return {
         text: onboarding.nameConfirm(name),
