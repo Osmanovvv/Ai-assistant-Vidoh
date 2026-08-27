@@ -115,8 +115,34 @@ const HYPERBOLE: readonly string[] = [
   'плохая мать',
   'хоть плачь',
   'я в аду',
+  'можно закапывать',
 ];
 
+/**
+ * Смерть, названная сравнением с делами.
+ *
+ * «Проще умереть, чем всё это разгрести», «скорее сдохну, чем ещё раз
+ * пойду на утренник» — это не список фраз, а грамматика, и списком её не
+ * закрыть: завтра человек скажет «легче повеситься, чем…». Поэтому здесь
+ * образец, а не перечисление.
+ *
+ * **Границы слова здесь — просмотр назад и вперёд, а не `\b`.** С кириллицей
+ * `\b` не работает вовсе: границу слова JavaScript определяет через
+ * латиницу. Первая версия образца не совпадала ни разу, и это поймали
+ * тесты, а не замер, — иначе правка уехала бы в бой пустой.
+ *
+ * **Держится всё на слове «чем».** Оно и делает фразу сравнением. Без
+ * него «мне проще умереть» — это уже не про дела, и трогать его нельзя.
+ *
+ * Замер 28.08.2026: промпт router@4 понял правило и сам закрыл четыре
+ * фразы из пяти, которых в нём не было. Но две из трёх, вписанных в него
+ * примерами, лёгкая модель всё равно не отдала — это её потолок, и
+ * дальше работает код.
+ */
+const COMPARISON =
+  /(?<!\p{L})(проще|легче|лучше|скорее)(?!\p{L})[^.!?]{0,20}(?<!\p{L})(умереть|умру|сдохнуть|сдохну|застрелиться|застрелюсь|повеситься|повешусь|помереть)(?!\p{L})[^.!?]{0,40}(?<!\p{L})чем(?!\p{L})/gu;
+
+const HYPERBOLE_PATTERNS: readonly RegExp[] = [COMPARISON];
 /**
  * Слова, которые сами по себе говорят о жизни, смерти и вреде себе.
  *
@@ -250,13 +276,25 @@ export function detectByMarkers(text: string): CrisisOutcome {
  * вреде себе. Нет ни одного — значит модель отреагировала на оборот.
  */
 function modelReactedToIdiom(normalized: string): string | undefined {
-  const idioms = HYPERBOLE.filter((phrase) => normalized.includes(phrase));
-  if (idioms.length === 0) return undefined;
-
   let rest = normalized;
-  for (const idiom of idioms) rest = rest.split(idiom).join(' ');
+  const hit: string[] = [];
 
-  return RISK_WORDS.some((word) => rest.includes(word)) ? undefined : idioms[0];
+  for (const idiom of HYPERBOLE) {
+    if (!rest.includes(idiom)) continue;
+    hit.push(idiom);
+    rest = rest.split(idiom).join(' ');
+  }
+
+  for (const pattern of HYPERBOLE_PATTERNS) {
+    const found = rest.match(pattern);
+    if (found === null) continue;
+    hit.push(found[0]);
+    rest = rest.replaceAll(pattern, ' ');
+  }
+
+  if (hit.length === 0) return undefined;
+
+  return RISK_WORDS.some((word) => rest.includes(word)) ? undefined : hit[0];
 }
 
 /**
