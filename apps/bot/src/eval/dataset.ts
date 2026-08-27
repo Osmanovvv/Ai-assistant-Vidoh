@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
-import { ITEM_TYPES, PRIORITIES } from '../modules/ai/schemas/index.js';
+import { DEADLINE_ACCURACY, ITEM_TYPES, PRIORITIES } from '../modules/ai/schemas/index.js';
 import { RECURRENCE_KINDS } from '../modules/recurrence/recurrence.js';
 
 /**
@@ -41,6 +41,24 @@ const expectedUnitSchema = z.object({
   topic: z.string().min(1),
   /** Ожидаемый вид повторения (задача 2.18а). */
   recurrence: z.enum(RECURRENCE_KINDS).default('none'),
+  /**
+   * Ожидаемая точность срока (задача 2.7): `none` — срока человек не
+   * называл, `day` — назвал день, `week`, `month`. Звёздочка — разметка
+   * не решает.
+   *
+   * По умолчанию `none`, и это главное здесь: **отсутствие срока — тоже
+   * ожидание.** Выдуманный срок хуже отсутствующего: фильтр выдачи ставит
+   * дела «на сегодня» впереди всех, и мелочь с придуманной датой
+   * вытесняет из выдачи важное без срока. Именно так и случилось на
+   * живой выгрузке 27.08.2026: пять покупок получили сегодняшнюю дату и
+   * заняли всю выдачу, а врачи в неё не попали.
+   */
+  deadline: z.union([z.enum(DEADLINE_ACCURACY), z.literal('*')]).default('none'),
+  /** Ожидаемая дата в виде ГГГГ-ММ-ДД, если её можно посчитать однозначно. */
+  deadlineDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/u)
+    .optional(),
   /** Зачем этот случай в наборе. Идёт в отчёт рядом с промахом. */
   why: z.string().default(''),
 });

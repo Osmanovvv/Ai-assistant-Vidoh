@@ -68,6 +68,7 @@ function stopped(item: EvalCase, version: string): MergedOutcome {
   return {
     id: item.id,
     note: item.note,
+    timeZone: item.timeZone,
     result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
     crisis: { detected: true, expected: item.expected.crisis },
     promptVersions: { classifier: version },
@@ -85,6 +86,7 @@ function failed(
   return {
     id: item.id,
     note: item.note,
+    timeZone: item.timeZone,
     result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
     crisis: { detected: false, expected: item.expected.crisis },
     failed: problem,
@@ -157,6 +159,7 @@ export async function runMergedCase(
     return {
       id: item.id,
       note: item.note,
+      timeZone: item.timeZone,
       result: matchItems(item, items),
       crisis: { detected: detectCrisis(item.text, false).detected, expected: item.expected.crisis },
       promptVersions: { classifier: version },

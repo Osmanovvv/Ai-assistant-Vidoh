@@ -27,6 +27,8 @@ import { match, type MatchResult } from './matcher.js';
 export interface CaseOutcome {
   readonly id: string;
   readonly note: string;
+  /** Пояс человека: без него дату срока не с чем сравнивать. */
+  readonly timeZone: string;
   readonly result: MatchResult;
   /** §13.7: сработал ли кризисный контур и ожидалось ли это. */
   readonly crisis: { readonly detected: boolean; readonly expected: boolean };
@@ -89,6 +91,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
   const stopped = (): CaseOutcome => ({
     id: item.id,
     note: item.note,
+    timeZone: item.timeZone,
     result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
     crisis: { detected: true, expected: item.expected.crisis },
     promptVersions: versions,
@@ -125,6 +128,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       return {
         id: item.id,
         note: item.note,
+        timeZone: item.timeZone,
         result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
         crisis: { detected: false, expected: item.expected.crisis },
         failed: `извлечение: ${extracted.problem}`,
@@ -146,6 +150,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       return {
         id: item.id,
         note: item.note,
+        timeZone: item.timeZone,
         result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
         crisis: { detected: false, expected: item.expected.crisis },
         failed: `классификация: ${classified.problem}`,
@@ -156,6 +161,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
     return {
       id: item.id,
       note: item.note,
+      timeZone: item.timeZone,
       result: match(item.expected.units, classified.items),
       crisis: { detected: false, expected: item.expected.crisis },
       promptVersions: versions,
@@ -166,6 +172,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
     return {
       id: item.id,
       note: item.note,
+      timeZone: item.timeZone,
       result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
       crisis: { detected: false, expected: item.expected.crisis },
       failed: error instanceof Error ? error.message : 'неизвестный отказ',
