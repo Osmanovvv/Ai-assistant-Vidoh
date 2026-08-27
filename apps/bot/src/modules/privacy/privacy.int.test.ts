@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -253,5 +254,94 @@ describe('deleteUserData', () => {
       messages: 0,
       dumps: 0,
     });
+  });
+});
+
+/**
+ * Полнота удаления по всей базе (§16 ТЗ, критерий 13).
+ *
+ * Проверка выше перечисляет таблицы руками — семь штук. Такой список
+ * устаревает молча: таблица появится, а тест останется зелёным, потому
+ * что о ней не знает. Ровно так уже вышло с выгрузкой, и ровно так —
+ * с проверкой резервных копий 27.08.2026.
+ *
+ * Здесь список берётся из самой базы: кто ссылается на `users`, тот и
+ * обязан отпустить человека. Каскад и обезличивание проверяются одним и
+ * тем же утверждением — **ни одна строка нигде не показывает на
+ * удалённого**, — потому что `set null` тоже обрывает ссылку.
+ *
+ * Чего проверка не поймает: таблицу, которая хранит `tg_id` человека без
+ * внешнего ключа. От этого страхует второй тест ниже.
+ */
+interface Reference {
+  readonly table: string;
+  readonly column: string;
+}
+
+async function referencesToUsers(): Promise<readonly Reference[]> {
+  const result = await testDb().execute<{ table_name: string; column_name: string }>(sql`
+    select tc.table_name, kcu.column_name
+    from information_schema.table_constraints tc
+    join information_schema.key_column_usage kcu
+      on kcu.constraint_name = tc.constraint_name
+     and kcu.table_schema = tc.table_schema
+    join information_schema.constraint_column_usage ccu
+      on ccu.constraint_name = tc.constraint_name
+     and ccu.table_schema = tc.table_schema
+    where tc.constraint_type = 'FOREIGN KEY'
+      and tc.table_schema = 'public'
+      and ccu.table_name = 'users'
+      and ccu.column_name = 'id'
+    order by tc.table_name, kcu.column_name
+  `);
+
+  return result.rows.map((row) => ({ table: row.table_name, column: row.column_name }));
+}
+
+describe('удаление по всей базе, а не по списку', () => {
+  it('ни одна таблица не хранит ссылку на удалённого человека', async () => {
+    const references = await referencesToUsers();
+
+    // Пустой или короткий список означал бы, что проверка ничего не
+    // проверяет. На момент второго этапа ссылок шесть: настройки,
+    // сообщения, выгрузки, записи, темы, состояние — плюс учёт расхода.
+    expect(references.length).toBeGreaterThanOrEqual(7);
+
+    await deleteUserData(testDb(), userId);
+
+    const survived: string[] = [];
+    for (const reference of references) {
+      const result = await testDb().execute<{ left: string }>(
+        sql`select count(*)::text as left from ${sql.identifier(reference.table)}
+            where ${sql.identifier(reference.column)} = ${userId}`,
+      );
+
+      if (result.rows[0]?.left !== '0') {
+        survived.push(`${reference.table}.${reference.column}: ${result.rows[0]?.left ?? '?'}`);
+      }
+    }
+
+    expect(
+      survived,
+      'После удаления на человека всё ещё ссылаются. Каскад или обезличивание не настроены.',
+    ).toEqual([]);
+  });
+
+  it('каждая таблица с колонкой user_id связана с людьми внешним ключом', async () => {
+    // Без ключа удаление до такой таблицы не дойдёт, и данные человека
+    // останутся в базе — при том что кнопка отчитается об успехе.
+    const result = await testDb().execute<{ table_name: string }>(sql`
+      select table_name from information_schema.columns
+      where table_schema = 'public' and column_name = 'user_id'
+      order by table_name
+    `);
+
+    const linked = new Set((await referencesToUsers()).map((reference) => reference.table));
+    const orphans = result.rows.map((row) => row.table_name).filter((name) => !linked.has(name));
+
+    expect(
+      orphans,
+      'Таблицы с user_id без внешнего ключа на users: удаление их не тронет.',
+    ).toEqual([]);
   });
 });
