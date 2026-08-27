@@ -293,11 +293,6 @@ export function getEnv(): Env {
   return cached;
 }
 
-/** Сброс кэша. Нужен только тестам. */
-export function resetEnvCache(): void {
-  cached = undefined;
-}
-
 /** Путь вебхука. Вынесен сюда, чтобы регистрация и обработчик не разошлись. */
 export const WEBHOOK_PATH = '/telegram/webhook';
 

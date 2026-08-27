@@ -1,6 +1,6 @@
 import { and, eq, gte, sql } from 'drizzle-orm';
 
-import { aiCalls, type AiCall, type AiStage } from '../../db/schema.js';
+import { aiCalls, type AiStage } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { callCost, type Currency, type ModelPricing, type UsageAmount } from './pricing.js';
 
@@ -159,8 +159,4 @@ export async function spendByUser(
   }
 
   return { calls, failed, totals, complete: unknown === 0 };
-}
-
-export async function callsForBatch(db: Executor, batchId: string): Promise<AiCall[]> {
-  return await db.select().from(aiCalls).where(eq(aiCalls.batchId, batchId));
 }
