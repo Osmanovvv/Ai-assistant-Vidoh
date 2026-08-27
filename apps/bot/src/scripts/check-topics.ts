@@ -37,7 +37,7 @@ if (!Number.isFinite(chatId)) {
 
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.
-const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY === true });
+const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY });
 const api = new Api(token);
 const gateway = createTopicGateway(api);
 
