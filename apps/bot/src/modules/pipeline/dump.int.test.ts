@@ -39,6 +39,7 @@ import { STEP } from '../onboarding/onboarding.service.js';
 import { countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
+import type { AudioLimits } from '../speech/audio.service.js';
 import { run } from '../speech/ffmpeg.js';
 import { MockSpeechProvider } from '../speech/providers/mock.js';
 import { PermanentSpeechError } from '../speech/providers/types.js';
@@ -187,6 +188,8 @@ interface HandlerOptions {
   readonly spendLimit?: SpendLimit | undefined;
   readonly prompts: PromptRegistry;
   readonly sender?: StatusSender | undefined;
+  /** Потолки аудио: нужны тесту на обрезку (§10.5 ТЗ). */
+  readonly speechLimits?: AudioLimits | undefined;
   readonly embedder?: MockEmbeddingProvider | undefined;
   readonly onboarding?: QuestionSender | undefined;
   readonly now?: Date | undefined;
@@ -209,7 +212,12 @@ function recordingQuestions(): { sender: QuestionSender; asked: string[] } {
 
 function handler(options: HandlerOptions) {
   return createDumpHandler({
-    speech: { provider: options.speech, download, pricing },
+    speech: {
+      provider: options.speech,
+      download,
+      pricing,
+      ...(options.speechLimits === undefined ? {} : { limits: options.speechLimits }),
+    },
     ai: {
       provider: options.llm ?? echoingLlm(),
       prompts: options.prompts,
@@ -579,6 +587,34 @@ describe('разбор', () => {
     expect(saved[0]?.isDraft).toBe(true);
     expect(saved[0]?.text).toBe('надо продукты и врача');
     expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
+  });
+
+  it('обрезка договаривается человеку, а не остаётся в журнале', async () => {
+    // §10.5 ТЗ требует предупреждения, и требует справедливо: человек
+    // говорил двадцать пять минут, получал разбор первых двадцати и не
+    // знал, что остальное потеряно. До 27.08.2026 обрезка уходила только
+    // в лог — ровно тот разрыв «модуль есть, а наверх не отдаёт».
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const speech = new MockSpeechProvider({ responses: ['купить продукты'] });
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech,
+          prompts,
+          sender,
+          // Запись длится две секунды, потолок — одна.
+          speechLimits: { maxSegmentSec: 82, maxSingleDurationSec: 1 },
+        }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toContain(defaultTexts.listening.tooLong);
   });
 
   it('высказанное состояние снижает уровень сил и оставляет одно действие', async () => {
