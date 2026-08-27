@@ -27,7 +27,12 @@ import {
   type StatusTarget,
 } from '../presenter/status.service.js';
 import { routeIntents, type Segment } from '../router/router.service.js';
-import { detectByMarkers, detectCrisis, type CrisisOutcome } from '../safety/crisis.js';
+import {
+  detectByMarkers,
+  detectCrisis,
+  type CrisisContour,
+  type CrisisOutcome,
+} from '../safety/crisis.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
 import { topicsFor } from '../topics/topics.repo.js';
@@ -228,8 +233,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * обращения к модели: он ничего не стоит, а значит на настоящем
      * кризисе разбор останавливается до первой потраченной копейки.
      */
-    const stopOnCrisis = async (outcome: CrisisOutcome): Promise<boolean> => {
-      if (!outcome.detected) return false;
+    const stopOnCrisis = async (
+      outcome: CrisisOutcome,
+      /** Какой контур считали: по нему в журнале видно, что именно снято. */
+      contour: CrisisContour,
+    ): Promise<boolean> => {
+      if (!outcome.detected) {
+        if (outcome.hyperbole !== undefined) {
+          // Признак был и снят речевым оборотом. Это самое опасное место
+          // контура: по требованию заказчицы мы гасим ложные
+          // срабатывания, и надо видеть, не гасим ли лишнего. В журнал
+          // идёт оборот, а не сказанное человеком.
+          deps.logger?.info(
+            {
+              event: 'crisis_muted',
+              batchId: batch.id,
+              userId: batch.userId,
+              contour,
+              hyperbole: outcome.hyperbole,
+            },
+            'Признак кризиса снят речевым оборотом',
+          );
+        }
+
+        return false;
+      }
 
       // В журнал идёт факт и сработавший маркер, но не сказанное:
       // частоту ложных срабатываний оценить надо, читать чужую беду в
@@ -239,7 +267,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           event: 'crisis_detected',
           batchId: batch.id,
           userId: batch.userId,
-          contour: outcome.contour,
+          contour: outcome.contour ?? contour,
           marker: outcome.marker,
         },
         'Сработал контур острого кризиса, разбор остановлен',
@@ -251,7 +279,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       return true;
     };
 
-    if (await stopOnCrisis(detectByMarkers(combined))) return;
+    if (await stopOnCrisis(detectByMarkers(combined), 'markers')) return;
 
     /**
      * §10.5: мягкий лимит расхода (задача 2.22).
@@ -283,7 +311,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
     // здесь решает только он.
-    if (await stopOnCrisis(detectCrisis(combined, routed.crisis))) return;
+    if (await stopOnCrisis(detectCrisis(combined, routed.crisis), 'model')) return;
 
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
