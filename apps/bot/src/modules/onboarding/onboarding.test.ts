@@ -320,3 +320,30 @@ describe('предложение добавить сферу (§6.4)', () => {
     expect(question?.rows.flat()).toHaveLength(2);
   });
 });
+
+describe('имя без букв (§12.2)', () => {
+  /**
+   * Имя приходит от Telegram, и там бывает что угодно. У живого человека
+   * 27.08.2026 имя оказалось одной точкой, и бот спросил «Называть тебя
+   * .?» — это выглядит как сбой, а не как знакомство. Проверка на пустую
+   * строку такое не ловила.
+   */
+
+  const letterless = ['', '   ', '.', '·', '...', '🙂', '—', '42'];
+
+  for (const name of letterless) {
+    it(`«${name}» — не имя, вопрос пропускается`, () => {
+      expect(firstStep(name)).toBe(STEP.timezone);
+      expect(questionFor(STEP.name, { texts: defaultTexts, name })).toBeUndefined();
+    });
+  }
+
+  const names = ['Аня', 'Anna', '.Аня', 'Аня 🙂'];
+
+  for (const name of names) {
+    it(`«${name}» — имя, вопрос задаётся`, () => {
+      expect(firstStep(name)).toBe(STEP.name);
+      expect(questionFor(STEP.name, { texts: defaultTexts, name })?.text).toContain(name);
+    });
+  }
+});
