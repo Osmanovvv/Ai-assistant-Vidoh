@@ -592,3 +592,111 @@ describe('домиграция первой выгрузки', () => {
     expect(await localDeadline(itemId, 'Europe/Moscow')).toBe('2026-08-27');
   });
 });
+
+describe('предложение добавить сферу (§6.4)', () => {
+  /**
+   * ТЗ §6.4: дела, не подошедшие ни к одной выбранной сфере, уходят в
+   * тему по умолчанию, **а бот предлагает создать новую**. План обещал
+   * это на задаче 2.15, но в коде потерянные названия только писались в
+   * журнал. Нашлось на живой выкладке этапа 2: у человека десять покупок
+   * ушло в «личное», и сказать ему об этом было некому.
+   */
+
+  async function dumpItemIn(topic: string): Promise<void> {
+    await testDb().insert(items).values({
+      userId,
+      text: 'купить пуфики',
+      type: 'TASK',
+      priority: 'LATER',
+      topic,
+      sourceOrder: 0,
+    });
+  }
+
+  /** Проходит онбординг до сфер и выбирает названные. */
+  async function finishOnboarding(bot: Bot, chosen: readonly string[]): Promise<void> {
+    await startedAt(STEP.timezone);
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
+    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, chosen)));
+  }
+
+  it('после онбординга бот предлагает сферу, в которую дела не попали', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await dumpItemIn('покупки');
+    await finishOnboarding(bot, ['семья', 'здоровье']);
+
+    const offer = calls.filter((call) => call.method === 'sendMessage').at(-1);
+
+    expect(String(offer?.payload['text'])).toContain('покупки');
+    // Кнопки «Добавить» и «Не надо» — решает человек, а не бот.
+    expect(JSON.stringify(offer?.payload['reply_markup'])).toContain(ACTION.addTopicsPrefix);
+  });
+
+  it('согласие создаёт сферу и не трогает порядок прежних', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await dumpItemIn('покупки');
+    await finishOnboarding(bot, ['семья', 'здоровье']);
+
+    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
+
+    // Новая сфера дописана в конец: встань она первой — человеку
+    // перетасовало бы весь список без его просьбы. Проверяется именно
+    // порядок сортировки, а не алфавит: названия помощник сортирует сам.
+    const rows = await testDb()
+      .select({ name: topics.name, order: topics.sortOrder })
+      .from(topics)
+      .where(eq(topics.userId, userId))
+      .orderBy(topics.sortOrder);
+
+    expect(rows.map((row) => row.name)).toEqual(['семья', 'здоровье', 'личное', 'покупки']);
+    expect(rows.at(-1)?.order).toBeGreaterThan(rows.at(-2)?.order ?? 0);
+  });
+
+  it('отказ ничего не создаёт', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await dumpItemIn('покупки');
+    await finishOnboarding(bot, ['семья', 'здоровье']);
+    const before = await topicNames();
+
+    await bot.handleUpdate(callbackUpdate(ACTION.addTopicsSkip));
+
+    expect(await topicNames()).toEqual(before);
+  });
+
+  it('без потерянных сфер предложения нет', async () => {
+    // Лишний вопрос дороже отсутствующего: §13.9 не терпит болтовни.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await dumpItemIn('здоровье');
+    await finishOnboarding(bot, ['семья', 'здоровье']);
+
+    const texts = calls
+      .filter((call) => call.method === 'sendMessage')
+      .map((call) => String(call.payload['text']));
+
+    expect(texts.join(' ')).not.toContain('Добавить такую сферу');
+  });
+
+  it('повторное согласие не плодит двойников', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await dumpItemIn('покупки');
+    await finishOnboarding(bot, ['семья', 'здоровье']);
+
+    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
+
+    const names = await topicNames();
+    expect(names.filter((name) => name === 'покупки')).toHaveLength(1);
+  });
+});

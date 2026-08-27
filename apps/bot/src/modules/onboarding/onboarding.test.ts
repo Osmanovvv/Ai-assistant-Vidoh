@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { defaultTexts, profiles } from '../../texts/index.js';
 import {
   chosenFromLabels,
+  decodeTopicOffer,
+  encodeTopicOffer,
   firstStep,
+  offerTopicsQuestion,
   questionFor,
   timezoneQuestion,
   topicRows,
@@ -245,10 +248,75 @@ describe('словарь', () => {
     for (const profile of Object.values(profiles)) {
       const values = Object.values(profile.onboarding);
 
+      // Часть реплик принимает строку, часть — список сфер. Проверяется
+      // наличие текста, а не форма аргумента, поэтому пробуем строкой и
+      // повторяем списком, если реплика ждала список.
+      const call = (fn: (input: never) => string): string => {
+        try {
+          return fn('проверка' as never);
+        } catch {
+          return fn(['проверка'] as never);
+        }
+      };
+
       for (const value of values) {
-        const text = typeof value === 'function' ? value('проверка') : value;
+        const text = typeof value === 'function' ? call(value) : value;
         expect(text.trim().length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe('предложение добавить сферу (§6.4)', () => {
+  /**
+   * ТЗ §6.4: «Если новая запись не подходит ни к одной теме, она уходит в
+   * тему по умолчанию, а бот при следующем удобном случае предлагает
+   * создать новую». Требование было в ТЗ и в плане, а в коде потерянные
+   * названия сфер только писались в журнал. Нашлось на живой выкладке.
+   */
+
+  it('кладёт в кнопку номера сфер, а не их названия', () => {
+    // Кириллица весит два байта на знак, а callback_data ограничена 64.
+    const action = encodeTopicOffer(['покупки']);
+
+    expect(action).toBe(`${ACTION.addTopicsPrefix}3`);
+    expect(Buffer.byteLength(action ?? '', 'utf8')).toBeLessThanOrEqual(64);
+  });
+
+  it('возвращает названия обратно', () => {
+    const action = encodeTopicOffer(['здоровье', 'покупки']);
+
+    expect(decodeTopicOffer(action ?? '')).toEqual(['здоровье', 'покупки']);
+  });
+
+  it('предлагает не больше двух сфер', () => {
+    // Вопрос из четырёх сфер — это анкета, а разгрузка в неё не
+    // превращается. Остальные предложатся, когда снова понадобятся.
+    const names = decodeTopicOffer(encodeTopicOffer(['семья', 'здоровье', 'работа']) ?? '');
+
+    expect(names).toHaveLength(2);
+  });
+
+  it('незнакомую сферу предложить нельзя', () => {
+    // Закрытый список — не прихоть: номер в кнопке имеет смысл только
+    // пока список в коде. Своё название человек назовёт сам, когда
+    // появится такая возможность.
+    expect(encodeTopicOffer(['ремонт дачи'])).toBeUndefined();
+    expect(offerTopicsQuestion(defaultTexts, ['ремонт дачи'])).toBeUndefined();
+  });
+
+  it('мусор в данных даёт пустой список, а не отказ', () => {
+    // callback_data приходит снаружи, подделать её можно.
+    expect(decodeTopicOffer('onb:add:99')).toEqual([]);
+    expect(decodeTopicOffer('onb:add:абв')).toEqual([]);
+    expect(decodeTopicOffer('onb:add:no')).toEqual([]);
+    expect(decodeTopicOffer('чужое')).toEqual([]);
+  });
+
+  it('вопрос называет сферы человеку и даёт два ответа', () => {
+    const question = offerTopicsQuestion(defaultTexts, ['покупки']);
+
+    expect(question?.text).toContain('покупки');
+    expect(question?.rows.flat()).toHaveLength(2);
   });
 });
