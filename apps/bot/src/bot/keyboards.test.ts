@@ -16,6 +16,7 @@ import { buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
 import { cardKeyboard } from './handlers/card.js';
 import { MENU_ACTION } from './handlers/menu.js';
+import { ANSWER_ACTION } from '../modules/presenter/presenter.service.js';
 import { DELETE_CANCEL, DELETE_STEP_ONE, DELETE_STEP_TWO } from './handlers/privacy.js';
 import { CALLBACK_DATA_LIMIT, callbackDataSize, toShortId } from './short-id.js';
 
@@ -188,6 +189,9 @@ describe('идентификаторы действий не пересекаю�
       MENU_ACTION.all,
       MENU_ACTION.today,
       MENU_ACTION.help,
+      ANSWER_ACTION.now,
+      ANSWER_ACTION.all,
+      ANSWER_ACTION.later,
       ONBOARDING.nameYes,
       ONBOARDING.nameLater,
       ONBOARDING.timezoneMoscow,

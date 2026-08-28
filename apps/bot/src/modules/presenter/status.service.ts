@@ -16,17 +16,28 @@ import type { Database } from '../../infra/db.js';
  */
 
 /** Отправка отделена от логики: тесты считают вызовы, а не шлют в Telegram. */
+/**
+ * Кнопка под сообщением. Та же форма, что у `ReplyButton` представления:
+ * отправитель не должен знать, кто и зачем её построил.
+ */
+export interface StatusButton {
+  readonly label: string;
+  readonly action: string;
+}
+
 export interface StatusSender {
   send(params: {
     readonly chatId: number;
     readonly threadId?: number | undefined;
     readonly text: string;
+    readonly buttons?: readonly StatusButton[] | undefined;
   }): Promise<number>;
 
   edit(params: {
     readonly chatId: number;
     readonly messageId: number;
     readonly text: string;
+    readonly buttons?: readonly StatusButton[] | undefined;
   }): Promise<void>;
 }
 
@@ -57,7 +68,7 @@ export async function showStatus(
   deps: StatusDeps,
   target: StatusTarget,
   text: string,
-  options: { readonly force?: boolean } = {},
+  options: { readonly force?: boolean; readonly buttons?: readonly StatusButton[] } = {},
 ): Promise<boolean> {
   const now = (deps.now ?? (() => new Date()))();
   const minInterval = deps.minEditIntervalMs ?? DEFAULT_MIN_EDIT_INTERVAL_MS;
@@ -80,6 +91,7 @@ export async function showStatus(
       chatId: target.chatId,
       threadId: target.threadId,
       text,
+      buttons: options.buttons,
     });
 
     // Ноль означает, что отправка не удалась — например, человек
@@ -107,6 +119,7 @@ export async function showStatus(
     chatId: target.chatId,
     messageId: batch.statusMessageId,
     text,
+    buttons: options.buttons,
   });
 
   await deps.db.update(batches).set({ statusUpdatedAt: now }).where(eq(batches.id, target.batchId));
@@ -119,6 +132,10 @@ export async function finishStatus(
   deps: StatusDeps,
   target: StatusTarget,
   text: string,
+  buttons?: readonly StatusButton[],
 ): Promise<boolean> {
-  return await showStatus(deps, target, text, { force: true });
+  return await showStatus(deps, target, text, {
+    force: true,
+    ...(buttons === undefined ? {} : { buttons }),
+  });
 }

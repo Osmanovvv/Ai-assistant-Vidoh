@@ -118,6 +118,19 @@ function bucketOf(item: Item, todayStart: Date, tomorrowStart: Date): Bucket {
  * «одинаковая выдача» стал бы недостижим.
  */
 function compareWithin(left: Item, right: Item): number {
+  // §13.2: большая цель не ставится в выдачу целиком. «Выбрать торт»
+  // человек сегодня сделает, «день рождения сына» — нет, и место в
+  // тройке такое дело занимать не должно.
+  //
+  // Разложить проект на шаги нечем до третьего этапа: §5 требует
+  // таблицу шагов с признаком ближайшего, её ещё нет. Поэтому здесь
+  // не запрет, а порядок — проект идёт последним внутри своей очереди.
+  // Совсем убрать его нельзя: выгрузка, где одна большая цель и больше
+  // ничего, осталась бы без единого действия.
+  const leftProject = left.isProject ? 1 : 0;
+  const rightProject = right.isProject ? 1 : 0;
+  if (leftProject !== rightProject) return leftProject - rightProject;
+
   const leftDeadline = left.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY;
   const rightDeadline = right.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY;
 

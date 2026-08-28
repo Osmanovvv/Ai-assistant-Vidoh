@@ -10,7 +10,8 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { DELETE_STEP_ONE } from './privacy.js';
-import { CARD_PREFIX } from './card.js';
+import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
+import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { fromShortId, toShortId } from '../short-id.js';
 
 /**
@@ -134,7 +135,12 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
   });
 
   // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
-  bot.callbackQuery(MENU_ACTION.all, async (ctx) => {
+  /**
+   * Полный бэклог по темам. Два входа, одна реализация: пункт меню и
+   * кнопка «Разобрать все» под разбором (§13.2). Разводить их значило бы
+   * получить два экрана, которые разойдутся.
+   */
+  bot.callbackQuery([MENU_ACTION.all, ANSWER_ACTION.all], async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id);
     if (!active) return;
@@ -205,5 +211,61 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       active.texts.menu.todayTitle,
       itemsKeyboard(active.texts, today, MENU_ACTION.root),
     );
+  });
+  /**
+   * «Сделать сейчас» (§13.2: ведёт в режим выполнения).
+   *
+   * Открывает карточку первого дела на сегодня — не список, а именно
+   * карточку: у кнопки написано «сделать», и человек должен оказаться там,
+   * где дело закрывается одним нажатием.
+   *
+   * Дело выбирается заново в момент нажатия, а не запоминается в
+   * обратном вызове: человек мог нажать через час, и за это время
+   * появилось более срочное.
+   */
+  bot.callbackQuery(ANSWER_ACTION.now, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const context = await outputContextOf(db, active.userId);
+    const now = new Date();
+    const today = selectForToday(await openItemsFor(db, active.userId), {
+      energy: effectiveEnergy(context.state, context.energyDefault, {
+        now,
+        timeZone: context.timeZone,
+      }),
+      now,
+      timeZone: context.timeZone,
+    });
+
+    const first = today[0];
+    if (first === undefined) {
+      await show(ctx, active.texts.menu.todayEmpty, backKeyboard(active.texts));
+      return;
+    }
+
+    await show(
+      ctx,
+      cardText(first, active.texts, active.timeZone),
+      cardKeyboard(first, active.texts, MENU_ACTION.root),
+    );
+  });
+
+  /**
+   * «Оставить на потом» (§13.2: закрывает сессию без упреков).
+   *
+   * Клавиатура снимается вместе с ответом: разговор закончен, и кнопки,
+   * которые ведут обратно в него, тут не к месту.
+   */
+  bot.callbackQuery(ANSWER_ACTION.later, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+
+    // Профиль текстов берётся человека, а если его нет — стандартный:
+    // реплика короткая, и молчать вместо неё было бы хуже.
+    const texts = active?.texts ?? textsFor(null);
+
+    await ctx.editMessageText(texts.answer.laterAccepted);
   });
 }

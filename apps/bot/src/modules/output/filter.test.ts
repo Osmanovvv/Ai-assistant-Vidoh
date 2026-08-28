@@ -338,3 +338,57 @@ describe('предел на выдачу (§13.7)', () => {
     expect(result.shown).toHaveLength(1);
   });
 });
+
+/**
+ * Большая цель не занимает место в тройке действий (§13.2).
+ *
+ * «Выбрать торт» человек сегодня сделает, «день рождения сына» — нет.
+ * Разложить проект на шаги нечем до третьего этапа, поэтому здесь не
+ * запрет, а порядок. Найдено сверкой с ТЗ 28.08.2026: проект стоял в
+ * выдаче целиком.
+ */
+describe('проект не вытесняет выполнимые дела', () => {
+  it('внутри своей очереди проект идёт последним', () => {
+    const project = item({ isProject: true, text: 'день рождения сына' });
+    const first = item({ text: 'купить продукты' });
+    const second = item({ text: 'записать к врачу' });
+
+    const result = selectForOutput([project, first, second], {
+      energy: 'normal',
+      now: NOW,
+      timeZone: MOSCOW,
+    });
+
+    expect(result.shown.map((shown) => shown.text)).toEqual([
+      'купить продукты',
+      'записать к врачу',
+      'день рождения сына',
+    ]);
+  });
+
+  it('срок важнее: проект со сроком на сегодня не уезжает в конец', () => {
+    // Отодвигаем внутри очереди, а не через все очереди: дело с сегодняшним
+    // сроком остаётся сегодняшним, даже если это составная цель.
+    const project = item({ isProject: true, text: 'день рождения сына', deadlineAt: NOW });
+    const other = item({ text: 'купить продукты' });
+
+    const result = selectForOutput([other, project], {
+      energy: 'normal',
+      now: NOW,
+      timeZone: MOSCOW,
+    });
+
+    expect(result.shown[0]?.text).toBe('день рождения сына');
+  });
+
+  it('выгрузка из одной большой цели не остаётся без действия', () => {
+    // Совсем убрать проект нельзя: человек остался бы с пустым ответом.
+    const result = selectForOutput([item({ isProject: true, text: 'день рождения сына' })], {
+      energy: 'normal',
+      now: NOW,
+      timeZone: MOSCOW,
+    });
+
+    expect(result.shown).toHaveLength(1);
+  });
+});

@@ -23,6 +23,7 @@ import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
   showStatus,
+  type StatusButton,
   type StatusSender,
   type StatusTarget,
 } from '../presenter/status.service.js';
@@ -123,9 +124,10 @@ async function reply(
   deps: DumpHandlerDeps,
   target: StatusTarget | undefined,
   text: string,
+  buttons?: readonly StatusButton[],
 ): Promise<void> {
   if (!deps.sender || !target) return;
-  await finishStatus({ db, sender: deps.sender }, target, text);
+  await finishStatus({ db, sender: deps.sender }, target, text, buttons);
 }
 
 /**
@@ -218,9 +220,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * И к кризисной реплике не договаривается тоже: там человеку не до
      * длины записи (§13.7).
      */
-    const answer = async (text: string): Promise<void> => {
+    const answer = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       const tail = `\n\n${texts.listening.tooLong}`;
-      await reply(db, deps, target, truncated ? `${text}${tail}` : text);
+      await reply(db, deps, target, truncated ? `${text}${tail}` : text, buttons);
     };
 
     if (combined === '') {
@@ -484,7 +486,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       'Выгрузка разобрана',
     );
 
-    await answer(presented.reply.text);
+    // §13.2: под разбором три кнопки, и одна из них ведёт к остальным
+    // делам. Без неё человек не знал, куда они делись.
+    await answer(presented.reply.text, presented.reply.buttons);
 
     /**
      * §8.2: сводка темы обновляется правкой закреплённого сообщения.

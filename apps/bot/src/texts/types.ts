@@ -94,6 +94,12 @@ export interface TextProfile {
     readonly buttonDoNow: string;
     readonly buttonShowAll: string;
     readonly buttonLater: string;
+    /**
+     * Ответ на «Оставить на потом» (§13.2: закрывает сессию **без
+     * упреков**). Ни счёта накопившегося, ни вопроса — разговор
+     * закончен, а не продолжен.
+     */
+    readonly laterAccepted: string;
 
     /** §17: разобрать не удалось, но текст сохранён. */
     readonly savedUnparsed: string;
