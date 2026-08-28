@@ -1,8 +1,9 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 
-import { items, type Item, type NewItem } from '../../db/schema.js';
+import { items, topics, type Item, type NewItem } from '../../db/schema.js';
 import type { Database, Executor } from '../../infra/db.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
+import { normalizeTopicName } from '../topics/topics.repo.js';
 
 /**
  * Сохранение записей (задача 2.8).
@@ -51,7 +52,19 @@ export interface SaveDraftParams {
   readonly order?: number | undefined;
 }
 
-function toRow(params: SaveItemsParams, item: ItemToSave, order: number): NewItem {
+/**
+ * Ссылка на тему по её названию.
+ *
+ * Разбор называет тему словом — так её называет модель, — а истина в
+ * базе это `topic_id`. Сопоставление здесь, а не в разборе: базе решать,
+ * какая запись к какой теме относится.
+ */
+function toRow(
+  params: SaveItemsParams,
+  item: ItemToSave,
+  order: number,
+  topicIds: ReadonlyMap<string, string>,
+): NewItem {
   return {
     userId: params.userId,
     sourceBatchId: params.batchId,
@@ -60,6 +73,7 @@ function toRow(params: SaveItemsParams, item: ItemToSave, order: number): NewIte
     type: item.type,
     priority: item.priority,
     topic: item.topic,
+    topicId: topicIds.get(normalizeTopicName(item.topic)) ?? null,
     isProject: item.isProject,
     deadlineAt: item.deadline?.at ?? null,
     deadlineAccuracy: item.deadline?.accuracy ?? null,
@@ -83,9 +97,16 @@ export async function saveItems(db: Database, params: SaveItemsParams): Promise<
   if (params.items.length === 0) return [];
 
   return await db.transaction(async (tx) => {
+    const own = await tx
+      .select({ id: topics.id, name: topics.name })
+      .from(topics)
+      .where(eq(topics.userId, params.userId));
+
+    const topicIds = new Map(own.map((topic) => [normalizeTopicName(topic.name), topic.id]));
+
     return await tx
       .insert(items)
-      .values(params.items.map((item, order) => toRow(params, item, order)))
+      .values(params.items.map((item, order) => toRow(params, item, order, topicIds)))
       .returning();
   });
 }

@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { items, topics, type Topic } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { isThreadGone, isTopicsUnavailable, type TopicGateway } from './gateway.js';
-import { listTopics } from './topics.repo.js';
+import { listTopics, normalizeTopicName } from './topics.repo.js';
 
 /**
  * Ветки личного чата (задача 2.15).
@@ -56,9 +56,7 @@ export interface TopicServiceDeps {
 }
 
 /** «ё» и регистр не делают тему другой темой. */
-function normalize(name: string): string {
-  return name.toLowerCase().replace(/ё/gu, 'е').trim();
-}
+const normalize = normalizeTopicName;
 
 async function iconFor(deps: TopicServiceDeps, name: string): Promise<string | undefined> {
   const emoji = TOPIC_ICONS[normalize(name)];
@@ -199,7 +197,8 @@ export async function moveItemToTopic(
 
   await db
     .update(items)
-    .set({ topic: target.name, updatedAt: new Date() })
+    // Оба поля в одной правке: ссылка — истина, название — кэш показа.
+    .set({ topicId: target.id, topic: target.name, updatedAt: new Date() })
     .where(eq(items.id, params.itemId));
 
   return { moved: true, from: before.topic, to: target.name };

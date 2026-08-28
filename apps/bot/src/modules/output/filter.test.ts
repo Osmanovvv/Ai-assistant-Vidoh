@@ -32,6 +32,8 @@ function item(overrides: Partial<Item> = {}): Item {
     type: 'TASK',
     priority: 'SOON',
     topic: 'личное',
+    topicId: null,
+    completedAt: null,
     status: 'new',
     isProject: false,
     assignee: null,

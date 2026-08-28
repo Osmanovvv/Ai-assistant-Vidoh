@@ -21,6 +21,17 @@ export const DEFAULT_TOPIC_NAMES = ['семья', 'здоровье', 'рабо�
 /** §6.4: куда уходит запись, не попавшая ни в одну тему. */
 export const FALLBACK_TOPIC = 'личное';
 
+/**
+ * Сравнение названий тем: регистр не важен, «ё» равна «е».
+ *
+ * Правило одно на весь проект. Копий было три — в классификации, в
+ * службе тем и в сохранении записей, — и разойтись им ничто не мешало:
+ * тема «Здоровье» и тема «здоровье» стали бы разными.
+ */
+export function normalizeTopicName(name: string): string {
+  return name.trim().toLowerCase().replace(/ё/gu, 'е');
+}
+
 export interface TopicList {
   readonly names: readonly string[];
   readonly defaultName: string;
