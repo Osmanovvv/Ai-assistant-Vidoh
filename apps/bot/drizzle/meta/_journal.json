@@ -127,6 +127,13 @@
       "when": 1787785546629,
       "tag": "0017_ai_call_model_version",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787940453430,
+      "tag": "0018_topic_link_and_completed_at",
+      "breakpoints": true
     }
   ]
 }

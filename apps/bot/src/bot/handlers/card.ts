@@ -198,6 +198,8 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         .update(items)
         .set({
           status: next,
+          // §5: когда закрыли, а не только что закрыто.
+          completedAt: next === 'done' ? new Date() : null,
           deadlineAt,
           ...(next === 'snoozed' && active.item.deadlineAccuracy === null
             ? { deadlineAccuracy: 'day' as const }

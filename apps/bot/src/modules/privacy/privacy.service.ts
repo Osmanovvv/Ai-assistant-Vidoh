@@ -94,6 +94,8 @@ export interface ExportedData {
     readonly recurrenceRule: unknown;
     readonly createdAt: string;
     readonly updatedAt: string;
+    /** §5: когда дело закрыли. */
+    readonly completedAt: string | null;
   }[];
   readonly dumps: readonly {
     readonly openedAt: string;
@@ -200,6 +202,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       recurrenceRule: item.recurrenceRule,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
+      completedAt: iso(item.completedAt),
     })),
     dumps: dumps.map((dump) => ({
       openedAt: dump.openedAt.toISOString(),

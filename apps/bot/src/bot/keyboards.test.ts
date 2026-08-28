@@ -50,6 +50,8 @@ function itemFixture(): Item {
     type: 'TASK',
     priority: 'SOON',
     topic: LONG_NAME,
+    topicId: null,
+    completedAt: null,
     status: 'new',
     isProject: false,
     assignee: null,
