@@ -297,9 +297,28 @@ export interface Threshold {
    * решает, что бот не понял главного.
    */
   readonly falseDeadlines: number;
+  /**
+   * Какую долю ожидаемых единиц обязан находить разбор.
+   *
+   * **Порога на это не было, и он пропустил настоящую регрессию.**
+   * 28.08.2026 промпт `router@4` терял три единицы из сорока трёх, а
+   * отчёт печатал «порог качества пройден»: точность-то считается **от
+   * найденного**, и потеря трудной единицы её даже поднимает. Проверка
+   * зеленела, теряя мысли человека.
+   *
+   * Число 0,95 взято из наблюдённого разброса, а не выдумано: за 23
+   * прогона на `router@2` находилось от 41 до 43 единиц из 43, то есть
+   * не ниже 95,3%. Сорок — это 93%, и такого не было ни разу.
+   */
+  readonly found: number;
 }
 
-export const STAGE2_THRESHOLD: Threshold = { type: 0.85, falseTasks: 0, falseDeadlines: 0 };
+export const STAGE2_THRESHOLD: Threshold = {
+  type: 0.85,
+  falseTasks: 0,
+  falseDeadlines: 0,
+  found: 0.95,
+};
 
 export interface ThresholdVerdict {
   readonly passed: boolean;
@@ -312,6 +331,15 @@ export function checkThreshold(
 ): ThresholdVerdict {
   const now = shares(report);
   const failures: string[] = [];
+
+  // Первым делом — сколько нашли. Проценты без этой строки не значат
+  // ничего: они считаются от найденного.
+  if (now.recall < threshold.found) {
+    failures.push(
+      `найдено единиц ${percent(now.recall)} ниже порога ${percent(threshold.found)}` +
+        ` (${String(report.found)} из ${String(report.expected)})`,
+    );
+  }
 
   if (now.type < threshold.type) {
     failures.push(`точность типа ${percent(now.type)} ниже порога ${percent(threshold.type)}`);
