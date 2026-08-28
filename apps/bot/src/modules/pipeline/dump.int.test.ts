@@ -42,7 +42,8 @@ import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { AudioLimits } from '../speech/audio.service.js';
 import { run } from '../speech/ffmpeg.js';
 import { MockSpeechProvider } from '../speech/providers/mock.js';
-import { PermanentSpeechError } from '../speech/providers/types.js';
+import { PermanentSpeechError, TransientSpeechError } from '../speech/providers/types.js';
+import { createFailureReporter } from './failure-notice.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { SpendLimit } from '../metering/limits.js';
 import { createDumpHandler } from './dump.handler.js';
@@ -615,6 +616,68 @@ describe('разбор', () => {
     );
 
     expect(all.at(-1)).toContain(defaultTexts.listening.tooLong);
+  });
+
+  it('сорвавшийся разбор говорит человеку, а не умирает молча', async () => {
+    // §17 ТЗ. Сверка 28.08.2026: текст `errors.generic` лежал в словаре и
+    // не вызывался ни разу. Человек видел «Секунду, слушаю запись» и
+    // больше ничего, навсегда — сбойные выгрузки намеренно не
+    // переподхватываются, а админки, из которой их перезапускают, не будет
+    // до четвёртого этапа.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const speech = new MockSpeechProvider({
+      failFirst: { times: 99, error: new PermanentSpeechError('запись не разобрать') },
+    });
+
+    await expect(
+      processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech, prompts, sender }),
+          onFailure: createFailureReporter({ db: testDb(), sender }),
+        },
+        userId,
+      ),
+    ).rejects.toThrow();
+
+    // §17, первая строка: расшифровка не удалась — просим прислать текстом.
+    expect(all.at(-1)).toBe(defaultTexts.errors.speechFailed);
+
+    const [batch] = await testDb().select().from(batches);
+    expect(batch?.status).toBe('failed');
+  });
+
+  it('о временном сбое говорят как о задержке, а не как о поражении', async () => {
+    // Выгрузка вернулась в очередь: звать человека переделывать работу
+    // значило бы заставить его заплатить дважды.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const speech = new MockSpeechProvider({
+      failFirst: { times: 99, error: new TransientSpeechError('распознаватель занят') },
+    });
+
+    await expect(
+      processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech, prompts, sender }),
+          onFailure: createFailureReporter({ db: testDb(), sender }),
+        },
+        userId,
+      ),
+    ).rejects.toThrow();
+
+    expect(all.at(-1)).toBe(defaultTexts.errors.delayed);
+
+    const [batch] = await testDb().select().from(batches);
+    expect(batch?.status).toBe('queued');
   });
 
   it('высказанное состояние снижает уровень сил и оставляет одно действие', async () => {

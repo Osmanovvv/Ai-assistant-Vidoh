@@ -34,6 +34,7 @@ import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
 import { createDumpHandler } from './modules/pipeline/dump.handler.js';
+import { createFailureReporter } from './modules/pipeline/failure-notice.js';
 import { limitFromEnv } from './modules/metering/limits.js';
 import { downloadTelegramFile } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
@@ -146,6 +147,13 @@ async function main(): Promise<void> {
   // же сообщение (§9.2 и §10.2 ТЗ).
   const sender = createTelegramSender({ api: bot.api, db, logger });
 
+  /**
+   * §17: о сорвавшемся разборе человек обязан узнать. До 28.08.2026
+   * выгрузка умирала молча — текст в словаре был, а звать его было
+   * некому.
+   */
+  const onFailure = createFailureReporter({ db, sender, logger });
+
   // Вопросы онбординга живут своей репликой с кнопками, поэтому у них свой
   // отправитель: статусное сообщение правится по ходу разбора, и
   // клавиатура на нём мигала бы (§12.2, задача 2.13).
@@ -225,7 +233,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const result = await processUserBatches({ db, lock, handleBatch }, data.userId);
+    const result = await processUserBatches({ db, lock, handleBatch, onFailure }, data.userId);
     if (result.skipped) {
       logger.debug({ userId: data.userId }, 'Пользователь уже обрабатывается');
     }
@@ -235,10 +243,11 @@ async function main(): Promise<void> {
   // Перезапуск Redis на боевом сервере показал, что воркер BullMQ после
   // него отложенные задания больше не разбирает: выгрузка остаётся
   // открытой навсегда, человек получает «Слушаю.» и тишину.
+
   const stopSweep = startRecoverySweep({
     db,
     logger,
-    process: (userId) => processUserBatches({ db, lock, handleBatch }, userId),
+    process: (userId) => processUserBatches({ db, lock, handleBatch, onFailure }, userId),
   });
 
   worker.on('completed', () => {

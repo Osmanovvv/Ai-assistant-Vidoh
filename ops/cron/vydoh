@@ -12,6 +12,13 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Пульс бота каждые десять минут (§18 ТЗ: оповещение при падении сервиса).
+#
+# Мониторинг внутри процесса считает долю ошибок, но упавший процесс
+# ничего не сообщит — счётчик умирает вместе с ним. Поэтому проверка
+# внешняя. Оповещение уходит после двух неудач подряд: выкладка
+# перезапускает контейнер, и попасть в эту секунду — обычное дело.
+*/10 * * * * root cd /opt/vydoh && set -a && . /opt/vydoh/.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/heartbeat.sh >> /var/log/vydoh-heartbeat.log 2>&1
 20 3 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/backup.sh >> /var/log/vydoh-backup.log 2>&1
 
 0 4 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/restore-check.sh >> /var/log/vydoh-backup.log 2>&1

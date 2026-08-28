@@ -30,11 +30,25 @@ const MAX_ATTEMPTS = 5;
 /** Что делать с закрытой выгрузкой. На этапе 2 сюда встанет разбор. */
 export type BatchHandler = (db: Database, batch: Batch) => Promise<void>;
 
+/**
+ * Доклад человеку о сорвавшемся разборе (§17 ТЗ).
+ *
+ * Решение «повторим или сдались» принимается здесь, а чат и словарь текстов
+ * известны выше — поэтому отправка вынесена в необязательную зависимость.
+ * Без неё конвейер работает как раньше: молча.
+ */
+export type FailureReporter = (
+  db: Database,
+  batch: Batch,
+  failure: { readonly retryable: boolean; readonly error: unknown },
+) => Promise<void>;
+
 export interface PipelineDeps {
   readonly db: Database;
   readonly lock: RedisLock;
   readonly handleBatch?: BatchHandler;
   readonly lockTtlMs?: number;
+  readonly onFailure?: FailureReporter | undefined;
 }
 
 export interface ProcessUserResult {
@@ -108,6 +122,15 @@ export async function processUserBatches(
               error: message,
             })
             .where(eq(batches.id, batch.id));
+
+          // §17: человек обязан узнать, что разбор сорвался. Отправка не
+          // должна ронять обработку — иначе сбой доклада о сбое стоил бы
+          // дороже самого сбоя.
+          try {
+            await deps.onFailure?.(db, batch, { retryable, error });
+          } catch {
+            // Молчание здесь намеренно: исходная ошибка важнее.
+          }
 
           throw error;
         }
