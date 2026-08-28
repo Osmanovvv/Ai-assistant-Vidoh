@@ -1166,24 +1166,36 @@ function recordingSender(): {
   sent: string[];
   edited: string[];
   all: string[];
+  /** Подписи кнопок последнего сообщения: §13.2 требует их под разбором. */
+  buttons: string[];
 } {
   const sent: string[] = [];
   const edited: string[] = [];
   const all: string[] = [];
+  const buttons: string[] = [];
+
+  /** Кнопки запоминаются от последнего сообщения, а не копятся. */
+  const remember = (labels: readonly { readonly label: string }[] | undefined): void => {
+    buttons.length = 0;
+    for (const button of labels ?? []) buttons.push(button.label);
+  };
 
   return {
     sent,
     edited,
     all,
+    buttons,
     sender: {
-      send: ({ text }) => {
+      send: ({ text, buttons: keys }) => {
         sent.push(text);
         all.push(text);
+        remember(keys);
         return Promise.resolve(1000 + sent.length);
       },
-      edit: ({ text }) => {
+      edit: ({ text, buttons: keys }) => {
         edited.push(text);
         all.push(text);
+        remember(keys);
         return Promise.resolve();
       },
     },
@@ -1191,6 +1203,30 @@ function recordingSender(): {
 }
 
 describe('ответ пользователю', () => {
+  it('под разбором стоят три кнопки §13.2', async () => {
+    // Кнопки строились представлением с самого начала и терялись:
+    // отправитель клавиатуру не умел, обработчиков не было. Из-за этого
+    // человек не понимал, куда делись остальные его дела — чтобы их
+    // увидеть, надо было знать про команду меню.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты, врача и химчистку', offsetMs: 0 }]);
+    const { sender, buttons } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(buttons).toEqual([
+      defaultTexts.answer.buttonDoNow,
+      defaultTexts.answer.buttonShowAll,
+      defaultTexts.answer.buttonLater,
+    ]);
+  });
   it('правит статусное сообщение, а не шлёт новое', async () => {
     // §9.2 ТЗ: одна реплика на выгрузку. Подтверждение приёма уже ушло
     // из обработчика входящих, конвейер только правит его.

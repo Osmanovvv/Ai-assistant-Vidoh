@@ -30,6 +30,23 @@ import { textsFor, type TextProfile } from '../../texts/index.js';
  * извинения.
  */
 
+/**
+ * Обратные вызовы кнопок под ответом (§13.2 ТЗ).
+ *
+ * Кнопки строились здесь с самого начала, а до человека не доходили:
+ * отправитель статусного сообщения клавиатуру не умел, и обработчиков
+ * для этих строк не было. Нашлось сверкой с ТЗ 28.08.2026 — и оказалось
+ * тем самым, из-за чего человек не понимал, куда делись остальные дела.
+ */
+export const ANSWER_ACTION = {
+  /** «Сделать сейчас» — ведёт в режим выполнения. */
+  now: 'answer:now',
+  /** «Разобрать все» — полный бэклог по темам. */
+  all: 'answer:all',
+  /** «Оставить на потом» — закрывает сессию без упреков. */
+  later: 'answer:later',
+} as const;
+
 export interface ReplyButton {
   readonly label: string;
   readonly action: string;
@@ -107,8 +124,8 @@ export function buildReply(params: BuildReplyParams): Reply {
     return {
       text: lines.join('\n'),
       buttons: [
-        { label: answer.buttonShowAll, action: 'answer:all' },
-        { label: answer.buttonLater, action: 'answer:later' },
+        { label: answer.buttonShowAll, action: ANSWER_ACTION.all },
+        { label: answer.buttonLater, action: ANSWER_ACTION.later },
       ],
     };
   }
@@ -125,8 +142,8 @@ export function buildReply(params: BuildReplyParams): Reply {
     return {
       text: lines.join('\n'),
       buttons: [
-        { label: answer.buttonDoNow, action: 'answer:now' },
-        { label: answer.buttonLater, action: 'answer:later' },
+        { label: answer.buttonDoNow, action: ANSWER_ACTION.now },
+        { label: answer.buttonLater, action: ANSWER_ACTION.later },
       ],
     };
   }
@@ -137,9 +154,9 @@ export function buildReply(params: BuildReplyParams): Reply {
   return {
     text: lines.join('\n'),
     buttons: [
-      { label: answer.buttonDoNow, action: 'answer:now' },
-      { label: answer.buttonShowAll, action: 'answer:all' },
-      { label: answer.buttonLater, action: 'answer:later' },
+      { label: answer.buttonDoNow, action: ANSWER_ACTION.now },
+      { label: answer.buttonShowAll, action: ANSWER_ACTION.all },
+      { label: answer.buttonLater, action: ANSWER_ACTION.later },
     ],
   };
 }
