@@ -15,7 +15,8 @@ import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
 import { toShortId } from '../../modules/shared/short-id.js';
-import { QUESTION_ACTION, questionMessage, registerQuestionHandlers } from './question.js';
+import { QUESTION_ACTION } from '../../modules/resolver/change-text.js';
+import { questionMessage, registerQuestionHandlers } from './question.js';
 
 /**
  * Две кнопки уточняющего вопроса через настоящий обработчик (задача 3.5).

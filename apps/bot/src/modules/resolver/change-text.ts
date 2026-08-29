@@ -60,3 +60,24 @@ export const UNDO_PREFIX = 'u:';
 export function undoButtons(revisionId: string, texts: TextProfile): readonly StatusButton[] {
   return [{ label: texts.resolver.buttonUndo, action: `${UNDO_PREFIX}${toShortId(revisionId)}` }];
 }
+
+/**
+ * Кнопки уточняющего вопроса — там же, где кнопка отмены, и по той же
+ * причине: вопрос задают двое.
+ *
+ * Резолвер спрашивает из конвейера, разбирая правку; обработчик отвечает
+ * на нажатие. Разъедься префиксы — нажатие перестанет находить вопрос.
+ */
+export const QUESTION_ACTION = {
+  attach: 'q:a:',
+  separate: 'q:s:',
+} as const;
+
+export function questionButtons(questionId: string, texts: TextProfile): readonly StatusButton[] {
+  const code = toShortId(questionId);
+
+  return [
+    { label: texts.resolver.buttonAttach, action: `${QUESTION_ACTION.attach}${code}` },
+    { label: texts.resolver.buttonSeparate, action: `${QUESTION_ACTION.separate}${code}` },
+  ];
+}

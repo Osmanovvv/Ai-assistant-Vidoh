@@ -88,6 +88,17 @@ export interface Decision {
   /** Выбранная запись. Для `create` её нет. */
   readonly candidate?: Candidate | undefined;
   /**
+   * Модель сама сказала «это новая мысль», а не пороги её к этому
+   * принудили.
+   *
+   * Разница решает судьбу сказанного. «Надо ещё окна помыть», ошибочно
+   * попавшее в правки, — настоящая новая мысль, и из неё выйдет запись.
+   А «нет, в пятницу», для которого не нашлось цели, записью стать не
+   * должно: получится задача «в пятницу». Одного `kind: create` для
+   * этого различения мало.
+   */
+  readonly newThought: boolean;
+  /**
    * Почему решено так — строкой, для журнала.
    *
    * Не для человека: реплику собирает представление. Без этой строки
@@ -149,7 +160,12 @@ export function decide(
   const thresholds = { ...DEFAULT_THRESHOLDS, ...context.thresholds };
 
   if (answer.action === 'new') {
-    return { kind: 'create', action: 'new', why: 'модель не нашла подходящей записи' };
+    return {
+      kind: 'create',
+      action: 'new',
+      newThought: true,
+      why: 'модель не нашла подходящей записи',
+    };
   }
 
   const candidate = candidates.find((item) => item.id === answer.itemId);
@@ -161,28 +177,58 @@ export function decide(
     return {
       kind: 'create',
       action: 'new',
+      newThought: false,
       why: 'модель назвала запись, которой не было среди кандидатов',
     };
   }
 
   if (answer.confidence < thresholds.create) {
-    return { kind: 'create', action: 'new', why: 'уверенность ниже нижнего порога' };
+    return {
+      kind: 'create',
+      action: 'new',
+      newThought: false,
+      why: 'уверенность ниже нижнего порога',
+    };
   }
 
   if (answer.confidence < thresholds.apply) {
-    return { kind: 'ask', action: answer.action, candidate, why: 'уверенность средняя' };
+    return {
+      kind: 'ask',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'уверенность средняя',
+    };
   }
 
   if (clearlyClosest(candidate, candidates, thresholds)) {
-    return { kind: 'apply', action: answer.action, candidate, why: 'подтверждено близостью' };
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено близостью',
+    };
   }
 
   if (freshAlone(candidate, candidates, context.now, thresholds.freshMinutes)) {
-    return { kind: 'apply', action: answer.action, candidate, why: 'подтверждено свежестью' };
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено свежестью',
+    };
   }
 
   if (candidate.sources.includes('deadline')) {
-    return { kind: 'apply', action: answer.action, candidate, why: 'подтверждено сроком' };
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено сроком',
+    };
   }
 
   // Уверенность высокая, но подтвердить нечем. §7.3 в этом случае велит
@@ -191,6 +237,7 @@ export function decide(
     kind: 'ask',
     action: answer.action,
     candidate,
+    newThought: false,
     why: 'уверенность высокая, но второго сигнала нет',
   };
 }

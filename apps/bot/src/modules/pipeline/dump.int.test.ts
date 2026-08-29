@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   aiCalls,
   batches,
+  itemRevisions,
   items,
   messagesRaw,
   pendingQuestions,
@@ -31,6 +32,7 @@ import {
   CLASSIFIER_SCHEMA_NAME,
   EXTRACTOR_SCHEMA_NAME,
   PRESENTER_SCHEMA_NAME,
+  RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
@@ -87,6 +89,7 @@ const MARKERS = {
   extractor: 'ЕДИНИЦЫ',
   classifier: 'КЛАССЫ',
   presenter: 'ПРИЗНАНИЕ',
+  resolver: 'РЕШЕНИЕ',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -154,6 +157,14 @@ function echoingLlm(
               recurrenceText: '',
             })),
           });
+        case 'resolver':
+          return JSON.stringify({
+            action: 'new',
+            itemId: '',
+            confidence: 0.1,
+            changes: { text: '', deadline: '', deadlineAccuracy: 'none' },
+            reason: 'заглушка',
+          });
         case 'presenter':
           return JSON.stringify({ acknowledgement: 'Я тебя услышала.' });
       }
@@ -167,6 +178,7 @@ async function seedPrompts(): Promise<PromptRegistry> {
     { stage: 'extractor', schema: EXTRACTOR_SCHEMA_NAME, marker: MARKERS.extractor },
     { stage: 'classifier', schema: CLASSIFIER_SCHEMA_NAME, marker: MARKERS.classifier },
     { stage: 'presenter', schema: PRESENTER_SCHEMA_NAME, marker: MARKERS.presenter },
+    { stage: 'resolver', schema: RESOLVER_SCHEMA_NAME, marker: MARKERS.resolver },
   ] as const;
 
   for (const { stage, schema, marker } of stages) {
@@ -506,9 +518,10 @@ describe('разбор', () => {
     expect(calls.every((call) => call.batchId !== null)).toBe(true);
   });
 
-  it('правку сказанного откладывает черновиком, а не превращает в задачу', async () => {
-    // §7 ТЗ: правка требует резолвера, а он приходит на третьем этапе.
-    // Задача «хотя нет, в пятницу» была бы задачей без задачи.
+  it('правку без цели откладывает черновиком, а не превращает в задачу', async () => {
+    // Резолвер работает, но записей у человека ещё нет: цели для правки не
+    // нашлось. Задача «хотя нет, в пятницу» была бы задачей без задачи —
+    // выбор второго этапа здесь сохраняется намеренно.
     const prompts = await seedPrompts();
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу в четверг, хотя нет, в пятницу', offsetMs: 0 },
@@ -540,7 +553,7 @@ describe('разбор', () => {
     expect(parsed.map((item) => item.text)).toEqual(['записать сына к врачу в четверг']);
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.text).toBe('хотя нет, в пятницу');
-    expect(drafts[0]?.draftReason).toContain('PATCH');
+    expect(drafts[0]?.draftReason).toContain('не нашёл цели');
   });
 
   it('на «привет» не разбирает ничего и отвечает коротко', async () => {
@@ -1792,5 +1805,132 @@ describe('ответ на уточняющий вопрос голосом (§7.
 
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts.map((row) => row.text)).toContain('нет, в пятницу');
+  });
+});
+
+describe('правка доходит до резолвера (§7, задача 3.6а)', () => {
+  /**
+   * Связка, которой не было.
+   *
+   * 3.1 собирает кандидатов, 3.2 решает, 3.3 применяет — а звать это
+   * было некому: сегменты с намерением `PATCH` уходили в черновик и
+   * ждали бы вечно. Здесь проверяется, что теперь не ждут.
+   */
+  async function existingItem(deadline: string | null): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать сына к врачу в четверг',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        deadlineAt: deadline === null ? null : new Date(`${deadline}T00:00:00.000Z`),
+        deadlineAccuracy: deadline === null ? null : 'day',
+      })
+      .returning({ id: items.id });
+
+    return row?.id ?? '';
+  }
+
+  /** Через неделю: заведомо будущее и ближе пяти лет. */
+  function soon(): string {
+    return new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString().slice(0, 10);
+  }
+
+  it('уверенная правка меняет запись и даёт кнопку отмены', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'хотя нет, в пятницу', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'хотя нет, в пятницу' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        itemId: '1',
+        confidence: 0.9,
+        changes: { text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        reason: 'поправка срока',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).not.toBeNull();
+
+    // §7.3: сказать, что именно изменилось.
+    expect(all.some((text) => text.includes('Перенесла'))).toBe(true);
+
+    // И оставить, что отменять: кнопка ведёт на эту ревизию, а её работу
+    // проверяет свой тест обработчика.
+    const revisions = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, itemId));
+
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]?.changedBy).toBe('resolver');
+
+    // Черновика при этом не появилось: правка разобрана, а не отложена.
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts).toEqual([]);
+  });
+
+  it('средняя уверенность задаёт один вопрос с двумя кнопками', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси на пятницу', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'перенеси на пятницу' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        itemId: '1',
+        confidence: 0.6,
+        changes: { text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        reason: 'не уверен',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Запись не тронута: спросили, а не поправили.
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).toBeNull();
+
+    expect(all.some((text) => text.includes('отдельная история'))).toBe(true);
+
+    // Сказанное лежит в открытом вопросе и не потеряно.
+    const [open] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+
+    expect(open?.segment).toBe('перенеси на пятницу');
   });
 });
