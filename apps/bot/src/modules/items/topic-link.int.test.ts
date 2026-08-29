@@ -137,3 +137,97 @@ describe('перенос записи в другую тему', () => {
     expect(topic?.name).toBe('Здоровье');
   });
 });
+
+describe('первая выгрузка разбирается раньше тем (§12.2)', () => {
+  /**
+   * ТЗ ставит онбординг **после** первой выгрузки, а темы создаёт его
+   * ответами. Значит первая выгрузка любого человека сохраняется, когда тем
+   * ещё нет, и ссылку взять неоткуда — `saveItems` не в чем искать название.
+   *
+   * Без привязки в момент создания тем ссылка осталась бы пустой навсегда.
+   * Найдено 29.08.2026 на боевых данных: 37 записей из 38 без ссылки, и все
+   * из первой выгрузки. Случай не краевой, а гарантированный — он приходится
+   * на самую большую выгрузку, ту, ради которой человек пришёл.
+   */
+  async function userWithoutTopics(): Promise<{ userId: string; batchId: string }> {
+    const user = await upsertUser(testDb(), { tgId: 8800 + seq, firstName: 'Оля' });
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId: user.id, status: 'processing' })
+      .returning({ id: batches.id });
+
+    return { userId: user.id, batchId: batch?.id ?? '' };
+  }
+
+  it('темы, созданные онбордингом, подбирают уже сохранённые записи', async () => {
+    const fresh = await userWithoutTopics();
+
+    await saveItems(testDb(), {
+      userId: fresh.userId,
+      batchId: fresh.batchId,
+      items: [
+        classified({ text: 'позвонить в сад', topic: 'семья' }),
+        classified({ text: 'сдать анализы', topic: 'Здоровье' }),
+        classified({ text: 'купить кофе', topic: 'покупки' }),
+      ],
+    });
+
+    const before = await testDb()
+      .select({ topicId: items.topicId })
+      .from(items)
+      .where(eq(items.userId, fresh.userId));
+
+    expect(before).toHaveLength(3);
+    expect(before.every((row) => row.topicId === null)).toBe(true);
+
+    await createTopics(testDb(), fresh.userId, [
+      { name: 'семья', isDefault: false },
+      { name: 'здоровье', isDefault: false },
+      { name: 'личное', isDefault: true },
+    ]);
+
+    const after = await testDb()
+      .select({ text: items.text, topic: items.topic, topicId: items.topicId })
+      .from(items)
+      .where(eq(items.userId, fresh.userId));
+
+    const byText = new Map(after.map((row) => [row.text, row]));
+
+    expect(byText.get('позвонить в сад')?.topicId).not.toBeNull();
+
+    // «Здоровье» и «здоровье» — одна тема: сравнение то же, что в
+    // normalizeTopicName. Название приводится к тому, как тему назвал
+    // человек: два источника истины обязаны совпадать.
+    expect(byText.get('сдать анализы')?.topicId).not.toBeNull();
+    expect(byText.get('сдать анализы')?.topic).toBe('здоровье');
+
+    // Тему «покупки» человек не выбрал. Выдумывать её нельзя, но и терять
+    // название незачем: запись останется без ссылки и будет видна.
+    expect(byText.get('купить кофе')?.topicId).toBeNull();
+    expect(byText.get('купить кофе')?.topic).toBe('покупки');
+  });
+
+  it('черновик остаётся черновиком: у него темы нет вовсе', async () => {
+    // §17: неразобранная запись ждёт ручного разбора, и приписывать ей тему
+    // по пустому названию — значит выдать догадку за разбор.
+    const fresh = await userWithoutTopics();
+
+    await testDb().insert(items).values({
+      userId: fresh.userId,
+      sourceBatchId: fresh.batchId,
+      text: 'не в 9, а в 9 30',
+      isDraft: true,
+    });
+
+    await createTopics(testDb(), fresh.userId, [{ name: 'семья', isDefault: true }]);
+
+    const [draft] = await testDb()
+      .select({ topic: items.topic, topicId: items.topicId })
+      .from(items)
+      .where(eq(items.userId, fresh.userId));
+
+    expect(draft?.topic).toBeNull();
+    expect(draft?.topicId).toBeNull();
+  });
+});

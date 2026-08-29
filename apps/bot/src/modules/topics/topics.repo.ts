@@ -1,6 +1,6 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 
-import { topics, type Topic } from '../../db/schema.js';
+import { items, topics, type Topic } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 
 /**
@@ -103,11 +103,75 @@ export async function createTopics(
       })),
     )
     .onConflictDoNothing()
-    .returning({ id: topics.id });
+    .returning({ id: topics.id, name: topics.name });
+
+  await linkOrphanItems(db, userId, rows);
 
   return rows.length;
 }
 
+/**
+ * Записи, сохранённые до того, как у человека появились темы.
+ *
+ * §12.2 ТЗ ставит онбординг **после** первой выгрузки, а темы создаёт его
+ * ответами. Значит первая выгрузка любого человека сохраняется, когда тем
+ * ещё нет: искать название не в чем, и ссылка остаётся пустой. Без этого
+ * шага — навсегда, а ТЗ держит тему записи именно ссылкой; название рядом
+ * стоит кэшем и в составе `items` у ТЗ его нет вовсе.
+ *
+ * Найдено 29.08.2026 на боевых данных: 37 записей из 38 без ссылки, все из
+ * первой выгрузки. Случай не краевой, а гарантированный самим порядком —
+ * и приходится он на самую большую выгрузку, ту, ради которой человек
+ * пришёл.
+ *
+ * **Сравнение считается здесь, а не запросом.** В базе локаль `C`, и
+ * `lower()` кириллицу не трогает: `lower('Здоровье')` возвращает
+ * «Здоровье». Правило нормализации в проекте одно — normalizeTopicName, —
+ * и держать его вторую, молча иначе работающую копию на стороне базы
+ * значило бы вернуть ту самую беду, ради которой правило и собрали в одном
+ * месте.
+ *
+ * Название приводится к тому, как тему назвал человек: два поля обязаны
+ * совпадать, иначе запись окажется в одной теме по ссылке и в другой по
+ * названию.
+ */
+async function linkOrphanItems(
+  db: Executor,
+  userId: string,
+  created: readonly { readonly id: string; readonly name: string }[],
+): Promise<void> {
+  if (created.length === 0) return;
+
+  const byName = new Map(created.map((topic) => [normalizeTopicName(topic.name), topic]));
+
+  const orphans = await db
+    .select({ id: items.id, topic: items.topic })
+    .from(items)
+    .where(and(eq(items.userId, userId), isNull(items.topicId)));
+
+  /** Записи одной темы правятся одним запросом: тем немного, записей много. */
+  const byTopic = new Map<string, string[]>();
+
+  for (const orphan of orphans) {
+    // У черновика темы нет вовсе (§17): приписать её по пустому названию
+    // значило бы выдать догадку за разбор.
+    if (orphan.topic === null) continue;
+
+    const target = byName.get(normalizeTopicName(orphan.topic));
+    // Названия, которого человек не выбрал, среди тем нет. Выдумывать тему
+    // запрещает §6.4, а название записи при этом остаётся на месте.
+    if (target === undefined) continue;
+
+    byTopic.set(target.id, [...(byTopic.get(target.id) ?? []), orphan.id]);
+  }
+
+  for (const [topicId, ids] of byTopic) {
+    const name = created.find((topic) => topic.id === topicId)?.name;
+    if (name === undefined) continue;
+
+    await db.update(items).set({ topicId, topic: name }).where(inArray(items.id, ids));
+  }
+}
 /**
  * Предел числа тем (§6.4: «количество тем ограничено, значение задаётся
  * в настройках»).
