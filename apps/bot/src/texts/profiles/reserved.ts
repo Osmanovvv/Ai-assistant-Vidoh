@@ -130,6 +130,8 @@ export const reserved: TextProfile = {
     noted: (title) => `Добавила подробность к «${title}».`,
     rewrote: (title) => `Поправила: теперь это «${title}».`,
     completed: (title) => `Отметила сделанным: «${title}».`,
+    completedRecurring: (title, date) => `Готово. «${title}» — снова ${date}.`,
+    ruleDropped: (title) => `Больше не буду напоминать про «${title}». Запись оставила.`,
     cancelled: (title) => `Убрала «${title}». Если что — верну.`,
 
     buttonUndo: 'Отменить',

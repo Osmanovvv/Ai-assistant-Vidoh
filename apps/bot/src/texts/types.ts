@@ -176,6 +176,16 @@ export interface TextProfile {
     readonly noted: (title: string) => string;
     readonly rewrote: (title: string) => string;
     readonly completed: (title: string) => string;
+    /**
+     * Регулярное дело: отметили и перенесли срок (задача 3.8а).
+     *
+     * Отдельная реплика, потому что событие другое. «Отметила
+     * сделанным» про дело, которое осталось в списке, звучит как ошибка
+     * бота, а не как перенос.
+     */
+    readonly completedRecurring: (title: string, date: string) => string;
+    /** Правило снято: напоминать перестанем, запись остаётся. */
+    readonly ruleDropped: (title: string) => string;
     readonly cancelled: (title: string) => string;
 
     readonly buttonUndo: string;
