@@ -50,6 +50,14 @@ export interface ResolveResult {
   readonly problem?: string | undefined;
   /** Уверенность, как её назвала модель. В журнал, рядом с решением. */
   readonly confidence?: number | undefined;
+  /**
+   * Поля, которые модель предлагает изменить.
+   *
+   * Наружу они нужны двоим: тому, кто будет применять изменение, и
+   * контрольному набору — иначе срок в разметке нечем сверить, а поле,
+   * которое не проверяется, хуже отсутствующего.
+   */
+  readonly changes?: ResolverAnswer['changes'] | undefined;
 }
 
 const CREATE: Decision = {
@@ -175,5 +183,6 @@ export async function resolveSegment(
     decision,
     promptVersion: outcome.promptVersion,
     confidence: outcome.value.confidence,
+    changes: outcome.value.changes,
   };
 }

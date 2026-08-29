@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { checkThreshold, shares, type EvalReport } from '../eval/report.js';
+import { checkResolverThreshold, type ResolverReport } from '../eval/resolver-report.js';
 
 /**
  * Заслон перед заливкой промптов (§10.3 ТЗ).
@@ -126,9 +127,74 @@ if (!verdict.passed) {
   ]);
 }
 
+await checkResolver();
+
 const found = shares(run.report);
 
 process.stdout.write(
   `Прогон ${run.name}: найдено ${(found.recall * 100).toFixed(1)}%, ` +
     `точность типа ${(found.type * 100).toFixed(1)}% — порог пройден.\n`,
 );
+
+/**
+ * Отдельная проверка для резолвера.
+ *
+ * Вынесена вниз и в функцию, потому что у неё свой набор, свой отчёт и
+ * свой порог. Общий код у двух проверок только один — правило §10.3, и
+ * оно как раз не код, а требование.
+ */
+async function checkResolver(): Promise<void> {
+  const activating = await versionsToActivate();
+  const version = activating.get('resolver');
+
+  // Промпта резолвера в заливке нет — и проверять нечего.
+  if (version === undefined) return;
+
+  const runs = join(evalDir, 'resolver', 'runs');
+
+  let files: string[];
+  try {
+    files = (await readdir(runs)).filter((name) => name.endsWith('.json')).sort();
+  } catch {
+    files = [];
+  }
+
+  const newest = files.at(-1);
+
+  if (newest === undefined) {
+    fail([
+      'Прогона контрольного набора резолвера нет ни одного.',
+      '',
+      '§10.3 ТЗ: выкладка промптов только при отсутствии ухудшения. Сначала',
+      'прогон:',
+      '    npx tsx src/scripts/run-resolver-eval.ts ../../docs/eval/resolver',
+    ]);
+  }
+
+  const report = JSON.parse(await readFile(join(runs, newest), 'utf8')) as ResolverReport;
+
+  if (report.promptVersion !== version) {
+    fail([
+      `Свежий прогон резолвера (${newest}) сделан на другом промпте:`,
+      `  заливается ${version}, а мерили ${report.promptVersion}`,
+      '',
+      '§10.3 ТЗ: любое изменение промпта прогоняется по набору.',
+    ]);
+  }
+
+  const verdict = checkResolverThreshold(report);
+
+  if (!verdict.passed) {
+    fail([
+      `Свежий прогон резолвера (${newest}) не прошёл порог:`,
+      ...verdict.failures.map((line) => `  ${line}`),
+      '',
+      '§10.3 ТЗ: выкладка только при отсутствии ухудшения.',
+    ]);
+  }
+
+  process.stdout.write(
+    `Резолвер ${version}: ${String(report.decisionCorrect)} из ${String(report.cases)} решений верны, ложных применений нет.
+`,
+  );
+}
