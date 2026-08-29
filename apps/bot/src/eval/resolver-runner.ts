@@ -51,12 +51,21 @@ export async function runResolverCase(
       ? true
       : result.changes?.deadline === item.expected.deadline;
 
+  /**
+   * Режим сверяется только там, где случай его задал.
+   *
+   * §7.4 различает замену и дополнение, но большинство случаев про
+   * другое, и требовать от них угаданного режима значило бы мерить шум.
+   */
+  const modeOk = item.expected.mode === undefined ? true : result.mode === item.expected.mode;
+
   return {
     id: item.id,
     expected: item.expected.kind,
     actual: decision.kind,
     targetOk,
     deadlineOk,
+    modeOk,
     confidence: result.confidence,
     failed: !result.ok,
   };

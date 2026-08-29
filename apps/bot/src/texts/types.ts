@@ -172,6 +172,8 @@ export interface TextProfile {
    */
   readonly resolver: {
     readonly movedDeadline: (title: string, date: string) => string;
+    /** §7.4: подробность дописана, само дело не тронуто. */
+    readonly noted: (title: string) => string;
     readonly rewrote: (title: string) => string;
     readonly completed: (title: string) => string;
     readonly cancelled: (title: string) => string;

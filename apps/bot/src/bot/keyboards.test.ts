@@ -41,6 +41,7 @@ function itemFixture(): Item {
   return {
     id: randomUUID(),
     userId: randomUUID(),
+    body: null,
     sourceBatchId: null,
     sourceOrder: 0,
     recurrenceRule: null,

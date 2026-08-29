@@ -23,6 +23,7 @@ function outcome(overrides: Partial<ResolverCaseOutcome> = {}): ResolverCaseOutc
     actual: 'apply',
     targetOk: true,
     deadlineOk: true,
+    modeOk: true,
     confidence: 0.9,
     failed: false,
     ...overrides,
@@ -99,6 +100,15 @@ describe('пороги заданы там, где их видно', () => {
   it('ложных применений и не тех записей разрешено ноль', () => {
     expect(RESOLVER_THRESHOLD.falseApplies).toBe(0);
     expect(RESOLVER_THRESHOLD.wrongTarget).toBe(0);
+  });
+
+  it('перепутанные дополнение и замена порог валят', () => {
+    // §7.4: при замене переписывается заголовок дела человека. Решение
+    // при этом выглядит верным — тем опаснее.
+    const verdict = checkResolverThreshold(runWith({ modeOk: false }));
+
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('дополнение и замена');
   });
 
   it('доля решений оставляет запас к замеру', () => {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { itemRevisions, items, type Item } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
+import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { applyDecision, PATCHABLE_FIELDS } from './patch.js';
 import { lastRevisionOf, RESTORABLE_FIELDS, revertRevision } from './revisions.repo.js';
 
@@ -27,7 +28,7 @@ let userId = '';
 let strangerId = '';
 let seq = 0;
 
-const NO_CHANGES = { text: '', deadline: '', deadlineAccuracy: 'none' } as const;
+const NO_CHANGES = { note: '', text: '', deadline: '', deadlineAccuracy: 'none' } as const;
 
 async function sow(overrides: Partial<Item> = {}): Promise<Item> {
   const [row] = await testDb()
@@ -68,7 +69,7 @@ describe('применение оставляет ревизию', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+      changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
       timeZone: MOSCOW,
       now: NOW,
       reason: 'подтверждено свежестью',
@@ -94,7 +95,12 @@ describe('применение оставляет ревизию', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { text: 'Записать сына к стоматологу', deadline: '', deadlineAccuracy: 'none' },
+      changes: {
+        note: '',
+        text: 'Записать сына к стоматологу',
+        deadline: '',
+        deadlineAccuracy: 'none',
+      },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -148,7 +154,12 @@ describe('чего применение делать не должно', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { text: 'Записать сына к врачу в четверг', deadline: '', deadlineAccuracy: 'none' },
+      changes: {
+        note: '',
+        text: 'Записать сына к врачу в четверг',
+        deadline: '',
+        deadlineAccuracy: 'none',
+      },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -197,7 +208,7 @@ describe('чего применение делать не должно', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { text: '', deadline: '2020-01-01', deadlineAccuracy: 'day' },
+      changes: { note: '', text: '', deadline: '2020-01-01', deadlineAccuracy: 'day' },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -215,7 +226,7 @@ describe('откат в один тап (3.4)', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { text: 'Другое дело', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+      changes: { note: '', text: 'Другое дело', deadline: '2026-09-04', deadlineAccuracy: 'day' },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -348,5 +359,106 @@ describe('обещание отката держится по построени
       .where(eq(itemRevisions.itemId, item.id));
 
     expect(left).toEqual([]);
+  });
+});
+
+describe('дополнение против замены (§7.4, задача 3.7)', () => {
+  const NOTE: ResolverAnswer['changes'] = {
+    note: 'взять карту прививок',
+    text: '',
+    deadline: '',
+    deadlineAccuracy: 'none',
+  };
+
+  async function append(changes: ResolverAnswer['changes'] = NOTE, itemId?: string) {
+    const item = itemId ?? (await sow()).id;
+
+    return {
+      item,
+      applied: await applyDecision(testDb(), {
+        userId,
+        itemId: item,
+        action: 'update',
+        mode: 'append',
+        changes,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    };
+  }
+
+  it('подробность дописывается, а заголовок и срок целы', async () => {
+    // «Готово, когда» задачи 3.7: «а ещё туда надо взять карту прививок»
+    // дополняет запись про врача, а не переписывает её.
+    const { item, applied } = await append();
+
+    expect(applied?.fields).toEqual(['body']);
+
+    const after = await reread(item);
+    expect(after.body).toBe('взять карту прививок');
+    expect(after.text).toBe('Записать сына к врачу в четверг');
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('вторая подробность встаёт отдельной строкой, а не затирает первую', async () => {
+    const { item } = await append();
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item,
+      action: 'update',
+      mode: 'append',
+      changes: { note: 'и полис', text: '', deadline: '', deadlineAccuracy: 'none' },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item)).body).toBe('взять карту прививок\nи полис');
+  });
+
+  it('та же подробность дважды изменением не считается', async () => {
+    // Человек мог повторить сказанное. Список подробностей с дублями
+    // читать невозможно, а кнопка отмены обещала бы отменить пустоту.
+    const { item } = await append();
+    const again = await append(NOTE, item);
+
+    expect(again.applied).toBeUndefined();
+    expect((await reread(item)).body).toBe('взять карту прививок');
+  });
+
+  it('при дополнении поля замены игнорируются, даже если модель их заполнила', async () => {
+    // Смешивать замену с дополнением — значит однажды переписать
+    // заголовок под видом уточнения.
+    const { item, applied } = await append({
+      note: 'взять карту прививок',
+      text: 'Совсем другое дело',
+      deadline: '2026-12-01',
+      deadlineAccuracy: 'day',
+    });
+
+    expect(applied?.fields).toEqual(['body']);
+
+    const after = await reread(item);
+    expect(after.text).toBe('Записать сына к врачу в четверг');
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('пустая подробность ничего не меняет', async () => {
+    const { applied } = await append({
+      note: '   ',
+      text: '',
+      deadline: '',
+      deadlineAccuracy: 'none',
+    });
+
+    expect(applied).toBeUndefined();
+  });
+
+  it('откат убирает дописанное', async () => {
+    const { item, applied } = await append();
+
+    await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
+
+    expect((await reread(item)).body).toBeNull();
   });
 });

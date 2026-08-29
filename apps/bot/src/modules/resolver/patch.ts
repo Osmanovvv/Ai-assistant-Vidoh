@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 
 import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import type { ResolverAction, ResolverAnswer } from '../ai/schemas/index.js';
+import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import { resolveDeadline } from '../classifier/dates.js';
 
 import { recordRevision } from './revisions.repo.js';
@@ -29,6 +29,7 @@ import { recordRevision } from './revisions.repo.js';
  */
 export const PATCHABLE_FIELDS = [
   'text',
+  'body',
   'status',
   'completedAt',
   'deadlineAt',
@@ -46,6 +47,13 @@ export interface ApplyParams {
   /** «Новая мысль» сюда не приходит: применять нечего. */
   readonly action: Exclude<ResolverAction, 'new'>;
   readonly changes: ResolverAnswer['changes'];
+  /**
+   * §7.4: дополняем подробности или заменяем поля.
+   *
+   * По умолчанию замена — так работали все, кто звал применение до
+   * задачи 3.7, и менять их поведение молча нельзя.
+   */
+  readonly mode?: ResolverMode | undefined;
   readonly timeZone: string;
   readonly now?: Date | undefined;
   readonly reason?: string | undefined;
@@ -77,6 +85,30 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
   if (params.action === 'cancel') {
     // §13.5: «убрать» — это отменённая запись, а не удалённая строка.
     if (item.status !== 'cancelled') next.status = 'cancelled';
+    return next;
+  }
+
+  /**
+   * Дополнение (§7.4): подробность дописывается, заголовок и срок целы.
+   *
+   * «А ещё туда надо взять карту прививок» не заменяет «Записать сына к
+   * врачу» и не двигает четверг. Правка полей здесь не рассматривается
+   * вовсе, даже если модель их заполнила: смешивать замену с дополнением
+   * — значит однажды переписать заголовок под видом уточнения.
+   */
+  if (params.mode === 'append') {
+    const note = params.changes.note.trim();
+    if (note.length === 0) return next;
+
+    // Подробности копятся строками: каждая — отдельная мысль человека, и
+    // склеивать их в один абзац значит терять границы.
+    const already = item.body ?? '';
+
+    // Одно и то же уточнение дважды — не изменение. Человек мог повторить
+    // сказанное, а список подробностей с дублями читать невозможно.
+    if (already.split('\n').includes(note)) return next;
+
+    next.body = already.length === 0 ? note : `${already}\n${note}`;
     return next;
   }
 

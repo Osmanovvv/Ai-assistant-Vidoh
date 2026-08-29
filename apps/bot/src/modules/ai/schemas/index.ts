@@ -11,7 +11,14 @@ import {
 } from './classifier.js';
 import { extractorSchema, EXTRACTOR_SCHEMA_NAME } from './extractor.js';
 import { presenterSchema, PRESENTER_SCHEMA_NAME } from './presenter.js';
-import { resolverSchema, RESOLVER_ACTIONS, RESOLVER_SCHEMA_NAME } from './resolver.js';
+import {
+  resolverSchema,
+  RESOLVER_ACTIONS,
+  RESOLVER_MODES,
+  RESOLVER_SCHEMA_NAME,
+  RESOLVER_V1_SCHEMA_NAME,
+  resolverV1Schema,
+} from './resolver.js';
 import { INTENTS, routerSchema, ROUTER_SCHEMA_NAME } from './router.js';
 
 /**
@@ -36,6 +43,9 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [CLASSIFIER_SCHEMA_NAME]: classifierSchema,
   [PRESENTER_SCHEMA_NAME]: presenterSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
+  // Первая версия ещё активна в бою до заливки промптов, и откат к ней
+  // возможен: схему выкидывать нельзя.
+  [RESOLVER_V1_SCHEMA_NAME]: resolverV1Schema,
 };
 
 export type SchemaName = keyof typeof SCHEMAS;
@@ -110,9 +120,9 @@ export { extractorSchema, EXTRACTOR_SCHEMA_NAME };
 export { routerSchema, ROUTER_SCHEMA_NAME, INTENTS };
 export { classifierSchema, CLASSIFIER_SCHEMA_NAME, ITEM_TYPES, PRIORITIES, DEADLINE_ACCURACY };
 export { presenterSchema, PRESENTER_SCHEMA_NAME };
-export { resolverSchema, RESOLVER_SCHEMA_NAME, RESOLVER_ACTIONS };
+export { resolverSchema, RESOLVER_SCHEMA_NAME, RESOLVER_ACTIONS, RESOLVER_MODES };
 export type { ExtractedUnits } from './extractor.js';
 export type { Intent, RoutedSegments } from './router.js';
 export type { ClassifiedItems, DeadlineAccuracy, ItemType, Priority } from './classifier.js';
 export type { PresenterAcknowledgement } from './presenter.js';
-export type { ResolverAction, ResolverAnswer } from './resolver.js';
+export type { ResolverAction, ResolverAnswer, ResolverMode } from './resolver.js';
