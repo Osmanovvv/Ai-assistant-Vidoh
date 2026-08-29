@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -19,7 +20,21 @@ export const DELETE_STEP_ONE = 'privacy:delete:1';
 export const DELETE_STEP_TWO = 'privacy:delete:2';
 export const DELETE_CANCEL = 'privacy:delete:cancel';
 
-export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger): void {
+export interface PrivacyDeps {
+  readonly db: Database;
+  readonly logger: Logger;
+  /**
+   * Шлюз веток нужен удалению, а не экспорту.
+   *
+   * Без него удаление чистило базу и оставляло в чате ветки тем с
+   * закреплёнными сводками — то есть со списком дел человека, который
+   * только что попросил всё стереть.
+   */
+  readonly topics: TopicGateway;
+}
+
+export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
+  const { db, logger } = deps;
   /**
    * Профиль текстов человека (§13.8). Отдельный запрос на команду: команды
    * приходят редко, а тащить настройки через весь поток сообщений ради
@@ -88,9 +103,30 @@ export function registerPrivacyHandlers(bot: Bot, db: Database, logger: Logger):
 
     const report = await deleteUserData(db, user.id);
     logger.info(
-      { tgId, messages: report.messages, dumps: report.dumps },
+      { tgId, messages: report.messages, dumps: report.dumps, threads: report.threadIds.length },
       'Данные пользователя удалены по его запросу',
     );
+
+    /**
+     * Ветки чистятся после базы, а не до, и поштучно в try/catch.
+     *
+     * Порядок такой потому, что главное здесь — удалить данные. Если
+     * Telegram откажет (режим тем выключен, ветку уже снесли руками, у
+     * бота нет прав), человек всё равно должен остаться удалённым:
+     * несработавшая уборка чата — это неопрятность, а несработавшее
+     * удаление — нарушение §16.
+     */
+    const chatId = ctx.chat?.id;
+
+    if (chatId !== undefined) {
+      for (const threadId of report.threadIds) {
+        try {
+          await deps.topics.deleteThread({ chatId, threadId });
+        } catch (error) {
+          logger.debug({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
+        }
+      }
+    }
 
     await ctx.editMessageText(texts.privacy.deleteDone);
   });

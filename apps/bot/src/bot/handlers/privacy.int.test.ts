@@ -4,9 +4,10 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, messagesRaw, users } from '../../db/schema.js';
+import { batches, messagesRaw, topics, users } from '../../db/schema.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { createLogger } from '../../infra/logger.js';
+import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { incomingMiddleware } from './incoming.js';
@@ -45,7 +46,11 @@ const stubQueue = {
   add: () => Promise.resolve({}),
 } as unknown as Queue<PipelineJob>;
 
-function createTestBot(options: { withIncoming?: boolean } = {}): { bot: Bot; calls: ApiCall[] } {
+function createTestBot(options: { withIncoming?: boolean; gateway?: FakeTopicGateway } = {}): {
+  bot: Bot;
+  calls: ApiCall[];
+  gateway: FakeTopicGateway;
+} {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -75,9 +80,11 @@ function createTestBot(options: { withIncoming?: boolean } = {}): { bot: Bot; ca
     bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
   }
   registerStartHandlers(bot, POLICY_URL);
-  registerPrivacyHandlers(bot, testDb(), logger);
 
-  return { bot, calls };
+  const gateway = options.gateway ?? new FakeTopicGateway();
+  registerPrivacyHandlers(bot, { db: testDb(), logger, topics: gateway });
+
+  return { bot, calls, gateway };
 }
 
 /** Так Telegram решает, команда это или обычный текст. */
@@ -266,6 +273,52 @@ describe('/delete_my_data', () => {
     // по этому идентификатору.
     await seedUser();
     const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const edit = calls.find((call) => call.method === 'editMessageText');
+    expect(String(edit?.payload['text'])).toContain('удалено');
+    expect(await rowsFor(TG_ID)).toEqual({ users: 0, messages: 0, batches: 0 });
+  });
+
+  it('ветки тем удаляются вместе с данными', async () => {
+    /**
+     * **Раньше удаление чата не касалось.** База чистилась начисто, а в
+     * Telegram оставались ветки тем, и в каждой — закреплённая сводка со
+     * списком дел. Человек нажимал «удалить мои данные» и продолжал
+     * видеть свои дела. Найдено ручной проверкой 29.08.2026.
+     *
+     * И вторая половина беды: следующее сообщение запускает онбординг
+     * заново, темы создаются с нуля, ветки тоже — в чате оказывается по
+     * две «семьи». Сценарий приёмки №13 обещает «бот начинает диалог с
+     * нуля», а получалось наоборот.
+     */
+    const userId = await seedUser();
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'семья', sortOrder: 0, tgThreadId: 101 },
+        { userId, name: 'здоровье', sortOrder: 1, tgThreadId: 102 },
+        // Тема без ветки: удалять нечего, и падать не на чем.
+        { userId, name: 'личное', sortOrder: 2, isDefault: true },
+      ]);
+
+    const { bot, gateway } = createTestBot();
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    expect(gateway.deletedThreads.map((one) => one.threadId).sort()).toEqual([101, 102]);
+    expect(gateway.deletedThreads.every((one) => one.chatId === TG_ID)).toBe(true);
+  });
+
+  it('отказ Telegram по ветке не отменяет удаление данных', async () => {
+    // §16 важнее опрятности чата: человек, попросивший себя стереть,
+    // обязан быть стёртым, даже если ветку до этого снесли руками или у
+    // бота нет прав её удалить.
+    const userId = await seedUser();
+    await testDb().insert(topics).values({ userId, name: 'семья', sortOrder: 0, tgThreadId: 101 });
+
+    const gateway = new FakeTopicGateway({ goneThreads: new Set([101]) });
+    const { bot, calls } = createTestBot({ gateway });
 
     await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
 

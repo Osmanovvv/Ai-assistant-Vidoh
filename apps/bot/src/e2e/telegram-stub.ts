@@ -89,6 +89,7 @@ export async function startTelegramStub(): Promise<TelegramStub> {
       case 'unpinChatMessage':
       case 'answerCallbackQuery':
       case 'editForumTopic':
+      case 'deleteForumTopic':
       case 'setMessageReaction':
         return true;
 

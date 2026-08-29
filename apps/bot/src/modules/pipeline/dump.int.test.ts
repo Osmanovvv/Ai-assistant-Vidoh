@@ -978,6 +978,125 @@ describe('ветки тем в разборе', () => {
     expect(saved?.topic).toBe('здоровье');
   });
 
+  it('модель отнесла дело в тему по умолчанию, а писали из ветки — уходит в ветку', async () => {
+    /**
+     * **Проверка выше зелёная, но в бою не исполняется.** Она отдаёт от
+     * модели тему «выдуманная», которой у человека нет, и меряет
+     * подстановку на неизвестной теме. Живая модель всегда называет тему
+     * из выданного списка, поэтому та подстановка не срабатывает никогда.
+     *
+     * Здесь модель отвечает как настоящая — темой по умолчанию, — и это
+     * тот самый случай с боевого бота 29.08.2026: «позвонить Марине
+     * насчёт вторника» из ветки «здоровье» легло в «личное».
+     */
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'личное', sortOrder: 1, isDefault: true },
+      ]);
+
+    const [health] = await testDb().select().from(topics).where(eq(topics.name, 'здоровье'));
+    const thread = await ensureThread(
+      { db: testDb(), gateway },
+      { topicId: health!.id, chatId: 700 },
+    );
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'позвонить Марине', offsetMs: 0, threadId: thread.threadId },
+    ]);
+
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'позвонить Марине',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const [saved] = await testDb().select().from(items).where(eq(items.isDraft, false));
+    expect(saved?.topic).toBe('здоровье');
+  });
+
+  it('явно названная сфера веткой не перебивается', async () => {
+    // Ветка — контекст по умолчанию, а не приказ: покупки остаются
+    // покупками, даже если сказаны из ветки «здоровье».
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'покупки', sortOrder: 1 },
+        { userId, name: 'личное', sortOrder: 2, isDefault: true },
+      ]);
+
+    const [health] = await testDb().select().from(topics).where(eq(topics.name, 'здоровье'));
+    const thread = await ensureThread(
+      { db: testDb(), gateway },
+      { topicId: health!.id, chatId: 700 },
+    );
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'купить корм коту', offsetMs: 0, threadId: thread.threadId },
+    ]);
+
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'купить корм коту',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'покупки',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const [saved] = await testDb().select().from(items).where(eq(items.isDraft, false));
+    expect(saved?.topic).toBe('покупки');
+  });
+
   it('после разбора обновляются сводки затронутых тем, и только они', async () => {
     const prompts = await seedPrompts();
     const gateway = new FakeTopicGateway();

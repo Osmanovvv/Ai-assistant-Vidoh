@@ -222,10 +222,25 @@ export interface DeletionReport {
   readonly deleted: boolean;
   readonly messages: number;
   readonly dumps: number;
+  /**
+   * Ветки Telegram, созданные ботом под темы человека.
+   *
+   * Возвращаются наружу, потому что чистит их вызывающая сторона: у неё
+   * есть чат и шлюз, а у службы — только база. Читаются до удаления,
+   * после каскада читать будет негде.
+   */
+  readonly threadIds: readonly number[];
 }
 
 /**
  * Физическое удаление всех данных пользователя (§16 ТЗ, критерий 13).
+ *
+ * **Чата это не касается, и об этом надо помнить.** База чистится
+ * каскадом целиком, но ветки тем, закреплённые сводки и голосовые живут
+ * в Telegram. Ветки удаляет вызывающая сторона по возвращённым здесь
+ * идентификаторам — иначе человек нажимает «удалить мои данные» и
+ * продолжает видеть свои дела в закрепах. Найдено ручной проверкой
+ * 29.08.2026.
  *
  * Записи учёта расхода не удаляются, а обезличиваются: внешний ключ
  * настроен на set null. В них нет ни строчки пользовательского текста —
@@ -236,7 +251,7 @@ export async function deleteUserData(db: Database, userId: string): Promise<Dele
   return await db.transaction(async (tx): Promise<DeletionReport> => {
     const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId));
     if (!existing) {
-      return { deleted: false, messages: 0, dumps: 0 };
+      return { deleted: false, messages: 0, dumps: 0, threadIds: [] };
     }
 
     // Считаем до удаления: после каскада считать будет нечего.
@@ -249,9 +264,22 @@ export async function deleteUserData(db: Database, userId: string): Promise<Dele
       .from(batches)
       .where(eq(batches.userId, userId));
 
+    // Ветки тоже до удаления: строки тем уйдут вместе с человеком.
+    const threads = await tx
+      .select({ threadId: topics.tgThreadId })
+      .from(topics)
+      .where(eq(topics.userId, userId));
+
     // Каскад по внешним ключам убирает настройки, сообщения и выгрузки.
     await tx.delete(users).where(eq(users.id, userId));
 
-    return { deleted: true, messages: messages.length, dumps: dumps.length };
+    return {
+      deleted: true,
+      messages: messages.length,
+      dumps: dumps.length,
+      threadIds: threads
+        .map((row) => row.threadId)
+        .filter((threadId): threadId is number => threadId !== null),
+    };
   });
 }
