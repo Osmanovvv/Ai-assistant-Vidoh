@@ -6,6 +6,7 @@ import { items, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { localDateParts } from '../../modules/classifier/dates.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { nextDeadlineAfterDone } from '../../modules/recurrence/recurrence.service.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -191,19 +192,33 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         return;
       }
 
+      /**
+       * Регулярное дело кнопкой закрывать нельзя (задача 3.8а).
+       *
+       * «Сделано» у него переносит срок на следующее повторение, а
+       * запись остаётся. Кнопка и голос обязаны вести себя одинаково:
+       * человек не должен запоминать, каким способом отмечать садик,
+       * чтобы список не зарос двенадцатью его копиями.
+       */
+      const moved =
+        next === 'done'
+          ? nextDeadlineAfterDone(active.item, { timeZone: active.timeZone, now: new Date() })
+          : undefined;
+
       // Отложенному делу срок сдвигается вперёд: иначе оно останется
       // просроченным и полезет в выдачу тем же вечером.
       const deadlineAt =
         next === 'snoozed'
           ? new Date(Date.now() + SNOOZE_DAYS * 24 * 60 * 60_000)
-          : active.item.deadlineAt;
+          : (moved ?? active.item.deadlineAt);
 
       await db
         .update(items)
         .set({
-          status: next,
+          // У регулярного дела статус не меняется: оно не закрывается.
+          status: moved === undefined ? next : active.item.status,
           // §5: когда закрыли, а не только что закрыто.
-          completedAt: next === 'done' ? new Date() : null,
+          completedAt: next === 'done' && moved === undefined ? new Date() : null,
           deadlineAt,
           ...(next === 'snoozed' && active.item.deadlineAccuracy === null
             ? { deadlineAccuracy: 'day' as const }

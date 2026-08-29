@@ -27,6 +27,19 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
   const { after, fields } = applied;
   const resolver = texts.resolver;
 
+  /**
+   * Регулярное дело сперва: у него выполнение выглядит как перенос
+   * срока, и общая реплика «перенесла на 05.10» соврала бы — человек
+   * ничего не переносил, он дело сделал (задача 3.8а).
+   */
+  if (applied.action === 'complete' && after.deadlineAt !== null && fields.includes('deadlineAt')) {
+    return resolver.completedRecurring(after.text, shortDate(after.deadlineAt, timeZone));
+  }
+
+  if (applied.action === 'cancel' && fields.includes('recurrenceRule')) {
+    return resolver.ruleDropped(after.text);
+  }
+
   // §7.4 идёт первым: дополнение не трогает ни заголовок, ни срок, и
   // сказать о нём надо именно как о дополнении.
   if (fields.includes('body')) return resolver.noted(after.text);

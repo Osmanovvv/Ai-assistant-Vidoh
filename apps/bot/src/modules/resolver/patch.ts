@@ -4,6 +4,7 @@ import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import { resolveDeadline } from '../classifier/dates.js';
+import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
 import { recordRevision } from './revisions.repo.js';
 
@@ -30,6 +31,9 @@ import { recordRevision } from './revisions.repo.js';
 export const PATCHABLE_FIELDS = [
   'text',
   'body',
+  'recurrenceRule',
+  'recurrenceText',
+  'recurrenceSource',
   'status',
   'completedAt',
   'deadlineAt',
@@ -64,6 +68,8 @@ export interface ApplyParams {
 
 export interface Applied {
   readonly revisionId: string;
+  /** Что делали: реплика человеку у выполнения и правки разная. */
+  readonly action: Exclude<ResolverAction, 'new'>;
   readonly before: Item;
   readonly after: Item;
   /** Что именно поменялось — для реплики человеку и для журнала. */
@@ -75,6 +81,21 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
   const next: ItemPatch = {};
 
   if (params.action === 'complete') {
+    /**
+     * Задача 3.8а: у регулярного дела выполнение двигает срок, а не
+     * закрывает запись. Иначе на месте одного «оплатить садик» вырастет
+     * стена из двенадцати — ровно та вина, которую продукт снимает.
+     */
+    const moved = nextDeadlineAfterDone(item, { timeZone: params.timeZone, now });
+
+    if (moved !== undefined) {
+      if (item.deadlineAt?.getTime() !== moved.getTime()) {
+        next.deadlineAt = moved;
+        next.deadlineAccuracy = 'day';
+      }
+      return next;
+    }
+
     if (item.status !== 'done') {
       next.status = 'done';
       next.completedAt = now;
@@ -83,6 +104,19 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
   }
 
   if (params.action === 'cancel') {
+    /**
+     * Задача 3.8а: «больше не надо» у регулярного дела снимает правило,
+     * а не отменяет запись. Человек имел в виду «перестань напоминать»,
+     * а не «этого дела не было»: садик оплачивался год, и это правда,
+     * даже если больше не оплачивается.
+     */
+    if (isRecurring(item)) {
+      next.recurrenceRule = null;
+      next.recurrenceText = null;
+      next.recurrenceSource = null;
+      return next;
+    }
+
     // §13.5: «убрать» — это отменённая запись, а не удалённая строка.
     if (item.status !== 'cancelled') next.status = 'cancelled';
     return next;
@@ -194,6 +228,6 @@ export async function applyDecision(
       sourceMessageId: params.sourceMessageId,
     });
 
-    return { revisionId: revision.id, before: item, after, fields };
+    return { revisionId: revision.id, action: params.action, before: item, after, fields };
   });
 }

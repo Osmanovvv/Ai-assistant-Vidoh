@@ -462,3 +462,119 @@ describe('дополнение против замены (§7.4, задача 3.
     expect((await reread(item)).body).toBeNull();
   });
 });
+
+describe('регулярное дело движется, а не множится (задача 3.8а)', () => {
+  /**
+   * Главное решение этапа, и оно продуктовое. Женщина, пропустившая три
+   * недели, не должна увидеть стену одинаковых просроченных дел — §13.6
+   * запрещает подавать просроченное как провал и запрещает считать
+   * пропущенные дни.
+   */
+  const MONDAY = '2026-08-31';
+
+  async function weekly(deadline: string, kind = 'weekly'): Promise<Item> {
+    return await sow({
+      text: 'Оплатить садик',
+      deadlineAt: new Date(`${deadline}T21:00:00.000Z`),
+      deadlineAccuracy: 'day',
+      recurrenceRule: { kind, interval: 1, anchor: MONDAY },
+      recurrenceText: 'каждую неделю',
+      recurrenceSource: 'stated',
+    });
+  }
+
+  async function markDone(item: Item, now: Date) {
+    return await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'complete',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now,
+    });
+  }
+
+  it('выполнение переносит срок вперёд и не закрывает запись', async () => {
+    // Понедельник 31.08 — якорь. Отмечаем во вторник 01.09.
+    const item = await weekly('2026-08-30');
+    const applied = await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
+
+    expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy']);
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.completedAt).toBeNull();
+    // Следующий понедельник — 7 сентября.
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-06T21:00:00.000Z');
+  });
+
+  it('две пропущенные недели дают одну запись со сроком, а не две просроченные', async () => {
+    // «Готово, когда» задачи 3.8а дословно. Отмечаем спустя три недели.
+    const item = await weekly('2026-08-30');
+    await markDone(item, new Date('2026-09-22T09:00:00.000Z'));
+
+    const after = await reread(item.id);
+    // Ближайший понедельник после 22 сентября — 28-е. Не 7-е и не 14-е:
+    // догоняющей очереди не образуется.
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-27T21:00:00.000Z');
+
+    const all = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(all).toHaveLength(1);
+  });
+
+  it('каждое выполнение видно в ревизиях (инвариант 7)', async () => {
+    // Статистики «сделано 3 из 5» продукт не ведёт — это трекер привычек,
+    // а он в §1.3 не входит. Но факт не теряется.
+    const item = await weekly('2026-08-30');
+
+    await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
+    await markDone(item, new Date('2026-09-08T09:00:00.000Z'));
+
+    const revisions = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, item.id));
+
+    expect(revisions).toHaveLength(2);
+  });
+
+  it('перенос откатывается, как и любое изменение', async () => {
+    const item = await weekly('2026-08-30');
+    const applied = await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
+
+    await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
+
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-08-30T21:00:00.000Z');
+  });
+
+  it('«больше не надо» снимает правило, а не отменяет запись', async () => {
+    // Человек имел в виду «перестань напоминать», а не «этого дела не
+    // было»: садик оплачивался год, и это правда.
+    const item = await weekly('2026-08-30');
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'cancel',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(applied?.fields).toContain('recurrenceRule');
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.recurrenceRule).toBeNull();
+    expect(after.recurrenceText).toBeNull();
+  });
+
+  it('у обычного дела выполнение по-прежнему закрывает запись', async () => {
+    // Смягчение ради регулярных не должно расползтись на остальные.
+    const item = await sow();
+    const applied = await markDone(item, NOW);
+
+    expect(applied?.fields).toEqual(['status', 'completedAt']);
+    expect((await reread(item.id)).status).toBe('done');
+  });
+});
