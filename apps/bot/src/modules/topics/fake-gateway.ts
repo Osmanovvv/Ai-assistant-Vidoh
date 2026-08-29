@@ -112,6 +112,18 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve(nextMessageId);
   }
 
+  /** Удалённые ветки: пара «чат, ветка» на каждый вызов. */
+  readonly deletedThreads: { chatId: number; threadId: number }[] = [];
+
+  deleteThread(params: { chatId: number; threadId: number }): Promise<void> {
+    if (this.options.goneThreads?.has(params.threadId) === true) {
+      return Promise.reject(telegramError(400, 'Bad Request: message thread not found'));
+    }
+
+    this.deletedThreads.push({ chatId: params.chatId, threadId: params.threadId });
+    return Promise.resolve();
+  }
+
   edit(params: { chatId: number; messageId: number; text: string }): Promise<void> {
     if (this.options.goneMessages?.has(params.messageId) === true) {
       return Promise.reject(telegramError(400, 'Bad Request: message to edit not found'));

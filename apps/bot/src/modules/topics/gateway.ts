@@ -42,6 +42,18 @@ export interface TopicGateway {
   }): Promise<void>;
 
   pin(params: { readonly chatId: number; readonly messageId: number }): Promise<void>;
+
+  /**
+   * Удалить ветку вместе со всем, что в ней (§16 ТЗ).
+   *
+   * Нужен ровно одному случаю — удалению данных по просьбе человека.
+   * Раньше удаление чистило базу и не трогало чат: ветки тем оставались
+   * на месте, а в каждой висела закреплённая сводка со списком дел.
+   * Человек нажимал «удалить мои данные» и продолжал видеть свои дела.
+   *
+   * Найдено ручной проверкой 29.08.2026.
+   */
+  deleteThread(params: { readonly chatId: number; readonly threadId: number }): Promise<void>;
 }
 
 /**
@@ -143,6 +155,10 @@ export function createTopicGateway(api: Api): TopicGateway {
 
     async edit({ chatId, messageId, text }) {
       await api.editMessageText(chatId, messageId, text);
+    },
+
+    async deleteThread({ chatId, threadId }) {
+      await api.deleteForumTopic(chatId, threadId);
     },
 
     async pin({ chatId, messageId }) {

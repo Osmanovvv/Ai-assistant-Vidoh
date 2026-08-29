@@ -242,8 +242,27 @@ describe('deleteUserData', () => {
 
   it('удаление неизвестного пользователя не ошибка', async () => {
     await expect(deleteUserData(testDb(), '00000000-0000-0000-0000-000000000000')).resolves.toEqual(
-      { deleted: false, messages: 0, dumps: 0 },
+      { deleted: false, messages: 0, dumps: 0, threadIds: [] },
     );
+  });
+
+  it('отчёт называет ветки тем: их чистит вызывающая сторона', async () => {
+    // Служба видит базу, но не чат. Ветки читаются до каскада и уходят
+    // наружу — иначе удаление данных оставляло бы в Telegram закреплённые
+    // сводки со списком дел человека, который попросил всё стереть.
+    // Найдено ручной проверкой 29.08.2026.
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'работа', sortOrder: 10, tgThreadId: 555 },
+        { userId, name: 'без ветки', sortOrder: 11 },
+      ]);
+
+    const report = await deleteUserData(testDb(), userId);
+
+    // Ровно одна: тема без ветки ничего не добавляет, а пустот в списке
+    // быть не должно — вызывающая сторона удаляет по нему не глядя.
+    expect(report.threadIds).toEqual([555]);
   });
 
   it('повторное удаление идемпотентно', async () => {
@@ -253,6 +272,7 @@ describe('deleteUserData', () => {
       deleted: false,
       messages: 0,
       dumps: 0,
+      threadIds: [],
     });
   });
 });

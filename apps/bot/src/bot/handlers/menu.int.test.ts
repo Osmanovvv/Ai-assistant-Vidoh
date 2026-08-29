@@ -396,9 +396,14 @@ describe('карточка записи', () => {
     );
   });
 
-  it('«Изменить» подсказывает сказать словами и статус не трогает', async () => {
+  it('«Изменить» подсказывает словами и не съедает карточку', async () => {
     // §7 ТЗ строит правку на речи. Учить человека формам вместо разговора
     // значит идти против продукта.
+    //
+    // **Подсказка приходила правкой сообщения и стирала клавиатуру** —
+    // при том что сама говорит «кнопками рядом». Нажатие, которое ничего
+    // не меняет, отнимало у человека экран. Найдено ручной проверкой
+    // 29.08.2026; здесь проверяется, что карточка на месте.
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -406,10 +411,28 @@ describe('карточка записи', () => {
 
     await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
 
-    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
-      defaultTexts.card.editHint,
-    );
+    const answer = calls.filter((call) => call.method === 'answerCallbackQuery').at(-1);
+    expect(textOf(answer)).toBe(defaultTexts.card.editHint);
+    expect(answer?.payload['show_alert']).toBe(true);
+
+    // Ни одной правки сообщения: карточка с кнопками осталась как была.
+    expect(calls.filter((call) => call.method === 'editMessageText')).toHaveLength(0);
     expect((await itemRow(itemId))?.status).toBe('new');
+  });
+
+  it('«Изменить» по исчезнувшей записи карточку как раз заменяет', async () => {
+    // Обратная сторона правила: карточка несуществующей записи врёт, и
+    // оставлять её на экране нельзя.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem({ owner: userId, text: 'к врачу', topic: 'личное' });
+    await testDb().delete(items).where(eq(items.id, itemId));
+
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(edited)).toBe(defaultTexts.card.gone);
   });
 });
 

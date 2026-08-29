@@ -40,6 +40,7 @@ import { topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
 import { lowerEnergy, outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
+import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
 
 /**
@@ -406,12 +407,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       return;
     }
 
+    /**
+     * §8.1: тема ветки — умолчание, а не приказ.
+     *
+     * Классификация уже получила её параметром `defaultTopic`, но тот
+     * срабатывает только на теме, которой у человека нет, — то есть в
+     * бою никогда. Подстановка живёт здесь: см. thread-topic.ts.
+     */
+    const units = applyThreadTopic(classified.items, {
+      threadTopic: threadTopic?.name,
+      catchAllTopic: topics.defaultName,
+    });
+
     // ── Сохранение ──────────────────────────────────────────────────────
-    const toSave = await withEmbeddings(db, deps, batch, classified.items);
+    const toSave = await withEmbeddings(db, deps, batch, units);
     await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
-    const composition = composeOf(classified.items);
+    const composition = composeOf(units);
     const energyNow = await applyEmotion(
       db,
       deps,

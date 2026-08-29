@@ -224,16 +224,28 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
   changeStatus(CARD_ACTION.snooze, 'snoozed', (texts) => texts.card.snoozed);
   changeStatus(CARD_ACTION.remove, 'cancelled', (texts) => texts.card.deleted);
 
-  // ── Изменить: подсказка сказать словами ───────────────────────────────
+  /**
+   * Изменить: подсказка сказать словами.
+   *
+   * **Подсказка приходит всплывающим окном, а не правкой сообщения.**
+   * Раньше она затирала карточку и не возвращала клавиатуру — и текст
+   * «кнопками рядом» указывал на кнопки, которые сам же и стёр. У трёх
+   * остальных кнопок замена карточки уместна: действие совершено, и
+   * держать её незачем. Здесь действия нет, а человек терял экран за
+   * нажатие, которое ничего не меняет.
+   *
+   * Найдено ручной проверкой на боевом боте 29.08.2026.
+   */
   bot.callbackQuery(new RegExp(`^${CARD_ACTION.edit}`, 'u'), async (ctx) => {
-    await ctx.answerCallbackQuery();
-
     const active = await ownItem(ctx.from.id, ctx.callbackQuery.data, CARD_ACTION.edit);
+
     if (!active) {
+      // Записи нет — вот здесь карточку заменить как раз надо: она врёт.
+      await ctx.answerCallbackQuery();
       await ctx.editMessageText(textsFor(null).card.gone);
       return;
     }
 
-    await ctx.editMessageText(active.texts.card.editHint);
+    await ctx.answerCallbackQuery({ text: active.texts.card.editHint, show_alert: true });
   });
 }
