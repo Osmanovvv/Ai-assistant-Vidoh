@@ -1,6 +1,8 @@
-import { localDateParts } from '../../modules/classifier/dates.js';
-import type { Applied } from '../../modules/resolver/patch.js';
+import { localDateParts } from '../classifier/dates.js';
+import type { Applied } from './patch.js';
+import type { StatusButton } from '../presenter/status.service.js';
 import type { TextProfile } from '../../texts/index.js';
+import { toShortId } from '../shared/short-id.js';
 
 /**
  * Что сказать человеку об изменении (§7.3 ТЗ, задача 3.3).
@@ -43,4 +45,18 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
   }
 
   return resolver.rewrote(after.text);
+}
+
+/**
+ * Кнопка отмены как данные, а не как клавиатура Telegram.
+ *
+ * Строится здесь, а не в обработчике: реплику об изменении шлют двое —
+ * обработчик кнопки и конвейер, когда человек ответил голосом. Две копии
+ * одной кнопки однажды разъехались бы префиксом, и половина отмен
+ * перестала бы находиться.
+ */
+export const UNDO_PREFIX = 'u:';
+
+export function undoButtons(revisionId: string, texts: TextProfile): readonly StatusButton[] {
+  return [{ label: texts.resolver.buttonUndo, action: `${UNDO_PREFIX}${toShortId(revisionId)}` }];
 }

@@ -6,7 +6,8 @@ import { revertRevision } from '../../modules/resolver/revisions.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { fromShortId, toShortId } from '../short-id.js';
+import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
+import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 
 /**
  * Откат в один тап (§7.3 ТЗ, задача 3.4).
@@ -24,8 +25,6 @@ import { fromShortId, toShortId } from '../short-id.js';
  * **Код не заменяет проверку прав.** Он приходит снаружи и подбирается;
  * владелец сверяется в `revertRevision`.
  */
-
-export const UNDO_PREFIX = 'u:';
 
 /** Кнопка отмены под сообщением об изменении. */
 export function undoKeyboard(revisionId: string, texts: TextProfile): InlineKeyboard {

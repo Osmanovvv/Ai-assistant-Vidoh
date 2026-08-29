@@ -12,8 +12,8 @@ import { topicsFor } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { fromShortId, toShortId } from '../short-id.js';
-import { describeChange } from './change-text.js';
+import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
+import { describeChange } from '../../modules/resolver/change-text.js';
 import { undoKeyboard } from './undo.js';
 
 /**

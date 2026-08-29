@@ -1,6 +1,7 @@
+import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import type { Batch, EnergyLevelValue } from '../../db/schema.js';
+import { items, type Batch, type EnergyLevelValue } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
@@ -10,6 +11,9 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
+import { describeChange, undoButtons } from '../resolver/change-text.js';
+import { settlePendingQuestion } from '../resolver/pending.js';
+import { openQuestionOf } from '../resolver/questions.repo.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
 import {
   firstStep,
@@ -64,6 +68,12 @@ import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe
  * задачу «в пятницу» было бы хуже, чем не разобрать её вовсе.
  */
 
+/** Заголовок записи: он подставляется в текст открытого вопроса (§7.3). */
+async function titleOfItem(db: Database, itemId: string): Promise<string | undefined> {
+  const [row] = await db.select({ text: items.text }).from(items).where(eq(items.id, itemId));
+  return row?.text;
+}
+
 /** Намерения, которые этап 2 разбирает сам. */
 const PARSED_INTENTS = new Set(['DUMP']);
 
@@ -74,6 +84,15 @@ const PARSED_INTENTS = new Set(['DUMP']);
  * в админке, а §13.9 требует от бота короткой реплики, а не разбора.
  */
 const IGNORED_INTENTS = new Set(['SMALLTALK']);
+
+/**
+ * Ответ на уточняющий вопрос (§7.3, задача 3.6).
+ *
+ * Не разбирается как мысль и не уходит в черновик: это реплика про
+ * открытый вопрос, а не дело. Без отдельной ветки «да, к прошлой»
+ * превратилось бы в запись «да».
+ */
+const ANSWER_INTENT = 'ANSWER';
 
 export interface DumpHandlerDeps {
   readonly speech: TranscribeDeps;
@@ -306,10 +325,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const heavy = limited.degrade ? aiLight : ai;
 
     // ── Намерения ───────────────────────────────────────────────────────
+    /**
+     * §7.3, задача 3.6: при открытом вопросе намерение `ANSWER`
+     * проверяется первым. Без этого «в пятницу» уйдёт в `DUMP` и создаст
+     * задачу без задачи — маршрутизатор не может знать, о чём спрашивал
+     * бот, если ему не сказать.
+     */
+    const pending = await openQuestionOf(db, batch.userId, now);
+    const askedAbout = pending === undefined ? undefined : await titleOfItem(db, pending.itemId);
+
     const routed = await routeIntents(aiLight, {
       input: combined,
       userId: batch.userId,
       batchId: batch.id,
+      ...(askedAbout === undefined ? {} : { openQuestion: texts.resolver.question(askedAbout) }),
     });
 
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
@@ -318,10 +347,47 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
+    const answers: string[] = [];
 
     for (const segment of routed.segments) {
-      if (PARSED_INTENTS.has(segment.intent)) parsed.push(segment);
+      if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
+      else if (PARSED_INTENTS.has(segment.intent)) parsed.push(segment);
       else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
+    }
+
+    /**
+     * Судьба открытого вопроса решается до разбора мыслей.
+     *
+     * «Это новое» возвращает сказанное обратно в разбор — оно пойдёт
+     * через то же извлечение и ту же классификацию, что и остальная
+     * выгрузка, без отдельного вызова модели.
+     */
+    const settled = await settlePendingQuestion(db, {
+      userId: batch.userId,
+      batchId: batch.id,
+      timeZone: context.timeZone,
+      ...(answers.length === 0 ? {} : { answerText: answers.join(' ') }),
+      now,
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    });
+
+    if (settled.carryOver !== undefined) {
+      parsed.push({ intent: 'DUMP', text: settled.carryOver });
+    }
+
+    if (settled.kind === 'applied' && settled.applied !== undefined) {
+      // §7.3: показать, что именно изменилось, и дать кнопку отмены.
+      await reply(
+        db,
+        deps,
+        target,
+        describeChange(settled.applied, texts, context.timeZone),
+        undoButtons(settled.applied.revisionId, texts),
+      );
+    } else if (settled.kind === 'nothingToApply') {
+      await reply(db, deps, target, texts.resolver.attached);
+    } else if (settled.kind === 'unclear') {
+      await reply(db, deps, target, texts.resolver.answerUnclear);
     }
 
     for (const [order, segment] of deferred.entries()) {

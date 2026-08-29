@@ -11,6 +11,7 @@ import {
   batches,
   items,
   messagesRaw,
+  pendingQuestions,
   promptVersions,
   topics,
   users,
@@ -24,6 +25,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
+import { askQuestion } from '../resolver/questions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
@@ -1690,5 +1692,105 @@ describe('мягкий лимит расхода', () => {
     );
 
     expect((await modelsByStage()).get('extractor')).toEqual(['mock:full']);
+  });
+});
+
+describe('ответ на уточняющий вопрос голосом (§7.3, задача 3.6)', () => {
+  /**
+   * Связка, а не служба.
+   *
+   * Решение про открытый вопрос проверено своими тестами. Здесь важно
+   * другое: доходит ли до него конвейер и не превращается ли «да, к
+   * прошлой» в запись «да». Именно на таком разрыве — «служба работает,
+   * а в боте не вызывается» — этот проект уже попадался.
+   */
+  /** Через неделю: заведомо будущее и заведомо ближе пяти лет. */
+  function soonDate(): string {
+    const at = new Date(Date.now() + 7 * 24 * 60 * 60_000);
+    return at.toISOString().slice(0, 10);
+  }
+
+  async function itemAndQuestion(): Promise<{ itemId: string }> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать сына к врачу в четверг',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+      })
+      .returning({ id: items.id });
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done' })
+      .returning({ id: batches.id });
+
+    await askQuestion(testDb(), {
+      userId,
+      itemId: row!.id,
+      batchId: batch!.id,
+      segment: 'нет, в пятницу',
+      action: 'update',
+      // Срок считается от настоящих часов: конвейер в этом тесте живёт
+      // по ним, а даты дальше пяти лет разбор сроков отвергает.
+      changes: { text: '', deadline: soonDate(), deadlineAccuracy: 'day' },
+    });
+
+    return { itemId: row!.id };
+  }
+
+  it('«да, к прошлой» правит запись и не создаёт задачу «да»', async () => {
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion();
+
+    await queuedBatchOf([{ kind: 'text', text: 'да, к прошлой', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'ANSWER', text: 'да, к прошлой' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider({}), prompts, llmLight: llm }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).not.toBeNull();
+
+    // Ни задачи «да», ни черновика «намерение ANSWER».
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('новая выгрузка без ответа снимает вопрос и сохраняет сказанное', async () => {
+    // §7.3: бот к снятому вопросу не возвращается.
+    const prompts = await seedPrompts();
+    await itemAndQuestion();
+
+    await queuedBatchOf([{ kind: 'text', text: 'купить хлеб', offsetMs: 0 }]);
+
+    await processUserBatches(
+      { db: testDb(), lock, handleBatch: handler({ speech: new MockSpeechProvider({}), prompts }) },
+      userId,
+    );
+
+    const [question] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+
+    expect(question?.outcome).toBe('superseded');
+
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts.map((row) => row.text)).toContain('нет, в пятницу');
   });
 });
