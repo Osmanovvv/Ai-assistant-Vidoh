@@ -88,7 +88,7 @@ export function toVectorLiteral(vector: readonly unknown[]): string {
 }
 
 /** Статусы, среди которых имеет смысл искать: §7.2 говорит об активных. */
-const SEARCHABLE_STATUSES: readonly ItemStatusValue[] = [
+export const SEARCHABLE_STATUSES: readonly ItemStatusValue[] = [
   'new',
   'active',
   'in_progress',
