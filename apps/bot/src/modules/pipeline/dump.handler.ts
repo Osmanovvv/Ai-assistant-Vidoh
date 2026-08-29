@@ -11,9 +11,10 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
-import { describeChange, undoButtons } from '../resolver/change-text.js';
+import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
+import { resolvePatchSegment } from '../resolver/segment.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
 import {
   firstStep,
@@ -76,6 +77,17 @@ async function titleOfItem(db: Database, itemId: string): Promise<string | undef
 
 /** Намерения, которые этап 2 разбирает сам. */
 const PARSED_INTENTS = new Set(['DUMP']);
+
+/**
+ * Намерения, с которыми работает резолвер (§7 ТЗ, задача 3.6а).
+ *
+ * До третьего этапа они уходили в черновик с пометкой «ждёт резолвера».
+ * Резолвер появился — значит пора звать.
+ *
+ * `QUERY` сюда не входит: вопрос по бэклогу — не правка записи, у него
+ * своя задача 3.10.
+ */
+const RESOLVED_INTENTS = new Set(['PATCH', 'COMPLETE', 'CANCEL']);
 
 /**
  * Намерения, которые ничего не создают и ничего не ждут.
@@ -349,9 +361,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const deferred: Segment[] = [];
     const answers: string[] = [];
 
+    const patches: Segment[] = [];
+
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
       else if (PARSED_INTENTS.has(segment.intent)) parsed.push(segment);
+      else if (RESOLVED_INTENTS.has(segment.intent)) patches.push(segment);
       else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
     }
 
@@ -388,6 +403,80 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       await reply(db, deps, target, texts.resolver.attached);
     } else if (settled.kind === 'unclear') {
       await reply(db, deps, target, texts.resolver.answerUnclear);
+    }
+
+    /**
+     * §8.1: сообщение внутри ветки обрабатывается в контексте её темы.
+     *
+     * Тема ветки становится темой по умолчанию — то есть тем, куда уйдёт
+     * запись, не попавшая ни в одну тему явно. Женщина, написавшая в
+     * ветку «здоровье», не должна получать своё дело в «личном» только
+     * потому, что не назвала сферу словами.
+     *
+     * Считается до разбора правок: подбор кандидатов сужается той же
+     * темой, и по той же причине — правка внутри ветки почти наверняка
+     * про запись из неё.
+     */
+    const threadTopic =
+      target?.threadId === undefined
+        ? undefined
+        : await topicByThread(db, batch.userId, target.threadId);
+
+    /**
+     * Правки разбираются по одной и до разбора новых мыслей.
+     *
+     * По одной, потому что у каждой свои кандидаты и своё решение: пачкой
+     * их не рассудить. До мыслей — потому что «нет, в пятницу» относится
+     * к тому, что было сказано раньше, и должно попасть в ту запись, а не
+     * в новую, которая появится через секунду.
+     */
+    for (const segment of patches) {
+      const outcome = await resolvePatchSegment(
+        {
+          db,
+          ai: heavy,
+          ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
+          ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
+          ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+        },
+        {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: segment.text,
+          timeZone: context.timeZone,
+          ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
+          now,
+        },
+      );
+
+      if (outcome.kind === 'applied') {
+        await reply(
+          db,
+          deps,
+          target,
+          describeChange(outcome.applied, texts, context.timeZone),
+          undoButtons(outcome.applied.revisionId, texts),
+        );
+      } else if (outcome.kind === 'asked') {
+        // §7.3: один короткий вопрос с двумя кнопками и заголовком
+        // найденной записи в тексте.
+        await reply(
+          db,
+          deps,
+          target,
+          texts.resolver.question(outcome.itemTitle),
+          questionButtons(outcome.questionId, texts),
+        );
+      } else if (outcome.kind === 'newThought') {
+        parsed.push(segment);
+      } else {
+        await saveDraft(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: segment.text,
+          reason: outcome.reason,
+        });
+      }
     }
 
     for (const [order, segment] of deferred.entries()) {
@@ -438,19 +527,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Классификация ───────────────────────────────────────────────────
     const topics = await topicsFor(db, batch.userId);
-
-    /**
-     * §8.1: сообщение внутри ветки обрабатывается в контексте её темы.
-     *
-     * Тема ветки становится темой по умолчанию — то есть тем, куда уйдёт
-     * запись, не попавшая ни в одну тему явно. Женщина, написавшая в
-     * ветку «здоровье», не должна получать своё дело в «личном» только
-     * потому, что не назвала сферу словами.
-     */
-    const threadTopic =
-      target?.threadId === undefined
-        ? undefined
-        : await topicByThread(db, batch.userId, target.threadId);
 
     const classified = await classifyUnits(heavy, {
       units: extracted.units,

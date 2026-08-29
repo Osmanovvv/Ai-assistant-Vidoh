@@ -13,7 +13,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
-import { describeChange } from '../../modules/resolver/change-text.js';
+import { describeChange, QUESTION_ACTION } from '../../modules/resolver/change-text.js';
 import { undoKeyboard } from './undo.js';
 
 /**
@@ -33,11 +33,6 @@ import { undoKeyboard } from './undo.js';
  * права превращаться в допрос» — к снятому бот не возвращается, но и
  * молчать в ответ на нажатие нельзя.
  */
-
-export const QUESTION_ACTION = {
-  attach: 'q:a:',
-  separate: 'q:s:',
-} as const;
 
 export interface QuestionDeps {
   readonly db: Database;
