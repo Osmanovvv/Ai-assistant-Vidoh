@@ -109,7 +109,7 @@ async function completeIt(item: Item): Promise<string> {
     userId,
     itemId: item.id,
     action: 'complete',
-    changes: { text: '', deadline: '', deadlineAccuracy: 'none' },
+    changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
     timeZone: MOSCOW,
     now: NOW,
   });
@@ -198,7 +198,7 @@ describe('нажатие', () => {
       userId: stranger.id,
       itemId: foreign?.id ?? '',
       action: 'complete',
-      changes: { text: '', deadline: '', deadlineAccuracy: 'none' },
+      changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
       timeZone: MOSCOW,
       now: NOW,
     });

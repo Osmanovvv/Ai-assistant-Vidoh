@@ -33,6 +33,14 @@ import { resolveSegment } from './resolver.service.js';
  * недоступного эмбеддера было бы обидно.
  */
 
+/** Пустые изменения: модель промолчала, а поля нужны всем. */
+const EMPTY_CHANGES = {
+  note: '',
+  text: '',
+  deadline: '',
+  deadlineAccuracy: 'none',
+} as const;
+
 export interface ResolveDeps {
   readonly db: Database;
   readonly ai: AiClientDeps;
@@ -153,7 +161,7 @@ export async function resolvePatchSegment(
       batchId: params.batchId,
       segment: params.text,
       action: decision.action,
-      changes: resolved.changes ?? { text: '', deadline: '', deadlineAccuracy: 'none' },
+      changes: resolved.changes ?? EMPTY_CHANGES,
       now,
     });
 
@@ -164,7 +172,8 @@ export async function resolvePatchSegment(
     userId: params.userId,
     itemId: candidate.id,
     action: decision.action === 'new' ? 'update' : decision.action,
-    changes: resolved.changes ?? { text: '', deadline: '', deadlineAccuracy: 'none' },
+    ...(resolved.mode === undefined ? {} : { mode: resolved.mode }),
+    changes: resolved.changes ?? EMPTY_CHANGES,
     timeZone: params.timeZone,
     now,
     reason: decision.why,

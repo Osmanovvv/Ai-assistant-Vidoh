@@ -33,7 +33,12 @@ let item: Item;
 let batchId = '';
 let seq = 0;
 
-const CHANGES = { text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' } as const;
+const CHANGES = {
+  note: '',
+  text: '',
+  deadline: '2026-09-04',
+  deadlineAccuracy: 'day',
+} as const;
 
 async function ask(now = NOW): Promise<string> {
   const question = await askQuestion(testDb(), {

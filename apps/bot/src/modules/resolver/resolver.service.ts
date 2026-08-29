@@ -57,6 +57,14 @@ export interface ResolveResult {
    * которое не проверяется, хуже отсутствующего.
    */
   readonly changes?: ResolverAnswer['changes'] | undefined;
+  /**
+   * §7.4: правит поля или дополняет подробности.
+   *
+   * Отдельно от решения: пороговая логика отвечает на вопрос «трогать ли
+   * запись вообще», а это — «что именно с ней сделать». Смешивать их
+   * значило бы заставить порог разбираться в содержании правки.
+   */
+  readonly mode?: ResolverAnswer['mode'] | undefined;
 }
 
 const CREATE: Decision = {
@@ -195,5 +203,6 @@ export async function resolveSegment(
     promptVersion: outcome.promptVersion,
     confidence: outcome.value.confidence,
     changes: outcome.value.changes,
+    mode: outcome.value.mode,
   };
 }

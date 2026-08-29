@@ -34,9 +34,10 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
 function answer(overrides: Partial<ResolverAnswer> = {}): ResolverAnswer {
   return {
     action: 'update',
+    mode: 'replace',
     itemId: 'i-1',
     confidence: 0.9,
-    changes: { text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+    changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
     reason: 'поправка срока',
     ...overrides,
   };

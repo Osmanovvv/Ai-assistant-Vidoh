@@ -31,6 +31,7 @@ import type { Executor } from '../../infra/db.js';
  */
 export const RESTORABLE_FIELDS = [
   'text',
+  'body',
   'type',
   'priority',
   'topic',

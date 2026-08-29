@@ -75,6 +75,8 @@ export interface ExportedData {
   }[];
   readonly items: readonly {
     readonly text: string;
+    /** §7.4: подробности, дописанные к делу позже. */
+    readonly body: string | null;
     readonly type: string | null;
     readonly priority: string | null;
     readonly topic: string | null;
@@ -237,6 +239,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     })),
     items: ownItems.map((item) => ({
       text: item.text,
+      body: item.body,
       type: item.type,
       priority: item.priority,
       topic: item.topic,

@@ -21,6 +21,8 @@ export interface ResolverCaseOutcome {
   readonly targetOk: boolean;
   /** Совпал ли срок, если случай его задавал. */
   readonly deadlineOk: boolean;
+  /** Совпал ли режим §7.4, если случай его задавал. */
+  readonly modeOk: boolean;
   /** Уверенность, как её назвала модель. Для разбора расхождений. */
   readonly confidence: number | undefined;
   readonly failed: boolean;
@@ -49,6 +51,13 @@ export interface ResolverReport {
   /** Решение верное, а запись выбрана не та. */
   readonly wrongTarget: number;
   readonly wrongDeadline: number;
+  /**
+   * Подробность записана заменой или замена дополнением (§7.4).
+   *
+   * Первое переписывает заголовок дела человека — по цене это ложное
+   * применение, только заметить его труднее: решение выглядит верным.
+   */
+  readonly wrongMode: number;
   /** Модель не ответила или ответила не по схеме. */
   readonly failed: number;
   readonly promptVersion: string;
@@ -69,6 +78,7 @@ export function collectResolver(
     missedPatches: count((outcome) => outcome.actual === 'create' && outcome.expected !== 'create'),
     wrongTarget: count((outcome) => outcome.expected === outcome.actual && !outcome.targetOk),
     wrongDeadline: count((outcome) => !outcome.deadlineOk),
+    wrongMode: count((outcome) => !outcome.modeOk),
     failed: count((outcome) => outcome.failed),
     promptVersion,
   };
@@ -79,6 +89,7 @@ export interface ResolverThresholdSpec {
   readonly decisions: number;
   readonly falseApplies: number;
   readonly wrongTarget: number;
+  readonly wrongMode: number;
   readonly failed: number;
 }
 
@@ -101,6 +112,7 @@ export const RESOLVER_THRESHOLD: ResolverThresholdSpec = {
   decisions: 0.85,
   falseApplies: 0,
   wrongTarget: 0,
+  wrongMode: 0,
   failed: 0,
 };
 
@@ -123,6 +135,12 @@ export function checkResolverThreshold(
 
   if (report.wrongTarget > spec.wrongTarget) {
     failures.push(`не та запись выбрана в ${String(report.wrongTarget)} случаях`);
+  }
+
+  if (report.wrongMode > spec.wrongMode) {
+    failures.push(
+      `перепутано дополнение и замена в ${String(report.wrongMode)} случаях — при замене переписывается заголовок дела`,
+    );
   }
 
   if (report.failed > spec.failed) {
@@ -153,6 +171,7 @@ export function formatResolver(report: ResolverReport): string {
     `  пропущенных правок:    ${String(report.missedPatches)}`,
     `  не та запись:          ${String(report.wrongTarget)}`,
     `  не тот срок:           ${String(report.wrongDeadline)}`,
+    `  замена вместо допол.:  ${String(report.wrongMode)}`,
     `  модель не ответила:    ${String(report.failed)}`,
     '',
   ].join('\n');

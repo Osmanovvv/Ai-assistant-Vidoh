@@ -160,9 +160,10 @@ function echoingLlm(
         case 'resolver':
           return JSON.stringify({
             action: 'new',
+            mode: 'replace',
             itemId: '',
             confidence: 0.1,
-            changes: { text: '', deadline: '', deadlineAccuracy: 'none' },
+            changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
             reason: 'заглушка',
           });
         case 'presenter':
@@ -1748,7 +1749,7 @@ describe('ответ на уточняющий вопрос голосом (§7.
       action: 'update',
       // Срок считается от настоящих часов: конвейер в этом тесте живёт
       // по ним, а даты дальше пяти лет разбор сроков отвергает.
-      changes: { text: '', deadline: soonDate(), deadlineAccuracy: 'day' },
+      changes: { note: '', text: '', deadline: soonDate(), deadlineAccuracy: 'day' },
     });
 
     return { itemId: row!.id };
@@ -1852,9 +1853,10 @@ describe('правка доходит до резолвера (§7, задача
       }),
       resolver: JSON.stringify({
         action: 'update',
+        mode: 'replace',
         itemId: '1',
         confidence: 0.9,
-        changes: { text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        changes: { note: '', text: '', deadline: soon(), deadlineAccuracy: 'day' },
         reason: 'поправка срока',
       }),
     });
@@ -1903,9 +1905,10 @@ describe('правка доходит до резолвера (§7, задача
       }),
       resolver: JSON.stringify({
         action: 'update',
+        mode: 'replace',
         itemId: '1',
         confidence: 0.6,
-        changes: { text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        changes: { note: '', text: '', deadline: soon(), deadlineAccuracy: 'day' },
         reason: 'не уверен',
       }),
     });

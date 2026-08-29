@@ -27,6 +27,10 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
   const { after, fields } = applied;
   const resolver = texts.resolver;
 
+  // §7.4 идёт первым: дополнение не трогает ни заголовок, ни срок, и
+  // сказать о нём надо именно как о дополнении.
+  if (fields.includes('body')) return resolver.noted(after.text);
+
   if (fields.includes('status')) {
     return after.status === 'done'
       ? resolver.completed(after.text)

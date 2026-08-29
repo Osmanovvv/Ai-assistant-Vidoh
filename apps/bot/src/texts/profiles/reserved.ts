@@ -127,6 +127,7 @@ export const reserved: TextProfile = {
 
   resolver: {
     movedDeadline: (title, date) => `Перенесла «${title}» на ${date}.`,
+    noted: (title) => `Добавила подробность к «${title}».`,
     rewrote: (title) => `Поправила: теперь это «${title}».`,
     completed: (title) => `Отметила сделанным: «${title}».`,
     cancelled: (title) => `Убрала «${title}». Если что — верну.`,

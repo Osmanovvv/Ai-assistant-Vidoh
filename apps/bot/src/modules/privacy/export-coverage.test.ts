@@ -112,6 +112,8 @@ const DECISIONS: readonly {
     decision: {
       exported: [
         'text',
+        // §7.4: подробности дела. Сказанное человеком, значит отдаём.
+        'body',
         'type',
         'priority',
         'topic',

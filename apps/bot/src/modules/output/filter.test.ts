@@ -29,6 +29,7 @@ function item(overrides: Partial<Item> = {}): Item {
     recurrenceText: null,
     recurrenceSource: null,
     text: `дело ${String(counter)}`,
+    body: null,
     type: 'TASK',
     priority: 'SOON',
     topic: 'личное',

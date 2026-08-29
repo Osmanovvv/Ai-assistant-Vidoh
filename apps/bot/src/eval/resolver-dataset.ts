@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { itemStatus } from '../db/schema.js';
 import type { Candidate } from '../modules/resolver/candidates.js';
-import { RESOLVER_ACTIONS } from '../modules/ai/schemas/index.js';
+import { RESOLVER_ACTIONS, RESOLVER_MODES } from '../modules/ai/schemas/index.js';
 
 /**
  * Контрольный набор резолвера (§10.3 ТЗ, к задачам 3.1–3.7).
@@ -73,6 +73,13 @@ const expectedSchema = z.object({
   target: z.union([z.number().int().min(0), z.array(z.number().int().min(1)).min(1)]).default(0),
   /** Ожидаемое действие. Не задано — не проверяется. */
   action: z.enum(RESOLVER_ACTIONS).optional(),
+  /**
+   * §7.4: ожидается замена полей или дополнение подробностей.
+   *
+   * Не задано — случай не про это различение, и требовать от модели
+   * угаданного режима было бы придиркой.
+   */
+  mode: z.enum(RESOLVER_MODES).optional(),
   /** Ожидаемый новый срок в виде ГГГГ-ММ-ДД, если случай про срок. */
   deadline: z
     .string()

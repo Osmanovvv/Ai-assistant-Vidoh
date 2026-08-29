@@ -55,6 +55,10 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
   const card = texts.card;
   const lines: string[] = [item.text, ''];
 
+  // §7.4: подробности, дописанные позже. Без них дополнение к делу
+  // некуда посмотреть, и обещание «ничего не потеряно» пустое.
+  if (item.body !== null && item.body.length > 0) lines.push(item.body, '');
+
   if (item.topic !== null) lines.push(`${card.topicLabel}: ${item.topic}`);
 
   if (item.deadlineAt === null) {

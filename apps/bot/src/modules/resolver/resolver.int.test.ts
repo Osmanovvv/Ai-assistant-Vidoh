@@ -44,9 +44,10 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
 function answer(overrides: Partial<ResolverAnswer> = {}): string {
   return JSON.stringify({
     action: 'update',
+    mode: 'replace',
     itemId: '1',
     confidence: 0.9,
-    changes: { text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+    changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
     reason: 'человек переносит срок',
     ...overrides,
   });
