@@ -163,6 +163,40 @@ export interface TextProfile {
   };
 
   /**
+   * Правка существующей записи (§7.3 ТЗ, задачи 3.3–3.5).
+   *
+   * §7.3 требует двух вещей от применённого изменения: показать, что
+   * именно изменилось, и дать кнопку отмены. Отсюда отдельная реплика
+   * на каждый вид изменения — «поправила» без «что» человек проверить
+   * не может, а непроверяемое обещание доверия не создаёт.
+   */
+  readonly resolver: {
+    readonly movedDeadline: (title: string, date: string) => string;
+    readonly rewrote: (title: string) => string;
+    readonly completed: (title: string) => string;
+    readonly cancelled: (title: string) => string;
+
+    readonly buttonUndo: string;
+    readonly undone: string;
+    /** Повторное нажатие: кнопка живёт в чате вечно. */
+    readonly alreadyUndone: string;
+    readonly undoGone: string;
+
+    /**
+     * Один вопрос, две кнопки, с заголовком найденной записи (§7.3).
+     *
+     * Заголовок обязателен: «это про прошлое или новое?» без названия
+     * заставляет человека вспоминать, о чём вообще речь.
+     */
+    readonly question: (title: string) => string;
+    readonly buttonAttach: string;
+    readonly buttonSeparate: string;
+    readonly attached: string;
+    readonly separated: string;
+    /** Вопрос уже снят — ответом, новой выгрузкой или временем. */
+    readonly questionStale: string;
+  };
+  /**
    * Закреплённая сводка темы (§8.2 ТЗ, задача 2.16).
    *
    * Одно сообщение на ветку, обновляется редактированием. Вопросов в нём

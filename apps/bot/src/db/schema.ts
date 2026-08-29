@@ -748,6 +748,166 @@ export const aiCalls = pgTable(
   ],
 );
 
+/**
+ * Кто изменил запись (§7.3 ТЗ, задача 3.3).
+ *
+ * В §5 справочник не задан — значения выбраны здесь и перечислены в
+ * плане. Различать источник обязательно: «бот поменял сам» и «я сама
+ * поменяла» — разные события и для человека, и для разбора жалобы.
+ */
+export const changedBy = pgEnum('changed_by', ['user', 'resolver', 'scheduler', 'admin']);
+
+/**
+ * История изменений записи (инвариант 7, §7.3 ТЗ).
+ *
+ * «Каждое применение изменения пишется в историю ревизий вместе со
+ * снимком записи до изменения. Кнопка отмены откатывает последнюю
+ * ревизию.»
+ *
+ * **Снимок целиком, а не список полей.** Перечислять изменённые поля
+ * дешевле по месту, но откат по такому списку восстановит ровно то, что
+ * мы догадались в него положить. Снимок переживает и добавление полей в
+ * схему, и ошибку в самом применении.
+ *
+ * Хранится и «до», и «после»: по одному «до» видно, что было, но не
+ * видно, что стало, — а следующая правка перепишет запись, и сравнить
+ * будет уже не с чем.
+ */
+export const itemRevisions = pgTable(
+  'item_revisions',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+
+    /**
+     * Владелец — рядом, а не только через запись.
+     *
+     * §16 требует стирать данные человека целиком, и удаление обязано
+     * доставать ревизии по прямой связи, не полагаясь на то, что каскад
+     * дойдёт сюда через записи.
+     */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    changedBy: changedBy('changed_by').notNull(),
+    /** Почему изменено: строка решения резолвера, для разбора жалоб. */
+    reason: text('reason'),
+
+    /** Полный снимок строки записи до изменения и после него. */
+    before: jsonb('before').notNull(),
+    after: jsonb('after').notNull(),
+
+    /** Сообщение, из-за которого случилось изменение. */
+    sourceMessageId: uuid('source_message_id').references(() => messagesRaw.id, {
+      onDelete: 'set null',
+    }),
+
+    /** Проставляется откатом. Пустое — ревизия ещё в силе. */
+    revertedAt: timestamp('reverted_at', { withTimezone: true }),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    // Откат берёт последнюю ревизию записи — по этому индексу.
+    index('item_revisions_item_created_idx').on(table.itemId, table.createdAt),
+    index('item_revisions_user_idx').on(table.userId),
+  ],
+);
+
+/**
+ * Чем кончился уточняющий вопрос (§7.3 ТЗ, задача 3.5).
+ *
+ * Три последних значения — не «ошибки», а нормальные исходы. §7.3:
+ * «продукт не имеет права превращаться в допрос», и вопрос без ответа
+ * должен уметь тихо закончиться.
+ */
+export const questionOutcome = pgEnum('question_outcome', [
+  /** Человек выбрал «Добавить к прошлой». */
+  'attached',
+  /** Человек выбрал «Это новое». */
+  'separate',
+  /** Шесть часов прошло. */
+  'timeout',
+  /** Пришла новая выгрузка, и вопрос снят. */
+  'superseded',
+]);
+
+/**
+ * Открытый уточняющий вопрос (§7.3 ТЗ, задача 3.5).
+ *
+ * «Пока вопрос не отвечен, сегмент хранится в таблице открытых вопросов
+ * и не теряется.»
+ *
+ * Одновременно у человека висит не более одного вопроса — за этим следит
+ * частичный уникальный индекс, а не только код: два открытых вопроса
+ * означали бы допрос, которого §7.3 не допускает.
+ */
+export const pendingQuestions = pgTable(
+  'pending_questions',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /**
+     * Запись, о которой спрашиваем.
+     *
+     * Исчезнет запись — исчезнет и вопрос: спрашивать «это про неё?» про
+     * то, чего нет, бессмысленно.
+     */
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+
+    /**
+     * Выгрузка, из которой родился вопрос.
+     *
+     * Нужна не для истории: если человек ответит «это новое» или не
+     * ответит вовсе, сегмент станет записью — и запись эта принадлежит
+     * той же выгрузке, что и остальные её дела.
+     */
+    batchId: uuid('batch_id')
+      .notNull()
+      .references(() => batches.id, { onDelete: 'cascade' }),
+
+    /** Сказанное человеком: то, что не должно потеряться. */
+    segment: text('segment').notNull(),
+    /** Что применить, если человек ответит «добавить к прошлой». */
+    action: text('action').notNull(),
+    changes: jsonb('changes').notNull(),
+
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+
+    /** Пусто — вопрос открыт. */
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    outcome: questionOutcome('outcome'),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    /**
+     * Один открытый вопрос на человека.
+     *
+     * Частичный индекс, а не проверка в коде: гонка двух выгрузок
+     * обошла бы проверку и оставила бы человека с двумя вопросами.
+     */
+    uniqueIndex('pending_questions_open_uq')
+      .on(table.userId)
+      .where(sql`${table.resolvedAt} is null`),
+    index('pending_questions_expires_idx').on(table.expiresAt),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -768,5 +928,11 @@ export type ItemStatusValue = (typeof itemStatus.enumValues)[number];
 export type ItemPriorityValue = (typeof itemPriority.enumValues)[number];
 export type PromptVersion = typeof promptVersions.$inferSelect;
 export type NewPromptVersion = typeof promptVersions.$inferInsert;
+export type ItemRevision = typeof itemRevisions.$inferSelect;
+export type NewItemRevision = typeof itemRevisions.$inferInsert;
+export type ChangedBy = (typeof changedBy.enumValues)[number];
+export type PendingQuestion = typeof pendingQuestions.$inferSelect;
+export type NewPendingQuestion = typeof pendingQuestions.$inferInsert;
+export type QuestionOutcome = (typeof questionOutcome.enumValues)[number];
 export type Topic = typeof topics.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;

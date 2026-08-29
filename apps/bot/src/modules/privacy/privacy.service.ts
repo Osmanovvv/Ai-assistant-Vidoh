@@ -8,6 +8,8 @@ import {
   userSettings,
   users,
   userState,
+  itemRevisions,
+  pendingQuestions,
 } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 
@@ -108,9 +110,35 @@ export interface ExportedData {
     readonly text: string | null;
     readonly transcript: string | null;
   }[];
+  /**
+   * История автоматических изменений (§7.3, инвариант 7).
+   *
+   * Человеку отдаётся не ради полноты: это перечень того, что бот
+   * сделал с его записями сам. Без него человек знает только нынешнее
+   * состояние и не может проверить, откуда оно взялось.
+   */
+  readonly revisions: readonly {
+    readonly at: string;
+    readonly changedBy: string;
+    readonly was: string | null;
+    readonly became: string | null;
+    readonly undoneAt: string | null;
+  }[];
+  /** Незакрытые уточняющие вопросы: в них лежат слова человека. */
+  readonly questions: readonly {
+    readonly askedAt: string;
+    readonly segment: string;
+    readonly outcome: string | null;
+  }[];
 }
 
 const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
+
+/** Заголовок записи из снимка ревизии. */
+function titleOf(snapshot: unknown): string | null {
+  const text = (snapshot as { readonly text?: unknown } | null)?.text;
+  return typeof text === 'string' ? text : null;
+}
 
 /**
  * Выгрузка всех данных пользователя.
@@ -147,6 +175,28 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     .from(topics)
     .where(eq(topics.userId, userId))
     .orderBy(asc(topics.sortOrder), asc(topics.name));
+
+  const revisions = await db
+    .select({
+      createdAt: itemRevisions.createdAt,
+      changedBy: itemRevisions.changedBy,
+      before: itemRevisions.before,
+      after: itemRevisions.after,
+      revertedAt: itemRevisions.revertedAt,
+    })
+    .from(itemRevisions)
+    .where(eq(itemRevisions.userId, userId))
+    .orderBy(asc(itemRevisions.createdAt));
+
+  const questions = await db
+    .select({
+      createdAt: pendingQuestions.createdAt,
+      segment: pendingQuestions.segment,
+      outcome: pendingQuestions.outcome,
+    })
+    .from(pendingQuestions)
+    .where(eq(pendingQuestions.userId, userId))
+    .orderBy(asc(pendingQuestions.createdAt));
 
   const ownItems = await db
     .select()
@@ -214,6 +264,25 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       kind: message.kind,
       text: message.text,
       transcript: message.transcript,
+    })),
+    /**
+     * Из снимка берётся заголовок, а не строка целиком.
+     *
+     * Сама запись уже отдана выше со всеми полями; повторять её здесь
+     * дважды на каждое изменение значило бы раздуть файл втрое и
+     * спрятать в нём главное — что именно поменялось.
+     */
+    revisions: revisions.map((revision) => ({
+      at: revision.createdAt.toISOString(),
+      changedBy: revision.changedBy,
+      was: titleOf(revision.before),
+      became: titleOf(revision.after),
+      undoneAt: iso(revision.revertedAt),
+    })),
+    questions: questions.map((question) => ({
+      askedAt: question.createdAt.toISOString(),
+      segment: question.segment,
+      outcome: question.outcome,
     })),
   };
 }

@@ -11,6 +11,8 @@ import { registerCardHandlers } from './bot/handlers/card.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
+import { registerQuestionHandlers } from './bot/handlers/question.js';
+import { registerUndoHandlers } from './bot/handlers/undo.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
 import { registerWebhook } from './bot/register-webhook.js';
 import { createWebhookHandler } from './bot/webhook.js';
@@ -266,6 +268,14 @@ async function main(): Promise<void> {
   registerOnboardingHandlers(bot, db, logger, topicGateway);
   registerMenuHandlers(bot, db, logger);
   registerCardHandlers(bot, { db, logger, topics: topicGateway }, MENU_ACTION.root);
+
+  // §7.3: откат любого автоматического решения — за один тап, и
+  // уточняющий вопрос с двумя кнопками. Резолвер к конвейеру ещё не
+  // подключён (это 3.6 и далее), но кнопки обязаны работать в тот же
+  // день, когда появится первая ревизия: иначе изменение окажется
+  // необратимым, а вопрос — без ответа.
+  registerUndoHandlers(bot, db, logger);
+  registerQuestionHandlers(bot, { db, ai: { db, provider: llm, prompts, logger }, logger });
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');
