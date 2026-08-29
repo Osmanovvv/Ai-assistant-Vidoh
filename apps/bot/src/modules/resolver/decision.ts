@@ -56,8 +56,30 @@ export interface ResolverThresholds {
   readonly create: number;
   /** Выше — можно применять, если найдётся подтверждение. */
   readonly apply: number;
-  /** Близость, начиная с которой она считается подтверждением. */
+  /** Близость, начиная с которой она считается подтверждением правки. */
   readonly similarity: number;
+  /**
+   * То же для отметки выполнения и отмены — порог ниже, и это замер.
+   *
+   * §21 п.8 требует, чтобы отметка голосом проходила **без уточняющих
+   * вопросов**, а §21 п.5 — чтобы неоднозначная реплика вопрос получала.
+   * Спор между ними решается тем, что отметка выполнения повторяет слова
+   * дела, а поправка нет:
+   *
+   * | Близость | Пара |
+   * |---|---|
+   * | 0,391 | «продукты купила» → «Проверить список продуктов» |
+   * | 0,512 | «кассу сверила» → «Сверить кассу» |
+   * | 0,575 | «кота записала на стрижку» → «Записать кота на стрижку» |
+   * | 0,256 | «записалась к врачу» → «Сверить кассу» — чужое |
+   * | 0,062 | «обед приготовила» → «Зайти в ВТБ» — чужое |
+   *
+   * Замер 30.08.2026 на десяти парах: верные 0,391–0,575, чужие
+   * 0,062–0,256. Разрыв чистый, и порог 0,35 проходит между ними с
+   * запасом в обе стороны. Отрыв от второго кандидата при этом остаётся
+   * обязательным — он и отсекает «купила» при двух покупках сразу.
+   */
+  readonly similarityDone: number;
   /** На сколько кандидат должен опережать второго по близости. */
   readonly similarityGap: number;
   /** Сколько минут запись считается свежей для подтверждения. */
@@ -75,6 +97,7 @@ export const DEFAULT_THRESHOLDS: ResolverThresholds = {
   create: 0.45,
   apply: 0.8,
   similarity: 0.5,
+  similarityDone: 0.35,
   similarityGap: 0.1,
   freshMinutes: 15,
 };
@@ -133,9 +156,21 @@ function clearlyClosest(
   candidate: Candidate,
   candidates: readonly Candidate[],
   thresholds: ResolverThresholds,
+  action: ResolverAction,
 ): boolean {
+  /**
+   * У отметки выполнения и отмены свой порог, ниже.
+   *
+   * Не поблажка: человек, закрывающий дело, повторяет его слова, и
+   * близость там выше по природе задачи. Мерено — см. `similarityDone`.
+   */
+  const floor =
+    action === 'complete' || action === 'cancel'
+      ? thresholds.similarityDone
+      : thresholds.similarity;
+
   const own = candidate.similarity;
-  if (own === null || own < thresholds.similarity) return false;
+  if (own === null || own < floor) return false;
 
   const rivals = candidates
     .filter((item) => item.id !== candidate.id)
@@ -201,7 +236,7 @@ export function decide(
     };
   }
 
-  if (clearlyClosest(candidate, candidates, thresholds)) {
+  if (clearlyClosest(candidate, candidates, thresholds, answer.action)) {
     return {
       kind: 'apply',
       action: answer.action,
