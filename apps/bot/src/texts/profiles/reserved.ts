@@ -125,6 +125,24 @@ export const reserved: TextProfile = {
     gone: 'Этой записи больше нет.',
   },
 
+  resolver: {
+    movedDeadline: (title, date) => `Перенесла «${title}» на ${date}.`,
+    rewrote: (title) => `Поправила: теперь это «${title}».`,
+    completed: (title) => `Отметила сделанным: «${title}».`,
+    cancelled: (title) => `Убрала «${title}». Если что — верну.`,
+
+    buttonUndo: 'Отменить',
+    undone: 'Вернула как было.',
+    alreadyUndone: 'Это уже отменено.',
+    undoGone: 'Этого изменения больше нет.',
+
+    question: (title) => `Это про «${title}» или отдельная история?`,
+    buttonAttach: 'Добавить к прошлой',
+    buttonSeparate: 'Это новое',
+    attached: 'Добавила к прошлой.',
+    separated: 'Хорошо, завела отдельно.',
+    questionStale: 'Этот вопрос уже неактуален — я записала как отдельное.',
+  },
   summary: {
     header: (topic) => `${topic} — что здесь есть:`,
     line: (text) => `— ${text}`,

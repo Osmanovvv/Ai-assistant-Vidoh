@@ -186,6 +186,55 @@ const DECISIONS: readonly {
       ],
     },
   },
+  {
+    name: 'item_revisions',
+    columns: Object.keys(getTableColumns(schema.itemRevisions)),
+    decision: {
+      exported: [
+        // Что бот сделал с записью сам и когда. Человек имеет право
+        // знать историю своих данных, а не только их нынешний вид.
+        'changedBy',
+        'before',
+        'after',
+        'revertedAt',
+        'createdAt',
+      ],
+      internal: [
+        'id',
+        'itemId',
+        'userId',
+        // Строка решения резолвера: «подтверждено свежестью». Это наш
+        // разбор жалоб, человеку она ничего не объясняет.
+        'reason',
+        'sourceMessageId',
+      ],
+    },
+  },
+  {
+    name: 'pending_questions',
+    columns: Object.keys(getTableColumns(schema.pendingQuestions)),
+    decision: {
+      exported: [
+        // Сказанное человеком, которое ещё ждёт ответа. §9.1: сказанное
+        // не пропадает, значит и в выгрузке оно быть обязано.
+        'segment',
+        'outcome',
+        'createdAt',
+      ],
+      internal: [
+        'id',
+        'userId',
+        'itemId',
+        'batchId',
+        // Служебное состояние вопроса: действие, которое применится, и
+        // сроки жизни. Человеку они ничего не говорят.
+        'action',
+        'changes',
+        'expiresAt',
+        'resolvedAt',
+      ],
+    },
+  },
 ];
 
 describe('решение по каждой колонке принято', () => {
