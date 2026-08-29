@@ -10,7 +10,7 @@ import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { fromShortId, toShortId } from '../short-id.js';
+import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 
 /**
  * Карточка записи (§12.2 ТЗ, задача 2.18).

@@ -14,7 +14,7 @@ import { askQuestion } from '../../modules/resolver/questions.repo.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
-import { toShortId } from '../short-id.js';
+import { toShortId } from '../../modules/shared/short-id.js';
 import { QUESTION_ACTION, questionMessage, registerQuestionHandlers } from './question.js';
 
 /**

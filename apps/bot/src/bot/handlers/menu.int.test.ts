@@ -9,7 +9,7 @@ import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
-import { toShortId } from '../short-id.js';
+import { toShortId } from '../../modules/shared/short-id.js';
 import { registerCardHandlers } from './card.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
 

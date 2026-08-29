@@ -18,7 +18,7 @@ import { cardKeyboard } from './handlers/card.js';
 import { MENU_ACTION } from './handlers/menu.js';
 import { ANSWER_ACTION } from '../modules/presenter/presenter.service.js';
 import { DELETE_CANCEL, DELETE_STEP_ONE, DELETE_STEP_TWO } from './handlers/privacy.js';
-import { CALLBACK_DATA_LIMIT, callbackDataSize, toShortId } from './short-id.js';
+import { CALLBACK_DATA_LIMIT, callbackDataSize, toShortId } from '../modules/shared/short-id.js';
 
 /**
  * Длина `callback_data` у всех клавиатур проекта (задача 2.18).

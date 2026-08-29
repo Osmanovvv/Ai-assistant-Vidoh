@@ -9,8 +9,9 @@ import { applyDecision } from '../../modules/resolver/patch.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
-import { toShortId } from '../short-id.js';
-import { registerUndoHandlers, undoKeyboard, UNDO_PREFIX } from './undo.js';
+import { toShortId } from '../../modules/shared/short-id.js';
+import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
+import { registerUndoHandlers, undoKeyboard } from './undo.js';
 
 /**
  * Откат через настоящий обработчик (§7.3 ТЗ, задача 3.4).

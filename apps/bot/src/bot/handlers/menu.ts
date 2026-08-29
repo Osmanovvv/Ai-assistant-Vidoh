@@ -12,7 +12,7 @@ import { textsFor, type TextProfile } from '../../texts/index.js';
 import { DELETE_STEP_ONE } from './privacy.js';
 import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
-import { fromShortId, toShortId } from '../short-id.js';
+import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 
 /**
  * Меню и списки (§12.1 ТЗ, задача 2.18).

@@ -142,6 +142,7 @@ export const reserved: TextProfile = {
     attached: 'Добавила к прошлой.',
     separated: 'Хорошо, завела отдельно.',
     questionStale: 'Этот вопрос уже неактуален — я записала как отдельное.',
+    answerUnclear: 'Не разобрала ответ, ничего не меняла. Если это была правка — скажи ещё раз.',
   },
   summary: {
     header: (topic) => `${topic} — что здесь есть:`,
