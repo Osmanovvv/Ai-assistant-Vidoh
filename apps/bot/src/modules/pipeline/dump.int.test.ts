@@ -27,6 +27,7 @@ import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
 import { askQuestion } from '../resolver/questions.repo.js';
+import { revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
@@ -1935,5 +1936,121 @@ describe('правка доходит до резолвера (§7, задача
       .where(eq(pendingQuestions.userId, userId));
 
     expect(open?.segment).toBe('перенеси на пятницу');
+  });
+});
+
+describe('выполнение и отмена голосом (§21 п.8, задача 3.8)', () => {
+  /**
+   * §21 п.8 требует, чтобы отметка голосом проходила **без уточняющих
+   * вопросов**. План просит на это отдельный тест — и он здесь не про
+   * пороги, а про то, что человек действительно не увидел вопроса.
+   */
+  async function itemWith(text: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({ userId, text, type: 'TASK', priority: 'SOON', topic: 'личное' })
+      .returning({ id: items.id });
+
+    return row?.id ?? '';
+  }
+
+  it('«кассу сверила» закрывает дело и ни о чём не спрашивает', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await itemWith('Сверить кассу');
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'кассу сверила', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'COMPLETE', text: 'кассу сверила' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'complete',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
+        reason: 'дело названо сделанным',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.status).toBe('done');
+
+    // Ни одного уточняющего вопроса — этого и требует §21 п.8.
+    expect(all.some((text) => text.includes('отдельная история'))).toBe(false);
+
+    const open = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+
+    expect(open).toEqual([]);
+  });
+
+  it('отмена голосом переводит в отменённые и откатывается', async () => {
+    // §13.5: без подтверждения кнопкой, запись не удаляется физически.
+    const prompts = await seedPrompts();
+    const itemId = await itemWith('Записаться к ортопеду');
+
+    await queuedBatchOf([{ kind: 'text', text: 'к ортопеду уже не нужно', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'CANCEL', text: 'к ортопеду уже не нужно' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'cancel',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
+        reason: 'дело отменяется',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.status).toBe('cancelled');
+
+    // Строка на месте: физическое удаление — только через «Удалить мои
+    // данные».
+    expect(after).toBeDefined();
+
+    // И отменённое можно вернуть — «готово, когда» задачи 3.8.
+    const [revision] = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, itemId));
+
+    const outcome = await revertRevision(testDb(), {
+      revisionId: revision?.id ?? '',
+      userId,
+    });
+
+    expect(outcome.kind).toBe('reverted');
+
+    const [restored] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(restored?.status).toBe('new');
   });
 });
