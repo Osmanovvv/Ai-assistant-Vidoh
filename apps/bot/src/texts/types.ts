@@ -204,6 +204,15 @@ export interface TextProfile {
     readonly cancelled: (title: string) => string;
 
     readonly buttonUndo: string;
+    /**
+     * Сценарий 8 §2: закрыв запись, бот спрашивает, продолжаем или на
+     * сегодня достаточно. Один раз на выгрузку, а не на каждое закрытое
+     * дело: §13.9 не даёт двух вопросов в реплике, а три закрытых дела
+     * подряд дали бы три вопроса.
+     */
+    readonly goOn: string;
+    readonly buttonGoOn: string;
+    readonly buttonEnough: string;
     readonly undone: string;
     /** Повторное нажатие: кнопка живёт в чате вечно. */
     readonly alreadyUndone: string;
@@ -326,6 +335,22 @@ export interface TextProfile {
     readonly buttonRemindersOn: string;
     readonly buttonQuietOff: string;
     readonly buttonQuietOn: string;
+  };
+
+  /**
+   * Возвращение после паузы (§13.6 ТЗ).
+   *
+   * Бот встречает мягче обычного и даёт выбор, вместо того чтобы
+   * вываливать накопившееся. «Начать с чистого листа» ничего не удаляет —
+   * записи уходят в фон и остаются в бэклоге.
+   */
+  readonly returning: {
+    readonly greeting: string;
+    readonly buttonContinue: string;
+    readonly buttonFresh: string;
+    /** Сколько записей ушло в фон — числом, без перечисления. */
+    readonly moved: (count: number) => string;
+    readonly nothingToMove: string;
   };
 
   readonly reminders: {

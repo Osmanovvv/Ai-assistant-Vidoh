@@ -55,6 +55,7 @@ function itemFixture(): Item {
     completedAt: null,
     status: 'new',
     isProject: false,
+    backgroundedAt: null,
     assignee: null,
     deadlineAt: new Date('2026-09-04T00:00:00.000Z'),
     deadlineAccuracy: 'day',

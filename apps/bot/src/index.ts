@@ -13,6 +13,7 @@ import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerQuestionHandlers } from './bot/handlers/question.js';
 import { registerReminderHandlers } from './bot/handlers/reminder.js';
+import { registerReturningHandlers } from './bot/handlers/returning.js';
 import { registerSuggestHandlers } from './bot/handlers/suggest.js';
 import { registerUndoHandlers } from './bot/handlers/undo.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
@@ -283,6 +284,7 @@ async function main(): Promise<void> {
   registerUndoHandlers(bot, db, logger);
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
+  registerReturningHandlers(bot, db, logger);
   registerQuestionHandlers(bot, { db, ai: { db, provider: llm, prompts, logger }, logger });
 
   bot.catch(({ error }) => {

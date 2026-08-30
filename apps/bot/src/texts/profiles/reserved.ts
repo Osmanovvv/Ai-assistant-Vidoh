@@ -141,6 +141,10 @@ export const reserved: TextProfile = {
     cancelled: (title) => `Убрала «${title}». Если что — верну.`,
 
     buttonUndo: 'Отменить',
+
+    goOn: 'Продолжаем или на сегодня хватит?',
+    buttonGoOn: 'Продолжаем',
+    buttonEnough: 'На сегодня хватит',
     undone: 'Вернула как было.',
     alreadyUndone: 'Это уже отменено.',
     undoGone: 'Этого изменения больше нет.',
@@ -196,6 +200,18 @@ export const reserved: TextProfile = {
     buttonRemindersOn: 'Включить напоминания',
     buttonQuietOff: 'Можно писать ночью',
     buttonQuietOn: 'Не писать ночью',
+  },
+
+  returning: {
+    greeting: [
+      'С возвращением. За это время у тебя кое-что накопилось.',
+      '',
+      'Хочешь продолжить старое или просто выгрузить всё заново?',
+    ].join('\n'),
+    buttonContinue: 'Продолжить старое',
+    buttonFresh: 'Начать с чистого листа',
+    moved: (count) => `Убрала ${String(count)} из поля зрения. Всё цело — лежит в «Все задачи».`,
+    nothingToMove: 'Поле и так чистое.',
   },
 
   reminders: {

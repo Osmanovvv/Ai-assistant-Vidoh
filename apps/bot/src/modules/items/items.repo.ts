@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import { items, topics, type Item, type NewItem } from '../../db/schema.js';
 import type { Database, Executor } from '../../infra/db.js';
@@ -140,17 +140,34 @@ export async function saveDraft(db: Executor, params: SaveDraftParams): Promise<
  * память на каждый разбор. Порядок — от свежих: годность и важность
  * проверяет фильтр, а вот отсечение по потолку должно быть предсказуемым.
  */
+export const OPEN_STATUSES = ['new', 'active', 'in_progress', 'waiting'] as const;
+
+/**
+ * Что значит «запись в работе» — одним условием на весь продукт.
+ *
+ * Тот же список статусов лежал в четырёх местах: выдача, сводки тем,
+ * планировщик и здесь. Пока условие было одно, это была просто копия; с
+ * появлением фона (§13.6) копия стала опасной — забыть про фон в одном из
+ * четырёх мест значит показать в выдаче то, что человек убрал с глаз.
+ *
+ * Сводки тем сюда не входят намеренно: §13.6 требует, чтобы ушедшее в фон
+ * **осталось доступно через бэклог**. Там у списка своё условие, и это
+ * разница по смыслу, а не забытая копия.
+ */
+export function openItemsWhere(userId: string) {
+  return and(
+    eq(items.userId, userId),
+    eq(items.isDraft, false),
+    isNull(items.backgroundedAt),
+    inArray(items.status, [...OPEN_STATUSES]),
+  );
+}
+
 export async function openItemsFor(db: Executor, userId: string, limit = 300): Promise<Item[]> {
   return await db
     .select()
     .from(items)
-    .where(
-      and(
-        eq(items.userId, userId),
-        eq(items.isDraft, false),
-        inArray(items.status, ['new', 'active', 'in_progress', 'waiting']),
-      ),
-    )
+    .where(openItemsWhere(userId))
     .orderBy(desc(items.createdAt), asc(items.sourceOrder), desc(items.id))
     .limit(limit);
 }

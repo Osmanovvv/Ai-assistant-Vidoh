@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import {
@@ -14,7 +14,7 @@ import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { TextProfile } from '../../texts/types.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
-import { openItemsFor } from '../items/items.repo.js';
+import { openItemsFor, openItemsWhere } from '../items/items.repo.js';
 import { effectiveEnergy, selectForToday } from '../output/filter.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { StatusButton } from '../presenter/status.service.js';
@@ -96,13 +96,12 @@ const PLAN_BATCH = 500;
 const DAY_MS = 24 * 60 * 60_000;
 
 /**
- * Что считается открытой записью.
+ * Что считается открытой записью — условие берётся из `items.repo`.
  *
- * Тот же список, что у `openItemsFor`: «открыто» должно означать одно и
- * то же везде, иначе напоминание придёт о деле, которого человек в своих
- * списках уже не видит.
+ * Своя копия списка статусов здесь была, и с появлением фона (§13.6) она
+ * стала опасной: напоминание пришло бы о деле, которое человек убрал с
+ * глаз. «Открыто» должно означать одно и то же везде.
  */
-const OPEN_STATUSES = ['new', 'active', 'in_progress', 'waiting'] as const;
 
 interface Recipient {
   readonly userId: string;
@@ -196,9 +195,7 @@ async function deadlinesOf(db: Database, userId: string, now: Date): Promise<Pla
     .from(items)
     .where(
       and(
-        eq(items.userId, userId),
-        eq(items.isDraft, false),
-        inArray(items.status, OPEN_STATUSES),
+        openItemsWhere(userId),
         isNotNull(items.deadlineAt),
         // Запас назад: срок сегодня утром ещё нужен вечернему накануне.
         gt(items.deadlineAt, new Date(now.getTime() - DAY_MS)),
@@ -237,14 +234,7 @@ async function staleProjectsOf(db: Database, userId: string, now: Date): Promise
         isNotNull(reminders.sentAt),
       ),
     )
-    .where(
-      and(
-        eq(items.userId, userId),
-        eq(items.isDraft, false),
-        inArray(items.status, OPEN_STATUSES),
-        eq(items.isProject, true),
-      ),
-    )
+    .where(and(openItemsWhere(userId), eq(items.isProject, true)))
     .groupBy(items.id, items.updatedAt);
 
   return rows
@@ -496,7 +486,7 @@ async function openItem(db: Database, reminder: Reminder): Promise<Item | undefi
   const [item] = await db
     .select()
     .from(items)
-    .where(and(eq(items.id, reminder.itemId), inArray(items.status, OPEN_STATUSES)))
+    .where(and(eq(items.id, reminder.itemId), openItemsWhere(reminder.userId)))
     .limit(1);
 
   return item;

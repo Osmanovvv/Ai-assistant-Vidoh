@@ -183,6 +183,13 @@
       "when": 1788115550650,
       "tag": "0025_reminder_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788119150650,
+      "tag": "0026_items_backgrounded",
+      "breakpoints": true
     }
   ]
 }
