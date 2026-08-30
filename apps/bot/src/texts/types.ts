@@ -91,6 +91,13 @@ export interface TextProfile {
     /** §13.7: эмоциональный монолог без дел — одна реплика и один вопрос. */
     readonly questionEmotionOnly: string;
 
+    /**
+     * Быстрое добавление (§13.3, задача 3.9).
+     *
+     * Одна строка и всё: ни выдачи действий, ни вопроса. Человек
+     * вспомнил на ходу, и разговор ему сейчас не нужен.
+     */
+    readonly added: string;
     readonly buttonDoNow: string;
     readonly buttonShowAll: string;
     readonly buttonLater: string;
@@ -126,6 +133,10 @@ export interface TextProfile {
     readonly buttonHelp: string;
     readonly buttonDeleteData: string;
     readonly buttonBack: string;
+    /** Постраничность списков (задача 3.11). */
+    readonly buttonPrevious: string;
+    readonly buttonNext: string;
+    readonly pageOf: (page: number, pages: number) => string;
 
     readonly topicsTitle: string;
     readonly noTopics: string;
@@ -230,6 +241,21 @@ export interface TextProfile {
      */
     readonly answerUnclear: string;
   };
+  /**
+   * Ответ на вопрос по бэклогу (§13.4 ТЗ, задача 3.10).
+   *
+   * Бот отвечает тем, что уже знает, и **ничего не создаёт**. Человек
+   * спросил, а получил три новых дела — это не ответ, а встречное
+   * требование.
+   */
+  readonly backlog: {
+    readonly today: string;
+    readonly about: string;
+    readonly line: (text: string) => string;
+    /** Ничего похожего не нашлось. Не повод предлагать завести. */
+    readonly nothing: string;
+  };
+
   /**
    * Закреплённая сводка темы (§8.2 ТЗ, задача 2.16).
    *
