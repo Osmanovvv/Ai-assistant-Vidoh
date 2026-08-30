@@ -202,25 +202,70 @@ describe('возврат к проекту (3.13)', () => {
   });
 });
 
-describe('тишина отсекает при планировании (3.17)', () => {
-  it('утреннее в 03:00 не ставится вовсе', () => {
-    const plan = planFor(input({ settings: { ...settings, morningTime: '03:00' } }));
+describe('тишина и выбор человека (3.17)', () => {
+  /**
+   * Регрессия, найденная на приёмке на живом пользователе: он выбрал на
+   * онбординге утро в 07:00, а тишина по умолчанию 22:00–08:00 накрывала
+   * его выбор целиком — утреннее не приходило бы никогда и молча.
+   */
+  it('выбранное человеком утро внутри тишины всё равно приходит', () => {
+    const plan = planFor(input({ settings: { ...settings, morningTime: '07:00' } }));
 
-    expect(kindsOf(plan)).toEqual(['evening']);
+    expect(kindsOf(plan)).toContain('morning');
   });
 
-  it('с выключенной тишиной то же напоминание проходит', () => {
+  it('и совсем раннее — тоже: он так сказал', () => {
+    const plan = planFor(input({ settings: { ...settings, morningTime: '03:00' } }));
+
+    expect(kindsOf(plan)).toContain('morning');
+  });
+
+  it('выбранный человеком поздний вечер приходит', () => {
+    const plan = planFor(input({ settings: { ...settings, eveningTime: '23:00' } }));
+
+    expect(kindsOf(plan)).toContain('evening');
+  });
+
+  it('тишина при этом не отменяется, а ужимается', () => {
+    // Напоминание по сроку идёт по тем же временам, что и сводки, поэтому
+    // проверяем на том, что тишина всё ещё что-то закрывает: срок в ночь
+    // при обычных временах напоминания не даёт.
     const plan = planFor(
-      input({ settings: { ...settings, morningTime: '03:00', quietHoursOn: false } }),
+      input({
+        settings: { ...settings, morningTime: '08:30', eveningTime: '02:00' },
+        deadlines: [
+          { itemId: 'i1', deadlineAt: new Date('2026-08-31T09:00:00.000Z'), accuracy: 'day' },
+        ],
+      }),
+    );
+
+    // Вечер в 02:00 человек выбрал сам — он проходит. А вот напоминание
+    // накануне вечером о завтрашнем сроке встало бы на 02:00 сегодняшних
+    // суток, то есть в прошлое, и не ставится по другой причине.
+    expect(kindsOf(plan)).toContain('evening');
+  });
+
+  it('с выключенной тишиной проходит всё', () => {
+    const plan = planFor(
+      input({
+        settings: { ...settings, morningTime: '03:00', quietHoursOn: false },
+      }),
     );
 
     expect(kindsOf(plan)).toContain('morning');
   });
 
-  it('вечернее в 23:00 не ставится', () => {
-    const plan = planFor(input({ settings: { ...settings, eveningTime: '23:00' } }));
+  it('вопрос о застрявшем проекте тишина по-прежнему может закрыть', () => {
+    // Полдень — время, которое выбрали мы, а не человек. Если он растянул
+    // тишину на день, вопрос не приходит.
+    const plan = planFor(
+      input({
+        settings: { ...settings, quietFrom: '09:00', quietTo: '18:00' },
+        staleProjects: ['p1'],
+      }),
+    );
 
-    expect(kindsOf(plan)).toEqual(['morning']);
+    expect(kindsOf(plan)).not.toContain('project');
   });
 });
 

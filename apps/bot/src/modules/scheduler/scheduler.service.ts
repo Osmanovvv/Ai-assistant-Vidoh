@@ -28,6 +28,7 @@ import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
   duePending,
   ignoredStreak,
+  itemsWithDeadlineReminder,
   lastMorningDay,
   markSent,
   markSkipped,
@@ -361,7 +362,29 @@ async function composeOne(
         timeZone: context.timeZone,
       });
 
-      return { text: morningText(texts, today), buttons: [] };
+      /**
+       * Дела, у которых сегодня своё напоминание по сроку, из сводки
+       * выпадают.
+       *
+       * Напоминание «сегодня срок» встаёт на то же местное утро, что и
+       * сводка: человек получал два сообщения подряд про одну запись.
+       * Остаётся то, что полезнее, — у отдельного есть кнопки «Сделано»
+       * и «Перенести».
+       */
+      const dayStart = startOfDayInZone(localDateParts(now, context.timeZone), context.timeZone);
+      const covered = await itemsWithDeadlineReminder(deps.db, {
+        userId: reminder.userId,
+        from: dayStart,
+        to: new Date(dayStart.getTime() + DAY_MS),
+      });
+
+      return {
+        text: morningText(
+          texts,
+          today.filter((item) => !covered.has(item.id)),
+        ),
+        buttons: [],
+      };
     }
 
     case 'evening': {

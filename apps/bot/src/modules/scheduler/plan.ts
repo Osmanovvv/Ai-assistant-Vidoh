@@ -1,7 +1,7 @@
 import { localDateParts, startOfDayInZone, type DateParts } from '../classifier/dates.js';
 import type { DeadlineAccuracyValue, ReminderKindValue } from '../../db/schema.js';
 import { morningDue } from './frequency.js';
-import { inQuietHours, quietWindow } from './quiet.js';
+import { effectiveQuiet, inQuietHours, quietWindow } from './quiet.js';
 import { localDateKey, localTimeToUtc, nextLocalTime, parseLocalTime } from './time.js';
 
 /**
@@ -110,8 +110,18 @@ export function planFor(input: PlanInput): PlannedReminder[] {
   const horizon = now.getTime() + HORIZON_HOURS * 60 * 60_000;
   const planned: PlannedReminder[] = [];
 
+  /**
+   * Тишина ужимается под времена, которые человек выбрал сам.
+   *
+   * Иначе умолчание 22:00–08:00 молча отменяет выбранное им утро в 07:00 —
+   * и он не получает утреннее напоминание никогда. Явный выбор сильнее
+   * умолчания; подробности в `quiet.ts`.
+   */
   const silence = settings.quietHoursOn
-    ? quietWindow(settings.quietFrom, settings.quietTo)
+    ? effectiveQuiet(quietWindow(settings.quietFrom, settings.quietTo), {
+        morning: minutesOf(settings.morningTime),
+        evening: minutesOf(settings.eveningTime),
+      })
     : undefined;
 
   const add = (kind: ReminderKindValue, dueAt: Date, key: string, itemId?: string): void => {
@@ -169,6 +179,13 @@ export function planFor(input: PlanInput): PlannedReminder[] {
   }
 
   return planned;
+}
+
+/** Минуты от местной полуночи по строке времени из настроек. */
+function minutesOf(localTime: string): number {
+  const { hours, minutes } = parseLocalTime(localTime);
+
+  return hours * 60 + minutes;
 }
 
 /** Минуты от местной полуночи в этот момент. */
