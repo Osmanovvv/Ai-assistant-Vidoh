@@ -388,6 +388,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const patches: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
     let askedSomething = false;
+    /**
+     * Сказал ли бот человеку хоть что-то по существу.
+     *
+     * Нужен ради одной реплики в самом конце. «Я здесь. Расскажешь, что
+     * в голове?» существует для сообщения, из которого не вышло ничего:
+     * ни записи, ни правки, ни ответа. Но условие на неё стояло только
+     * «новых мыслей нет» — а новых мыслей нет и когда человек задал
+     * вопрос, и когда поправил запись, и когда отметил дело сделанным.
+     * Бот отвечал по существу и следом добавлял «расскажешь, что в
+     * голове?», то есть выглядел так, будто не понял.
+     */
+    let saidSomething = false;
 
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
@@ -418,6 +430,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (settled.kind === 'applied' && settled.applied !== undefined) {
+      saidSomething = true;
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await reply(
         db,
@@ -427,8 +440,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         undoButtons(settled.applied.revisionId, texts),
       );
     } else if (settled.kind === 'nothingToApply') {
+      saidSomething = true;
       await reply(db, deps, target, texts.resolver.attached);
     } else if (settled.kind === 'unclear') {
+      saidSomething = true;
       await reply(db, deps, target, texts.resolver.answerUnclear);
     }
 
@@ -477,6 +492,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       );
 
       if (outcome.kind === 'applied') {
+        saidSomething = true;
         await reply(
           db,
           deps,
@@ -486,6 +502,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         );
       } else if (outcome.kind === 'asked') {
         askedSomething = true;
+        saidSomething = true;
         // §7.3: один короткий вопрос с двумя кнопками и заголовком
         // найденной записи в тексте.
         await reply(
@@ -524,6 +541,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     for (const question of questions) {
+      saidSomething = true;
       const answer = await answerBacklogQuery(
         {
           db,
@@ -572,7 +590,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (parsed.length === 0) {
-      await answer(deferred.length > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse);
+      /**
+       * Отложенное подтверждаем всегда: человек должен знать, что
+       * сказанное сохранено, даже если мы уже ответили о другом.
+       *
+       * А вот «Я здесь. Расскажешь, что в голове?» — только когда сказать
+       * больше нечего. После ответа на вопрос или после правки эта
+       * реплика читается как «я тебя не поняла».
+       */
+      if (deferred.length > 0) await answer(texts.answer.savedUnparsed);
+      else if (!saidSomething) await answer(texts.answer.nothingToParse);
       return;
     }
 
