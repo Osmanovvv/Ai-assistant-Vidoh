@@ -111,13 +111,37 @@ function unitsFromInput(input: string): string[] {
 }
 
 /**
+ * Номер кандидата с таким заголовком во входе резолвера.
+ *
+ * Резолвер нумерует записи «1», «2», «3» и ждёт номер обратно. Тест не
+ * должен угадывать порядок кандидатов — он читает его из того же текста,
+ * который видит модель.
+ */
+const NEWLINE = String.fromCharCode(10);
+
+function numberOfCandidate(input: string, title: string): number {
+  for (const line of input.split(NEWLINE)) {
+    const match = /^(?<number>\d+)\.\s*(?<text>[^·]+)/u.exec(line);
+    if (match?.groups?.['text']?.trim() === title) return Number(match.groups['number']);
+  }
+
+  throw new Error(`кандидата «${title}» нет во входе резолвера:${NEWLINE}${input}`);
+}
+
+/**
  * Модель-эхо: всё сказанное проходит цепочку насквозь.
  *
  * Так видно, что шаги соединены: заголовок дела в ответе — это текст,
  * который человек наговорил, а не выдумка теста.
  */
+/**
+ * Ответ этапа: строкой, если он один на весь прогон, или функцией, если
+ * этап зовётся несколько раз и должен отвечать по-разному.
+ */
+type StageAnswer = string | ((request: CompletionRequest) => string);
+
 function echoingLlm(
-  overrides: Partial<Record<Stage, string>> = {},
+  overrides: Partial<Record<Stage, StageAnswer>> = {},
   /** Название модели: по нему в учёте видно, полная работала или лёгкая. */
   model?: string,
 ): MockLlmProvider {
@@ -128,6 +152,7 @@ function echoingLlm(
       if (stage === undefined) return '{}';
 
       const override = overrides[stage];
+      if (typeof override === 'function') return override(request);
       if (override !== undefined) return override;
 
       switch (stage) {
@@ -2037,6 +2062,121 @@ describe('выполнение и отмена голосом (§21 п.8, зад
       .where(eq(pendingQuestions.userId, userId));
 
     expect(open).toEqual([]);
+  });
+
+  it('пример §7.1: три намерения в одной выгрузке отрабатывают все три', async () => {
+    /**
+     * Дословный пример из ТЗ: «купила продукты, а врача давай перенесем на
+     * пятницу, и еще надо забрать вещи из химчистки» — выполнение,
+     * корректировка и новая задача.
+     *
+     * Маршрутизатор умеет разбирать три сегмента, это проверено у него.
+     * Здесь проверяется другое: что конвейер прогоняет их **все три** за
+     * один проход. Внутри это три раздельных цикла — правки, вопросы,
+     * новые мысли, — и до сих пор ни один тест не сводил их вместе.
+     */
+    const prompts = await seedPrompts();
+
+    /**
+     * Продукты названы только что, врач — три часа назад.
+     *
+     * Так это и выглядит в жизни, и на этом держится решение резолвера:
+     * §7.3 велит подтверждать высокую уверенность вторым сигналом.
+     * Свежая запись одна — её и закрываем. У врача второго сигнала нет,
+     * и бот **спрашивает**, а не угадывает. Это тоже часть примера.
+     */
+    const bought = await itemWith('Купить продукты');
+    const doctor = await itemWith('Записать сына к врачу в четверг');
+    // Часы в этих тестах заморожены на T0: старить надо от них, а не от
+    // настоящего «сейчас», иначе запись окажется в будущем и будет свежей.
+    const longAgo = new Date(T0.getTime() - 3 * 60 * 60_000);
+    await testDb()
+      .update(items)
+      .set({ createdAt: longAgo, updatedAt: longAgo })
+      .where(eq(items.id, doctor));
+
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'купила продукты, а врача давай перенесём на пятницу, и ещё надо забрать вещи из химчистки',
+        offsetMs: 0,
+      },
+    ]);
+
+    let resolverCall = 0;
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'COMPLETE', text: 'купила продукты' },
+          { intent: 'PATCH', text: 'врача давай перенесём на пятницу' },
+          { intent: 'DUMP', text: 'надо забрать вещи из химчистки' },
+        ],
+      }),
+
+      /**
+       * Резолвер зовётся дважды и отвечает по-разному: первый раз про
+       * продукты, второй про врача. Один ответ на оба означал бы, что
+       * тест проверяет один сегмент, а не три.
+       */
+      resolver: (request) => {
+        resolverCall += 1;
+        const done = resolverCall === 1;
+        const title = done ? 'Купить продукты' : 'Записать сына к врачу в четверг';
+
+        return JSON.stringify({
+          action: done ? 'complete' : 'update',
+          mode: 'replace',
+          itemId: String(numberOfCandidate(request.input, title)),
+          confidence: 0.95,
+          changes: {
+            note: '',
+            text: '',
+            deadline: done ? '' : '2026-09-04',
+            deadlineAccuracy: done ? 'none' : 'day',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          reason: 'сегмент разобран',
+        });
+      },
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const closed = saved.find((one) => one.id === bought);
+    const fresh = saved.filter((one) => !one.isDraft && one.id !== bought && one.id !== doctor);
+    const open = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+
+    // 1. Выполнение применено: свежая запись была одна.
+    expect(closed?.status).toBe('done');
+
+    // 2. Корректировка не угадана, а спрошена: §7.3, второго сигнала нет.
+    expect(open).toHaveLength(1);
+    expect(open[0]?.segment).toContain('пятницу');
+
+    // 3. Новая мысль стала записью, и вторая запись про врача не создалась.
+    expect(fresh.map((one) => one.text).join(' ')).toMatch(/химчистк/iu);
+    expect(saved.filter((one) => /врач/iu.test(one.text))).toHaveLength(1);
+
+    // Все три сегмента дошли до резолвера или разбора, ни один не потерян.
+    expect(resolverCall).toBe(2);
+    expect(all.join(NEWLINE)).toMatch(/химчистк/iu);
   });
 
   it('после отметки выполнения бот не добавляет «расскажешь, что в голове»', async () => {
