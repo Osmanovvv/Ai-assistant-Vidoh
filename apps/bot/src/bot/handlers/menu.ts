@@ -1,6 +1,9 @@
 import { InlineKeyboard, type Bot, type CallbackQueryContext, type Context } from 'grammy';
 import type { Logger } from 'pino';
 
+import { eq, not } from 'drizzle-orm';
+
+import { userSettings } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
 import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
@@ -19,9 +22,14 @@ import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
  * Меню и списки (§12.1 ТЗ, задача 2.18).
  *
  * **Пунктов меньше, чем в §12.1, и это осознанно.** «Проекты» появятся с
- * задачей 3.12, «Настройки» и «Подписка» — на четвёртом этапе. Кнопка, за
- * которой ничего нет, хуже отсутствующей: она обещает и не выполняет, и
- * человек перестаёт верить остальным.
+ * задачей 3.12, «Подписка» — на четвёртом этапе. Кнопка, за которой ничего
+ * нет, хуже отсутствующей: она обещает и не выполняет, и человек перестаёт
+ * верить остальным.
+ *
+ * **«Настройки» открылись раньше своего этапа, но урезанными.** §11 требует
+ * выключатель напоминаний и режим тишины, а с задачи 3.14 бот начал писать
+ * сам — настройка, до которой нельзя дотянуться, настройкой не является.
+ * Времена, пояс и темы остаются четвёртому этапу.
  *
  * **Списки простые, без постраничности.** Постраничность и реестр
  * инструментов — задача 3.11, там же «Проекты». Здесь ровно то, без чего
@@ -43,6 +51,10 @@ export const MENU_ACTION = {
   pagePrefix: 'menu:p:',
   /** `menu:d:<страница>` — страница списка «Сегодня». */
   todayPage: 'menu:d:',
+  /** Настройки: пока только два выключателя из §11 (задача 3.17). */
+  settings: 'menu:set',
+  toggleReminders: 'menu:set:r',
+  toggleQuiet: 'menu:set:q',
 } as const;
 
 function rootKeyboard(texts: TextProfile): InlineKeyboard {
@@ -51,6 +63,8 @@ function rootKeyboard(texts: TextProfile): InlineKeyboard {
     .text(texts.menu.buttonToday, MENU_ACTION.today)
     .row()
     .text(texts.menu.buttonHelp, MENU_ACTION.help)
+    .row()
+    .text(texts.menu.buttonSettings, MENU_ACTION.settings)
     .row()
     .text(texts.menu.buttonDeleteData, DELETE_STEP_ONE);
 }
@@ -163,6 +177,90 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     if (!active) return;
 
     await show(ctx, active.texts.menu.help, backKeyboard(active.texts));
+  });
+
+  // ── Настройки: два выключателя из §11 (задача 3.17) ───────────────────
+  /**
+   * Экран показывает состояние словами, а кнопки называют действие.
+   *
+   * «Напоминания: вкл» на кнопке двусмысленно: непонятно, это текущее
+   * состояние или то, что случится по нажатию. Состояние — в тексте,
+   * действие — на кнопке, и спутать нечего.
+   */
+  async function showSettings(ctx: CallbackQueryContext<Context>): Promise<void> {
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const [current] = await db
+      .select({
+        notificationsOn: userSettings.notificationsOn,
+        quietHoursOn: userSettings.quietHoursOn,
+        quietFrom: userSettings.quietFrom,
+        quietTo: userSettings.quietTo,
+      })
+      .from(userSettings)
+      .where(eq(userSettings.userId, active.userId))
+      .limit(1);
+
+    if (!current) return;
+
+    const texts = active.texts;
+    const lines = [
+      texts.settings.title,
+      '',
+      current.notificationsOn ? texts.settings.remindersOn : texts.settings.remindersOff,
+      current.quietHoursOn
+        ? texts.settings.quietOn(shortTime(current.quietFrom), shortTime(current.quietTo))
+        : texts.settings.quietOff,
+    ];
+
+    const keyboard = new InlineKeyboard()
+      .text(
+        current.notificationsOn
+          ? texts.settings.buttonRemindersOff
+          : texts.settings.buttonRemindersOn,
+        MENU_ACTION.toggleReminders,
+      )
+      .row()
+      .text(
+        current.quietHoursOn ? texts.settings.buttonQuietOff : texts.settings.buttonQuietOn,
+        MENU_ACTION.toggleQuiet,
+      )
+      .row()
+      .text(texts.menu.buttonBack, MENU_ACTION.root);
+
+    await show(ctx, lines.join(NEWLINE), keyboard);
+  }
+
+  bot.callbackQuery(MENU_ACTION.settings, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showSettings(ctx);
+  });
+
+  bot.callbackQuery(MENU_ACTION.toggleReminders, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await db
+      .update(userSettings)
+      .set({ notificationsOn: not(userSettings.notificationsOn), updatedAt: new Date() })
+      .where(eq(userSettings.userId, active.userId));
+
+    await showSettings(ctx);
+  });
+
+  bot.callbackQuery(MENU_ACTION.toggleQuiet, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await db
+      .update(userSettings)
+      .set({ quietHoursOn: not(userSettings.quietHoursOn), updatedAt: new Date() })
+      .where(eq(userSettings.userId, active.userId));
+
+    await showSettings(ctx);
   });
 
   // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
@@ -327,4 +425,11 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
 
     await ctx.editMessageText(texts.answer.laterAccepted);
   });
+}
+
+const NEWLINE = '\n';
+
+/** «22:00:00» из базы человеку показывается как «22:00». */
+function shortTime(value: string): string {
+  return value.slice(0, 5);
 }

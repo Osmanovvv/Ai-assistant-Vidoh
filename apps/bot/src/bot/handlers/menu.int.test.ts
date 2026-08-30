@@ -3,7 +3,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, topics } from '../../db/schema.js';
+import { items, topics, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -168,14 +168,19 @@ describe('меню', () => {
       defaultTexts.menu.buttonAll,
       defaultTexts.menu.buttonToday,
       defaultTexts.menu.buttonHelp,
+      defaultTexts.menu.buttonSettings,
       defaultTexts.menu.buttonDeleteData,
     ]);
   });
 
   it('в меню нет кнопок, за которыми пока ничего нет', async () => {
-    // §12.1 перечисляет девять пунктов, но «Проекты», «Настройки» и
-    // «Подписка» приходят со своими задачами. Кнопка, которая обещает и
-    // не выполняет, дороже отсутствующей.
+    // §12.1 перечисляет девять пунктов, но «Проекты» и «Подписка»
+    // приходят со своими задачами. Кнопка, которая обещает и не
+    // выполняет, дороже отсутствующей.
+    //
+    // «Настройки» с задачи 3.17 в меню есть — и за ними два работающих
+    // выключателя, которых требует §11. Остальное содержимое экрана
+    // остаётся четвёртому этапу.
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -185,8 +190,78 @@ describe('меню', () => {
     );
 
     expect(labels).not.toContain('Проекты');
-    expect(labels).not.toContain('Настройки');
     expect(labels).not.toContain('Подписка');
+  });
+
+  describe('настройки (§11, задача 3.17)', () => {
+    async function openSettings() {
+      const { bot, calls } = createTestBot();
+      await bot.init();
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.settings));
+
+      return { bot, calls };
+    }
+
+    const lastScreen = (calls: readonly ApiCall[]): ApiCall | undefined =>
+      calls.filter((call) => call.method === 'editMessageText').at(-1);
+
+    it('показывают состояние словами, а не только кнопками', async () => {
+      const { calls } = await openSettings();
+
+      expect(textOf(lastScreen(calls))).toContain(defaultTexts.settings.remindersOn);
+    });
+
+    it('выключатель напоминаний действительно выключает', async () => {
+      const { bot, calls } = await openSettings();
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
+
+      const [saved] = await testDb()
+        .select({ on: userSettings.notificationsOn })
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId));
+
+      expect(saved?.on).toBe(false);
+      expect(textOf(lastScreen(calls))).toContain(defaultTexts.settings.remindersOff);
+    });
+
+    it('нажатие второй раз возвращает как было', async () => {
+      const { bot } = await openSettings();
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
+
+      const [saved] = await testDb()
+        .select({ on: userSettings.notificationsOn })
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId));
+
+      expect(saved?.on).toBe(true);
+    });
+
+    it('режим тишины переключается и показывает границы', async () => {
+      const { bot, calls } = await openSettings();
+
+      expect(textOf(lastScreen(calls))).toContain('22:00');
+
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleQuiet));
+
+      const [saved] = await testDb()
+        .select({ on: userSettings.quietHoursOn })
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId));
+
+      expect(saved?.on).toBe(false);
+      expect(textOf(lastScreen(calls))).toContain(defaultTexts.settings.quietOff);
+    });
+
+    it('кнопка называет действие, а не состояние', async () => {
+      // «Напоминания: вкл» на кнопке двусмысленно: непонятно, это то, что
+      // сейчас, или то, что случится по нажатию.
+      const { calls } = await openSettings();
+      const labels = keyboardOf(lastScreen(calls)).map((button) => button.text);
+
+      expect(labels).toContain(defaultTexts.settings.buttonRemindersOff);
+      expect(labels).toContain(defaultTexts.menu.buttonBack);
+    });
   });
 
   it('«Все задачи» ведёт по сферам, а сферы — к записям и карточке', async () => {

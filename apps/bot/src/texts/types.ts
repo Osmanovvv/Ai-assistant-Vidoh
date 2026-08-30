@@ -132,6 +132,8 @@ export interface TextProfile {
     readonly buttonToday: string;
     readonly buttonHelp: string;
     readonly buttonDeleteData: string;
+    /** Настройки (§11 и §12.1, задача 3.17): пока только напоминания. */
+    readonly buttonSettings: string;
     readonly buttonBack: string;
     /** Постраничность списков (задача 3.11). */
     readonly buttonPrevious: string;
@@ -292,6 +294,68 @@ export interface TextProfile {
     readonly empty: string;
     /** Сколько записей не показано: сводка не растёт бесконечно. */
     readonly more: (count: number) => string;
+  };
+
+  /**
+   * Напоминания планировщика (§11 ТЗ, задачи 3.15–3.17).
+   *
+   * **Тон здесь важнее, чем где-либо.** Эти реплики приходят без спроса:
+   * человек их не вызывал и не готов к ним. §13.6 запрещает подавать
+   * просроченное как провал и считать пропущенные дни — поэтому в словаре
+   * нет ни одной формулировки, куда можно подставить число несделанного.
+   * Это не самоограничение, а отсутствие возможности: чего нет в словаре,
+   * то не появится в реплике.
+   */
+  /**
+   * Настройки (§11 ТЗ, задача 3.17).
+   *
+   * **Экран урезан до двух выключателей, и это не халтура.** §12.1 обещает
+   * в настройках ещё темы, время напоминаний, пояс и подписку — они
+   * приходят на четвёртом этапе. Но §11 требует, чтобы выключатель
+   * напоминаний и режим тишины у человека были, а настройка, до которой
+   * нельзя дотянуться, настройкой не является.
+   */
+  readonly settings: {
+    readonly title: string;
+    readonly remindersOn: string;
+    readonly remindersOff: string;
+    readonly quietOn: (from: string, to: string) => string;
+    readonly quietOff: string;
+    /** Что переключится по нажатию — на кнопке всегда действие. */
+    readonly buttonRemindersOff: string;
+    readonly buttonRemindersOn: string;
+    readonly buttonQuietOff: string;
+    readonly buttonQuietOn: string;
+  };
+
+  readonly reminders: {
+    /** Утро: приглашение выгрузить (§11). */
+    readonly morningInvite: string;
+    /** Заголовок перед делами на сегодня. */
+    readonly morningActions: string;
+    readonly line: (text: string) => string;
+
+    /** Вечер: короткий итог дня. */
+    readonly eveningClosed: (count: number) => string;
+    /** Вечер без закрытых дел: итога нет, упрёка тоже. */
+    readonly eveningQuiet: string;
+    readonly eveningInvite: string;
+
+    /** Накануне вечером о завтрашнем сроке. */
+    readonly deadlineTomorrow: (text: string) => string;
+    /** Утром в день срока. */
+    readonly deadlineToday: (text: string) => string;
+    readonly buttonDone: string;
+    readonly buttonPostpone: string;
+    readonly done: string;
+    readonly postponed: (when: string) => string;
+
+    /** Один вопрос про застрявший проект (§11, задача 3.13). */
+    readonly projectStuck: (title: string, step: string) => string;
+    readonly buttonProjectTake: string;
+    readonly buttonProjectLater: string;
+    readonly projectTaken: string;
+    readonly projectLater: string;
   };
 
   /**
