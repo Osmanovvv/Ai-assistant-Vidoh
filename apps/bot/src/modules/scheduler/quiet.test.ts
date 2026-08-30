@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { inQuietHours, quietWindow } from './quiet.js';
+import { effectiveQuiet, inQuietHours, quietWindow } from './quiet.js';
 
 /**
  * Режим тишины (задача 3.17).
@@ -79,5 +79,54 @@ describe('вырожденные окна', () => {
     const fromDb = quietWindow('22:00:00', '08:00:00');
 
     expect(fromDb).toEqual(night);
+  });
+});
+
+describe('тишина ужимается под выбор человека', () => {
+  /**
+   * Найдено на приёмке этапа 3, на живом пользователе: он выбрал утро в
+   * 07:00, а тишина по умолчанию 22:00–08:00 накрыла его выбор целиком.
+   * Утреннее напоминание не пришло бы никогда, и понять почему было бы
+   * нечем: настройки по умолчанию, к которым он не прикасался, отменяли
+   * то, о чём он попросил прямо.
+   */
+  it('утро в 07:00 обрывает ночную тишину на 07:00', () => {
+    const shrunk = effectiveQuiet(night, { morning: at(7), evening: at(20) });
+
+    expect(shrunk).toEqual({ from: at(22), to: at(7) });
+    expect(inQuietHours(at(7), shrunk!)).toBe(false);
+  });
+
+  it('ночь при этом закрыта по-прежнему', () => {
+    const shrunk = effectiveQuiet(night, { morning: at(7), evening: at(20) });
+
+    expect(inQuietHours(at(3), shrunk!)).toBe(true);
+    expect(inQuietHours(at(23), shrunk!)).toBe(true);
+    expect(inQuietHours(at(6, 59), shrunk!)).toBe(true);
+  });
+
+  it('поздний вечер сдвигает начало тишины', () => {
+    const shrunk = effectiveQuiet(night, { morning: at(8, 30), evening: at(23) });
+
+    expect(shrunk?.from).toBe(at(23) + 1);
+    expect(inQuietHours(at(23), shrunk!)).toBe(false);
+  });
+
+  it('времена вне окна ничего не меняют', () => {
+    expect(effectiveQuiet(night, { morning: at(8, 30), evening: at(21) })).toEqual(night);
+  });
+
+  it('оба времени внутри — окно ужимается с двух сторон', () => {
+    const shrunk = effectiveQuiet(night, { morning: at(6), evening: at(23) });
+
+    expect(shrunk).toEqual({ from: at(23) + 1, to: at(6) });
+  });
+
+  it('если от окна ничего не осталось — тишины нет', () => {
+    // Человек выбрал вечер ровно на минуту раньше своего утра: закрывать
+    // нечего, и притворяться, что закрываем, не надо.
+    const narrow = quietWindow('22:00', '22:30');
+
+    expect(effectiveQuiet(narrow, { morning: at(22, 30), evening: at(22, 29) })).toBeUndefined();
   });
 });

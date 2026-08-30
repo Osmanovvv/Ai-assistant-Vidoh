@@ -98,6 +98,34 @@ export async function dropPending(db: Executor, userId: string): Promise<number>
   return removed.length;
 }
 
+/**
+ * Записи, у которых сегодня своё напоминание по сроку.
+ *
+ * Нужны утренней сводке, чтобы не называть одно дело дважды. Напоминание
+ * «сегодня срок» встаёт на то же местное утро, что и сводка, — человек
+ * получал два сообщения подряд про одну запись: сначала списком, потом
+ * отдельно. Отдельное полезнее: у него кнопки «Сделано» и «Перенести».
+ */
+export async function itemsWithDeadlineReminder(
+  db: Executor,
+  params: { readonly userId: string; readonly from: Date; readonly to: Date },
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ itemId: reminders.itemId })
+    .from(reminders)
+    .where(
+      and(
+        eq(reminders.userId, params.userId),
+        eq(reminders.kind, 'deadline_day'),
+        isNull(reminders.skippedReason),
+        gte(reminders.dueAt, params.from),
+        lt(reminders.dueAt, params.to),
+      ),
+    );
+
+  return new Set(rows.flatMap((row) => (row.itemId === null ? [] : [row.itemId])));
+}
+
 export async function markSent(db: Executor, id: string, at: Date): Promise<void> {
   await db.update(reminders).set({ sentAt: at }).where(eq(reminders.id, id));
 }
