@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { eq, not } from 'drizzle-orm';
 
 import { userSettings } from '../../db/schema.js';
+import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
 import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
@@ -371,6 +372,18 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
   };
 
   bot.callbackQuery(MENU_ACTION.today, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showToday(ctx, 0);
+  });
+
+  /**
+   * «Продолжить старое» с экрана возвращения (§13.6) ведёт сюда же.
+   *
+   * §13.6 просит показать «актуальные записи и ближайшие шаги по
+   * проектам» — это и есть список «Сегодня». Свой второй экран разъехался
+   * бы с настоящим списком при первой же правке выдачи.
+   */
+  bot.callbackQuery(RETURNING_ACTION.keep, async (ctx) => {
     await ctx.answerCallbackQuery();
     await showToday(ctx, 0);
   });

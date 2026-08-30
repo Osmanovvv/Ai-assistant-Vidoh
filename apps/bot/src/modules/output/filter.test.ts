@@ -37,6 +37,7 @@ function item(overrides: Partial<Item> = {}): Item {
     completedAt: null,
     status: 'new',
     isProject: false,
+    backgroundedAt: null,
     assignee: null,
     deadlineAt: null,
     deadlineAccuracy: null,

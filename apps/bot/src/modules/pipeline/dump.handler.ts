@@ -29,7 +29,9 @@ import {
   setStep,
   STEP,
 } from '../onboarding/onboarding.service.js';
-import { composeOf, presentDump } from '../presenter/presenter.service.js';
+import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
+import { RETURNING_ACTION } from '../returning/returning-actions.js';
+import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
@@ -388,6 +390,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const patches: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
     let askedSomething = false;
+    /** Закрылось ли в этой выгрузке хоть одно дело — для вопроса §2.8. */
+    let closedSomething = false;
     /**
      * Сказал ли бот человеку хоть что-то по существу.
      *
@@ -400,6 +404,26 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * голове?», то есть выглядел так, будто не понял.
      */
     let saidSomething = false;
+
+    /**
+     * Возвращение после паузы (§13.6 ТЗ).
+     *
+     * Первое, что человек видит, вернувшись через две недели: не стена
+     * накопившегося, а выбор. Экран занимает единственный вопрос реплики
+     * — обычный ответ на эту выгрузку придёт без своего «С чего начнём?»,
+     * ровно как это уже устроено у онбординга.
+     *
+     * Сказанное при этом разбирается как обычно: человек вернулся и
+     * что-то наговорил, терять это нельзя.
+     */
+    if (await returningAfterPause(db, { userId: batch.userId, batchId: batch.id, now })) {
+      askedSomething = true;
+      saidSomething = true;
+      await reply(db, deps, target, texts.returning.greeting, [
+        { label: texts.returning.buttonContinue, action: RETURNING_ACTION.keep },
+        { label: texts.returning.buttonFresh, action: RETURNING_ACTION.fresh },
+      ]);
+    }
 
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
@@ -493,6 +517,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       if (outcome.kind === 'applied') {
         saidSomething = true;
+        if (outcome.applied.action === 'complete') closedSomething = true;
         await reply(
           db,
           deps,
@@ -593,13 +618,40 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       /**
        * Отложенное подтверждаем всегда: человек должен знать, что
        * сказанное сохранено, даже если мы уже ответили о другом.
-       *
-       * А вот «Я здесь. Расскажешь, что в голове?» — только когда сказать
-       * больше нечего. После ответа на вопрос или после правки эта
-       * реплика читается как «я тебя не поняла».
        */
       if (deferred.length > 0) await answer(texts.answer.savedUnparsed);
-      else if (!saidSomething) await answer(texts.answer.nothingToParse);
+
+      /**
+       * Сценарий 8 §2: закрыв запись, бот спрашивает, продолжаем или на
+       * сегодня достаточно.
+       *
+       * **Здесь, а не после каждого закрытого дела.** §13.9 не даёт двух
+       * вопросов в реплике, а три закрытых дела подряд дали бы три
+       * вопроса — продукт про выдох превратился бы в опрос. И только
+       * когда разбирать больше нечего: если в выгрузке были новые мысли,
+       * обычный ответ и так заканчивается «С чего начнём?», и второй
+       * вопрос был бы лишним.
+       *
+       * Только у выполнения. У отмены §13.5 требует «подтверждение в одну
+       * строку» и вопроса не хочет: человек, отказавшийся от дела, не
+       * ждёт, что его спросят, чем он займётся дальше.
+       */
+      if (closedSomething && !askedSomething) {
+        // Присваивать `askedSomething` здесь нечему: после этой ветки
+        // обработка заканчивается возвратом.
+        await reply(db, deps, target, texts.resolver.goOn, [
+          { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
+          { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
+        ]);
+      } else if (deferred.length === 0 && !saidSomething) {
+        /**
+         * «Я здесь. Расскажешь, что в голове?» — только когда сказать
+         * больше нечего. После ответа на вопрос или после правки эта
+         * реплика читается как «я тебя не поняла».
+         */
+        await answer(texts.answer.nothingToParse);
+      }
+
       return;
     }
 
@@ -774,7 +826,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       profile: context.textProfile,
       userId: batch.userId,
       batchId: batch.id,
-      omitQuestion: startOnboarding !== undefined || onboardingOpen,
+      /**
+       * Вопрос уже занят — своего ответ не задаёт.
+       *
+       * Так было у онбординга; с §13.6 сюда добавился экран возвращения.
+       * Инвариант «один вопрос» продукт понимает как один на обмен, а не
+       * на реплику: два вопроса подряд разными сообщениями — тот же
+       * допрос.
+       */
+      omitQuestion: askedSomething || startOnboarding !== undefined || onboardingOpen,
       quickAdd,
     });
 

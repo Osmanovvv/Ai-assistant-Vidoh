@@ -2064,6 +2064,56 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(open).toEqual([]);
   });
 
+  it('§13.6: вернувшись после паузы, человек видит выбор, а не стену дел', async () => {
+    /**
+     * «Если женщина не заходила дольше заданного срока, бот встречает её
+     * мягче обычного и даёт выбор, вместо того чтобы вываливать
+     * накопившееся.»
+     *
+     * Экран занимает единственный вопрос реплики: обычный ответ на эту
+     * выгрузку приходит без своего «С чего начнём?» — ровно так же, как
+     * это устроено у онбординга.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    // Прошлая выгрузка — три недели назад.
+    await testDb()
+      .insert(batches)
+      .values({
+        userId,
+        status: 'done',
+        openedAt: new Date(T0.getTime() - 21 * 24 * 60 * 60_000),
+        lastMessageAt: new Date(T0.getTime() - 21 * 24 * 60 * 60_000),
+      });
+
+    await queuedBatchOf([{ kind: 'text', text: 'надо купить продукты', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm(),
+          sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('С возвращением'))).toBe(true);
+
+    // Сказанное разобрано, а не потеряно.
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved.filter((one) => !one.isDraft)).not.toHaveLength(0);
+
+    // Один вопрос на весь обмен: экран возвращения занял его.
+    const questions = all.filter((text) => text.includes('?'));
+    expect(questions).toHaveLength(1);
+  });
+
   it('пример §7.1: три намерения в одной выгрузке отрабатывают все три', async () => {
     /**
      * Дословный пример из ТЗ: «купила продукты, а врача давай перенесем на
@@ -2228,7 +2278,15 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     );
 
     expect(all).not.toContain(defaultTexts.answer.nothingToParse);
-    expect(all.at(-1)).toContain('Сверить кассу');
+    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(true);
+
+    /**
+     * Последним идёт вопрос сценария 8 §2 — «продолжаем или на сегодня
+     * достаточно». Уточняющим он не является: §21 п.8 запрещает
+     * переспрашивать, о какой записи речь, а это вопрос о том, что делать
+     * дальше, и он в ТЗ прямо назван.
+     */
+    expect(all.at(-1)).toBe(defaultTexts.resolver.goOn);
   });
 
   it('после ответа на вопрос по бэклогу — тоже не добавляет', async () => {
