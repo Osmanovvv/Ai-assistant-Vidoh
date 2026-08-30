@@ -38,6 +38,9 @@ const CHANGES = {
   text: '',
   deadline: '2026-09-04',
   deadlineAccuracy: 'day',
+  recurrenceKind: 'none',
+  recurrenceInterval: 0,
+  recurrenceText: '',
 } as const;
 
 async function ask(now = NOW): Promise<string> {

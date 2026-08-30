@@ -121,7 +121,15 @@ async function ask(): Promise<string> {
     batchId,
     segment: 'нет, в пятницу',
     action: 'update',
-    changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+    changes: {
+      note: '',
+      text: '',
+      deadline: '2026-09-04',
+      deadlineAccuracy: 'day',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
   });
 
   return question.id;

@@ -36,6 +36,11 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
     return resolver.completedRecurring(after.text, shortDate(after.deadlineAt, timeZone));
   }
 
+  // Правило выставлено или изменено (задача 3.8б).
+  if (applied.action === 'update' && fields.includes('recurrenceRule')) {
+    return resolver.ruleSet(after.text, after.recurrenceText ?? '');
+  }
+
   if (applied.action === 'cancel' && fields.includes('recurrenceRule')) {
     return resolver.ruleDropped(after.text);
   }

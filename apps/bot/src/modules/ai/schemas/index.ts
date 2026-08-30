@@ -17,7 +17,9 @@ import {
   RESOLVER_MODES,
   RESOLVER_SCHEMA_NAME,
   RESOLVER_V1_SCHEMA_NAME,
+  RESOLVER_V2_SCHEMA_NAME,
   resolverV1Schema,
+  resolverV2Schema,
 } from './resolver.js';
 import { INTENTS, routerSchema, ROUTER_SCHEMA_NAME } from './router.js';
 
@@ -46,6 +48,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
   // возможен: схему выкидывать нельзя.
   [RESOLVER_V1_SCHEMA_NAME]: resolverV1Schema,
+  [RESOLVER_V2_SCHEMA_NAME]: resolverV2Schema,
 };
 
 export type SchemaName = keyof typeof SCHEMAS;

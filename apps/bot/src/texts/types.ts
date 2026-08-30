@@ -184,6 +184,8 @@ export interface TextProfile {
      * бота, а не как перенос.
      */
     readonly completedRecurring: (title: string, date: string) => string;
+    /** Правило выставлено словами человека (задача 3.8б). */
+    readonly ruleSet: (title: string, howOften: string) => string;
     /** Правило снято: напоминать перестанем, запись остаётся. */
     readonly ruleDropped: (title: string) => string;
     readonly cancelled: (title: string) => string;

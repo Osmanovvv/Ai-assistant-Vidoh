@@ -164,7 +164,15 @@ function echoingLlm(
             mode: 'replace',
             itemId: '',
             confidence: 0.1,
-            changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
+            changes: {
+              note: '',
+              text: '',
+              deadline: '',
+              deadlineAccuracy: 'none',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
             reason: 'заглушка',
           });
         case 'presenter':
@@ -1750,7 +1758,15 @@ describe('ответ на уточняющий вопрос голосом (§7.
       action: 'update',
       // Срок считается от настоящих часов: конвейер в этом тесте живёт
       // по ним, а даты дальше пяти лет разбор сроков отвергает.
-      changes: { note: '', text: '', deadline: soonDate(), deadlineAccuracy: 'day' },
+      changes: {
+        note: '',
+        text: '',
+        deadline: soonDate(),
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
     });
 
     return { itemId: row!.id };
@@ -1857,7 +1873,15 @@ describe('правка доходит до резолвера (§7, задача
         mode: 'replace',
         itemId: '1',
         confidence: 0.9,
-        changes: { note: '', text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        changes: {
+          note: '',
+          text: '',
+          deadline: soon(),
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
         reason: 'поправка срока',
       }),
     });
@@ -1909,7 +1933,15 @@ describe('правка доходит до резолвера (§7, задача
         mode: 'replace',
         itemId: '1',
         confidence: 0.6,
-        changes: { note: '', text: '', deadline: soon(), deadlineAccuracy: 'day' },
+        changes: {
+          note: '',
+          text: '',
+          deadline: soon(),
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
         reason: 'не уверен',
       }),
     });
@@ -1971,7 +2003,15 @@ describe('выполнение и отмена голосом (§21 п.8, зад
         mode: 'replace',
         itemId: '1',
         confidence: 0.9,
-        changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
         reason: 'дело названо сделанным',
       }),
     });
@@ -2016,7 +2056,15 @@ describe('выполнение и отмена голосом (§21 п.8, зад
         mode: 'replace',
         itemId: '1',
         confidence: 0.9,
-        changes: { note: '', text: '', deadline: '', deadlineAccuracy: 'none' },
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
         reason: 'дело отменяется',
       }),
     });

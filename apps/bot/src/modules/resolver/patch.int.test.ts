@@ -28,7 +28,15 @@ let userId = '';
 let strangerId = '';
 let seq = 0;
 
-const NO_CHANGES = { note: '', text: '', deadline: '', deadlineAccuracy: 'none' } as const;
+const NO_CHANGES = {
+  note: '',
+  text: '',
+  deadline: '',
+  deadlineAccuracy: 'none',
+  recurrenceKind: 'none',
+  recurrenceInterval: 0,
+  recurrenceText: '',
+} as const;
 
 async function sow(overrides: Partial<Item> = {}): Promise<Item> {
   const [row] = await testDb()
@@ -69,7 +77,15 @@ describe('применение оставляет ревизию', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+      changes: {
+        note: '',
+        text: '',
+        deadline: '2026-09-04',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
       timeZone: MOSCOW,
       now: NOW,
       reason: 'подтверждено свежестью',
@@ -100,6 +116,9 @@ describe('применение оставляет ревизию', () => {
         text: 'Записать сына к стоматологу',
         deadline: '',
         deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
       },
       timeZone: MOSCOW,
       now: NOW,
@@ -159,6 +178,9 @@ describe('чего применение делать не должно', () => {
         text: 'Записать сына к врачу в четверг',
         deadline: '',
         deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
       },
       timeZone: MOSCOW,
       now: NOW,
@@ -208,7 +230,15 @@ describe('чего применение делать не должно', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { note: '', text: '', deadline: '2020-01-01', deadlineAccuracy: 'day' },
+      changes: {
+        note: '',
+        text: '',
+        deadline: '2020-01-01',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -226,7 +256,15 @@ describe('откат в один тап (3.4)', () => {
       userId,
       itemId: item.id,
       action: 'update',
-      changes: { note: '', text: 'Другое дело', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+      changes: {
+        note: '',
+        text: 'Другое дело',
+        deadline: '2026-09-04',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -368,6 +406,9 @@ describe('дополнение против замены (§7.4, задача 3.
     text: '',
     deadline: '',
     deadlineAccuracy: 'none',
+    recurrenceKind: 'none',
+    recurrenceInterval: 0,
+    recurrenceText: '',
   };
 
   async function append(changes: ResolverAnswer['changes'] = NOTE, itemId?: string) {
@@ -408,7 +449,15 @@ describe('дополнение против замены (§7.4, задача 3.
       itemId: item,
       action: 'update',
       mode: 'append',
-      changes: { note: 'и полис', text: '', deadline: '', deadlineAccuracy: 'none' },
+      changes: {
+        note: 'и полис',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
       timeZone: MOSCOW,
       now: NOW,
     });
@@ -434,6 +483,9 @@ describe('дополнение против замены (§7.4, задача 3.
       text: 'Совсем другое дело',
       deadline: '2026-12-01',
       deadlineAccuracy: 'day',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
     });
 
     expect(applied?.fields).toEqual(['body']);
@@ -449,6 +501,9 @@ describe('дополнение против замены (§7.4, задача 3.
       text: '',
       deadline: '',
       deadlineAccuracy: 'none',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
     });
 
     expect(applied).toBeUndefined();
@@ -576,5 +631,93 @@ describe('регулярное дело движется, а не множитс
 
     expect(applied?.fields).toEqual(['status', 'completedAt']);
     expect((await reread(item.id)).status).toBe('done');
+  });
+});
+
+describe('просьба запомнить у существующего дела (задача 3.8б)', () => {
+  const RULE: ResolverAnswer['changes'] = {
+    note: '',
+    text: '',
+    deadline: '',
+    deadlineAccuracy: 'none',
+    recurrenceKind: 'monthly',
+    recurrenceInterval: 1,
+    recurrenceText: 'каждый месяц',
+  };
+
+  async function setRule(spoken: string, changes = RULE) {
+    const item = await sow({ text: 'Оплатить садик' });
+
+    return {
+      item,
+      applied: await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes,
+        spoken,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    };
+  }
+
+  it('меняет существующую запись, а не создаёт вторую', async () => {
+    const { item, applied } = await setRule('запомни, это у меня каждый месяц');
+
+    expect(applied?.fields).toContain('recurrenceRule');
+
+    const after = await reread(item.id);
+    expect(after.recurrenceText).toBe('каждый месяц');
+    expect((after.recurrenceRule as { kind: string }).kind).toBe('monthly');
+
+    const all = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(all).toHaveLength(1);
+  });
+
+  it('в базе видно, что регулярность пришла способом asked', async () => {
+    // «Готово, когда» задачи 3.8б дословно.
+    const { item } = await setRule('запомни, это у меня каждый месяц');
+
+    expect((await reread(item.id)).recurrenceSource).toBe('asked');
+  });
+
+  it('без просьбы источник остаётся stated', async () => {
+    // «Это у меня каждый месяц» — человек назвал факт, а не поручил боту
+    // его держать. Право бота на инициативу здесь другое.
+    const { item } = await setRule('это у меня каждый месяц');
+
+    expect((await reread(item.id)).recurrenceSource).toBe('stated');
+  });
+
+  it('правило откатывается в один тап, как и срок', async () => {
+    const { item, applied } = await setRule('запомни, каждый месяц');
+
+    await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
+
+    const after = await reread(item.id);
+    expect(after.recurrenceRule).toBeNull();
+    expect(after.recurrenceSource).toBeNull();
+  });
+
+  it('правило без срока не выставляется', async () => {
+    // Правило опирается на дату: без неё неизвестно, какое число месяца
+    // повторять. Выдуманный якорь дал бы напоминания не в те дни.
+    const [row] = await testDb()
+      .insert(items)
+      .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'деньги' })
+      .returning();
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: row?.id ?? '',
+      action: 'update',
+      changes: RULE,
+      spoken: 'запомни, каждый месяц',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(applied).toBeUndefined();
   });
 });

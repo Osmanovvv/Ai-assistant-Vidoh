@@ -39,6 +39,9 @@ const EMPTY_CHANGES = {
   text: '',
   deadline: '',
   deadlineAccuracy: 'none',
+  recurrenceKind: 'none',
+  recurrenceInterval: 0,
+  recurrenceText: '',
 } as const;
 
 export interface ResolveDeps {
@@ -174,6 +177,8 @@ export async function resolvePatchSegment(
     action: decision.action === 'new' ? 'update' : decision.action,
     ...(resolved.mode === undefined ? {} : { mode: resolved.mode }),
     changes: resolved.changes ?? EMPTY_CHANGES,
+    // §3.8б: «запомни» видно только в сказанном.
+    spoken: params.text,
     timeZone: params.timeZone,
     now,
     reason: decision.why,
