@@ -118,6 +118,7 @@ export async function settlePendingQuestion(
     itemId: open.itemId,
     action: open.action === 'complete' || open.action === 'cancel' ? open.action : 'update',
     changes: open.changes as ResolverAnswer['changes'],
+    spoken: open.segment,
     timeZone: params.timeZone,
     now,
     reason: 'человек подтвердил голосом',

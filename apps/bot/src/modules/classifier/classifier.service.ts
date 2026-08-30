@@ -8,6 +8,7 @@ import type {
   Priority,
 } from '../ai/schemas/classifier.js';
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
+import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeNow, resolveDeadline, type ResolvedDeadline } from './dates.js';
 
@@ -41,6 +42,15 @@ export interface ClassifyParams {
   /** Куда девать запись, не попавшую ни в одну тему (§6.4). */
   readonly defaultTopic: string;
   readonly timeZone: string;
+  /**
+   * Сказанное человеком целиком, до извлечения (задача 3.8б).
+   *
+   * Извлечение переписывает «запомни, садик оплачивается пятого» в
+   * «оплатить садик», и просьба запомнить из текста единицы исчезает. А
+   * различить «попросили запомнить» и «назвали мимоходом» можно только
+   * по исходным словам.
+   */
+  readonly spoken?: string | undefined;
   readonly now?: Date | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
@@ -112,6 +122,8 @@ function buildInput(params: ClassifyParams, now: Date): string {
 
 /** Что нужно поправкам, кроме самого ответа модели. */
 export interface CorrectionContext {
+  /** Сказанное целиком: по нему видно, просили ли запомнить (3.8б). */
+  readonly spoken?: string | undefined;
   readonly topics: readonly string[];
   readonly defaultTopic: string;
   readonly timeZone: string;
@@ -234,7 +246,24 @@ export function correctItems(
         deadline: item.deadline,
       });
 
-      if (resolvedRecurrence.text !== undefined) recurrence = resolvedRecurrence;
+      if (resolvedRecurrence.text !== undefined) {
+        /**
+         * Задача 3.8б: «запомни» поднимает источник до `asked`.
+         *
+         * Разбор видит правило, но не видит, просили его запомнить или
+         * назвали мимоходом. А различие важное: правило, о котором
+         * попросили, бот не имеет права менять без спроса. Задним числом
+         * источник не восстановить, поэтому уточняем здесь.
+         *
+         * Смотрим на сказанное человеком, а не на формулировку единицы:
+         * извлечение переписывает «запомни, садик пятого» в «оплатить
+         * садик», и просьба из текста единицы исчезает.
+         */
+        recurrence = {
+          ...resolvedRecurrence,
+          source: sourceOf(ctx.spoken ?? item.text, resolvedRecurrence.source),
+        };
+      }
 
       if (resolvedRecurrence.problem !== undefined) {
         corrections.recurrence++;
@@ -299,6 +328,7 @@ export async function classifyUnits(
   }
 
   const { items, corrections } = correctItems(outcome.value, {
+    ...(params.spoken === undefined ? {} : { spoken: params.spoken }),
     topics: params.topics,
     defaultTopic: params.defaultTopic,
     timeZone: params.timeZone,

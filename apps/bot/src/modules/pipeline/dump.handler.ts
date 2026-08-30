@@ -530,6 +530,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     const classified = await classifyUnits(heavy, {
       units: extracted.units,
+      // §3.8б: «запомни» живёт в сказанном, а не в единицах.
+      spoken: dumpText,
       topics: topics.names,
       defaultTopic: threadTopic?.name ?? topics.defaultName,
       timeZone: context.timeZone,

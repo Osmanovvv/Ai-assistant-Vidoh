@@ -4,6 +4,8 @@ import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import { resolveDeadline } from '../classifier/dates.js';
+import { sourceOf } from '../recurrence/asked.js';
+import { resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
 import { recordRevision } from './revisions.repo.js';
@@ -51,6 +53,13 @@ export interface ApplyParams {
   /** «Новая мысль» сюда не приходит: применять нечего. */
   readonly action: Exclude<ResolverAction, 'new'>;
   readonly changes: ResolverAnswer['changes'];
+  /**
+   * Сказанное человеком: по нему видно, просили ли запомнить (3.8б).
+   *
+   * Без него правило, о котором попросили, легло бы в базу как названное
+   * мимоходом, и различить их потом стало бы нечем.
+   */
+  readonly spoken?: string | undefined;
   /**
    * §7.4: дополняем подробности или заменяем поля.
    *
@@ -147,6 +156,35 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
   }
 
   const { text, deadline, deadlineAccuracy } = params.changes;
+
+  /**
+   * Правка правила повторения (задача 3.8б).
+   *
+   * «Запомни, это у меня каждый месяц» про существующее дело — правка,
+   * а не новая запись. Ведёт себя как правка срока: показывается
+   * человеку и откатывается одним тапом.
+   *
+   * Правило опирается на срок: без даты неизвестно, какой день недели и
+   * какое число месяца повторять. Поэтому берётся новый срок, если он
+   * назван, иначе нынешний.
+   */
+  if (params.changes.recurrenceKind !== 'none') {
+    const anchor =
+      deadline.length > 0 ? deadline : (item.deadlineAt?.toISOString().slice(0, 10) ?? '');
+
+    const resolved = resolveRecurrence({
+      kind: params.changes.recurrenceKind,
+      interval: params.changes.recurrenceInterval,
+      text: params.changes.recurrenceText,
+      deadline: anchor,
+    });
+
+    if (resolved.rule !== undefined && resolved.text !== undefined) {
+      next.recurrenceRule = resolved.rule;
+      next.recurrenceText = resolved.text;
+      next.recurrenceSource = sourceOf(params.spoken ?? '', resolved.source);
+    }
+  }
 
   // Пустая строка означает «не трогать»: так же устроена схема
   // классификации, и модели такой ответ даётся надёжнее пропуска ключа.

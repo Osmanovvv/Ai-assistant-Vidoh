@@ -131,6 +131,7 @@ export const reserved: TextProfile = {
     rewrote: (title) => `Поправила: теперь это «${title}».`,
     completed: (title) => `Отметила сделанным: «${title}».`,
     completedRecurring: (title, date) => `Готово. «${title}» — снова ${date}.`,
+    ruleSet: (title, howOften) => `Запомнила: «${title}» — ${howOften}.`,
     ruleDropped: (title) => `Больше не буду напоминать про «${title}». Запись оставила.`,
     cancelled: (title) => `Убрала «${title}». Если что — верну.`,
 

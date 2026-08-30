@@ -47,7 +47,15 @@ function answer(overrides: Partial<ResolverAnswer> = {}): string {
     mode: 'replace',
     itemId: '1',
     confidence: 0.9,
-    changes: { note: '', text: '', deadline: '2026-09-04', deadlineAccuracy: 'day' },
+    changes: {
+      note: '',
+      text: '',
+      deadline: '2026-09-04',
+      deadlineAccuracy: 'day',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
     reason: 'человек переносит срок',
     ...overrides,
   });

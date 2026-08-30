@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { RECURRENCE_KINDS } from '../../recurrence/recurrence.js';
 import { DEADLINE_ACCURACY } from './classifier.js';
 
 /**
@@ -18,9 +19,14 @@ import { DEADLINE_ACCURACY } from './classifier.js';
  * Добавлены `mode` и `changes.note`. Разница не косметическая: «а ещё
  * туда надо взять карту прививок» не заменяет дело и не двигает срок, а
  * прежняя схема умела только заменять — и переписала бы заголовок.
+ *
+ * **Версия третья: правка регулярности (задача 3.8б).** «Запомни, это у
+ * меня каждый месяц» про существующее дело — это правка правила, и вести
+ * себя она обязана как правка срока: с показом изменения и откатом в
+ * один тап. Без этих полей она стала бы второй записью.
  */
 
-export const RESOLVER_SCHEMA_NAME = 'resolver.v2';
+export const RESOLVER_SCHEMA_NAME = 'resolver.v3';
 
 /**
  * Первая версия остаётся в коде, хотя её больше никто не заливает.
@@ -32,6 +38,9 @@ export const RESOLVER_SCHEMA_NAME = 'resolver.v2';
  * а запись о том, что мы однажды пообещали.
  */
 export const RESOLVER_V1_SCHEMA_NAME = 'resolver.v1';
+
+/** Вторая версия: тоже остаётся, пока может быть активна или откачена. */
+export const RESOLVER_V2_SCHEMA_NAME = 'resolver.v2';
 
 /**
  * Что человек хочет сделать с найденной записью.
@@ -74,6 +83,21 @@ export const resolverV1Schema = z.object({
   itemId: z.string().max(64),
   confidence: z.number().min(0).max(1),
   changes: z.object({
+    text: z.string().max(500),
+    deadline: z.string().max(10),
+    deadlineAccuracy: z.enum(DEADLINE_ACCURACY),
+  }),
+  reason: z.string().max(300),
+});
+
+/** Схема второй версии: дополнение против замены, но без регулярности. */
+export const resolverV2Schema = z.object({
+  action: z.enum(RESOLVER_ACTIONS),
+  mode: z.enum(RESOLVER_MODES),
+  itemId: z.string().max(64),
+  confidence: z.number().min(0).max(1),
+  changes: z.object({
+    note: z.string().max(500),
     text: z.string().max(500),
     deadline: z.string().max(10),
     deadlineAccuracy: z.enum(DEADLINE_ACCURACY),
@@ -125,6 +149,18 @@ export const resolverSchema = z.object({
     /** Дата в виде ГГГГ-ММ-ДД, как в классификации. */
     deadline: z.string().max(10),
     deadlineAccuracy: z.enum(DEADLINE_ACCURACY),
+
+    /**
+     * Новое правило повторения (задача 3.8б).
+     *
+     * `none` — правило не меняется. Поля названы как в классификации:
+     * одно и то же понятие в двух схемах должно называться одинаково,
+     * иначе перенос значений между ними станет местом для ошибки.
+     */
+    recurrenceKind: z.enum(RECURRENCE_KINDS),
+    recurrenceInterval: z.number().int().min(0).max(99),
+    /** Как человек это сказал, дословно: «каждый месяц». */
+    recurrenceText: z.string().max(200),
   }),
 
   /**
