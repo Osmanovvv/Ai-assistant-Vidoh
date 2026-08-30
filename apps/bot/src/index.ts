@@ -332,7 +332,12 @@ async function main(): Promise<void> {
    * а не единственность процесса.
    */
   const stopScheduler = env.REMINDERS
-    ? startScheduler({ db, sender: questions, logger })
+    ? startScheduler({
+        db,
+        sender: questions,
+        logger,
+        suggestRecurrence: env.RECURRENCE_SUGGESTIONS,
+      })
     : () => undefined;
 
   if (!env.REMINDERS) logger.warn('Напоминания выключены переменной REMINDERS');

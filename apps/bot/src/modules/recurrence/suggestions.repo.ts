@@ -64,22 +64,39 @@ export async function canOffer(
 
   const wanted = new Set(params.itemIds);
 
-  // Отклонённая связка не предлагается никогда. Достаточно одной общей
-  // записи: значит речь о том же деле.
-  const declined = history.some(
-    (row) => row.outcome === 'declined' && idsOf(row).some((id) => wanted.has(id)),
-  );
+  /**
+   * Один раз спросили — больше об этой связке не спрашиваем никогда.
+   *
+   * Отказ и согласие очевидны: в первом случае человек сказал «нет», во
+   * втором правило уже есть. **Молчание сюда же**, и это не мелочь:
+   * обход накопленной истории (3.17а) идёт каждый вечер, и связка, о
+   * которой человек не ответил, возвращалась бы ровно через неделю —
+   * и так до конца жизни продукта. Функция, которая раз в неделю
+   * переспрашивает одно и то же, становится ненавистной за месяц.
+   *
+   * Достаточно одной общей записи: значит речь о том же деле.
+   */
+  const asked = history.some((row) => idsOf(row).some((id) => wanted.has(id)));
 
-  if (declined) return false;
+  if (asked) return false;
 
-  // Уже согласились — правило есть, предлагать нечего.
-  const accepted = history.some(
-    (row) => row.outcome === 'accepted' && idsOf(row).some((id) => wanted.has(id)),
-  );
+  return !(await offeredRecently(db, { userId: params.userId, now }));
+}
 
-  if (accepted) return false;
-
+/**
+ * Было ли предложение за последние семь дней.
+ *
+ * Отдельно от `canOffer`, потому что вызывается раньше и без связки:
+ * обход накопленной истории (3.17а) стоит куда дороже одного запроса, и
+ * начинать его, когда предлагать всё равно нельзя, незачем.
+ */
+export async function offeredRecently(
+  db: Executor,
+  params: { readonly userId: string; readonly now?: Date | undefined },
+): Promise<boolean> {
+  const now = params.now ?? new Date();
   const since = new Date(now.getTime() - SUGGESTION_COOLDOWN_DAYS * DAY_MS);
+
   const recent = await db
     .select({ id: recurrenceSuggestions.id })
     .from(recurrenceSuggestions)
@@ -91,7 +108,7 @@ export async function canOffer(
     )
     .limit(1);
 
-  return recent.length === 0;
+  return recent.length > 0;
 }
 
 /** Записывает, что предложение сделано. */
