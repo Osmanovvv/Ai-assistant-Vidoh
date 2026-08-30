@@ -116,6 +116,22 @@ export const envSchema = z.object({
    */
   SPEND_LIMIT_RUB: z.coerce.number().positive().optional(),
 
+  /**
+   * Бот сам предлагает запомнить регулярность (задача 3.8в).
+   *
+   * **Выключено по умолчанию до калибровки на живых данных.** Порог
+   * «это одно и то же дело» угадать нельзя, его надо мерить на тестовой
+   * группе. Ложное «это у тебя каждую неделю?» на разовом деле
+   * раздражает, а раздражение копится быстрее доверия.
+   *
+   * Строкой, а не `coerce.boolean`: тот превращает «false» в true, и
+   * выключатель, который не выключается, — худший вид выключателя.
+   */
+  RECURRENCE_SUGGESTIONS: z
+    .enum(['on', 'off'])
+    .default('off')
+    .transform((value) => value === 'on'),
+
   DATABASE_URL: databaseUrl,
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });

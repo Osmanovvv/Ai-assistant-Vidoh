@@ -207,6 +207,18 @@ export interface TextProfile {
     readonly buttonSeparate: string;
     readonly attached: string;
     readonly separated: string;
+    /**
+     * Бот заметил повторяемость и предлагает запомнить (задача 3.8в).
+     *
+     * **Даты обязательны.** Без перечисления предложение читается как
+     * гадание бота, и человек справедливо не доверяет. «Ты писала об
+     * этом 5, 12 и 19 августа» — это основание, которое можно проверить.
+     */
+    readonly noticed: (title: string, dates: string, howOften: string) => string;
+    readonly buttonRemember: string;
+    readonly buttonNoNeed: string;
+    readonly rememberedIt: string;
+    readonly notRemembered: string;
     /** Вопрос уже снят — ответом, новой выгрузкой или временем. */
     readonly questionStale: string;
     /**

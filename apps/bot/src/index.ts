@@ -12,6 +12,7 @@ import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerQuestionHandlers } from './bot/handlers/question.js';
+import { registerSuggestHandlers } from './bot/handlers/suggest.js';
 import { registerUndoHandlers } from './bot/handlers/undo.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
 import { registerWebhook } from './bot/register-webhook.js';
@@ -179,6 +180,9 @@ async function main(): Promise<void> {
     aiLight: { provider: llmLight, prompts, logger },
     // §10.5: мягкий лимит расхода. Не задан — ограничение выключено.
     spendLimit: limitFromEnv(env.SPEND_LIMIT_RUB),
+    // §3.8в: выключено, пока порог «это одно и то же дело» не измерен на
+    // живых данных тестовой группы.
+    suggestRecurrence: env.RECURRENCE_SUGGESTIONS,
     embedder,
     logger,
     sender,
@@ -275,6 +279,7 @@ async function main(): Promise<void> {
   // день, когда появится первая ревизия: иначе изменение окажется
   // необратимым, а вопрос — без ответа.
   registerUndoHandlers(bot, db, logger);
+  registerSuggestHandlers(bot, db, logger);
   registerQuestionHandlers(bot, { db, ai: { db, provider: llm, prompts, logger }, logger });
 
   bot.catch(({ error }) => {

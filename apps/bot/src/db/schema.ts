@@ -922,6 +922,61 @@ export const pendingQuestions = pgTable(
   ],
 );
 
+/** Чем кончилось предложение запомнить регулярность (задача 3.8в). */
+export const suggestionOutcome = pgEnum('suggestion_outcome', [
+  /** Человек согласился: правило выставлено. */
+  'accepted',
+  /** Человек отказался. Больше этой связке не предлагаем — никогда. */
+  'declined',
+  /** Предложили и не дождались ответа. */
+  'ignored',
+]);
+
+/**
+ * Предложения запомнить регулярность (задача 3.8в).
+ *
+ * **Отказ запоминается навсегда — это половина задачи.** Функция,
+ * которая раз в неделю переспрашивает одно и то же, становится
+ * ненавистной за месяц. Поэтому отклонённая связка записывается сюда и
+ * больше не предлагается никогда.
+ *
+ * Связка хранится списком записей, а не текстом: «оплатить садик»,
+ * «садик оплатить» и «заплатить за садик» — одно дело, и текстом их не
+ * сопоставить. Пересечение по записям точнее любой нормализации.
+ */
+export const recurrenceSuggestions = pgTable(
+  'recurrence_suggestions',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** Запись, о которой спрашивали: самая свежая из связки. */
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+
+    /** Вся связка целиком: по ней узнаётся уже отклонённое. */
+    itemIds: jsonb('item_ids').notNull(),
+
+    kind: text('kind').notNull(),
+    interval: integer('interval').notNull(),
+
+    outcome: suggestionOutcome('outcome'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    // Недельный предел ищется по последнему предложению человека.
+    index('recurrence_suggestions_user_created_idx').on(table.userId, table.createdAt),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -948,5 +1003,7 @@ export type ChangedBy = (typeof changedBy.enumValues)[number];
 export type PendingQuestion = typeof pendingQuestions.$inferSelect;
 export type NewPendingQuestion = typeof pendingQuestions.$inferInsert;
 export type QuestionOutcome = (typeof questionOutcome.enumValues)[number];
+export type RecurrenceSuggestion = typeof recurrenceSuggestions.$inferSelect;
+export type SuggestionOutcome = (typeof suggestionOutcome.enumValues)[number];
 export type Topic = typeof topics.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;
