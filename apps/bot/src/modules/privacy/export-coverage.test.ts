@@ -213,6 +213,27 @@ const DECISIONS: readonly {
     },
   },
   {
+    name: 'project_steps',
+    columns: Object.keys(getTableColumns(schema.projectSteps)),
+    decision: {
+      exported: [
+        // Разложил их бот, но закрывал человек, и живут они как часть его
+        // цели. Отдать «спланировать годовщину» без шагов — отдать половину.
+        'text',
+        'doneAt',
+      ],
+      internal: [
+        'id',
+        'itemId',
+        'userId',
+        // Порядок нужен нам, чтобы знать, какой шаг ближайший. Человеку в
+        // выгрузке он виден самим порядком строк.
+        'position',
+        'createdAt',
+      ],
+    },
+  },
+  {
     name: 'pending_questions',
     columns: Object.keys(getTableColumns(schema.pendingQuestions)),
     decision: {

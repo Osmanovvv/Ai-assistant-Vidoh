@@ -977,6 +977,54 @@ export const recurrenceSuggestions = pgTable(
   ],
 );
 
+/**
+ * Шаги большой составной цели (§5 ТЗ, задача 3.12).
+ *
+ * «День рождения сына» — это не задача, а проект: внутри десяток дел, и
+ * человек думает о нём как об одном. §13.2 требует урезать большую цель
+ * до посильного первого шага, поэтому **наружу выдаётся только шаг с
+ * признаком `is_next`**, а не список из десяти пунктов. Десять пунктов в
+ * ответ на «что сегодня» — это не помощь, а та же гора, только в профиль.
+ *
+ * Шаги живут отдельной таблицей, а не записями: у них нет ни темы, ни
+ * приоритета, ни срока, и попав в общий список дел они удвоили бы его.
+ */
+export const projectSteps = pgTable(
+  'project_steps',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    /** Запись-проект, к которой относятся шаги. */
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    text: text('text').notNull(),
+    /** Порядок, в котором шаги имеют смысл. */
+    position: integer('position').notNull(),
+
+    doneAt: timestamp('done_at', { withTimezone: true }),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    /**
+     * Порядок шагов внутри проекта уникален.
+     *
+     * Два шага с номером три — это два «ближайших», и выдача начнёт
+     * показывать то один, то другой в зависимости от порядка строк.
+     */
+    uniqueIndex('project_steps_item_position_uq').on(table.itemId, table.position),
+    index('project_steps_user_idx').on(table.userId),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1005,5 +1053,7 @@ export type NewPendingQuestion = typeof pendingQuestions.$inferInsert;
 export type QuestionOutcome = (typeof questionOutcome.enumValues)[number];
 export type RecurrenceSuggestion = typeof recurrenceSuggestions.$inferSelect;
 export type SuggestionOutcome = (typeof suggestionOutcome.enumValues)[number];
+export type ProjectStep = typeof projectSteps.$inferSelect;
+export type NewProjectStep = typeof projectSteps.$inferInsert;
 export type Topic = typeof topics.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;

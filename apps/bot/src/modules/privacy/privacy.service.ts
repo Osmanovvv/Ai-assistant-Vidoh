@@ -10,6 +10,7 @@ import {
   userState,
   itemRevisions,
   pendingQuestions,
+  projectSteps,
 } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 
@@ -126,6 +127,18 @@ export interface ExportedData {
     readonly became: string | null;
     readonly undoneAt: string | null;
   }[];
+  /**
+   * Шаги больших целей (§5, задача 3.12).
+   *
+   * Разложил их бот, но живут они как часть цели человека, и он их
+   * закрывал. Отдать запись «спланировать годовщину» без шагов значило бы
+   * отдать половину.
+   */
+  readonly projectSteps: readonly {
+    readonly project: string;
+    readonly text: string;
+    readonly doneAt: string | null;
+  }[];
   /** Незакрытые уточняющие вопросы: в них лежат слова человека. */
   readonly questions: readonly {
     readonly askedAt: string;
@@ -189,6 +202,18 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     .from(itemRevisions)
     .where(eq(itemRevisions.userId, userId))
     .orderBy(asc(itemRevisions.createdAt));
+
+  const steps = await db
+    .select({
+      project: items.text,
+      text: projectSteps.text,
+      position: projectSteps.position,
+      doneAt: projectSteps.doneAt,
+    })
+    .from(projectSteps)
+    .innerJoin(items, eq(items.id, projectSteps.itemId))
+    .where(eq(projectSteps.userId, userId))
+    .orderBy(asc(items.createdAt), asc(projectSteps.position));
 
   const questions = await db
     .select({
@@ -281,6 +306,11 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       was: titleOf(revision.before),
       became: titleOf(revision.after),
       undoneAt: iso(revision.revertedAt),
+    })),
+    projectSteps: steps.map((step) => ({
+      project: step.project,
+      text: step.text,
+      doneAt: iso(step.doneAt),
     })),
     questions: questions.map((question) => ({
       askedAt: question.createdAt.toISOString(),

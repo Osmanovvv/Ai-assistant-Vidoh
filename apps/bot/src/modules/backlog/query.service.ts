@@ -42,6 +42,13 @@ export interface QueryParams {
 }
 
 export type BacklogAnswer =
+  /**
+   * Спрашивали про большую цель: где мы в ней (§21 п.6).
+   *
+   * Отдельный вид ответа, а не список записей: у проекта человек
+   * спрашивает не «что записано», а «где мы».
+   */
+  | { readonly kind: 'project'; readonly item: Item }
   /** Спрашивали про сегодня: список дел на сегодня. */
   | { readonly kind: 'today'; readonly items: readonly Item[] }
   /** Спрашивали про конкретное дело: что о нём известно. */
@@ -137,6 +144,18 @@ export async function answerBacklogQuery(
 
   const ids = new Set(relevant.slice(0, MAX_SHOWN).map((candidate) => candidate.id));
   const open = await openItemsFor(deps.db, params.userId);
+  const found = open.filter((item) => ids.has(item.id));
 
-  return { kind: 'about', items: open.filter((item) => ids.has(item.id)) };
+  /**
+   * Если самое близкое — большая цель, отвечаем про неё целиком.
+   *
+   * «Что там с днём рождения» — вопрос не о том, что записано, а о том,
+   * где мы. Список из одной строки «Спланировать день рождения» на такой
+   * вопрос не отвечает вовсе.
+   */
+  const best = relevant[0];
+  const project = found.find((item) => item.id === best?.id && item.isProject);
+  if (project !== undefined) return { kind: 'project', item: project };
+
+  return { kind: 'about', items: found };
 }
