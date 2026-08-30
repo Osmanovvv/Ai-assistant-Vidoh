@@ -13,6 +13,8 @@ import { extractUnits } from '../extractor/extractor.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
+import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
+import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import { resolvePatchSegment } from '../resolver/segment.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
@@ -126,6 +128,13 @@ export interface DumpHandlerDeps {
    * предупреждения, ответ приходит как обычно.
    */
   readonly spendLimit?: SpendLimit | undefined;
+  /**
+   * Бот сам предлагает запомнить регулярность (задача 3.8в).
+   *
+   * Выключено по умолчанию до калибровки на живых данных: порог «это одно
+   * и то же дело» угадать нельзя, а ложное предложение раздражает.
+   */
+  readonly suggestRecurrence?: boolean | undefined;
   /**
    * Провайдер смысловых представлений. Без него записи сохраняются без
    * векторов: разбор дороже поиска, и терять его из-за эмбеддингов нельзя.
@@ -362,6 +371,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const answers: string[] = [];
 
     const patches: Segment[] = [];
+    /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
+    let askedSomething = false;
 
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
@@ -458,6 +469,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           undoButtons(outcome.applied.revisionId, texts),
         );
       } else if (outcome.kind === 'asked') {
+        askedSomething = true;
         // §7.3: один короткий вопрос с двумя кнопками и заголовком
         // найденной записи в тексте.
         await reply(
@@ -565,7 +577,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Сохранение ──────────────────────────────────────────────────────
     const toSave = await withEmbeddings(db, deps, batch, units);
-    await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
+    const saved = await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
@@ -671,6 +683,46 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           profile: context.textProfile,
         },
       );
+    }
+
+    /**
+     * Бот замечает повторяемость (задача 3.8в).
+     *
+     * **Предложение конкурирует за единственный вопрос и проигрывает.**
+     * Инвариант 10: один вопрос в реплике. Уточняющий вопрос резолвера
+     * всегда важнее — там цена ошибки выше, там портится существующая
+     * запись. Если он уже задан, предложение не задаётся вовсе и не
+     * встаёт в очередь: дело регулярное, оно повторится, и случай
+     * представится снова.
+     *
+     * Вопрос онбординга занимает то же единственное место, поэтому блок
+     * стоит после него, а не до: иначе человек получил бы два вопроса в
+     * одном обмене, чего §13.9 не допускает.
+     */
+    if (deps.suggestRecurrence === true && !askedSomething && !startOnboarding && !onboardingOpen) {
+      for (const item of saved) {
+        const suggestion = await suggestRecurrence(
+          { db, ...(deps.logger === undefined ? {} : { logger: deps.logger }) },
+          { userId: batch.userId, item, now },
+        );
+
+        if (suggestion === undefined) continue;
+
+        await reply(
+          db,
+          deps,
+          target,
+          texts.resolver.noticed(
+            suggestion.title,
+            datesInWords(suggestion.dates, context.timeZone),
+            rhythmInWords(suggestion.rhythm),
+          ),
+          suggestButtons(suggestion.suggestionId, texts),
+        );
+
+        // Одно предложение на выгрузку, даже если совпадений несколько.
+        break;
+      }
     }
 
     if (startOnboarding) {
