@@ -9,6 +9,7 @@ import {
   ITEM_TYPES,
   PRIORITIES,
 } from './classifier.js';
+import { decomposerSchema, DECOMPOSER_SCHEMA_NAME } from './decomposer.js';
 import { extractorSchema, EXTRACTOR_SCHEMA_NAME } from './extractor.js';
 import { presenterSchema, PRESENTER_SCHEMA_NAME } from './presenter.js';
 import {
@@ -44,6 +45,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [EXTRACTOR_SCHEMA_NAME]: extractorSchema,
   [CLASSIFIER_SCHEMA_NAME]: classifierSchema,
   [PRESENTER_SCHEMA_NAME]: presenterSchema,
+  [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
   // возможен: схему выкидывать нельзя.
@@ -67,6 +69,7 @@ export const SCHEMA_BY_STAGE: Readonly<Partial<Record<AiStage, string>>> = {
   classifier: CLASSIFIER_SCHEMA_NAME,
   presenter: PRESENTER_SCHEMA_NAME,
   resolver: RESOLVER_SCHEMA_NAME,
+  decomposer: DECOMPOSER_SCHEMA_NAME,
 };
 
 export class UnknownSchemaError extends Error {
@@ -120,6 +123,8 @@ export function canonicalJson(value: unknown): string {
 }
 
 export { extractorSchema, EXTRACTOR_SCHEMA_NAME };
+export { decomposerSchema, DECOMPOSER_SCHEMA_NAME };
+export type { DecomposedSteps } from './decomposer.js';
 export { routerSchema, ROUTER_SCHEMA_NAME, INTENTS };
 export { classifierSchema, CLASSIFIER_SCHEMA_NAME, ITEM_TYPES, PRIORITIES, DEADLINE_ACCURACY };
 export { presenterSchema, PRESENTER_SCHEMA_NAME };

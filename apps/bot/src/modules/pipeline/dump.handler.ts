@@ -11,6 +11,9 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import { answerBacklogQuery } from '../backlog/query.service.js';
+import { decomposeIfNeeded } from '../projects/decomposer.service.js';
+import { describeProject } from '../projects/project-text.js';
+import { contextOf, nextStepOf } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
@@ -531,6 +534,30 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         { userId: batch.userId, text: question, batchId: batch.id, now },
       );
 
+      /**
+       * Про большую цель отвечаем контекстом, а не строкой списка (3.13).
+       *
+       * Разложение случается здесь же, лениво: человек спросил — значит
+       * цель ему интересна, и платить за разбор уже не жалко.
+       * Раскладывать при создании значило бы платить за все проекты, к
+       * которым никто не вернётся, а таких большинство.
+       */
+      if (answer.kind === 'project') {
+        await decomposeIfNeeded(
+          { db, ai: { db, ...deps.ai } },
+          { item: answer.item, userId: batch.userId, batchId: batch.id },
+        );
+
+        await reply(
+          db,
+          deps,
+          target,
+          describeProject(answer.item, await contextOf(db, answer.item.id), texts),
+        );
+
+        continue;
+      }
+
       const header =
         answer.kind === 'today'
           ? texts.backlog.today
@@ -690,9 +717,32 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       spoken: dumpText,
     });
 
+    /**
+     * §13.2: большая цель урезается до посильного первого шага.
+     *
+     * В выдаче проект занимает одну строку, и это должна быть строка
+     * шага, а не заголовок цели. «Спланировать годовщину родителей» в
+     * ответ на «что сегодня» — это не действие, а напоминание о горе.
+     *
+     * Раскладывать здесь не станем: разложение ленивое и случается при
+     * обращении к проекту. Неразложенный проект показывается как есть —
+     * так же, как показывался до третьего этапа.
+     */
+    const actions: string[] = [];
+
+    for (const item of selection.shown) {
+      if (!item.isProject) {
+        actions.push(item.text);
+        continue;
+      }
+
+      const step = await nextStepOf(db, item.id);
+      actions.push(step?.text ?? item.text);
+    }
+
     const presented = await presentDump(ai, {
       composition,
-      actions: selection.shown.map((item) => item.text),
+      actions,
       hidden: selection.hidden,
       profile: context.textProfile,
       userId: batch.userId,

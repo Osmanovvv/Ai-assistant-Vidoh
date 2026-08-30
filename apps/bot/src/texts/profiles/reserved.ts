@@ -164,6 +164,19 @@ export const reserved: TextProfile = {
     nothing: 'Про это у меня ничего не записано.',
   },
 
+  project: {
+    header: (title) => `«${title}» — вот где мы.`,
+    doneHeader: 'Уже сделано:',
+    remainingHeader: 'Осталось:',
+    nextStep: (text) => `Ближайший шаг: ${text}`,
+    line: (text) => `— ${text}`,
+    noSteps: 'Пока не раскладывала это на шаги.',
+    finished: 'Здесь всё сделано.',
+    buttonStepDone: 'Шаг сделан',
+    stepDone: (next) => `Отметила. Дальше: ${next}`,
+    allStepsDone: 'Это был последний шаг. Всё готово.',
+  },
+
   summary: {
     header: (topic) => `${topic} — что здесь есть:`,
     line: (text) => `— ${text}`,

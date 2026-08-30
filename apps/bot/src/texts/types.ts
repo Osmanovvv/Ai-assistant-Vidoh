@@ -257,6 +257,29 @@ export interface TextProfile {
   };
 
   /**
+   * Большая составная цель (§5, §13.2, задачи 3.12 и 3.13).
+   *
+   * §21 п.6: через неделю «что там с днём рождения» — бот показывает,
+   * что уже решено, что осталось и следующий шаг, **не переспрашивая
+   * известное**. Переспросить здесь — значит показать, что бот не помнит,
+   * а весь третий этап про то, что помнит.
+   */
+  readonly project: {
+    readonly header: (title: string) => string;
+    readonly doneHeader: string;
+    readonly remainingHeader: string;
+    readonly nextStep: (text: string) => string;
+    readonly line: (text: string) => string;
+    /** Шагов пока нет и разложить не вышло. */
+    readonly noSteps: string;
+    /** Все шаги закрыты. */
+    readonly finished: string;
+    readonly buttonStepDone: string;
+    readonly stepDone: (next: string) => string;
+    readonly allStepsDone: string;
+  };
+
+  /**
    * Закреплённая сводка темы (§8.2 ТЗ, задача 2.16).
    *
    * Одно сообщение на ветку, обновляется редактированием. Вопросов в нём
