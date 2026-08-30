@@ -2039,6 +2039,86 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(open).toEqual([]);
   });
 
+  it('после отметки выполнения бот не добавляет «расскажешь, что в голове»', async () => {
+    /**
+     * Регрессия, найденная сквозным тестом этапа 3.
+     *
+     * Заглушка «Я здесь. Расскажешь, что в голове?» стояла под условием
+     * «новых мыслей нет». Но новых мыслей нет и когда человек поправил
+     * запись, и когда отметил дело сделанным, и когда задал вопрос: бот
+     * отвечал по существу и следом добавлял эту фразу, то есть выглядел
+     * так, будто не понял.
+     */
+    const prompts = await seedPrompts();
+    await itemWith('Сверить кассу');
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'кассу сверила', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'COMPLETE', text: 'кассу сверила' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'complete',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'дело названо сделанным',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all).not.toContain(defaultTexts.answer.nothingToParse);
+    expect(all.at(-1)).toContain('Сверить кассу');
+  });
+
+  it('после ответа на вопрос по бэклогу — тоже не добавляет', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'что там с кассой', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что там с кассой' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Без векторного поиска ответом будет «ничего не записано» — и это
+    // ответ: заглушка после него всё равно лишняя.
+    expect(all).not.toContain(defaultTexts.answer.nothingToParse);
+    expect(all.at(-1)).toBe(defaultTexts.backlog.nothing);
+  });
+
   it('отмена голосом переводит в отменённые и откатывается', async () => {
     // §13.5: без подтверждения кнопкой, запись не удаляется физически.
     const prompts = await seedPrompts();
