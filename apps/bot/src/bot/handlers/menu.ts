@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { eq, not } from 'drizzle-orm';
 
 import { userSettings } from '../../db/schema.js';
+import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
 import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
@@ -247,6 +248,14 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       .set({ notificationsOn: not(userSettings.notificationsOn), updatedAt: new Date() })
       .where(eq(userSettings.userId, active.userId));
 
+    /**
+     * Уже поставленные задания снимаем, планировщик разложит заново.
+     *
+     * Иначе настройка вступает в силу не сразу, а по мере устаревания
+     * заданий — до полутора суток вперёд смотрит раскладка.
+     */
+    await dropPending(db, active.userId);
+
     await showSettings(ctx);
   });
 
@@ -259,6 +268,8 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       .update(userSettings)
       .set({ quietHoursOn: not(userSettings.quietHoursOn), updatedAt: new Date() })
       .where(eq(userSettings.userId, active.userId));
+
+    await dropPending(db, active.userId);
 
     await showSettings(ctx);
   });

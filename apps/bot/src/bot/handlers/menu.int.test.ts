@@ -3,7 +3,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, topics, userSettings } from '../../db/schema.js';
+import { items, reminders, topics, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -251,6 +251,51 @@ describe('меню', () => {
 
       expect(saved?.on).toBe(false);
       expect(textOf(lastScreen(calls))).toContain(defaultTexts.settings.quietOff);
+    });
+
+    it('переключение снимает уже поставленные напоминания', async () => {
+      /**
+       * Найдено на приёмке этапа 3, на боевом.
+       *
+       * Раскладка смотрит вперёд на 36 часов. Без сброса человек включает
+       * режим тишины, а вечернее напоминание, поставленное час назад на
+       * 23:00, всё равно приходит: настройка вступала бы в силу не сразу,
+       * а по мере устаревания заданий.
+       */
+      await testDb()
+        .insert(reminders)
+        .values({
+          userId,
+          kind: 'evening',
+          dueAt: new Date(Date.now() + 60 * 60_000),
+          dedupeKey: 'evening:тест',
+        });
+
+      const { bot } = await openSettings();
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleQuiet));
+
+      const left = await testDb().select().from(reminders).where(eq(reminders.userId, userId));
+
+      expect(left).toEqual([]);
+    });
+
+    it('отправленные напоминания остаются: по ним считается серия молчания', async () => {
+      await testDb()
+        .insert(reminders)
+        .values({
+          userId,
+          kind: 'morning',
+          dueAt: new Date(Date.now() - 60 * 60_000),
+          dedupeKey: 'morning:тест',
+          sentAt: new Date(Date.now() - 60 * 60_000),
+        });
+
+      const { bot } = await openSettings();
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
+
+      const left = await testDb().select().from(reminders).where(eq(reminders.userId, userId));
+
+      expect(left).toHaveLength(1);
     });
 
     it('кнопка называет действие, а не состояние', async () => {

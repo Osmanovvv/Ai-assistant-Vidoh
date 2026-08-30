@@ -72,6 +72,32 @@ export async function duePending(
     .limit(params.limit);
 }
 
+/**
+ * Снимает ещё не отправленные задания человека.
+ *
+ * Зовётся при правке настроек напоминаний. Без этого настройка вступала
+ * бы в силу не сразу, а по мере устаревания уже поставленных заданий —
+ * до полутора суток: горизонт раскладки смотрит вперёд на 36 часов.
+ *
+ * Живой случай, найденный на приёмке: человек включает режим тишины, а
+ * вечернее напоминание, поставленное час назад на 23:00, всё равно
+ * приходит. Настройка, которая начинает действовать завтра, читается как
+ * сломанная — и справедливо.
+ *
+ * Отправленные не трогаем: они уже история, и по ним считается серия
+ * молчания (3.17). Планировщик восстановит нужные в ближайшую минуту.
+ */
+export async function dropPending(db: Executor, userId: string): Promise<number> {
+  const removed = await db
+    .delete(reminders)
+    .where(
+      and(eq(reminders.userId, userId), isNull(reminders.sentAt), isNull(reminders.skippedReason)),
+    )
+    .returning({ id: reminders.id });
+
+  return removed.length;
+}
+
 export async function markSent(db: Executor, id: string, at: Date): Promise<void> {
   await db.update(reminders).set({ sentAt: at }).where(eq(reminders.id, id));
 }
