@@ -2102,3 +2102,137 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(restored?.status).toBe('new');
   });
 });
+
+describe('быстрое добавление (§13.3, задача 3.9)', () => {
+  /**
+   * План просит интеграционные на два примера из §13.3. Здесь проверяется
+   * то, чего не видно на чистой функции: реплика действительно короткая,
+   * список действий не показан, а запись при этом создана.
+   */
+  it('«Добавь ещё купить витамины» — одна строка и никакой выдачи', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    // Дело, которое бот предложил бы, будь это обычной выгрузкой.
+    await testDb().insert(items).values({
+      userId,
+      text: 'Сверить кассу',
+      type: 'TASK',
+      priority: 'NOW',
+      topic: 'деньги',
+    });
+
+    await queuedBatchOf([{ kind: 'text', text: 'добавь ещё купить витамины', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.answer.added);
+    // Ни списка действий, ни вопроса «с чего начнём».
+    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(false);
+    expect(all.some((text) => text.includes('С чего начнём'))).toBe(false);
+
+    // Запись при этом создана: короткий ответ не значит «ничего не делал».
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved).toHaveLength(2);
+  });
+
+  it('обычная выгрузка режим не включает', async () => {
+    // Без маркера добавления «купить витамины» — это мысль, и односложный
+    // ответ на неё читается как «бот не понял».
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'купить витамины', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).not.toBe(defaultTexts.answer.added);
+  });
+});
+
+describe('вопрос по бэклогу ничего не создаёт (§13.4, задача 3.10)', () => {
+  /**
+   * План просит интеграционный тест со счётчиком созданных записей —
+   * он должен быть ноль. Это и есть всё требование §13.4: человек
+   * спросил, а получил три новых дела — это не ответ, а встречное
+   * требование.
+   */
+  it('«что на сегодня» отвечает списком и не заводит ни одной записи', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await testDb().insert(items).values({
+      userId,
+      text: 'Сверить кассу',
+      type: 'TASK',
+      priority: 'NOW',
+      topic: 'деньги',
+    });
+
+    const before = await testDb().select().from(items).where(eq(items.userId, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'что там на сегодня', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что там на сегодня' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(true);
+
+    const after = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(after).toHaveLength(before.length);
+  });
+
+  it('вопрос не оседает черновиком', async () => {
+    // До третьего этапа QUERY уходил в черновик с пометкой «ждёт
+    // резолвера». Теперь на него отвечают, и мусора в админке не остаётся.
+    const prompts = await seedPrompts();
+
+    await queuedBatchOf([{ kind: 'text', text: 'что там с альбомом', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что там с альбомом' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts).toEqual([]);
+  });
+});

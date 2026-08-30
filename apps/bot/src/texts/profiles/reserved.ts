@@ -72,6 +72,7 @@ export const reserved: TextProfile = {
     closingTired: 'Если найдутся силы на что-то ещё, скажи.',
     questionEmotionOnly: 'Разобрать что-нибудь из дел или на сегодня хватит?',
 
+    added: 'Записала. Разберём потом, когда дойдём.',
     buttonDoNow: 'Сделать сейчас',
     buttonShowAll: 'Разобрать всё',
     buttonLater: 'Оставить на потом',
@@ -90,6 +91,9 @@ export const reserved: TextProfile = {
     buttonHelp: 'Помощь',
     buttonDeleteData: 'Удалить мои данные',
     buttonBack: 'Назад',
+    buttonPrevious: '←',
+    buttonNext: '→',
+    pageOf: (page, pages) => `${String(page)} из ${String(pages)}`,
 
     topicsTitle: 'Твои сферы:',
     noTopics: 'Сфер пока нет — они появятся, когда разберём первую выгрузку.',
@@ -153,6 +157,13 @@ export const reserved: TextProfile = {
     questionStale: 'Этот вопрос уже неактуален — я записала как отдельное.',
     answerUnclear: 'Не разобрала ответ, ничего не меняла. Если это была правка — скажи ещё раз.',
   },
+  backlog: {
+    today: 'На сегодня у тебя вот это:',
+    about: 'Вот что у меня про это записано:',
+    line: (text) => `— ${text}`,
+    nothing: 'Про это у меня ничего не записано.',
+  },
+
   summary: {
     header: (topic) => `${topic} — что здесь есть:`,
     line: (text) => `— ${text}`,

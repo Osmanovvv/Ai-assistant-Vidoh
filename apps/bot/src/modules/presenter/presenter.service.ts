@@ -270,6 +270,14 @@ export interface PresentParams {
   readonly batchId?: string | undefined;
   /** См. `BuildReplyParams.omitQuestion`. */
   readonly omitQuestion?: boolean | undefined;
+  /**
+   * Быстрое добавление (§13.3, задача 3.9).
+   *
+   * Человек вспомнил одно дело на ходу. Ответ — одна строка, без выдачи
+   * действий и без вопроса: предлагать ему в этот момент три дела на
+   * сегодня значит превратить полсекунды в разговор.
+   */
+  readonly quickAdd?: boolean | undefined;
 }
 
 export interface PresentResult {
@@ -310,6 +318,23 @@ export async function presentDump(
 ): Promise<PresentResult> {
   const texts = textsFor(params.profile);
   const tired = params.composition.emotions > 0;
+
+  /**
+   * Быстрое добавление отвечает до всякой модели.
+   *
+   * Не только ради экономии, хотя и она есть: реплика «Записала» не
+   * зависит ни от чего, что модель могла бы сказать. Обращение к ней
+   * означало бы риск получить вместо одной строки разбор — ровно то,
+   * чего §13.3 просит не делать.
+   */
+  if (params.quickAdd === true) {
+    return {
+      reply: { text: texts.answer.added, buttons: [] },
+      promptVersion: null,
+      replaced: false,
+      reason: 'быстрое добавление',
+    };
+  }
 
   let raw = '';
   let promptVersion: string | null = null;

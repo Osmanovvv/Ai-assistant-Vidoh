@@ -12,6 +12,7 @@ import { textsFor, type TextProfile } from '../../texts/index.js';
 import { DELETE_STEP_ONE } from './privacy.js';
 import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
+import { pageOf } from '../../modules/backlog/backlog.service.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 
 /**
@@ -38,6 +39,10 @@ export const MENU_ACTION = {
   help: 'menu:help',
   /** `menu:t:<код>` — тема коротким кодом, как и запись. */
   topicPrefix: 'menu:t:',
+  /** `menu:p:<код>:<страница>` — страница списка темы. */
+  pagePrefix: 'menu:p:',
+  /** `menu:d:<страница>` — страница списка «Сегодня». */
+  todayPage: 'menu:d:',
 } as const;
 
 function rootKeyboard(texts: TextProfile): InlineKeyboard {
@@ -81,11 +86,37 @@ function itemsKeyboard(
   texts: TextProfile,
   items: readonly { readonly id: string; readonly text: string }[],
   back: string,
+  paging?: { readonly index: number; readonly action: (page: number) => string },
 ): InlineKeyboard {
+  /**
+   * Двести дел в одно сообщение не помещаются (задача 3.11).
+   *
+   * Telegram отводит на текст 4096 знаков, а на клавиатуру — сотню
+   * кнопок. Список накопившегося бэклога пробивает оба предела, и бот
+   * молча ответит ошибкой. Проверять это на человеке с реальным списком
+   * — поздно.
+   */
+  const page = pageOf(items, paging?.index ?? 0);
   const keyboard = new InlineKeyboard();
 
-  for (const item of items) {
+  for (const item of page.items) {
     keyboard.text(item.text, `${CARD_PREFIX}${toShortId(item.id)}`).row();
+  }
+
+  if (paging !== undefined && page.pages > 1) {
+    if (page.hasPrevious) {
+      keyboard.text(texts.menu.buttonPrevious, paging.action(page.index - 1));
+    }
+
+    // Номер страницы кнопкой, ведущей туда же: у Telegram нет надписи без
+    // нажатия, а знать, где ты в списке из двадцати пяти страниц, надо.
+    keyboard.text(texts.menu.pageOf(page.index + 1, page.pages), paging.action(page.index));
+
+    if (page.hasNext) {
+      keyboard.text(texts.menu.buttonNext, paging.action(page.index + 1));
+    }
+
+    keyboard.row();
   }
 
   return keyboard.text(texts.menu.buttonBack, back);
@@ -155,12 +186,10 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     await show(ctx, active.texts.menu.topicsTitle, topicsKeyboard(active.texts, own));
   });
 
-  bot.callbackQuery(new RegExp(`^${MENU_ACTION.topicPrefix}`, 'u'), async (ctx) => {
-    await ctx.answerCallbackQuery();
+  const showTopic = async (ctx: CallbackQueryContext<Context>, code: string, page: number) => {
     const active = await acting(ctx.from.id);
     if (!active) return;
 
-    const code = ctx.callbackQuery.data.slice(MENU_ACTION.topicPrefix.length);
     const topicId = fromShortId(code);
 
     // Тема ищется среди тем этого человека: код приходит из нажатия, то
@@ -181,13 +210,29 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       // Заголовок из словаря, тот же, что у закреплённой сводки: строить
       // видимый человеку текст в коде нельзя даже из одного двоеточия.
       inTopic.length === 0 ? active.texts.summary.empty : active.texts.summary.header(topic.name),
-      itemsKeyboard(active.texts, inTopic, MENU_ACTION.all),
+      itemsKeyboard(active.texts, inTopic, MENU_ACTION.all, {
+        index: page,
+        action: (next) => `${MENU_ACTION.pagePrefix}${code}:${String(next)}`,
+      }),
     );
+  };
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.topicPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showTopic(ctx, ctx.callbackQuery.data.slice(MENU_ACTION.topicPrefix.length), 0);
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.pagePrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const rest = ctx.callbackQuery.data.slice(MENU_ACTION.pagePrefix.length);
+    const [code = '', page = '0'] = rest.split(':');
+
+    await showTopic(ctx, code, Number.parseInt(page, 10) || 0);
   });
 
   // ── Сегодня ───────────────────────────────────────────────────────────
-  bot.callbackQuery(MENU_ACTION.today, async (ctx) => {
-    await ctx.answerCallbackQuery();
+  const showToday = async (ctx: CallbackQueryContext<Context>, page: number) => {
     const active = await acting(ctx.from.id);
     if (!active) return;
 
@@ -209,8 +254,22 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     await show(
       ctx,
       active.texts.menu.todayTitle,
-      itemsKeyboard(active.texts, today, MENU_ACTION.root),
+      itemsKeyboard(active.texts, today, MENU_ACTION.root, {
+        index: page,
+        action: (next) => `${MENU_ACTION.todayPage}${String(next)}`,
+      }),
     );
+  };
+
+  bot.callbackQuery(MENU_ACTION.today, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showToday(ctx, 0);
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.todayPage}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const page = Number.parseInt(ctx.callbackQuery.data.slice(MENU_ACTION.todayPage.length), 10);
+    await showToday(ctx, page || 0);
   });
   /**
    * «Сделать сейчас» (§13.2: ведёт в режим выполнения).

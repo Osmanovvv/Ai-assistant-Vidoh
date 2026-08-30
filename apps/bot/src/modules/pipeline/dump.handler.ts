@@ -10,6 +10,7 @@ import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.ser
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
+import { answerBacklogQuery } from '../backlog/query.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
@@ -26,6 +27,7 @@ import {
   STEP,
 } from '../onboarding/onboarding.service.js';
 import { composeOf, presentDump } from '../presenter/presenter.service.js';
+import { isQuickAdd } from '../presenter/quick-add.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
@@ -90,6 +92,15 @@ const PARSED_INTENTS = new Set(['DUMP']);
  * своя задача 3.10.
  */
 const RESOLVED_INTENTS = new Set(['PATCH', 'COMPLETE', 'CANCEL']);
+
+/**
+ * Вопрос по бэклогу (§13.4, задача 3.10).
+ *
+ * Отвечается тем, что уже известно, и **ничего не создаёт** — ни записи,
+ * ни черновика. Человек спросил, а получил три новых дела: это не ответ,
+ * а встречное требование.
+ */
+const QUERY_INTENT = 'QUERY';
 
 /**
  * Намерения, которые ничего не создают и ничего не ждут.
@@ -369,6 +380,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
     const answers: string[] = [];
+    const questions: string[] = [];
 
     const patches: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
@@ -376,6 +388,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
+      else if (segment.intent === QUERY_INTENT) questions.push(segment.text);
       else if (PARSED_INTENTS.has(segment.intent)) parsed.push(segment);
       else if (RESOLVED_INTENTS.has(segment.intent)) patches.push(segment);
       else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
@@ -507,6 +520,30 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
     }
 
+    for (const question of questions) {
+      const answer = await answerBacklogQuery(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
+          ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
+          ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+        },
+        { userId: batch.userId, text: question, batchId: batch.id, now },
+      );
+
+      const header =
+        answer.kind === 'today'
+          ? texts.backlog.today
+          : answer.kind === 'about'
+            ? texts.backlog.about
+            : texts.backlog.nothing;
+
+      const body =
+        answer.kind === 'nothing' ? [] : answer.items.map((item) => texts.backlog.line(item.text));
+
+      await reply(db, deps, target, [header, ...body].join('\n'));
+    }
+
     if (parsed.length === 0) {
       await answer(deferred.length > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse);
       return;
@@ -630,6 +667,29 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const onboardingOpen = onboarding.step > 0 && onboarding.step < STEP.done;
 
+    /**
+     * §13.3: короткое добавление не порождает выдачу действий.
+     *
+     * Решается здесь, а не в промпте: правило, живущее в промпте, плавает
+     * от версии к версии, и «Записала» приходило бы через раз. К форме
+     * ответа человек привыкает быстрее, чем к чему бы то ни было ещё.
+     */
+    const quickAdd = isQuickAdd({
+      /**
+       * Во время онбординга режим не включается.
+       *
+       * §13.3 просит не открывать разговор, а онбординг — это разговор,
+       * который уже идёт: его вопрос приходит вместе с этой же репликой.
+       * «Записала.» проглотило бы контекст, и человек получил бы вопрос
+       * про сферы жизни без всякого повода. Поймали два старых теста.
+       */
+      asked: askedSomething || startOnboarding !== undefined || onboardingOpen,
+      created: saved.length,
+      hidden: selection.hidden,
+      emotions: composition.emotions,
+      spoken: dumpText,
+    });
+
     const presented = await presentDump(ai, {
       composition,
       actions: selection.shown.map((item) => item.text),
@@ -638,6 +698,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       userId: batch.userId,
       batchId: batch.id,
       omitQuestion: startOnboarding !== undefined || onboardingOpen,
+      quickAdd,
     });
 
     deps.logger?.info(
