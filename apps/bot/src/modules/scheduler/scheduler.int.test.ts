@@ -3,12 +3,22 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import pino from 'pino';
 
-import { items, messagesRaw, reminders, userSettings, users } from '../../db/schema.js';
+import {
+  items,
+  messagesRaw,
+  recurrenceSuggestions,
+  reminders,
+  userSettings,
+  users,
+} from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import { dispatchReminders, planReminders, runScheduler } from './scheduler.service.js';
 import { ignoredStreak, lastMorningDay } from './reminders.repo.js';
+import { setItemEmbedding } from '../embedder/embedder.service.js';
+import { defaultTexts } from '../../texts/index.js';
+import { eveningText } from './digest.js';
 
 /**
  * Планировщик целиком (задачи 3.14–3.17).
@@ -359,5 +369,141 @@ describe('проход целиком', () => {
 
     expect(second).toEqual({ planned: 0, sent: 0 });
     expect(outbox).toHaveLength(1);
+  });
+});
+
+describe('регулярность в накопленной истории (3.17а)', () => {
+  /**
+   * Условие готовности: засеянная история из четырёх ежемесячных оплат
+   * даёт одно предложение **в вечерней сводке**; человек в режиме тишины
+   * не получает его вовсе.
+   *
+   * Обход проверен отдельно в `recurrence/history.int.test.ts`. Здесь —
+   * только связка с планировщиком: доехало ли предложение до сообщения и
+   * гасят ли его настройки.
+   */
+
+  /** Единичный вектор: близость к себе — единица. */
+  const axis = (index: number): number[] =>
+    Array.from({ length: 256 }, (_unused, position) => (position === index ? 1 : 0));
+
+  async function monthlyPayments(): Promise<void> {
+    for (const [index, day] of ['2026-05-06', '2026-06-05', '2026-07-06', '2026-08-05'].entries()) {
+      const [row] = await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: `Оплатить садик ${String(index)}`,
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'деньги',
+          status: index === 3 ? 'new' : 'done',
+        })
+        .returning({ id: items.id });
+
+      const id = row?.id ?? '';
+      await setItemEmbedding(testDb(), id, axis(0));
+      // Дату ставим после вектора: `setItemEmbedding` двигает `updated_at`.
+      await testDb()
+        .update(items)
+        .set({ createdAt: new Date(`${day}T09:00:00.000Z`) })
+        .where(eq(items.id, id));
+    }
+  }
+
+  const withSweep = () => ({ db: testDb(), sender, logger, suggestRecurrence: true });
+  const evening = new Date('2026-08-30T18:00:00.000Z'); // 21:00 МСК
+
+  async function offerCount(): Promise<number> {
+    return (
+      await testDb()
+        .select()
+        .from(recurrenceSuggestions)
+        .where(eq(recurrenceSuggestions.userId, userId))
+    ).length;
+  }
+
+  it('предложение приезжает в вечерней сводке с двумя кнопками', async () => {
+    await monthlyPayments();
+    await planReminders(withSweep(), { now: NOW });
+    await dispatchReminders(withSweep(), { now: evening });
+
+    const sent = outbox.at(-1);
+
+    expect(sent?.text).toContain(defaultTexts.reminders.eveningInvite);
+    expect(sent?.text).toMatch(/каждый месяц/u);
+    expect(sent?.buttons).toEqual([
+      defaultTexts.resolver.buttonRemember,
+      defaultTexts.resolver.buttonNoNeed,
+    ]);
+  });
+
+  it('в сводке ровно один вопрос', async () => {
+    await monthlyPayments();
+    await planReminders(withSweep(), { now: NOW });
+    await dispatchReminders(withSweep(), { now: evening });
+
+    expect((outbox.at(-1)?.text.match(/\?/gu) ?? []).length).toBe(1);
+  });
+
+  it('с выключенной функцией сводка приходит без предложения', async () => {
+    await monthlyPayments();
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: evening });
+
+    expect(outbox.at(-1)?.text).toBe(eveningText(defaultTexts, 0));
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('в режиме тишины человек не получает его вовсе', async () => {
+    /**
+     * Правила 3.17 действуют без исключений. Функция, которая обходит
+     * настройку тишины, — это не функция, а баг с описанием.
+     *
+     * Проверяется и то, что предложение при этом **не записано**: иначе
+     * недельный бюджет сгорел бы на сообщении, которого никто не видел,
+     * и связка закрылась бы навсегда.
+     */
+    await monthlyPayments();
+    await testDb()
+      .update(userSettings)
+      .set({ quietFrom: '20:00', quietTo: '08:00' })
+      .where(eq(userSettings.userId, userId));
+
+    await planReminders(withSweep(), { now: NOW });
+    await dispatchReminders(withSweep(), { now: evening });
+
+    expect(outbox.map((one) => one.text)).not.toContainEqual(
+      expect.stringContaining('каждый месяц'),
+    );
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('с выключенными напоминаниями — тоже вовсе', async () => {
+    await monthlyPayments();
+    await testDb()
+      .update(userSettings)
+      .set({ notificationsOn: false })
+      .where(eq(userSettings.userId, userId));
+
+    await planReminders(withSweep(), { now: NOW });
+    await dispatchReminders(withSweep(), { now: evening });
+
+    expect(outbox).toEqual([]);
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('назавтра второго предложения нет', async () => {
+    await monthlyPayments();
+    await planReminders(withSweep(), { now: NOW });
+    await dispatchReminders(withSweep(), { now: evening });
+
+    const tomorrow = new Date(evening.getTime() + DAY);
+    await planReminders(withSweep(), { now: new Date(NOW.getTime() + DAY) });
+    await dispatchReminders(withSweep(), { now: tomorrow });
+
+    expect(outbox).toHaveLength(4); // утро, вечер, утро, вечер
+    expect(outbox.filter((one) => one.text.includes('каждый месяц'))).toHaveLength(1);
+    expect(await offerCount()).toBe(1);
   });
 });

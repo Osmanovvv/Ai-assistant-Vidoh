@@ -41,17 +41,27 @@ export function morningText(texts: TextProfile, actions: readonly Item[]): strin
 }
 
 /**
- * Вечерняя реплика: итог дня и приглашение.
+ * Вечерняя реплика: итог дня, приглашение и — если есть — один вопрос.
  *
  * Итог — только про закрытое. Ни одного дела не закрыто — итога нет, и
  * это не повод для замечания: день, в котором ничего не закрылось,
  * человеку известен и без нас.
+ *
+ * **Предложение запомнить регулярность едет здесь, а не отдельным
+ * сообщением** (задача 3.17а). Бот, который сам начинает разговор с
+ * открытия про твою жизнь, — это вторжение, даже когда он прав. Вечерняя
+ * сводка уже приходит по расписанию человека; предложение занимает в ней
+ * место единственного вопроса, и §13.9 не нарушается: приглашение выше —
+ * не вопрос, а приглашение.
  */
-export function eveningText(texts: TextProfile, closedToday: number): string {
+export function eveningText(texts: TextProfile, closedToday: number, suggestion?: string): string {
   const summary =
     closedToday > 0 ? texts.reminders.eveningClosed(closedToday) : texts.reminders.eveningQuiet;
 
-  return [summary, texts.reminders.eveningInvite].join('\n');
+  const lines = [summary, texts.reminders.eveningInvite];
+  if (suggestion !== undefined && suggestion.length > 0) lines.push('', suggestion);
+
+  return lines.join('\n');
 }
 
 /** Реплика напоминания по сроку (задача 3.16). */

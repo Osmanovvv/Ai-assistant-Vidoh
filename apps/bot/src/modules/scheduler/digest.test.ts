@@ -25,6 +25,16 @@ import {
 
 const item = (text: string): Item => ({ text }) as Item;
 
+/** Имена параметров функции — по ним видно, что ей вообще можно скормить. */
+function paramsOf(fn: (...args: never[]) => unknown): string[] {
+  const inside = /\(([^)]*)\)/u.exec(fn.toString())?.[1] ?? '';
+
+  return inside
+    .split(',')
+    .map((one) => one.trim().split(/[:=?]/u)[0]?.trim() ?? '')
+    .filter((one) => one.length > 0);
+}
+
 const all = (): string[] => [
   morningText(defaultTexts, []),
   morningText(defaultTexts, [item('Позвонить в садик'), item('Забрать посылку')]),
@@ -89,6 +99,45 @@ describe('вечер', () => {
   });
 });
 
+describe('предложение запомнить регулярность в сводке (3.17а)', () => {
+  const noticed = defaultTexts.resolver.noticed(
+    'Оплатить садик',
+    '6 мая, 5 июня, 6 июля и 5 августа',
+    'каждый месяц',
+  );
+
+  it('едет внутри вечерней сводки, а не отдельным сообщением', () => {
+    const text = eveningText(defaultTexts, 2, noticed);
+
+    expect(text).toContain(defaultTexts.reminders.eveningInvite);
+    expect(text).toContain('Оплатить садик');
+  });
+
+  it('занимает единственный вопрос сводки', () => {
+    // §13.9: один вопрос на реплику. Приглашение выше — не вопрос.
+    const text = eveningText(defaultTexts, 2, noticed);
+
+    expect((text.match(/\?/gu) ?? []).length).toBe(1);
+  });
+
+  it('без предложения сводка остаётся без вопросов вовсе', () => {
+    expect((eveningText(defaultTexts, 2).match(/\?/gu) ?? []).length).toBe(0);
+  });
+
+  it('пустая строка предложением не считается', () => {
+    expect(eveningText(defaultTexts, 2, '')).toBe(eveningText(defaultTexts, 2));
+  });
+
+  it('предложение отделено пустой строкой от итога', () => {
+    // Иначе вопрос читается как продолжение приглашения.
+    expect(eveningText(defaultTexts, 2, noticed).split('\n')[2]).toBe('');
+  });
+
+  it('и с предложением тон остаётся в рамках §13.8', () => {
+    expect(forbiddenPhraseIn(eveningText(defaultTexts, 0, noticed))).toBeUndefined();
+  });
+});
+
 describe('§13.6: просроченное не провал', () => {
   it('ни одна реплика не говорит о просроченном', () => {
     for (const text of all()) {
@@ -108,9 +157,13 @@ describe('§13.6: просроченное не провал', () => {
      * `morningText` и `eveningText` нет параметра, куда просроченное
      * можно было бы подставить. Значит, оно не появится и после правки
      * текстов чужой рукой.
+     *
+     * Имена, а не количество: считать параметры бесполезно, стоит кому-то
+     * добавить `overdueCount` вместо чего-нибудь. Список имён падает
+     * ровно на той правке, ради которой этот тест написан.
      */
-    expect(morningText).toHaveLength(2);
-    expect(eveningText).toHaveLength(2);
+    expect(paramsOf(morningText)).toEqual(['texts', 'actions']);
+    expect(paramsOf(eveningText)).toEqual(['texts', 'closedToday', 'suggestion']);
   });
 });
 

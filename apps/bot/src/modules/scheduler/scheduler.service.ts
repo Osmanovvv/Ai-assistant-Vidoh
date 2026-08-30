@@ -19,6 +19,8 @@ import { effectiveEnergy, selectForToday } from '../output/filter.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import { nudgeDue } from '../projects/projects.service.js';
+import { sweepHistory } from '../recurrence/history.service.js';
+import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { outputContextOf } from '../users/state.repo.js';
 import { deadlineText, eveningText, morningText, projectText } from './digest.js';
 import { HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
@@ -55,6 +57,14 @@ export interface SchedulerDeps {
   readonly db: Database;
   readonly sender: QuestionSender;
   readonly logger: Logger;
+  /**
+   * Искать ли регулярность в накопленной истории (задача 3.17а).
+   *
+   * Тот же выключатель, что у предложений из 3.8в: обе функции опираются
+   * на неизмеренный порог «это то же самое дело» и обе выключены до
+   * калибровки на живых данных.
+   */
+  readonly suggestRecurrence?: boolean | undefined;
 }
 
 /**
@@ -356,13 +366,38 @@ async function composeOne(
 
     case 'evening': {
       const context = await outputContextOf(deps.db, reminder.userId);
+      const closed = await closedToday(deps.db, reminder.userId, now, context.timeZone);
+
+      /**
+       * Обход накопленной истории (задача 3.17а).
+       *
+       * Здесь и только здесь: отдельным сообщением такое предложение
+       * было бы вторжением, а в утренней сводке — вопросом там, где
+       * человек ещё не начал день. Правила 3.17 действуют полностью и
+       * бесплатно: если вечернее напоминание не поставлено из-за тишины
+       * или выключателя, обхода не будет вовсе — некому его звать.
+       */
+      const found =
+        deps.suggestRecurrence === true
+          ? await sweepHistory(
+              { db: deps.db, logger: deps.logger },
+              { userId: reminder.userId, now },
+            )
+          : undefined;
+
+      if (found === undefined) return { text: eveningText(texts, closed), buttons: [] };
 
       return {
         text: eveningText(
           texts,
-          await closedToday(deps.db, reminder.userId, now, context.timeZone),
+          closed,
+          texts.resolver.noticed(
+            found.title,
+            datesInWords(found.dates, context.timeZone),
+            rhythmInWords(found.rhythm),
+          ),
         ),
-        buttons: [],
+        buttons: suggestButtons(found.suggestionId, texts),
       };
     }
 
