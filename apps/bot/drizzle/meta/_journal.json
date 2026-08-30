@@ -169,6 +169,13 @@
       "when": 1788108350650,
       "tag": "0023_project_steps",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788111950650,
+      "tag": "0024_reminders",
+      "breakpoints": true
     }
   ]
 }

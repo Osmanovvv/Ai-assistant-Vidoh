@@ -54,6 +54,8 @@ export interface ExportedData {
     readonly notificationsOn: boolean;
     readonly eveningOn: boolean;
     readonly quietHoursOn: boolean;
+    readonly quietFrom: string;
+    readonly quietTo: string;
     readonly energyDefault: string;
     readonly textProfile: string;
     readonly onboardingDoneAt: string | null;
@@ -249,6 +251,8 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
           notificationsOn: settings.notificationsOn,
           eveningOn: settings.eveningOn,
           quietHoursOn: settings.quietHoursOn,
+          quietFrom: settings.quietFrom,
+          quietTo: settings.quietTo,
           energyDefault: settings.energyDefault,
           textProfile: settings.textProfile,
           onboardingDoneAt: iso(settings.onboardingDoneAt),

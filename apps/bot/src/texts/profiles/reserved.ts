@@ -89,6 +89,7 @@ export const reserved: TextProfile = {
     buttonAll: 'Все задачи',
     buttonToday: 'Сегодня',
     buttonHelp: 'Помощь',
+    buttonSettings: 'Настройки',
     buttonDeleteData: 'Удалить мои данные',
     buttonBack: 'Назад',
     buttonPrevious: '←',
@@ -183,6 +184,41 @@ export const reserved: TextProfile = {
     lineWithDate: (text, date) => `— ${text} · ${date}`,
     empty: 'Пока пусто.',
     more: (count) => `И ещё ${String(count)}.`,
+  },
+
+  settings: {
+    title: 'Настройки.',
+    remindersOn: 'Напоминания приходят.',
+    remindersOff: 'Напоминания выключены.',
+    quietOn: (from, to) => `Ночью, с ${from} до ${to}, не пишу.`,
+    quietOff: 'Могу написать в любое время.',
+    buttonRemindersOff: 'Выключить напоминания',
+    buttonRemindersOn: 'Включить напоминания',
+    buttonQuietOff: 'Можно писать ночью',
+    buttonQuietOn: 'Не писать ночью',
+  },
+
+  reminders: {
+    morningInvite: 'Доброе утро. Что на уме — наговори, разложу.',
+    morningActions: 'На сегодня:',
+    line: (text) => `— ${text}`,
+
+    eveningClosed: (count) => `Сегодня закрыто: ${String(count)}.`,
+    eveningQuiet: 'День закончился.',
+    eveningInvite: 'Если что-то накопилось — скажи.',
+
+    deadlineTomorrow: (text) => `Завтра срок: ${text}`,
+    deadlineToday: (text) => `Сегодня срок: ${text}`,
+    buttonDone: 'Сделано',
+    buttonPostpone: 'Перенести',
+    done: 'Отметила.',
+    postponed: (when) => `Перенесла на ${when}.`,
+
+    projectStuck: (title, step) => `«${title}» стоит. Ближайший шаг — ${step}. Возьмёшься?`,
+    buttonProjectTake: 'Возьмусь',
+    buttonProjectLater: 'Не сейчас',
+    projectTaken: 'Хорошо, поставила на сегодня.',
+    projectLater: 'Поняла, не трогаю.',
   },
 
   onboarding: {

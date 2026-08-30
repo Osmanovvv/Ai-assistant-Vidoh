@@ -112,6 +112,16 @@ export const userSettings = pgTable('user_settings', {
    */
   eveningOn: boolean('evening_on').notNull().default(true),
   quietHoursOn: boolean('quiet_hours_on').notNull().default(true),
+  /**
+   * Границы тишины (задача 3.17). Через полночь — это норма, а не ошибка.
+   *
+   * Выключатель `quiet_hours_on` существовал с задачи 2.13 и до сих пор
+   * ничего не выключал: часов, которые он мог бы погасить, не было. §11
+   * требует «режим тишины» в настройках, а режим без границ — это флаг,
+   * который ничего не делает.
+   */
+  quietFrom: time('quiet_from').notNull().default('22:00'),
+  quietTo: time('quiet_to').notNull().default('08:00'),
 
   energyDefault: energyLevel('energy_default').notNull().default('normal'),
 
@@ -1025,6 +1035,78 @@ export const projectSteps = pgTable(
   ],
 );
 
+/**
+ * Поставленные напоминания (§11 ТЗ, задача 3.14).
+ *
+ * **Задание, а не отправка.** Планировщик просыпается часто и раскладывает
+ * будущее по строкам; отправка потом только читает готовое. Разделение
+ * нужно ради двух вещей: ключа, исключающего дубли, и распределения
+ * отправки во времени — Telegram не даёт разослать всё разом.
+ *
+ * `item_id` необязателен: у утреннего и вечернего напоминания записи нет,
+ * определяющим является `kind`.
+ */
+export const reminderKind = pgEnum('reminder_kind', [
+  /** Приглашение выгрузить мысли и дела на сегодня (3.15). */
+  'morning',
+  /** Короткий итог дня (3.15). */
+  'evening',
+  /** Накануне вечером о завтрашнем сроке (3.16). */
+  'deadline_eve',
+  /** Утром в день срока (3.16). */
+  'deadline_day',
+  /** Вопрос про ближайший шаг застрявшего проекта (3.13). */
+  'project',
+]);
+
+export const reminders = pgTable(
+  'reminders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Пусто у утренних и вечерних: они про день, а не про запись. */
+    itemId: uuid('item_id').references(() => items.id, { onDelete: 'cascade' }),
+    kind: reminderKind('kind').notNull(),
+
+    /** Момент отправки в UTC. Местное время человека уже учтено. */
+    dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
+
+    /**
+     * Ключ, исключающий дубли при повторном запуске планировщика.
+     *
+     * Собирается из вида, местной даты и записи: «morning:2026-08-30».
+     * Планировщик может проснуться дважды, упасть посередине и подняться
+     * снова — вторая строка с тем же ключом просто не вставится.
+     *
+     * Уникальность в базе, а не проверкой перед вставкой: между «проверил»
+     * и «вставил» помещается второй экземпляр процесса.
+     */
+    dedupeKey: text('dedupe_key').notNull(),
+
+    /** Пусто — ещё не отправлено. Заполнено — отправлять больше не нужно. */
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+
+    /**
+     * Почему не отправили: 'quiet', 'off', 'gone', 'rare'.
+     *
+     * Отменённое напоминание не удаляется, а помечается. Иначе счётчик
+     * игнорирований (3.17) не отличит «человек не ответил» от «мы сами
+     * не отправили», и тишина в настройках начнёт снижать частоту.
+     */
+    skippedReason: text('skipped_reason'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('reminders_user_key_uq').on(table.userId, table.dedupeKey),
+    /** Выборка «что пора отправить» — самый частый запрос планировщика. */
+    index('reminders_pending_idx').on(table.dueAt),
+    index('reminders_user_kind_idx').on(table.userId, table.kind),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1055,5 +1137,9 @@ export type RecurrenceSuggestion = typeof recurrenceSuggestions.$inferSelect;
 export type SuggestionOutcome = (typeof suggestionOutcome.enumValues)[number];
 export type ProjectStep = typeof projectSteps.$inferSelect;
 export type NewProjectStep = typeof projectSteps.$inferInsert;
+export type DeadlineAccuracyValue = (typeof deadlineAccuracy.enumValues)[number];
+export type Reminder = typeof reminders.$inferSelect;
+export type NewReminder = typeof reminders.$inferInsert;
+export type ReminderKindValue = (typeof reminderKind.enumValues)[number];
 export type Topic = typeof topics.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;

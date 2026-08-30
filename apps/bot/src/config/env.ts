@@ -132,6 +132,21 @@ export const envSchema = z.object({
     .default('off')
     .transform((value) => value === 'on'),
 
+  /**
+   * Планировщик напоминаний (§11 ТЗ, задача 3.14).
+   *
+   * По умолчанию включён: напоминания — обещанная часть продукта, а не
+   * эксперимент. Выключатель нужен для локальной разработки и для того
+   * случая, когда в бою что-то пошло не так и рассылку надо остановить
+   * быстрее, чем выкатывается правка.
+   *
+   * Строкой, а не `coerce.boolean`: тот превращает «false» в true.
+   */
+  REMINDERS: z
+    .enum(['on', 'off'])
+    .default('on')
+    .transform((value) => value === 'on'),
+
   DATABASE_URL: databaseUrl,
   REDIS_URL: z.string().min(1).startsWith('redis', 'должен начинаться с redis://'),
 });

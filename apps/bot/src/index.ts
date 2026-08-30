@@ -12,6 +12,7 @@ import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { registerQuestionHandlers } from './bot/handlers/question.js';
+import { registerReminderHandlers } from './bot/handlers/reminder.js';
 import { registerSuggestHandlers } from './bot/handlers/suggest.js';
 import { registerUndoHandlers } from './bot/handlers/undo.js';
 import { registerStartHandlers } from './bot/handlers/start.js';
@@ -33,6 +34,7 @@ import { createServer } from './http/server.js';
 import { DEFAULT_LIMITS, closeBatchOnSilence } from './modules/buffer/buffer.service.js';
 import { modelsWithoutPrice } from './modules/metering/pricing.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
+import { startScheduler } from './modules/scheduler/scheduler.service.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
@@ -280,6 +282,7 @@ async function main(): Promise<void> {
   // необратимым, а вопрос — без ответа.
   registerUndoHandlers(bot, db, logger);
   registerSuggestHandlers(bot, db, logger);
+  registerReminderHandlers(bot, db, logger);
   registerQuestionHandlers(bot, { db, ai: { db, provider: llm, prompts, logger }, logger });
 
   bot.catch(({ error }) => {
@@ -319,7 +322,25 @@ async function main(): Promise<void> {
     logger.info({ port: env.PORT }, 'HTTP-сервер слушает');
   });
 
-  installShutdownHandlers(server, worker, stopSweep);
+  /**
+   * Планировщик напоминаний (§11 ТЗ, задачи 3.14–3.17).
+   *
+   * Живёт в том же процессе, что и бот, и это осознанно: отдельный
+   * процесс потребовал бы второго деплоя, второго health-check и второго
+   * места, где что-то может тихо не подняться. Дубли при двух живых
+   * экземплярах — во время выкладки они бывают — исключает ключ задания,
+   * а не единственность процесса.
+   */
+  const stopScheduler = env.REMINDERS
+    ? startScheduler({ db, sender: questions, logger })
+    : () => undefined;
+
+  if (!env.REMINDERS) logger.warn('Напоминания выключены переменной REMINDERS');
+
+  installShutdownHandlers(server, worker, () => {
+    stopSweep();
+    stopScheduler();
+  });
 }
 
 function installShutdownHandlers(
