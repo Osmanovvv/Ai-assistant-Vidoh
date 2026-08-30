@@ -14,7 +14,12 @@ import {
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
-import { dispatchReminders, planReminders, runScheduler } from './scheduler.service.js';
+import {
+  dispatchReminders,
+  MAX_ATTEMPTS,
+  planReminders,
+  runScheduler,
+} from './scheduler.service.js';
 import { ignoredStreak, lastMorningDay } from './reminders.repo.js';
 import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -41,8 +46,13 @@ interface Sent {
 
 let outbox: Sent[] = [];
 
+/** Срывать ли отправку: так проверяется счётчик попыток (§5 ТЗ). */
+let sendFails = false;
+
 const sender: QuestionSender = {
   ask: async ({ chatId, text, rows }) => {
+    if (sendFails) return await Promise.resolve(0);
+
     outbox.push({ chatId, text, buttons: rows.flat().map((one) => one.label) });
     return await Promise.resolve(1);
   },
@@ -79,6 +89,7 @@ beforeEach(async () => {
   seq += 1;
   tgId = 7300 + seq;
   outbox = [];
+  sendFails = false;
 
   const user = await upsertUser(testDb(), { tgId, firstName: 'Аня' });
   userId = user.id;
@@ -174,6 +185,69 @@ describe('отправка', () => {
     await testDb().update(users).set({ isBlocked: true }).where(eq(users.id, userId));
 
     expect(await dispatchReminders(deps(), { now: new Date('2026-08-30T05:30:00.000Z') })).toBe(0);
+  });
+});
+
+describe('сорвавшаяся отправка (§5 ТЗ, колонка attempts)', () => {
+  /**
+   * Раньше ответ отправителя не смотрели вовсе, и сорвавшаяся отправка
+   * помечалась отправленной: сообщение терялось молча, а человек, ничего
+   * не получивший, попадал в серию молчания (3.17) — продукт снижал ему
+   * частоту за собственный сбой.
+   */
+  const morning = new Date('2026-08-30T05:30:00.000Z');
+
+  it('не помечается отправленной и пробуется снова', async () => {
+    await planReminders(deps(), { now: NOW });
+    sendFails = true;
+
+    expect(await dispatchReminders(deps(), { now: morning })).toBe(0);
+
+    const [row] = await testDb()
+      .select()
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    expect(row?.sentAt).toBeNull();
+    expect(row?.attempts).toBe(1);
+  });
+
+  it('после трёх попыток сдаётся и говорит об этом', async () => {
+    await planReminders(deps(), { now: NOW });
+    sendFails = true;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      await dispatchReminders(deps(), { now: morning });
+    }
+
+    const [row] = await testDb()
+      .select()
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    expect(row?.attempts).toBe(MAX_ATTEMPTS);
+    expect(row?.skippedReason).toBe('failed');
+    expect(row?.sentAt).toBeNull();
+  });
+
+  it('удавшаяся со второй попытки доходит', async () => {
+    await planReminders(deps(), { now: NOW });
+
+    sendFails = true;
+    await dispatchReminders(deps(), { now: morning });
+    sendFails = false;
+
+    expect(await dispatchReminders(deps(), { now: morning })).toBe(1);
+    expect(outbox).toHaveLength(1);
+  });
+
+  it('недоставленное не считается молчанием человека', async () => {
+    // Иначе наш сбой снижал бы человеку частоту напоминаний.
+    await planReminders(deps(), { now: NOW });
+    sendFails = true;
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(await ignoredStreak(testDb(), { userId, timeZone: 'Europe/Moscow' })).toBe(0);
   });
 });
 

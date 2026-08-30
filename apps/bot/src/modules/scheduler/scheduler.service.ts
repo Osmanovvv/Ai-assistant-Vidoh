@@ -26,6 +26,7 @@ import { deadlineText, eveningText, morningText, projectText } from './digest.js
 import { HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
+  countAttempt,
   duePending,
   ignoredStreak,
   itemsWithDeadlineReminder,
@@ -76,6 +77,15 @@ export interface SchedulerDeps {
  * несколько человек порция вообще не заполнится.
  */
 export const DISPATCH_BATCH = 20;
+
+/**
+ * Сколько раз пробуем отправить, прежде чем сдаться.
+ *
+ * Три: проход планировщика раз в минуту, значит на сбой связи отводится
+ * три минуты. Бесконечный повтор был бы хуже потери — он превратил бы
+ * одно недоставленное сообщение в вечную нагрузку на Telegram.
+ */
+export const MAX_ATTEMPTS = 3;
 
 /** Пауза между отправками внутри порции. */
 export const SEND_SPACING_MS = 120;
@@ -321,11 +331,34 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
     return false;
   }
 
-  await deps.sender.ask({
+  /**
+   * Отправитель возвращает номер сообщения, а при сбое — ноль.
+   *
+   * Раньше ответ не смотрели вовсе, и сорвавшаяся отправка помечалась
+   * отправленной: сообщение терялось молча, а человек, ничего не
+   * получивший, попадал в серию молчания (3.17) — продукт снижал ему
+   * частоту за собственный сбой. §5 ТЗ держит для этого колонку
+   * `attempts`, и держит не ради статистики: повтор должен быть конечным.
+   */
+  const messageId = await deps.sender.ask({
     chatId: person.tgId,
     text: message.text,
     rows: message.buttons.length === 0 ? [] : [message.buttons],
   });
+
+  if (messageId === 0) {
+    const attempts = await countAttempt(deps.db, reminder.id);
+
+    if (attempts >= MAX_ATTEMPTS) {
+      await markSkipped(deps.db, reminder.id, 'failed');
+      deps.logger.error(
+        { reminderId: reminder.id, attempts },
+        'Напоминание не удалось отправить, больше не пробуем',
+      );
+    }
+
+    return false;
+  }
 
   await markSent(deps.db, reminder.id, now);
   return true;

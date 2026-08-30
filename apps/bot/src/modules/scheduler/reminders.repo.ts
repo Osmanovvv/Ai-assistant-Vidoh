@@ -130,6 +130,23 @@ export async function markSent(db: Executor, id: string, at: Date): Promise<void
   await db.update(reminders).set({ sentAt: at }).where(eq(reminders.id, id));
 }
 
+/**
+ * Записывает сорвавшуюся попытку и возвращает их общее число.
+ *
+ * Задание остаётся неотправленным: следующий проход возьмёт его снова.
+ * Так §5 ТЗ и задумывал колонку `attempts` — не ради статистики, а чтобы
+ * повтор был конечным.
+ */
+export async function countAttempt(db: Executor, id: string): Promise<number> {
+  const [row] = await db
+    .update(reminders)
+    .set({ attempts: sql`${reminders.attempts} + 1` })
+    .where(eq(reminders.id, id))
+    .returning({ attempts: reminders.attempts });
+
+  return row?.attempts ?? 0;
+}
+
 export async function markSkipped(db: Executor, id: string, reason: string): Promise<void> {
   await db.update(reminders).set({ skippedReason: reason }).where(eq(reminders.id, id));
 }
