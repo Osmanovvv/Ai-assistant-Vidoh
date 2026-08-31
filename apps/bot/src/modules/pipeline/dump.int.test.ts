@@ -1330,6 +1330,20 @@ describe('острый кризис', () => {
 });
 
 /** Считает отправки и правки вместо обращений к Telegram. */
+/**
+ * Одна реплика человеку: чем отправлена, что сказано, что под ней.
+ *
+ * Нужна из-за дефекта 31.08.2026: правка статусного сообщения затирала
+ * предыдущую реплику вместе с кнопкой отката, а список текстов этого не
+ * показывал — в нём обе строки были на месте. Проверять надо способ
+ * отправки и кнопки **каждого** сообщения, а не последнего.
+ */
+interface Said {
+  readonly kind: 'send' | 'edit';
+  readonly text: string;
+  readonly buttons: readonly string[];
+}
+
 function recordingSender(): {
   sender: StatusSender;
   sent: string[];
@@ -1337,11 +1351,13 @@ function recordingSender(): {
   all: string[];
   /** Подписи кнопок последнего сообщения: §13.2 требует их под разбором. */
   buttons: string[];
+  said: Said[];
 } {
   const sent: string[] = [];
   const edited: string[] = [];
   const all: string[] = [];
   const buttons: string[] = [];
+  const said: Said[] = [];
 
   /** Кнопки запоминаются от последнего сообщения, а не копятся. */
   const remember = (labels: readonly { readonly label: string }[] | undefined): void => {
@@ -1349,21 +1365,27 @@ function recordingSender(): {
     for (const button of labels ?? []) buttons.push(button.label);
   };
 
+  const labels = (keys: readonly { readonly label: string }[] | undefined): string[] =>
+    (keys ?? []).map((one) => one.label);
+
   return {
     sent,
     edited,
     all,
     buttons,
+    said,
     sender: {
       send: ({ text, buttons: keys }) => {
         sent.push(text);
         all.push(text);
+        said.push({ kind: 'send', text, buttons: labels(keys) });
         remember(keys);
         return Promise.resolve(1000 + sent.length);
       },
       edit: ({ text, buttons: keys }) => {
         edited.push(text);
         all.push(text);
+        said.push({ kind: 'edit', text, buttons: labels(keys) });
         remember(keys);
         return Promise.resolve();
       },
@@ -2241,7 +2263,7 @@ describe('выполнение и отмена голосом (§21 п.8, зад
      */
     const prompts = await seedPrompts();
     await itemWith('Сверить кассу');
-    const { sender, all } = recordingSender();
+    const { sender, all, said } = recordingSender();
 
     await queuedBatchOf([{ kind: 'text', text: 'кассу сверила', offsetMs: 0 }]);
 
@@ -2278,7 +2300,31 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     );
 
     expect(all).not.toContain(defaultTexts.answer.nothingToParse);
-    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(true);
+
+    /**
+     * Регрессия 31.08.2026, найденная ручным прогоном.
+     *
+     * Вопрос сценария 8 отправлялся правкой статусного сообщения и затирал
+     * подтверждение выполнения вместе с кнопкой отката: человек не видел,
+     * что закрылось, и не мог вернуть.
+     *
+     * Проверять надо не список текстов — в нём обе строки были и до
+     * починки, — а что подтверждение **осталось отдельной репликой** и
+     * сохранило кнопку.
+     */
+    const confirmation = said.find((one) => one.text.includes('Сверить кассу'));
+    const question = said.find((one) => one.text === defaultTexts.resolver.goOn);
+
+    expect(confirmation).toBeDefined();
+    expect(confirmation?.buttons).toContain(defaultTexts.resolver.buttonUndo);
+    expect(question).toBeDefined();
+    expect(question?.buttons).toEqual([
+      defaultTexts.resolver.buttonGoOn,
+      defaultTexts.resolver.buttonEnough,
+    ]);
+
+    // Вопрос не должен править то, что уже сказано.
+    expect(question?.kind).toBe('send');
 
     /**
      * Последним идёт вопрос сценария 8 §2 — «продолжаем или на сегодня
