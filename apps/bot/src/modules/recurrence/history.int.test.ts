@@ -225,6 +225,24 @@ describe('повторный проход второго предложения 
     expect(await sweepHistory({ db: testDb() }, { userId, now: later })).toBeUndefined();
   });
 
+  it('недельный предел считается от переданного времени, а не от часов базы', async () => {
+    /**
+     * Регрессия. `recordOffer` принимал `now` и не использовал его:
+     * `created_at` брался из часов базы. Предел нельзя было проверить
+     * управляемыми часами, и тест на него падал через сутки после
+     * написания — в зависимости от настоящего календаря.
+     */
+    await monthlyPayments();
+    await sweepHistory({ db: testDb() }, { userId, now: NOW });
+
+    const [offer] = await testDb()
+      .select({ createdAt: recurrenceSuggestions.createdAt })
+      .from(recurrenceSuggestions)
+      .where(eq(recurrenceSuggestions.userId, userId));
+
+    expect(offer?.createdAt.toISOString()).toBe(NOW.toISOString());
+  });
+
   it('про другое дело через неделю спросить можно', async () => {
     // Предел недельный, а не пожизненный: закрывается связка, а не человек.
     await monthlyPayments();

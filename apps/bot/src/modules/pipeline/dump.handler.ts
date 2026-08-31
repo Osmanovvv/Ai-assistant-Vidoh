@@ -188,6 +188,35 @@ async function reply(
 }
 
 /**
+ * Вторая и последующие реплики одного разбора — своими сообщениями.
+ *
+ * `reply` **правит** единственное статусное сообщение выгрузки, и для
+ * первой реплики это верно: человек видит, как «Слушаю…» превращается в
+ * ответ. Но второй вызов затирает первый.
+ *
+ * Так пропало подтверждение выполнения вместе с кнопкой отката, когда к
+ * нему добавился вопрос сценария 8: человек не видел, что закрылось, и не
+ * мог вернуть. Найдено ручным прогоном 31.08.2026 — тесты этого не
+ * показывали, потому что фейковый отправитель копил реплики списком, а не
+ * правил одну.
+ */
+async function alsoSay(
+  deps: DumpHandlerDeps,
+  target: StatusTarget | undefined,
+  text: string,
+  buttons?: readonly StatusButton[],
+): Promise<void> {
+  if (!deps.sender || !target) return;
+
+  await deps.sender.send({
+    chatId: target.chatId,
+    ...(target.threadId === undefined ? {} : { threadId: target.threadId }),
+    text,
+    ...(buttons === undefined ? {} : { buttons }),
+  });
+}
+
+/**
  * Считает векторы для записей.
  *
  * Последовательно, а не разом: двадцать пять одновременных обращений к
@@ -637,9 +666,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * ждёт, что его спросят, чем он займётся дальше.
        */
       if (closedSomething && !askedSomething) {
-        // Присваивать `askedSomething` здесь нечему: после этой ветки
-        // обработка заканчивается возвратом.
-        await reply(db, deps, target, texts.resolver.goOn, [
+        // Своим сообщением, а не правкой статусного: иначе затрёт
+        // подтверждение выполнения вместе с кнопкой отката.
+        await alsoSay(deps, target, texts.resolver.goOn, [
           { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
           { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
         ]);
