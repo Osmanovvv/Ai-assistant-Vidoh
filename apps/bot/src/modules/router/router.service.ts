@@ -1,5 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
+import { looksLikeAppend } from './append.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -170,6 +171,34 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
 
   const { segments, reordered } = orderByText(params.input, outcome.value.segments);
 
+  /**
+   * Дополнение к сказанному — правкой, а не новой мыслью (§7.4).
+   *
+   * Признаки правки в §7.1 перечислены закрытым списком, и «а ещё туда»
+   * в него не входит: модель отвечает по спецификации, дыра между §7.1 и
+   * §7.4 закрывается здесь, в коде. Промпт маршрутизатора не трогаем — он
+   * теряет единицы от любого утяжеления.
+   *
+   * **Цена ошибки ограничена.** Если сегмент на самом деле новая мысль,
+   * резолвер не найдёт цели и вернёт его в обычный разбор — запись всё
+   * равно появится, потерян будет один вызов модели. Поэтому признак
+   * требует двух примет сразу, а не одной.
+   */
+  const marked = segments.map((segment) =>
+    segment.intent === 'DUMP' && looksLikeAppend(segment.text)
+      ? { ...segment, intent: 'PATCH' as const }
+      : segment,
+  );
+
+  const appended = marked.filter((one, index) => one.intent !== segments[index]?.intent).length;
+
+  if (appended > 0) {
+    deps.logger?.info(
+      { promptVersion: outcome.promptVersion, count: appended },
+      'Сегмент похож на дополнение к сказанному, разбираем как правку',
+    );
+  }
+
   if (reordered) {
     deps.logger?.warn(
       { promptVersion: outcome.promptVersion, count: segments.length },
@@ -178,7 +207,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
   }
 
   return {
-    segments,
+    segments: marked,
     crisis: outcome.value.crisis,
     promptVersion: outcome.promptVersion,
     reordered,

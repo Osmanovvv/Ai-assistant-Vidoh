@@ -308,6 +308,19 @@ function lastKeyboard(): Keyboard {
   return { labels: flat.map((one) => one.text), actions: flat.map((one) => one.callback_data) };
 }
 
+/**
+ * Признак сводки ветки: по нему её отличают от ответа человеку.
+ *
+ * По ветке отличить нельзя: сводка обновляется через `editMessageText`, а
+ * у правки признака ветки нет — правят по номеру сообщения. До того как
+ * сводки начали обновляться после правок, это не мешало; после — сводка
+ * стала выглядеть последним ответом человеку и роняла проверку.
+ *
+ * Заголовок берётся из словаря, а не переписан сюда: правка формулировки
+ * не должна ломать тест, который к ней отношения не имеет.
+ */
+const SUMMARY_MARK = defaultTexts.summary.header('').trim();
+
 /** Последний ответ человеку, не сводка ветки. */
 function answerToPerson(): string {
   return (
@@ -315,7 +328,10 @@ function answerToPerson(): string {
       .filter(
         (call) =>
           (call.method === 'sendMessage' || call.method === 'editMessageText') &&
-          call.payload['message_thread_id'] === undefined,
+          call.payload['message_thread_id'] === undefined &&
+          !(
+            typeof call.payload['text'] === 'string' && call.payload['text'].includes(SUMMARY_MARK)
+          ),
       )
       .map((call) => (typeof call.payload['text'] === 'string' ? call.payload['text'] : ''))
       .at(-1) ?? ''
@@ -591,6 +607,45 @@ try {
       );
     }
   }
+  if (runs('8')) {
+    // ── Сценарий 8: дополнение против замены (§7.4) ────────────────────────
+    say('Сценарий 8: «а ещё туда» дописывает подробность, а не заводит запись');
+
+    await cleanup(userId);
+    userId = await seedUser();
+    stub.reset();
+
+    await send('надо записать сына к врачу в четверг');
+    await waitForBatch(userId, 1);
+
+    const before = (await openItems(userId)).length;
+
+    stub.reset();
+    await send('а ещё туда надо взять карту прививок');
+    await waitForBatch(userId, 2);
+
+    const after = await openItems(userId);
+    const doctor = after.find((one) => /врач/iu.test(one.text));
+
+    check(
+      'подробность легла в запись про врача',
+      doctor?.body != null && /привив/iu.test(doctor.body),
+      `подробности: ${String(doctor?.body)}`,
+    );
+
+    check(
+      'вторая запись не создана',
+      after.length === before,
+      `было ${String(before)}, стало ${String(after.length)}: ${after.map((one) => one.text).join(' / ')}`,
+    );
+
+    check(
+      'заголовок не переписан',
+      doctor?.text.includes('врач') === true,
+      `заголовок: ${String(doctor?.text)}`,
+    );
+  }
+
   if (runs('4')) {
     // ── Сценарий 4: возврат к проекту (§21 п.6) ────────────────────────────
     say('Сценарий 4: возврат к проекту через неделю — контекст и ближайший шаг');
