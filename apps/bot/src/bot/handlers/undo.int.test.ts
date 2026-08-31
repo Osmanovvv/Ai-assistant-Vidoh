@@ -59,7 +59,7 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerUndoHandlers(bot, testDb(), logger);
+  registerUndoHandlers(bot, { db: testDb(), logger });
   return { bot, calls };
 }
 

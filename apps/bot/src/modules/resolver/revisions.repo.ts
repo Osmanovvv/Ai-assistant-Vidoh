@@ -102,8 +102,14 @@ export async function lastRevisionOf(
 }
 
 export type RevertOutcome =
-  /** Запись вернулась в прежнее состояние. */
-  | { readonly kind: 'reverted'; readonly item: Item }
+  /**
+   * Запись вернулась в прежнее состояние.
+   *
+   * `topics` — темы, сводки которых надо обновить: их две, если правка
+   * переносила запись между темами, и одна в обычном случае. Без этого
+   * ветка после отката показывала состояние, которого больше нет.
+   */
+  | { readonly kind: 'reverted'; readonly item: Item; readonly topics: readonly string[] }
   /** Эту ревизию уже откатывали. Повторное нажатие — не ошибка. */
   | { readonly kind: 'already' }
   /** Ревизии нет: чужая, выдуманная или удалённая вместе с записью. */
@@ -173,5 +179,20 @@ export async function revertRevision(
     .set({ revertedAt: new Date() })
     .where(eq(itemRevisions.id, revision.id));
 
-  return { kind: 'reverted', item };
+  /**
+   * Темы до и после правки: перенос между темами затрагивает обе ветки.
+   *
+   * Снимки лежат в `jsonb`, поэтому читаются осторожно — строка или
+   * ничего.
+   */
+  const topicOf = (snapshot: unknown): string | undefined => {
+    const topic = (snapshot as { topic?: unknown } | null)?.topic;
+    return typeof topic === 'string' && topic.length > 0 ? topic : undefined;
+  };
+
+  const topics = [...new Set([topicOf(revision.before), topicOf(revision.after)])].filter(
+    (topic): topic is string => topic !== undefined,
+  );
+
+  return { kind: 'reverted', item, topics };
 }

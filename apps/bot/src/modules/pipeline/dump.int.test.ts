@@ -972,6 +972,82 @@ describe('онбординг после первой выгрузки', () => {
   });
 });
 
+describe('сводки веток после правок (§8)', () => {
+  /**
+   * Найдено ручным прогоном 31.08.2026. Обновление сводок звалось только
+   * с темами **новых** записей и стояло после раннего выхода: выгрузка из
+   * одной правки до него не доходила вовсе. Поправил срок — в ветке
+   * старый, закрыл дело — в ветке открыто.
+   *
+   * §8 обещает «сводка ветки обновляется редактированием».
+   */
+  it('закрытие дела обновляет сводку его ветки', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([{ userId, name: 'работа', sortOrder: 0, isDefault: true }]);
+
+    const [work] = await testDb().select().from(topics).where(eq(topics.name, 'работа'));
+    await ensureThread({ db: testDb(), gateway }, { topicId: work!.id, chatId: 700 });
+
+    const [item] = await testDb()
+      .insert(items)
+      .values({ userId, text: 'Сверить кассу', type: 'TASK', priority: 'SOON', topic: 'работа' })
+      .returning({ id: items.id });
+
+    // Сводка на месте до правки — дальше смотрим, изменилась ли она.
+    const before = gateway.sent.length + gateway.edited.length;
+
+    await queuedBatchOf([{ kind: 'text', text: 'кассу сверила', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'COMPLETE', text: 'кассу сверила' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'complete',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'дело названо сделанным',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          topics: gateway,
+        }),
+      },
+      userId,
+    );
+
+    const [closed] = await testDb().select().from(items).where(eq(items.id, item!.id));
+    expect(closed?.status).toBe('done');
+
+    // Сводка ветки тронута, и в ней больше нет закрытого дела.
+    expect(gateway.sent.length + gateway.edited.length).toBeGreaterThan(before);
+    expect(gateway.edited.at(-1)?.text ?? '').not.toContain('Сверить кассу');
+  });
+});
+
 describe('ветки тем в разборе', () => {
   it('сообщение внутри ветки разбирается в контексте её темы (§8.1)', async () => {
     // Женщина, написавшая в ветку «здоровье», не должна получать дело в

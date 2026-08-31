@@ -20,6 +20,7 @@ import { settlePendingQuestion } from '../resolver/pending.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
+import type { Applied } from '../resolver/patch.js';
 import { resolvePatchSegment } from '../resolver/segment.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
 import {
@@ -185,6 +186,39 @@ async function reply(
 ): Promise<void> {
   if (!deps.sender || !target) return;
   await finishStatus({ db, sender: deps.sender }, target, text, buttons);
+}
+
+/** Запоминает темы записи до и после правки: перенос затрагивает обе. */
+function rememberTopics(into: Set<string>, applied: Applied): void {
+  for (const topic of [applied.before.topic, applied.after.topic]) {
+    if (topic !== null && topic.length > 0) into.add(topic);
+  }
+}
+
+/** Обновляет сводки тронутых тем, если ветки вообще есть. */
+async function refreshTouched(
+  db: Database,
+  deps: DumpHandlerDeps,
+  target: StatusTarget | undefined,
+  params: {
+    readonly userId: string;
+    readonly timeZone: string;
+    readonly textProfile: string;
+  },
+  topics: ReadonlySet<string>,
+): Promise<void> {
+  if (!deps.topics || !target || topics.size === 0) return;
+
+  await refreshSummaries(
+    { db, gateway: deps.topics, logger: deps.logger },
+    {
+      userId: params.userId,
+      chatId: target.chatId,
+      topicNames: [...topics],
+      timeZone: params.timeZone,
+      profile: params.textProfile,
+    },
+  );
 }
 
 /**
@@ -419,6 +453,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const patches: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
     let askedSomething = false;
+    /**
+     * Темы, которых коснулись правки, — их сводки надо обновить.
+     *
+     * Обновление сводок стояло ниже и звалось только с темами **новых**
+     * записей. Выгрузка из одной правки, закрытия или отмены до него не
+     * доходила вовсе: поправил срок — в ветке старый, закрыл дело — в
+     * ветке открыто. §8 обещает «сводка ветки обновляется редактированием».
+     * Найдено ручным прогоном 31.08.2026.
+     *
+     * Собираются обе темы — прежняя и новая: правка могла перенести
+     * запись, и тогда обновить надо и ту ветку, откуда она ушла.
+     */
+    const touchedTopics = new Set<string>();
+
     /** Закрылось ли в этой выгрузке хоть одно дело — для вопроса §2.8. */
     let closedSomething = false;
     /**
@@ -484,6 +532,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     if (settled.kind === 'applied' && settled.applied !== undefined) {
       saidSomething = true;
+      rememberTopics(touchedTopics, settled.applied);
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await reply(
         db,
@@ -546,6 +595,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       if (outcome.kind === 'applied') {
         saidSomething = true;
+        rememberTopics(touchedTopics, outcome.applied);
         if (outcome.applied.action === 'complete') closedSomething = true;
         await reply(
           db,
@@ -644,6 +694,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (parsed.length === 0) {
+      // Правки без новых мыслей тоже меняют ветки — обновить надо здесь,
+      // потому что ниже этой ветки обработка уже не идёт.
+      await refreshTouched(
+        db,
+        deps,
+        target,
+        { userId: batch.userId, timeZone: context.timeZone, textProfile: context.textProfile },
+        touchedTopics,
+      );
+
       /**
        * Отложенное подтверждаем всегда: человек должен знать, что
        * сказанное сохранено, даже если мы уже ответили о другом.
@@ -905,7 +965,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         {
           userId: batch.userId,
           chatId: target.chatId,
-          topicNames: toSave.map((item) => item.topic),
+          topicNames: [...new Set([...toSave.map((item) => item.topic), ...touchedTopics])],
           timeZone: context.timeZone,
           profile: context.textProfile,
         },
