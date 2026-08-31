@@ -972,6 +972,108 @@ describe('онбординг после первой выгрузки', () => {
   });
 });
 
+describe('дополнение против замены сквозь конвейер (§7.4)', () => {
+  /**
+   * Найдено ручным прогоном 31.08.2026: дословный пример из условия
+   * готовности 3.7 создавал вторую запись вместо подробности к первой.
+   *
+   * Механизм дополнения был цел и покрыт тестами на двух уровнях — но
+   * обоим сегмент приходил **уже размеченным**. Размечает маршрутизатор,
+   * и он такие фразы отдавал в обычный разбор. Здесь проверяется путь
+   * целиком: от слов человека до поля записи.
+   */
+  it('«а ещё туда надо взять карту прививок» дописывает подробность', async () => {
+    const prompts = await seedPrompts();
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать сына к врачу в четверг',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+      })
+      .returning({ id: items.id });
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'а ещё туда надо взять карту прививок', offsetMs: 0 },
+    ]);
+
+    /**
+     * Маршрутизатор отвечает так, как отвечает живая модель, — `DUMP`.
+     * Переразметку делает правило в коде, и именно она здесь проверяется.
+     */
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'DUMP', text: 'а ещё туда надо взять карту прививок' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'append',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: 'взять карту прививок',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'дополнение к записи про врача',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const doctor = saved.find((one) => one.id === item!.id);
+
+    // Подробность легла в запись, заголовок не тронут.
+    expect(doctor?.body).toBe('взять карту прививок');
+    expect(doctor?.text).toBe('Записать сына к врачу в четверг');
+
+    // И второй записи не появилось — ради этого всё и делалось.
+    expect(saved.filter((one) => !one.isDraft)).toHaveLength(1);
+  });
+
+  it('«а ещё» без отсылки назад остаётся новой мыслью', async () => {
+    // Перечисление — самый частый случай этой связки, и ломать его нельзя.
+    const prompts = await seedPrompts();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'а ещё надо забрать вещи из химчистки', offsetMs: 0 },
+    ]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm: echoingLlm() }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+
+    expect(
+      saved
+        .filter((one) => !one.isDraft)
+        .map((one) => one.text)
+        .join(' '),
+    ).toMatch(/химчистк/iu);
+  });
+});
+
 describe('сводки веток после правок (§8)', () => {
   /**
    * Найдено ручным прогоном 31.08.2026. Обновление сводок звалось только
