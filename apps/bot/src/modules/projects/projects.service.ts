@@ -74,13 +74,30 @@ export interface SaveStepsParams {
  * при любом повторном вызове, а порядковые номера уникальны — вторая
  * попытка просто упала бы.
  */
+/**
+ * Срезает нумерацию, которую модель приписывает к шагу.
+ *
+ * Найдено ручным прогоном 01.09.2026: в базе лежало
+ * `[. Определить дату дня рождения]`, и человек видел «— . Решить, где
+ * праздновать» в каждой строке. Модель отдаёт шаги пронумерованными,
+ * цифра теряется по дороге, точка остаётся.
+ *
+ * **Срезается образец, а не любые цифры и знаки.** «2 торта купить» —
+ * законный шаг, и жадное правило превратило бы его в «торта купить».
+ * Поэтому убираются только «1.», «1)», одиночная точка или тире в начале.
+ */
+function withoutNumbering(text: string): string {
+  return text.replace(/^\s*(?:\d+\s*[.)]|[.)\-–—•*])\s*/u, '').trim();
+}
+
 export async function saveSteps(db: Executor, params: SaveStepsParams): Promise<ProjectStep[]> {
-  if (params.texts.length === 0) return [];
+  const texts = params.texts.map(withoutNumbering).filter((text) => text.length > 0);
+  if (texts.length === 0) return [];
 
   return await db
     .insert(projectSteps)
     .values(
-      params.texts.map((text, index) => ({
+      texts.map((text, index) => ({
         itemId: params.itemId,
         userId: params.userId,
         text,

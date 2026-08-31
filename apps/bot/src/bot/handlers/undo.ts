@@ -8,6 +8,8 @@ import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { refreshSummaries } from '../../modules/topics/summary.service.js';
 
 /**
  * Откат в один тап (§7.3 ТЗ, задача 3.4).
@@ -34,7 +36,15 @@ export function undoKeyboard(revisionId: string, texts: TextProfile): InlineKeyb
   );
 }
 
-export function registerUndoHandlers(bot: Bot, db: Database, logger: Logger): void {
+export interface UndoDeps {
+  readonly db: Database;
+  readonly logger: Logger;
+  /** Нужен, чтобы после откатa обновить сводку ветки (§8). */
+  readonly topics?: TopicGateway | undefined;
+}
+
+export function registerUndoHandlers(bot: Bot, deps: UndoDeps): void {
+  const { db, logger } = deps;
   bot.callbackQuery(new RegExp(`^${UNDO_PREFIX}[A-Za-z0-9_-]{22}$`, 'u'), async (ctx) => {
     await ctx.answerCallbackQuery();
 
@@ -66,6 +76,28 @@ export function registerUndoHandlers(bot: Bot, db: Database, logger: Logger): vo
     }[outcome.kind];
 
     await ctx.editMessageText(reply);
+
+    /**
+     * Сводки веток после отката (§8, найдено ручным прогоном 31.08.2026).
+     *
+     * Откат меняет запись так же, как правка, и ветка обязана это
+     * показать. Стоит после ответа человеку: сводка — удобство, а ответ —
+     * суть, и отказ Telegram по ветке не должен съесть подтверждение.
+     */
+    if (outcome.kind === 'reverted' && deps.topics && ctx.chat) {
+      await refreshSummaries(
+        { db, gateway: deps.topics, logger },
+        {
+          userId: user.id,
+          chatId: ctx.chat.id,
+          topicNames: outcome.topics,
+          timeZone: context.timeZone,
+          profile: context.textProfile,
+        },
+      ).catch((error: unknown) => {
+        logger.warn({ err: error }, 'Сводка после отката не обновилась');
+      });
+    }
 
     logger.info(
       { userId: user.id, revisionId: revisionId ?? null, outcome: outcome.kind },

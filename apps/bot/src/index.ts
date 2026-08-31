@@ -281,7 +281,7 @@ async function main(): Promise<void> {
   // подключён (это 3.6 и далее), но кнопки обязаны работать в тот же
   // день, когда появится первая ревизия: иначе изменение окажется
   // необратимым, а вопрос — без ответа.
-  registerUndoHandlers(bot, db, logger);
+  registerUndoHandlers(bot, { db, logger, topics: topicGateway });
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
   registerReturningHandlers(bot, db, logger);
