@@ -13,6 +13,7 @@ import {
   type TopicGateway,
 } from './gateway.js';
 import { ensureThread, forgetThread } from './topics.service.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
  * Закреплённая сводка темы (задача 2.16).
@@ -70,7 +71,10 @@ export function buildSummary(params: {
     lines.push(
       item.deadlineAt === null
         ? texts.summary.line(item.text)
-        : texts.summary.lineWithDate(item.text, shortDate(item.deadlineAt, params.timeZone)),
+        : texts.summary.lineWithDate(
+            titleWithoutDate(item.text),
+            shortDate(item.deadlineAt, params.timeZone),
+          ),
     );
   }
 

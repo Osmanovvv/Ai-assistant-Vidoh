@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { userSettings, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
+import { dropPending } from '../scheduler/reminders.repo.js';
 import { createTopics, DEFAULT_TOPIC_NAMES, FALLBACK_TOPIC } from '../topics/topics.repo.js';
 
 /**
@@ -406,11 +407,32 @@ export async function setTimezone(
   };
 }
 
+/**
+ * Выбранное время вступает в силу сразу, а не через сутки (задача 3.26).
+ *
+ * **Найдено ручным прогоном на боевом 01.09.2026.** Человек выбрал утро
+ * 09:00, а задание в `reminders` осталось на 08:30 — значение по
+ * умолчанию. Причина в порядке: онбординг идёт **после** первой выгрузки
+ * (§12.2), а планировщик к этому времени уже разложил ближайшие полтора
+ * суток по прежним настройкам. `storePlanned` вставляет через
+ * `onConflictDoNothing`, поэтому существующую строку новое время не
+ * заменяет.
+ *
+ * Человеку это видно один раз и необъяснимо: первое напоминание приходит
+ * не тогда, когда он попросил, а дальше всё верно.
+ *
+ * **Снятие стоит здесь, а не в обработчике, и это решение.** В `menu.ts`
+ * оно вызывается руками после каждого переключателя §11 — и ровно так же
+ * руками его забыли позвать здесь. Пока снятие живёт внутри самой
+ * установки, забыть его нельзя.
+ */
 export async function setMorning(db: Executor, userId: string, time: string): Promise<void> {
   await db
     .update(userSettings)
     .set({ morningTime: time, updatedAt: new Date() })
     .where(eq(userSettings.userId, userId));
+
+  await dropPending(db, userId);
 }
 
 export async function setEvening(db: Executor, userId: string, time: string | null): Promise<void> {
@@ -425,6 +447,9 @@ export async function setEvening(db: Executor, userId: string, time: string | nu
         : { eveningTime: time, eveningOn: true, updatedAt: new Date() },
     )
     .where(eq(userSettings.userId, userId));
+
+  // То же, что у утреннего: см. `setMorning`.
+  await dropPending(db, userId);
 }
 
 export interface TopicsResult {

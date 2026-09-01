@@ -3,6 +3,7 @@ import type { Applied } from './patch.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import type { TextProfile } from '../../texts/index.js';
 import { toShortId } from '../shared/short-id.js';
+import { titleWithoutDate } from './title-date.js';
 
 /**
  * Что сказать человеку об изменении (§7.3 ТЗ, задача 3.3).
@@ -33,7 +34,10 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
    * ничего не переносил, он дело сделал (задача 3.8а).
    */
   if (applied.action === 'complete' && after.deadlineAt !== null && fields.includes('deadlineAt')) {
-    return resolver.completedRecurring(after.text, shortDate(after.deadlineAt, timeZone));
+    return resolver.completedRecurring(
+      titleWithoutDate(after.text),
+      shortDate(after.deadlineAt, timeZone),
+    );
   }
 
   // Правило выставлено или изменено (задача 3.8б).
@@ -63,7 +67,10 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
    * увидит в списке.
    */
   if (fields.includes('deadlineAt') && after.deadlineAt !== null) {
-    return resolver.movedDeadline(after.text, shortDate(after.deadlineAt, timeZone));
+    return resolver.movedDeadline(
+      titleWithoutDate(after.text),
+      shortDate(after.deadlineAt, timeZone),
+    );
   }
 
   return resolver.rewrote(after.text);

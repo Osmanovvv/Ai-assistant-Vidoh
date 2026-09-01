@@ -22,7 +22,7 @@ import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/sugge
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import type { Applied } from '../resolver/patch.js';
-import { resolvePatchSegment } from '../resolver/segment.js';
+import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
 import {
   firstStep,
@@ -58,6 +58,7 @@ import { lowerEnergy, outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
 import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
  * Разбор выгрузки целиком: от звука до ответа человеку.
@@ -334,6 +335,55 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     });
 
     /**
+     * Занят ли статусный слот выгрузки.
+     *
+     * **Статусное сообщение одно, и `finishStatus` его правит.** Значит
+     * вторая реплика за одну выгрузку затирает первую — вместе с её
+     * кнопками. Один раз это уже поймали ручным прогоном 31.08.2026:
+     * вопрос сценария 8 съедал подтверждение выполнения с кнопкой отката.
+     * Тогда починили одно место, подставив `alsoSay`.
+     *
+     * **А случай был общий.** В смешанной выгрузке — правка плюс новые
+     * мысли — подтверждение изменения точно так же затиралось итоговым
+     * ответом §13.2, и кнопка отката исчезала. Нашлось 01.09.2026, когда
+     * чинили 3.24: правка внутри выгрузки наконец стала применяться, и
+     * сразу выяснилось, что человек об этом всё равно не узнает.
+     *
+     * Поэтому решение здесь, а не в каждом месте по отдельности: первая
+     * реплика забирает статусное сообщение, каждая следующая уходит
+     * своим. Через `reply` больше никто не ходит — забыть это нельзя.
+     */
+    /**
+     * Что уже случилось за эту выгрузку.
+     *
+     * **Одним объектом, а не четырьмя `let`, и это не косметика.** Флаги
+     * ставятся внутри замыканий `tell` и `useOutcome`, а для захваченной
+     * переменной TypeScript сужение теряет и считает её навсегда
+     * `false` — то есть перестаёт проверять как раз то, ради чего флаг и
+     * существует. У поля объекта такого не происходит.
+     */
+    const happened = {
+      /** Сказал ли бот человеку хоть что-то по существу. */
+      said: false,
+      /** Задан ли вопрос: §13.9 разрешает один на обмен. */
+      asked: false,
+      /** Закрылось ли хоть одно дело — для вопроса §2 сценария 8. */
+      closed: false,
+      /** Занят ли статусный слот: вторая реплика уходит своим сообщением. */
+      statusTaken: false,
+    };
+
+    const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
+      if (happened.statusTaken) {
+        await alsoSay(deps, target, text, buttons);
+        return;
+      }
+
+      happened.statusTaken = true;
+      await reply(db, deps, target, text, buttons);
+    };
+
+    /**
      * Обычный ответ, к которому договаривается предупреждение об обрезке
      * (§10.5 ТЗ).
      *
@@ -343,7 +393,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const answer = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       const tail = `\n\n${texts.listening.tooLong}`;
-      await reply(db, deps, target, truncated ? `${text}${tail}` : text, buttons);
+      await tell(truncated ? `${text}${tail}` : text, buttons);
     };
 
     if (combined === '') {
@@ -398,7 +448,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       // Ни записей, ни черновиков, ни уточняющих вопросов. Текст человека
       // при этом на месте: он сохранён до всякого разбора (инвариант 1).
-      await reply(db, deps, target, texts.safety.crisis);
+      await tell(texts.safety.crisis);
       return true;
     };
 
@@ -439,7 +489,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       input: combined,
       userId: batch.userId,
       batchId: batch.id,
-      ...(askedAbout === undefined ? {} : { openQuestion: texts.resolver.question(askedAbout) }),
+      ...(askedAbout === undefined
+        ? {}
+        : { openQuestion: texts.resolver.question(titleWithoutDate(askedAbout)) }),
     });
 
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
@@ -453,7 +505,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     const patches: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
-    let askedSomething = false;
+
     /**
      * Темы, которых коснулись правки, — их сводки надо обновить.
      *
@@ -479,7 +531,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const mentioned = new Set<string>();
 
     /** Закрылось ли в этой выгрузке хоть одно дело — для вопроса §2.8. */
-    let closedSomething = false;
+
     /**
      * Сказал ли бот человеку хоть что-то по существу.
      *
@@ -491,7 +543,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * Бот отвечал по существу и следом добавлял «расскажешь, что в
      * голове?», то есть выглядел так, будто не понял.
      */
-    let saidSomething = false;
 
     /**
      * Возвращение после паузы (§13.6 ТЗ).
@@ -505,9 +556,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * что-то наговорил, терять это нельзя.
      */
     if (await returningAfterPause(db, { userId: batch.userId, batchId: batch.id, now })) {
-      askedSomething = true;
-      saidSomething = true;
-      await reply(db, deps, target, texts.returning.greeting, [
+      happened.asked = true;
+      happened.said = true;
+      await tell(texts.returning.greeting, [
         { label: texts.returning.buttonContinue, action: RETURNING_ACTION.keep },
         { label: texts.returning.buttonFresh, action: RETURNING_ACTION.fresh },
       ]);
@@ -542,23 +593,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (settled.kind === 'applied' && settled.applied !== undefined) {
-      saidSomething = true;
+      happened.said = true;
       rememberTopics(touchedTopics, settled.applied);
       mentioned.add(settled.applied.after.id);
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
-      await reply(
-        db,
-        deps,
-        target,
+      await tell(
         describeChange(settled.applied, texts, context.timeZone),
         undoButtons(settled.applied.revisionId, texts),
       );
     } else if (settled.kind === 'nothingToApply') {
-      saidSomething = true;
-      await reply(db, deps, target, texts.resolver.attached);
+      happened.said = true;
+      await tell(texts.resolver.attached);
     } else if (settled.kind === 'unclear') {
-      saidSomething = true;
-      await reply(db, deps, target, texts.resolver.answerUnclear);
+      happened.said = true;
+      await tell(texts.resolver.answerUnclear);
     }
 
     /**
@@ -585,9 +633,105 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * их не рассудить. До мыслей — потому что «нет, в пятницу» относится
      * к тому, что было сказано раньше, и должно попасть в ту запись, а не
      * в новую, которая появится через секунду.
+     *
+     * **У этого порядка есть цена, и она обнаружилась в бою** (задача
+     * 3.24): правка к сказанному **в этой же выгрузке** цели не находит —
+     * записи ещё нет. Поэтому такие правки не уходят в черновик сразу, а
+     * ждут второго прохода, ниже.
      */
-    for (const segment of patches) {
-      const outcome = await resolvePatchSegment(
+
+    /** Правки, чья цель могла быть названа здесь же и ещё не сохранена. */
+    const retryAfterSave: Segment[] = [];
+
+    /**
+     * Что делать с исходом разбора правки.
+     *
+     * Отдельной функцией потому, что проходов два и обработка у них
+     * одна: разъехавшись, они дали бы правку, которая на втором проходе
+     * применяется молча, без реплики человеку.
+     */
+    const useOutcome = async (
+      segment: Segment,
+      outcome: SegmentResult,
+      /** Первый проход: цель ещё может появиться после сохранения. */
+      first: boolean,
+    ): Promise<void> => {
+      if (outcome.kind === 'applied') {
+        happened.said = true;
+        rememberTopics(touchedTopics, outcome.applied);
+        mentioned.add(outcome.applied.after.id);
+        if (outcome.applied.action === 'complete') happened.closed = true;
+        await tell(
+          describeChange(outcome.applied, texts, context.timeZone),
+          undoButtons(outcome.applied.revisionId, texts),
+        );
+        return;
+      }
+
+      if (outcome.kind === 'asked') {
+        /**
+         * Второй вопрос за обмен задавать нельзя (§13.9).
+         *
+         * На повторном проходе вопрос уже мог быть задан первым, и тогда
+         * лучше черновик: два вопроса подряд — это допрос, а текст
+         * человека не теряется и так.
+         */
+        if (happened.asked) {
+          await saveDraft(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            text: segment.text,
+            reason: 'цель нашлась, но вопрос за эту выгрузку уже задан (§13.9)',
+          });
+          return;
+        }
+
+        happened.asked = true;
+        happened.said = true;
+        // §7.3: один короткий вопрос с двумя кнопками и заголовком
+        // найденной записи в тексте.
+        await tell(
+          texts.resolver.question(titleWithoutDate(outcome.itemTitle)),
+          questionButtons(outcome.questionId, texts),
+        );
+        return;
+      }
+
+      if (outcome.kind === 'newThought') {
+        /**
+         * На первом проходе это ещё мысль, на втором — уже поздно:
+         * извлечение и сохранение прошли, и вставить её в разбор нечем.
+         */
+        if (first) {
+          parsed.push(segment);
+          return;
+        }
+
+        await saveDraft(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: segment.text,
+          reason: 'резолвер счёл это новой мыслью, но разбор выгрузки уже прошёл',
+        });
+        return;
+      }
+
+      if (first && outcome.retryAfterSave === true) {
+        retryAfterSave.push(segment);
+        return;
+      }
+
+      await saveDraft(db, {
+        userId: batch.userId,
+        batchId: batch.id,
+        text: segment.text,
+        reason: outcome.reason,
+      });
+    };
+
+    /** Разбор одной правки: один и тот же вызов на оба прохода. */
+    const resolveOne = async (segment: Segment): Promise<SegmentResult> =>
+      await resolvePatchSegment(
         {
           db,
           ai: heavy,
@@ -605,40 +749,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         },
       );
 
-      if (outcome.kind === 'applied') {
-        saidSomething = true;
-        rememberTopics(touchedTopics, outcome.applied);
-        mentioned.add(outcome.applied.after.id);
-        if (outcome.applied.action === 'complete') closedSomething = true;
-        await reply(
-          db,
-          deps,
-          target,
-          describeChange(outcome.applied, texts, context.timeZone),
-          undoButtons(outcome.applied.revisionId, texts),
-        );
-      } else if (outcome.kind === 'asked') {
-        askedSomething = true;
-        saidSomething = true;
-        // §7.3: один короткий вопрос с двумя кнопками и заголовком
-        // найденной записи в тексте.
-        await reply(
-          db,
-          deps,
-          target,
-          texts.resolver.question(outcome.itemTitle),
-          questionButtons(outcome.questionId, texts),
-        );
-      } else if (outcome.kind === 'newThought') {
-        parsed.push(segment);
-      } else {
-        await saveDraft(db, {
-          userId: batch.userId,
-          batchId: batch.id,
-          text: segment.text,
-          reason: outcome.reason,
-        });
-      }
+    for (const segment of patches) {
+      await useOutcome(segment, await resolveOne(segment), true);
     }
 
     for (const [order, segment] of deferred.entries()) {
@@ -658,7 +770,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     for (const question of questions) {
-      saidSomething = true;
+      happened.said = true;
       const answer = await answerBacklogQuery(
         {
           db,
@@ -683,12 +795,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { item: answer.item, userId: batch.userId, batchId: batch.id },
         );
 
-        await reply(
-          db,
-          deps,
-          target,
-          describeProject(answer.item, await contextOf(db, answer.item.id), texts),
-        );
+        await tell(describeProject(answer.item, await contextOf(db, answer.item.id), texts));
 
         continue;
       }
@@ -703,7 +810,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const body =
         answer.kind === 'nothing' ? [] : answer.items.map((item) => texts.backlog.line(item.text));
 
-      await reply(db, deps, target, [header, ...body].join('\n'));
+      await tell([header, ...body].join('\n'));
     }
 
     if (parsed.length === 0) {
@@ -738,14 +845,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * строку» и вопроса не хочет: человек, отказавшийся от дела, не
        * ждёт, что его спросят, чем он займётся дальше.
        */
-      if (closedSomething && !askedSomething) {
+      if (happened.closed && !happened.asked) {
         // Своим сообщением, а не правкой статусного: иначе затрёт
         // подтверждение выполнения вместе с кнопкой отката.
-        await alsoSay(deps, target, texts.resolver.goOn, [
+        await tell(texts.resolver.goOn, [
           { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
           { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
         ]);
-      } else if (deferred.length === 0 && !saidSomething) {
+      } else if (deferred.length === 0 && !happened.said) {
         /**
          * «Я здесь. Расскажешь, что в голове?» — только когда сказать
          * больше нечего. После ответа на вопрос или после правки эта
@@ -846,6 +953,30 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     for (const item of [...saved, ...split.known]) mentioned.add(item.id);
 
+    /**
+     * Второй проход по правкам, чья цель не нашлась (задача 3.24).
+     *
+     * **Найдено на боевом 01.09.2026.** Человек в одной выгрузке сказал
+     * «…приходила не в 11, а в 9», и сразу «Нет, лучше не в 9, а в 9 30».
+     * Первая фраза стала записью, вторая — правкой, но правки разбираются
+     * до сохранения, и цели для неё в базе ещё не было. Поправка ушла в
+     * невидимый черновик, а в записи осталось промежуточное значение — 9
+     * вместо 9:30. Человек об этом не узнал.
+     *
+     * Теперь записи сохранены, и та же правка находит цель среди них.
+     *
+     * **Почему второй проход, а не перестановка шагов.** Разбирать правки
+     * после сохранения целиком нельзя: «нет, в пятницу» тогда попадало бы
+     * в свежую запись вместо прежней — ровно то, от чего порядок и
+     * защищает. Второй проход платит лишним вызовом резолвера только
+     * там, где первый не справился.
+     *
+     * Стоит он ноль, когда таких правок нет, — а это обычный случай.
+     */
+    for (const segment of retryAfterSave) {
+      await useOutcome(segment, await resolveOne(segment), false);
+    }
+
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
     const energyNow = await applyEmotion(
@@ -914,7 +1045,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * «Записала.» проглотило бы контекст, и человек получил бы вопрос
        * про сферы жизни без всякого повода. Поймали два старых теста.
        */
-      asked: askedSomething || startOnboarding !== undefined || onboardingOpen,
+      asked: happened.asked || startOnboarding !== undefined || onboardingOpen,
       /**
        * Считается всё, что вышло из выгрузки, а не только заведённое.
        *
@@ -967,7 +1098,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * на реплику: два вопроса подряд разными сообщениями — тот же
        * допрос.
        */
-      omitQuestion: askedSomething || startOnboarding !== undefined || onboardingOpen,
+      omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       quickAdd,
     });
 
@@ -1031,7 +1162,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * стоит после него, а не до: иначе человек получил бы два вопроса в
      * одном обмене, чего §13.9 не допускает.
      */
-    if (deps.suggestRecurrence === true && !askedSomething && !startOnboarding && !onboardingOpen) {
+    if (deps.suggestRecurrence === true && !happened.asked && !startOnboarding && !onboardingOpen) {
       for (const item of saved) {
         const suggestion = await suggestRecurrence(
           { db, ...(deps.logger === undefined ? {} : { logger: deps.logger }) },
@@ -1040,10 +1171,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
         if (suggestion === undefined) continue;
 
-        await reply(
-          db,
-          deps,
-          target,
+        await tell(
           texts.resolver.noticed(
             suggestion.title,
             datesInWords(suggestion.dates, context.timeZone),

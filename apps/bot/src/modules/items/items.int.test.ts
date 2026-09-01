@@ -60,7 +60,9 @@ describe('saveItems', () => {
 
     const [row] = await itemsForBatch(testDb(), batchId);
 
-    expect(row?.text).toBe('день рождения сына');
+    // Заглавная в начале ставится при сохранении: задача 3.25, регистр
+    // заголовков плавал между выгрузками.
+    expect(row?.text).toBe('День рождения сына');
     expect(row?.type).toBe('TASK');
     expect(row?.priority).toBe('SOON');
     expect(row?.topic).toBe('семья');

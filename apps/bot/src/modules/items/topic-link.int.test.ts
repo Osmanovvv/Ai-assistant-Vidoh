@@ -192,7 +192,9 @@ describe('первая выгрузка разбирается раньше те
       .from(items)
       .where(eq(items.userId, fresh.userId));
 
-    const byText = new Map(after.map((row) => [row.text, row]));
+    // Регистр заголовка приводится при сохранении (3.25), поэтому ключ
+    // — приведённый к нижнему: тест про темы, а не про регистр.
+    const byText = new Map(after.map((row) => [row.text.toLowerCase(), row]));
 
     expect(byText.get('позвонить в сад')?.topicId).not.toBeNull();
 
