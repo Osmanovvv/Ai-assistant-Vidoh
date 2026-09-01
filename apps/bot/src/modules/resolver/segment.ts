@@ -10,6 +10,7 @@ import { applyDecision, type Applied } from './patch.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
+import { startsWithReplacement } from '../router/append.js';
 
 /**
  * Разбор одной правки: от сегмента до последствия (§7 ТЗ, задача 3.6а).
@@ -60,6 +61,14 @@ export interface ResolveSegmentParams {
   /** §8.1: сообщение внутри ветки сужает поиск до её темы. */
   readonly topic?: string | undefined;
   readonly now?: Date | undefined;
+  /**
+   * Искать цель только среди записей этой выгрузки (задача 3.24).
+   *
+   * Ставит проход по правкам, сказанным после мысли этой же выгрузки:
+   * поправка к только что произнесённому относится к нему, а не к
+   * похожей записи из прошлого. Подробности в `candidates.ts`.
+   */
+  readonly onlyOwnBatch?: boolean | undefined;
 }
 
 export type SegmentResult =
@@ -133,6 +142,7 @@ export async function resolvePatchSegment(
     ...(vector === undefined ? {} : { vector }),
     ...(period === undefined ? {} : { period }),
     ...(params.topic === undefined ? {} : { topic: params.topic }),
+    ...(params.onlyOwnBatch === true ? { onlyBatch: params.batchId } : {}),
   });
 
   const resolved = await resolveSegment(deps.ai, {
@@ -195,11 +205,33 @@ export async function resolvePatchSegment(
     return { kind: 'asked', questionId: question.id, itemTitle: candidate.text };
   }
 
+  /**
+   * Замена не может стать дополнением (§7.1, боевое 02.09.2026).
+   *
+   * «нет, няня пусть приходит в 9 30» модель разобрала дополнением: время
+   * ушло в подробности, а заголовок остался врать «в 9». Признак замены
+   * §7.1 задан закрытым списком, значит решает он.
+   *
+   * **Но только если модель дала новый текст.** Без него замена вышла бы
+   * пустой: `applyDecision` не нашёл бы что менять, правка стала бы
+   * «запись уже в нужном состоянии» и ушла в черновик **молча**. Это
+   * хуже неточного дополнения — там человек хотя бы видит, что его
+   * услышали, и может отменить. Замер на контрольном наборе показал, что
+   * модель здесь чаще отвечает вопросом, а не дополнением, поэтому
+   * случай редкий и осторожность дешёвая.
+   */
+  const replaceInstead =
+    resolved.mode === 'append' &&
+    startsWithReplacement(params.text) &&
+    (resolved.changes?.text ?? '').trim().length > 0;
+
+  const mode = replaceInstead ? 'replace' : resolved.mode;
+
   const applied = await applyDecision(deps.db, {
     userId: params.userId,
     itemId: candidate.id,
     action: decision.action === 'new' ? 'update' : decision.action,
-    ...(resolved.mode === undefined ? {} : { mode: resolved.mode }),
+    ...(mode === undefined ? {} : { mode }),
     changes: resolved.changes ?? EMPTY_CHANGES,
     // §3.8б: «запомни» видно только в сказанном.
     spoken: params.text,

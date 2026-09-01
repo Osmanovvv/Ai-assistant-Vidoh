@@ -67,6 +67,20 @@ export interface CollectParams {
   /** §8.1: сообщение внутри ветки сужает поиск до её темы. */
   readonly topic?: string | undefined;
   readonly limits?: Partial<CandidateLimits> | undefined;
+  /**
+   * Искать только среди записей этой выгрузки (задача 3.24).
+   *
+   * Нужно второму проходу по правкам. Он существует ровно для случая
+   * «цель названа здесь же и на первом проходе ещё не была сохранена»,
+   * а первый проход уже искал по всему и не нашёл. Значит расширять
+   * поиск нечем — надо, наоборот, сузить.
+   *
+   * **Без этого второй проход бьёт мимо.** Найдено на боевом 02.09.2026:
+   * человек сказал «Договориться с няней, чтобы приходила в 10. Нет,
+   * лучше в 10 30», а поправка ушла в **другую** запись про няню,
+   * созданную утром. Похожа она сильнее — и по вектору, и по свежести.
+   */
+  readonly onlyBatch?: string | undefined;
 }
 
 export interface CandidateLimits {
@@ -107,12 +121,18 @@ const CARD = {
  * попасть в список ни при какой ошибке в остальных условиях. Черновики
  * исключены — они сами ждут разбора, поправлять в них нечего.
  */
-function common(userId: string, statuses: readonly ItemStatusValue[], topic?: string) {
+function common(
+  userId: string,
+  statuses: readonly ItemStatusValue[],
+  topic?: string,
+  onlyBatch?: string,
+) {
   return and(
     eq(items.userId, userId),
     eq(items.isDraft, false),
     inArray(items.status, [...statuses]),
     topic === undefined ? undefined : eq(items.topic, topic),
+    onlyBatch === undefined ? undefined : eq(items.sourceBatchId, onlyBatch),
   );
 }
 
@@ -129,7 +149,10 @@ async function fromSession(
     .select(CARD)
     .from(items)
     .where(
-      and(common(params.userId, SEARCHABLE_STATUSES, params.topic), gte(items.updatedAt, since)),
+      and(
+        common(params.userId, SEARCHABLE_STATUSES, params.topic, params.onlyBatch),
+        gte(items.updatedAt, since),
+      ),
     )
     .orderBy(desc(items.updatedAt))
     .limit(limits.session);
@@ -149,7 +172,7 @@ async function fromDeadline(
     .from(items)
     .where(
       and(
-        common(params.userId, SEARCHABLE_STATUSES, params.topic),
+        common(params.userId, SEARCHABLE_STATUSES, params.topic, params.onlyBatch),
         gte(items.deadlineAt, period.from),
         lt(items.deadlineAt, period.to),
       ),
@@ -175,7 +198,15 @@ export async function collectCandidates(db: Executor, params: CollectParams): Pr
   const [session, deadline, semantic] = await Promise.all([
     fromSession(db, params, limits, now),
     fromDeadline(db, params, limits),
-    params.vector === undefined
+    /**
+     * Смысловой поиск при сужении до выгрузки не нужен и вреден.
+     *
+     * Он ищет по всем записям человека и вернул бы как раз то, от чего
+     * мы сужаемся, — похожую запись из прошлой выгрузки. А внутри одной
+     * выгрузки записей единицы, и короткая память отдаёт их все: ранжировать
+     * нечего.
+     */
+    params.vector === undefined || params.onlyBatch !== undefined
       ? Promise.resolve([])
       : findSimilarItems(db, {
           userId: params.userId,

@@ -3056,3 +3056,103 @@ describe('правка к сказанному в этой же выгрузке
     expect(confirmation?.text).toContain('9 30');
   });
 });
+
+describe('второй проход целится в свою выгрузку (задача 3.24, боевое 02.09.2026)', () => {
+  /**
+   * Промах в самой починке 3.24, найденный ручным прогоном на следующий
+   * день.
+   *
+   * Человек сказал одной фразой «Договориться с няней, чтобы приходила в
+   * 10. Нет, лучше в 10 30», а поправка ушла в **другую** запись про
+   * няню, заведённую утром. Она похожа сильнее — и по вектору, и по
+   * свежести, — поэтому резолвер выбрал её. В итоге правка попала не туда
+   * дважды: утренняя запись получила чужое время, а только что созданная
+   * осталась неправленой.
+   *
+   * Второй проход существует ровно для случая «цель названа здесь же».
+   * Первый проход уже искал по всему и не нашёл — значит расширять нечем,
+   * надо сужать. Теперь он ищет только среди записей своей выгрузки.
+   */
+
+  const MORNING = 'Договориться с няней, чтобы она поменяла график работы, приходить в 9';
+  const FRESH = 'Договориться с няней, чтобы приходила в 10';
+  const FIXED = 'Договориться с няней, чтобы приходила в 10 30';
+
+  /**
+   * Резолвер, ведущий себя как живая модель: из двух записей про няню
+   * выбирает более похожую — утреннюю.
+   */
+  function resolverPreferringMorning(): (request: CompletionRequest) => string {
+    return (request) => {
+      const target = request.input.includes(MORNING)
+        ? MORNING
+        : request.input.includes(FRESH)
+          ? FRESH
+          : undefined;
+
+      return JSON.stringify({
+        action: target === undefined ? 'new' : 'update',
+        mode: 'replace',
+        itemId: target === undefined ? '' : String(numberOfCandidate(request.input, target)),
+        confidence: target === undefined ? 0.1 : 0.95,
+        changes: {
+          note: '',
+          text: target === undefined ? '' : FIXED,
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка времени',
+      });
+    };
+  }
+
+  it('правит запись этой выгрузки, а не похожую из прошлой', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+
+    // Утренняя запись: своей выгрузки у неё нет, как и у любой прошлой.
+    await testDb().insert(items).values({
+      userId,
+      text: MORNING,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'семья',
+    });
+
+    await queuedBatchOf([
+      { kind: 'text', text: `${FRESH}${NEWLINE}нет, лучше в 10 30`, offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: FRESH },
+          { intent: 'PATCH', text: 'нет, лучше в 10 30' },
+        ],
+      }),
+      resolver: resolverPreferringMorning(),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const texts = saved.filter((one) => !one.isDraft).map((one) => one.text);
+
+    // Утренняя не тронута.
+    expect(texts, `записи: ${texts.join(' | ')}`).toContain(MORNING);
+    // А свежая — поправлена.
+    expect(texts).toContain(FIXED);
+    expect(texts).not.toContain(FRESH);
+  });
+});
