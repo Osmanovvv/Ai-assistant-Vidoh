@@ -2738,3 +2738,152 @@ describe('вопрос по бэклогу ничего не создаёт (§1
     expect(drafts).toEqual([]);
   });
 });
+
+describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => {
+  /**
+   * Проджект заказчицы назвал шесть дел и попросил разложить. В ответе
+   * увидел три чужих — «сходить с собакой» и два «к врачу» из прошлых
+   * выгрузок. Решил, что бот сломался, и отправил то же голосовое ещё
+   * дважды: в базе стало восемнадцать записей вместо шести.
+   *
+   * Здесь проверяется весь путь, а не отдельный фильтр: в модульных
+   * тестах порядок был верен и до починки — пометка «сказано сейчас»
+   * просто не доходила из конвейера.
+   */
+
+  const SAID = [
+    'съездить в магазин',
+    'оплатить бухгалтеру налоги',
+    'позвонить заказчику',
+    'отправить ссылки на сайт',
+    'купить себе витамины',
+    'заплатить по учёбе',
+  ];
+
+  /** Три дела из прошлых выгрузок — те самые, что вытесняли свежие. */
+  async function seedOld(): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values([
+        {
+          userId,
+          text: 'записать к врачу в четверг',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'здоровье',
+          deadlineAt: new Date('2026-08-27T09:00:00.000Z'),
+          deadlineAccuracy: 'day',
+        },
+        {
+          userId,
+          text: 'Записаться к врачу в пятницу',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'здоровье',
+          deadlineAt: new Date('2026-08-28T09:00:00.000Z'),
+          deadlineAccuracy: 'day',
+        },
+        {
+          userId,
+          text: 'Нужно сходить с собакой погулять',
+          type: 'TASK',
+          priority: 'NOW',
+          topic: 'личное',
+        },
+      ]);
+  }
+
+  async function dump(sender: StatusSender, prompts: PromptRegistry): Promise<void> {
+    await queuedBatchOf([{ kind: 'text', text: SAID.join(NEWLINE), offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+  }
+
+  async function openTexts(): Promise<string[]> {
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    return rows.map((row) => row.text);
+  }
+
+  it('в ответе стоят названные сейчас дела, а не старые', async () => {
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender, all } = recordingSender();
+
+    await dump(sender, prompts);
+
+    const answer = all.at(-1) ?? '';
+
+    for (const said of SAID.slice(0, 3)) {
+      expect(answer, `в ответе нет «${said}»`).toContain(said);
+    }
+    expect(answer).not.toContain('к врачу');
+    expect(answer).not.toContain('с собакой');
+  });
+
+  it('та же выгрузка второй раз не заводит вторую копию', async () => {
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender } = recordingSender();
+
+    await dump(sender, prompts);
+    const afterFirst = await openTexts();
+
+    await dump(sender, prompts);
+    const afterSecond = await openTexts();
+
+    // Три засеянных плюс шесть названных — и ни одной записи больше.
+    expect(afterFirst).toHaveLength(9);
+    expect(afterSecond).toHaveLength(9);
+  });
+
+  it('повтор отвечает так же, а не пустотой', async () => {
+    /**
+     * Важнее, чем кажется. Отсев повторов не должен менять разговор:
+     * человек повторил — значит он об этих делах думает, и ответ обязан
+     * быть про них, а не «ничего нового».
+     */
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender, all } = recordingSender();
+
+    await dump(sender, prompts);
+    const first = all.at(-1) ?? '';
+
+    await dump(sender, prompts);
+    const second = all.at(-1) ?? '';
+
+    for (const said of SAID.slice(0, 3)) {
+      expect(second, `в повторном ответе нет «${said}»`).toContain(said);
+    }
+    expect(second).toBe(first);
+  });
+
+  it('новое дело в повторной выгрузке всё-таки заводится', async () => {
+    // Отсев не должен глотать то, чего человек раньше не говорил.
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+
+    await dump(sender, prompts);
+
+    await queuedBatchOf([
+      { kind: 'text', text: [...SAID, 'забрать права'].join(NEWLINE), offsetMs: 0 },
+    ]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(await openTexts()).toContain('забрать права');
+    expect(await openTexts()).toHaveLength(SAID.length + 1);
+  });
+});

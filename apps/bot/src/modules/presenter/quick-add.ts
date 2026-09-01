@@ -54,7 +54,10 @@ function hasPhrase(words: readonly string[], phrase: string): boolean {
 }
 
 export interface QuickAddCheck {
-  /** Сколько записей родилось из выгрузки. */
+  /**
+   * Сколько дел вышло из выгрузки — считая те, что у человека уже
+   * были и повторно заводить их не пришлось.
+   */
   readonly created: number;
   /** Сколько дел бот собирался предложить. */
   readonly hidden: number;
