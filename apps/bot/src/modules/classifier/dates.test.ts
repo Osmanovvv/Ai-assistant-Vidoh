@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeNow, localDateParts, resolveDeadline, startOfDayInZone } from './dates.js';
+import { describeToday, localDateParts, resolveDeadline, startOfDayInZone } from './dates.js';
 
 /**
  * Сроки — самый частый источник тихих ошибок: они не падают, а ставят
@@ -67,9 +67,9 @@ describe('localDateParts', () => {
   });
 });
 
-describe('describeNow', () => {
+describe('describeToday', () => {
   it('называет день недели: без него не разрешить «в четверг»', () => {
-    const described = describeNow(NOW, MOSCOW);
+    const described = describeToday(NOW, MOSCOW);
 
     expect(described).toContain('пятница');
     expect(described).toContain('4 сентября 2026');
@@ -80,8 +80,48 @@ describe('describeNow', () => {
     // Ровно поэтому одна фраза в разных поясах даёт разные даты.
     const instant = new Date('2026-09-04T20:30:00.000Z');
 
-    expect(describeNow(instant, MOSCOW)).toContain('4 сентября');
-    expect(describeNow(instant, VLADIVOSTOK)).toContain('5 сентября');
+    expect(describeToday(instant, MOSCOW)).toContain('4 сентября');
+    expect(describeToday(instant, VLADIVOSTOK)).toContain('5 сентября');
+  });
+
+  it('дважды за день описывает день одинаково', () => {
+    /**
+     * То самое свойство, из-за которого починка и делалась (задача 3.23).
+     *
+     * Раньше сюда уходили часы и минуты, и один и тот же текст, сказанный
+     * в 11:06 и в 12:11, приходил модели **разным входом** — с разным
+     * разбором на выходе. Замер на живой модели показал: при одинаковом
+     * входе ответ совпадает, при разном времени того же дня расходится.
+     *
+     * Времена ниже — настоящие, из трёх выгрузок с боевого 31.08.2026.
+     */
+    const morning = new Date('2026-08-31T08:06:49.000Z');
+    const noon = new Date('2026-08-31T09:03:55.000Z');
+    const later = new Date('2026-08-31T09:11:55.000Z');
+
+    expect(describeToday(noon, MOSCOW)).toBe(describeToday(morning, MOSCOW));
+    expect(describeToday(later, MOSCOW)).toBe(describeToday(morning, MOSCOW));
+  });
+
+  it('часов и минут в описании нет', () => {
+    /**
+     * Прежний тест проверял только, что нужное **есть**, — и остался
+     * зелёным, когда часы убрали. Проверять надо и то, чего быть не
+     * должно: иначе минуты вернутся следующей правкой, и никто не
+     * заметит.
+     */
+    const described = describeToday(new Date('2026-08-31T09:11:55.000Z'), MOSCOW);
+
+    expect(described).not.toMatch(/\d{1,2}:\d{2}/u);
+  });
+
+  it('через сутки описание меняется', () => {
+    // Обратная сторона: «в четверг» от разных дней — разные даты, и
+    // одинаковое описание здесь было бы ошибкой.
+    const monday = new Date('2026-08-31T09:00:00.000Z');
+    const tuesday = new Date('2026-09-01T09:00:00.000Z');
+
+    expect(describeToday(tuesday, MOSCOW)).not.toBe(describeToday(monday, MOSCOW));
   });
 });
 

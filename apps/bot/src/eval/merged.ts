@@ -3,11 +3,12 @@ import type { Logger } from 'pino';
 import { classifierSchema, toJsonSchema } from '../modules/ai/schemas/index.js';
 import type { LlmProvider } from '../modules/ai/providers/types.js';
 import { correctItems, type ClassifiedItem } from '../modules/classifier/classifier.service.js';
-import { describeNow } from '../modules/classifier/dates.js';
+import { describeToday } from '../modules/classifier/dates.js';
 import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
 import type { EvalCase } from './dataset.js';
 import { match, type MatchResult } from './matcher.js';
 import type { CaseOutcome } from './runner.js';
+import { temperatureFor } from '../modules/ai/temperature.js';
 
 /**
  * Объединённый разбор: одним вызовом вместо двух (задача 2.20, §10.1).
@@ -55,7 +56,7 @@ export interface MergedOutcome extends CaseOutcome {
 /** Что отправляем модели: дата, темы и весь текст выгрузки целиком. */
 function buildInput(item: EvalCase, now: Date): string {
   return [
-    describeNow(now, item.timeZone),
+    describeToday(now, item.timeZone),
     '',
     `Доступные темы: ${item.topics.join(', ')}.`,
     '',
@@ -124,7 +125,8 @@ export async function runMergedCase(
       prompt: deps.prompt,
       input: buildInput(item, now),
       jsonSchema: toJsonSchema(classifierSchema),
-      temperature: 0,
+      // Та же температура, что в бою: иначе набор мерит не то, что работает.
+      temperature: temperatureFor('classifier'),
     });
 
     usage = { tokensIn: completion.tokensIn, tokensOut: completion.tokensOut };

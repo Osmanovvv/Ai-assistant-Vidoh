@@ -14,7 +14,7 @@ import {
   routerSchema,
   toJsonSchema,
 } from '../modules/ai/schemas/index.js';
-import { describeNow } from '../modules/classifier/dates.js';
+import { describeToday } from '../modules/classifier/dates.js';
 
 /**
  * Проверка разбора на живой модели (задачи 2.3, 2.4, 2.5).
@@ -94,7 +94,7 @@ const rawInput = (await readFile(inputPath, 'utf8')).trim();
 const input =
   stageName === 'classifier'
     ? [
-        describeNow(new Date(), 'Europe/Moscow'),
+        describeToday(new Date(), 'Europe/Moscow'),
         '',
         `Доступные темы: ${TOPICS.join(', ')}.`,
         '',
