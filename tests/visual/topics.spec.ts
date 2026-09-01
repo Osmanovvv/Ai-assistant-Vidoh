@@ -78,9 +78,40 @@ async function openChat(page: Page): Promise<void> {
   await page.goto(`#@${BOT}`);
   await page.waitForLoadState('domcontentloaded');
 
+  /**
+   * Истёкшая сессия отличается от несуществующего чата.
+   *
+   * Прогон 02.09.2026 показал форму входа по QR, а тест сказал «не
+   * открылась переписка» — и полчаса ушло на проверку имени бота вместо
+   * простого «войди заново». Сессия живёт неделями, а не вечно.
+   */
+  const loginScreen = page.getByText('Log in by QR Code', { exact: false }).first();
   // Признак, что чат открылся: поле ввода сообщения на месте.
   const composer = page.locator('[contenteditable="true"]').first();
-  await expect(composer, `не открылась переписка с @${BOT}`).toBeVisible({ timeout: 30_000 });
+
+  /**
+   * Ждём того, что появится раньше: переписки или формы входа.
+   *
+   * Проверять форму сразу нельзя — страница ещё не отрисована, и проверка
+   * всегда говорила «формы нет». Так и вышло 02.09.2026: тест краснел
+   * «не открылась переписка», хотя на экране был вход по QR.
+   */
+  await Promise.race([
+    composer.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => undefined),
+    loginScreen.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => undefined),
+  ]);
+
+  if (await loginScreen.isVisible()) {
+    throw new Error(
+      [
+        'Сессия Telegram истекла: на экране форма входа.',
+        'Выполни вход заново: npm run visual:login (QR со своего телефона).',
+        'Код из SMS или QR вводит человек — автоматизировать это нельзя.',
+      ].join(String.fromCharCode(10)),
+    );
+  }
+
+  await expect(composer, `не открылась переписка с @${BOT}`).toBeVisible({ timeout: 10_000 });
 }
 
 test.describe('темы в Telegram Web', () => {
