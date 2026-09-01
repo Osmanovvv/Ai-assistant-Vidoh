@@ -503,7 +503,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const answers: string[] = [];
     const questions: string[] = [];
 
+    /**
+     * Правки, сказанные **до** первой мысли этой выгрузки.
+     *
+     * Такая правка относится к прошлому: «нет, в пятницу» в начале
+     * выгрузки — про то, что человек говорил раньше. Разбирается до
+     * сохранения, чтобы попасть в прежнюю запись, а не в свежую.
+     */
     const patches: Segment[] = [];
+
+    /**
+     * Правки, сказанные **после** мысли этой же выгрузки (задача 3.24).
+     *
+     * «Договориться с няней, чтобы приходила в 10. Нет, лучше в 10 30» —
+     * поправка к тому, что произнесено секунду назад. Разбирается после
+     * сохранения и **только среди записей своей выгрузки**.
+     *
+     * **Порядок сегментов и есть признак.** Найдено ручным прогоном на
+     * боевом 02.09.2026: без этого правку перехватывал первый проход и
+     * уводил в похожую запись из прошлой выгрузки — у человека оказались
+     * испорчены обе, старая и новая.
+     */
+    const patchesAfterThought: Segment[] = [];
     /** Инвариант 10: один вопрос в реплике, и первый его занимает. */
 
     /**
@@ -564,12 +585,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       ]);
     }
 
+    /** Прозвучала ли в этой выгрузке мысль до текущего сегмента. */
+    let thoughtSaid = false;
+
     for (const segment of routed.segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
       else if (segment.intent === QUERY_INTENT) questions.push(segment.text);
-      else if (PARSED_INTENTS.has(segment.intent)) parsed.push(segment);
-      else if (RESOLVED_INTENTS.has(segment.intent)) patches.push(segment);
-      else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
+      else if (PARSED_INTENTS.has(segment.intent)) {
+        parsed.push(segment);
+        thoughtSaid = true;
+      } else if (RESOLVED_INTENTS.has(segment.intent)) {
+        (thoughtSaid ? patchesAfterThought : patches).push(segment);
+      } else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
     }
 
     /**
@@ -640,8 +667,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * ждут второго прохода, ниже.
      */
 
-    /** Правки, чья цель могла быть названа здесь же и ещё не сохранена. */
-    const retryAfterSave: Segment[] = [];
+    /** Правки, которые надо перебрать среди записей своей выгрузки. */
+    const searchOwnBatch: Segment[] = [...patchesAfterThought];
+
+    /** Правки, которым не хватило и своей выгрузки: ищем по всему. */
+    const searchEverywhere: Segment[] = [];
 
     /**
      * Что делать с исходом разбора правки.
@@ -653,8 +683,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const useOutcome = async (
       segment: Segment,
       outcome: SegmentResult,
-      /** Первый проход: цель ещё может появиться после сохранения. */
-      first: boolean,
+      /**
+       * Какой это проход. От него зависит, куда девать «цель не нашлась»:
+       * `before` — до сохранения, `ownBatch` — среди своей выгрузки,
+       * `wide` — последний, по всем записям.
+       */
+      stage: 'before' | 'ownBatch' | 'wide',
     ): Promise<void> => {
       if (outcome.kind === 'applied') {
         happened.said = true;
@@ -702,7 +736,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * На первом проходе это ещё мысль, на втором — уже поздно:
          * извлечение и сохранение прошли, и вставить её в разбор нечем.
          */
-        if (first) {
+        if (stage === 'before') {
           parsed.push(segment);
           return;
         }
@@ -716,8 +750,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         return;
       }
 
-      if (first && outcome.retryAfterSave === true) {
-        retryAfterSave.push(segment);
+      if (outcome.retryAfterSave === true && stage !== 'wide') {
+        (stage === 'before' ? searchOwnBatch : searchEverywhere).push(segment);
         return;
       }
 
@@ -729,8 +763,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
     };
 
-    /** Разбор одной правки: один и тот же вызов на оба прохода. */
-    const resolveOne = async (segment: Segment): Promise<SegmentResult> =>
+    /**
+     * Разбор одной правки.
+     *
+     * `ownBatchOnly` ставит второй проход: он ищет цель только среди
+     * записей этой выгрузки. Первый проход уже искал по всему и не
+     * нашёл — значит цель либо здесь, либо её нет вовсе.
+     */
+    const resolveOne = async (segment: Segment, ownBatchOnly = false): Promise<SegmentResult> =>
       await resolvePatchSegment(
         {
           db,
@@ -745,12 +785,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           text: segment.text,
           timeZone: context.timeZone,
           ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
+          ...(ownBatchOnly ? { onlyOwnBatch: true } : {}),
           now,
         },
       );
 
     for (const segment of patches) {
-      await useOutcome(segment, await resolveOne(segment), true);
+      await useOutcome(segment, await resolveOne(segment), 'before');
     }
 
     for (const [order, segment] of deferred.entries()) {
@@ -973,8 +1014,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      *
      * Стоит он ноль, когда таких правок нет, — а это обычный случай.
      */
-    for (const segment of retryAfterSave) {
-      await useOutcome(segment, await resolveOne(segment), false);
+    for (const segment of searchOwnBatch) {
+      await useOutcome(segment, await resolveOne(segment, true), 'ownBatch');
+    }
+
+    /**
+     * Последняя попытка — по всем записям человека.
+     *
+     * Сюда попадает правка, которая шла после мысли (а значит выглядела
+     * поправкой к ней), но в своей выгрузке цели не нашла. Значит человек
+     * всё-таки говорил о прошлом — например, вспомнил о старом деле в
+     * середине потока.
+     */
+    for (const segment of searchEverywhere) {
+      await useOutcome(segment, await resolveOne(segment), 'wide');
     }
 
     // ── Отбор и ответ ───────────────────────────────────────────────────

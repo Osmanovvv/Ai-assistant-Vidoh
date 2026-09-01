@@ -20,13 +20,15 @@ import { upsertUser } from '../modules/users/users.repo.js';
 import { defaultTexts } from '../texts/index.js';
 
 /**
- * Прогон жалобы с боевого (задачи 3.21–3.23).
+ * Прогон находок ручного прогона (задачи 3.21–3.28).
  *
- * **Зачем отдельным скриптом.** Три починки закрывали один живой случай:
- * выдача не про то, что человек сказал; повтор выгрузки плодит дубли;
- * подписи кнопок обрезаются. Каждая проверена своими тестами, но человек
- * жаловался не на три починки — он жаловался на один разговор с ботом.
- * Проверить надо именно разговор, целиком и на живой модели.
+ * **Зачем отдельным скриптом.** Починки закрывали живые случаи, каждая
+ * проверена своими тестами — но человек жаловался не на починки, а на
+ * разговор с ботом. Проверять надо разговор, целиком и на живой модели.
+ *
+ * **И на живой модели, а не на подменённой.** Половина этих дефектов
+ * держалась именно на том, что модель решает не так, как ожидает тест с
+ * заглушкой: способ правки, выбор записи, регистр заголовка.
  *
  * **Что настоящее.** Свой процесс бота, вебхук с секретом, Postgres,
  * Redis, очередь, воркер, промпты из `docs/prompts`, живая модель.
@@ -431,6 +433,99 @@ try {
     'черновиков нет',
     rowsInDb.every((row) => !row.isDraft),
     `черновиков: ${String(rowsInDb.filter((row) => row.isDraft).length)}`,
+  );
+  // ── Правка внутри выгрузки, рядом с похожей записью ────────────────
+  say('Правка к сказанному здесь же, когда рядом лежит похожая запись');
+
+  const OLD_NANNY = 'Договориться с няней, чтобы она поменяла график, приходить в 9';
+  await db.insert(items).values({
+    userId,
+    text: OLD_NANNY,
+    type: 'TASK',
+    priority: 'SOON',
+    topic: 'семья',
+  });
+
+  const patchMark = mark();
+  await send('Договориться с няней, чтобы приходила в 10. Нет, лучше в 10 30.');
+  check('выгрузка с правкой разобрана', (await waitForBatch(userId, 3)) === 'done');
+
+  const nannies = (await db.select().from(items).where(eq(items.userId, userId)))
+    .filter((one) => !one.isDraft && one.text.toLowerCase().includes('нян'))
+    .map((one) => one.text);
+
+  process.stdout.write(`  записи про няню: ${nannies.join(' | ')}
+`);
+
+  check(
+    'старая запись про няню не тронута',
+    nannies.includes(OLD_NANNY),
+    `осталось: ${nannies.join(' | ')}`,
+  );
+  /**
+   * Время сверяется без разделителя.
+   *
+   * Живая модель пишет «10:30», а человек сказал «10 30». Проверять надо
+   * смысл, а не то, как модель поставила двоеточие: первая версия этой
+   * проверки покраснела именно на нём, хотя бот сработал верно.
+   */
+  const digitsOf = (text: string): string => text.replace(/\D/gu, '');
+
+  check(
+    'поправка попала в свежую запись',
+    nannies.some((one) => digitsOf(one).includes('1030')),
+    `осталось: ${nannies.join(' | ')}`,
+  );
+  check(
+    'промежуточного «в 10» не осталось',
+    !nannies.some((one) => one.trim().endsWith('в 10')),
+    `осталось: ${nannies.join(' | ')}`,
+  );
+
+  const afterPatch = stub.calls.slice(patchMark);
+  const undoSaid = afterPatch.filter((one) => {
+    const markup = one.payload['reply_markup'] as
+      { inline_keyboard?: { text: string }[][] } | undefined;
+    return (markup?.inline_keyboard ?? [])
+      .flat()
+      .some((button) => button.text === defaultTexts.resolver.buttonUndo);
+  });
+  const answerSaid = afterPatch.filter((one) => {
+    const markup = one.payload['reply_markup'] as
+      { inline_keyboard?: { text: string }[][] } | undefined;
+    return (markup?.inline_keyboard ?? [])
+      .flat()
+      .some((button) => button.text === defaultTexts.answer.buttonDoNow);
+  });
+
+  check('подтверждение правки с кнопкой отката пришло', undoSaid.length === 1);
+  check('разбор пришёл своим сообщением, а не поверх', answerSaid.at(-1)?.method === 'sendMessage');
+
+  // ── Устаревшая дата в цитате ────────────────────────────────────────
+  say('Перенос срока: в цитате не должно быть прежней даты');
+
+  await db.insert(items).values({
+    userId,
+    text: 'Записать сына к врачу в четверг',
+    type: 'TASK',
+    priority: 'SOON',
+    topic: 'здоровье',
+    deadlineAt: new Date(Date.now() + 2 * 24 * 60 * 60_000),
+    deadlineAccuracy: 'day',
+  });
+
+  const dateMark = mark();
+  await send('перенеси врача на пятницу');
+  check('выгрузка с переносом разобрана', (await waitForBatch(userId, 4)) === 'done');
+
+  const moved = answerToPerson(dateMark);
+  process.stdout.write(`  реплика: ${moved}
+`);
+
+  check(
+    'в реплике про перенос нет прежнего «в четверг»',
+    !moved.toLowerCase().includes('четверг'),
+    `реплика: ${moved}`,
   );
 } finally {
   if (userId !== '') await cleanup(userId);
