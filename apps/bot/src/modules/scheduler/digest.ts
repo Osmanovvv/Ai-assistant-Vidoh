@@ -1,5 +1,6 @@
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
  * Утренняя и вечерняя сводки (§11 и §13.6 ТЗ, задача 3.15).
@@ -69,9 +70,13 @@ export function deadlineText(
   texts: TextProfile,
   params: { readonly item: Item; readonly onDay: boolean },
 ): string {
+  // Реплика сама называет день, поэтому дату из цитаты убираем:
+  // иначе в одной фразе окажутся две даты. См. title-date.ts.
+  const title = titleWithoutDate(params.item.text);
+
   return params.onDay
-    ? texts.reminders.deadlineToday(params.item.text)
-    : texts.reminders.deadlineTomorrow(params.item.text);
+    ? texts.reminders.deadlineToday(title)
+    : texts.reminders.deadlineTomorrow(title);
 }
 
 /** Вопрос про застрявший проект (задача 3.13). */

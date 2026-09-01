@@ -9,6 +9,7 @@ import { resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
 import { recordRevision } from './revisions.repo.js';
+import { withCapital } from '../items/item-text.js';
 
 /**
  * Применение изменения (§7.3 ТЗ, задача 3.3).
@@ -188,7 +189,10 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
 
   // Пустая строка означает «не трогать»: так же устроена схема
   // классификации, и модели такой ответ даётся надёжнее пропуска ключа.
-  if (text.length > 0 && text !== item.text) next.text = text;
+  // Правило то же, что при сохранении: заголовок не должен менять
+  // регистр от того, каким путём он пришёл (задача 3.25).
+  const rewritten = withCapital(text);
+  if (rewritten.length > 0 && rewritten !== item.text) next.text = rewritten;
 
   if (deadline.length > 0) {
     /**

@@ -520,7 +520,7 @@ describe('разбор', () => {
     );
 
     const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
-    expect(saved.map((item) => item.text)).toEqual(['записать сына к врачу', 'купить продукты']);
+    expect(saved.map((item) => item.text)).toEqual(['Записать сына к врачу', 'Купить продукты']);
     expect(saved.every((item) => item.sourceBatchId === batchId)).toBe(true);
     expect(saved.every((item) => item.topic === 'личное')).toBe(true);
     expect(saved.every((item) => item.embedding !== null)).toBe(true);
@@ -585,10 +585,18 @@ describe('разбор', () => {
     const drafts = saved.filter((item) => item.isDraft);
     const parsed = saved.filter((item) => !item.isDraft);
 
-    expect(parsed.map((item) => item.text)).toEqual(['записать сына к врачу в четверг']);
+    expect(parsed.map((item) => item.text)).toEqual(['Записать сына к врачу в четверг']);
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.text).toBe('хотя нет, в пятницу');
-    expect(drafts[0]?.draftReason).toContain('не нашёл цели');
+    /**
+     * Причина изменилась с появлением второго прохода (задача 3.24).
+     *
+     * На первом проходе цели нет вовсе — записей ещё не сохранили. На
+     * втором они уже есть, и подменённый резолвер отвечает «это новая
+     * мысль»; вставить её в разбор уже нечем, поэтому черновик. Главное
+     * при этом не изменилось: текст человека сохранён и задачей не стал.
+     */
+    expect(drafts[0]?.draftReason).toContain('разбор выгрузки уже прошёл');
   });
 
   it('на «привет» не разбирает ничего и отвечает коротко', async () => {
@@ -790,7 +798,7 @@ describe('разбор', () => {
     // Дело ровно одно, и это первое сказанное, а не произвольное:
     // порядок внутри выгрузки сохранён.
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('первое дело');
+    expect(reply).toContain('Первое дело');
     expect(reply).not.toContain('второе дело');
     expect(reply).not.toContain('третье дело');
     // Уровень «сил мало» при этом остаётся уровнем: следующая выгрузка
@@ -867,7 +875,7 @@ describe('онбординг после первой выгрузки', () => {
     // Свой вопрос ответ при этом не задал: его место занял первый вопрос
     // онбординга. Иначе у человека было бы два открытых вопроса подряд.
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('записать сына к врачу');
+    expect(reply).toContain('Записать сына к врачу');
     expect(reply).not.toContain(defaultTexts.answer.question);
     expect(countQuestions(reply)).toBe(0);
   });
@@ -1370,7 +1378,7 @@ describe('ветки тем в разборе', () => {
     // Затронута одна тема — значит и ветка создана одна, и сводка одна.
     expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
     expect(gateway.sent).toHaveLength(1);
-    expect(gateway.sent[0]?.text).toContain('к врачу');
+    expect(gateway.sent[0]?.text).toContain('К врачу');
   });
 
   it('без шлюза тем разбор работает целиком: плоский режим', async () => {
@@ -1389,7 +1397,7 @@ describe('ветки тем в разборе', () => {
     );
 
     expect(await testDb().select().from(items)).toHaveLength(1);
-    expect(all.at(-1)).toContain('к врачу');
+    expect(all.at(-1)).toContain('К врачу');
   });
 
   it('пропавшая ветка не роняет разбор', async () => {
@@ -1618,7 +1626,7 @@ describe('ответ пользователю', () => {
     expect(sent).toEqual([]);
     // Промежуточная реплика на время расшифровки и итоговый разбор.
     expect(edited).toHaveLength(2);
-    expect(edited.at(-1)).toContain('купить продукты');
+    expect(edited.at(-1)).toContain('Купить продукты');
   });
 
   it('отвечает по §13.2: признание, список, сохранённое, один вопрос', async () => {
@@ -1640,8 +1648,8 @@ describe('ответ пользователю', () => {
 
     const reply = all.at(-1) ?? '';
     expect(reply.startsWith('Я тебя услышала.')).toBe(true);
-    expect(reply).toContain('записать сына к врачу');
-    expect(reply).toContain('и ещё забрать вещи');
+    expect(reply).toContain('Записать сына к врачу');
+    expect(reply).toContain('И ещё забрать вещи');
     expect(reply).toContain(defaultTexts.answer.question);
     expect(countQuestions(reply)).toBe(1);
   });
@@ -1759,7 +1767,7 @@ describe('онбординг: края', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('ещё одно дело');
+    expect(reply).toContain('Ещё одно дело');
     expect(countQuestions(reply)).toBe(0);
 
     // И второй вопрос онбординга не задан: человек ещё на прежнем шаге.
@@ -1885,7 +1893,7 @@ describe('мягкий лимит расхода', () => {
     );
 
     expect(all).toHaveLength(1);
-    expect(all[0]).toContain('купить продукты');
+    expect(all[0]).toContain('Купить продукты');
     expect(all.join(' ')).not.toMatch(/лимит|модель|дешевл|ограничен/iu);
 
     const saved = await testDb().select().from(items).where(eq(items.userId, userId));
@@ -2820,7 +2828,9 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
     const answer = all.at(-1) ?? '';
 
     for (const said of SAID.slice(0, 3)) {
-      expect(answer, `в ответе нет «${said}»`).toContain(said);
+      // Регистр здесь не проверяется — он приводится при сохранении
+      // (3.25) и покрыт своими тестами.
+      expect(answer.toLowerCase(), `в ответе нет «${said}»`).toContain(said);
     }
     expect(answer).not.toContain('к врачу');
     expect(answer).not.toContain('с собакой');
@@ -2859,7 +2869,7 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
     const second = all.at(-1) ?? '';
 
     for (const said of SAID.slice(0, 3)) {
-      expect(second, `в повторном ответе нет «${said}»`).toContain(said);
+      expect(second.toLowerCase(), `в повторном ответе нет «${said}»`).toContain(said);
     }
     expect(second).toBe(first);
   });
@@ -2883,7 +2893,166 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
       userId,
     );
 
-    expect(await openTexts()).toContain('забрать права');
+    expect((await openTexts()).map((one) => one.toLowerCase())).toContain('забрать права');
     expect(await openTexts()).toHaveLength(SAID.length + 1);
+  });
+});
+
+describe('правка к сказанному в этой же выгрузке (задача 3.24)', () => {
+  /**
+   * Дефект найден ручным прогоном на боевом 01.09.2026.
+   *
+   * Человек в одной выгрузке сказал «…приходила не в 11, а в 9», и сразу
+   * «Нет, лучше не в 9, а в 9 30». Первая фраза стала записью, вторая —
+   * правкой, но правки разбираются **до** сохранения, и цели для неё в
+   * базе ещё не было. Поправка ушла в невидимый черновик, а в записи
+   * осталось промежуточное значение: 9 вместо 9:30. Человек об этом не
+   * узнал — и это хуже потери текста: запись выглядит верной.
+   *
+   * Здесь проверяется весь путь. Резолвер подменён так, как ответила бы
+   * живая модель: увидев запись про няню среди кандидатов, она называет
+   * её номер.
+   */
+
+  const NANNY = 'договориться с няней, чтобы приходила в 9';
+  const FIXED = 'договориться с няней, чтобы приходила в 9 30';
+  /**
+   * Как запись выглядит в списке кандидатов: с заглавной.
+   *
+   * Регистр ставится при сохранении (задача 3.25), и резолвер видит
+   * именно сохранённый текст. Литералом, а не вызовом `withCapital`:
+   * тест не должен повторять реализацию, которую проверяет.
+   */
+  const NANNY_SAVED = 'Договориться с няней, чтобы приходила в 9';
+
+  /** Резолвер, который находит запись про няню, когда она уже сохранена. */
+  function resolverThatFindsNanny(): (request: CompletionRequest) => string {
+    return (request) => {
+      const known = request.input.includes('нян');
+
+      return JSON.stringify({
+        action: known ? 'update' : 'new',
+        mode: 'replace',
+        itemId: known ? String(numberOfCandidate(request.input, NANNY_SAVED)) : '',
+        confidence: known ? 0.95 : 0.1,
+        changes: {
+          note: '',
+          text: known ? FIXED : '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: known ? 'поправка времени к записи про няню' : 'цели нет',
+      });
+    };
+  }
+
+  async function dump(sender: StatusSender, prompts: PromptRegistry): Promise<void> {
+    await queuedBatchOf([
+      { kind: 'text', text: `${NANNY}${NEWLINE}нет, лучше в 9 30`, offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      // Так размечает живой маршрутизатор: «нет» есть в закрытом списке
+      // признаков правки §7.1.
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: NANNY },
+          { intent: 'PATCH', text: 'нет, лучше в 9 30' },
+        ],
+      }),
+      resolver: resolverThatFindsNanny(),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+  }
+
+  it('поправка доезжает до записи, а не в черновик', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+
+    await dump(sender, prompts);
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const parsed = saved.filter((one) => !one.isDraft);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.text).toBe('Договориться с няней, чтобы приходила в 9 30');
+    expect(saved.filter((one) => one.isDraft)).toHaveLength(0);
+  });
+
+  it('изменение записано ревизией — значит его можно откатить', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+
+    await dump(sender, prompts);
+
+    const revisions = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.userId, userId));
+
+    expect(revisions).toHaveLength(1);
+  });
+
+  it('человек видит и правку, и разбор — двумя сообщениями', async () => {
+    /**
+     * Вторая половина починки. Статусное сообщение одно, и `finishStatus`
+     * его правит: подтверждение изменения затиралось итоговым ответом
+     * §13.2 вместе с кнопкой отката. То есть правка применилась бы, а
+     * человек всё равно ничего бы не заметил.
+     */
+    const prompts = await seedPrompts();
+    const { sender, said } = recordingSender();
+
+    await dump(sender, prompts);
+
+    const toPerson = said.filter((one) => one.text.trim() !== '');
+    const withUndo = toPerson.filter((one) =>
+      one.buttons.includes(defaultTexts.resolver.buttonUndo),
+    );
+    const withAnswer = toPerson.filter((one) =>
+      one.buttons.includes(defaultTexts.answer.buttonDoNow),
+    );
+
+    expect(withUndo, `реплики: ${JSON.stringify(toPerson)}`).toHaveLength(1);
+    expect(withAnswer).toHaveLength(1);
+
+    /**
+     * **Проверяется способ отправки, а не наличие текста.** Первая версия
+     * этого теста смотрела только на то, что реплик две, — и осталась
+     * зелёной, когда я нарочно вернул затирание: фейковый отправитель
+     * пишет в один список и правку, и отправку. Ровно та же ошибка, что
+     * была с кнопками §13.2.
+     *
+     * Смотреть надо на **ответ**: он обязан уйти новым сообщением, иначе
+     * затрёт подтверждение вместе с кнопкой отката. Способ отправки
+     * самого подтверждения тут ни при чём — у текстовой выгрузки
+     * статусного сообщения ещё нет, и первая реплика его создаёт, а у
+     * голосовой оно уже есть от «Разбираю…», и та же реплика правит.
+     */
+    expect(withAnswer[0]?.kind, `реплики: ${JSON.stringify(toPerson)}`).toBe('send');
+    expect(withUndo[0]?.text).not.toBe(withAnswer[0]?.text);
+  });
+
+  it('в подтверждении назван поправленный текст', async () => {
+    const prompts = await seedPrompts();
+    const { sender, said } = recordingSender();
+
+    await dump(sender, prompts);
+
+    const confirmation = said.find((one) => one.buttons.includes(defaultTexts.resolver.buttonUndo));
+
+    expect(confirmation?.text).toContain('9 30');
   });
 });

@@ -20,6 +20,7 @@ import {
 } from '../../modules/resolver/change-text.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { undoKeyboard } from './undo.js';
+import { titleWithoutDate } from '../../modules/resolver/title-date.js';
 
 /**
  * Уточняющий вопрос: две кнопки (§7.3 ТЗ, задача 3.5).
@@ -52,7 +53,7 @@ export function questionMessage(
   texts: TextProfile,
 ): { readonly text: string; readonly keyboard: InlineKeyboard } {
   return {
-    text: texts.resolver.question(itemTitle),
+    text: texts.resolver.question(titleWithoutDate(itemTitle)),
     /**
      * Кнопки берутся из `questionButtons`, а не собираются здесь заново.
      *

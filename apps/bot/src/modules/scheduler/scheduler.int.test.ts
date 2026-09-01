@@ -21,6 +21,7 @@ import {
   runScheduler,
 } from './scheduler.service.js';
 import { ignoredStreak, lastMorningDay } from './reminders.repo.js';
+import { setEvening, setMorning } from '../onboarding/onboarding.service.js';
 import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { defaultTexts } from '../../texts/index.js';
 import { eveningText } from './digest.js';
@@ -606,5 +607,105 @@ describe('регулярность в накопленной истории (3.1
     expect(outbox).toHaveLength(4); // утро, вечер, утро, вечер
     expect(outbox.filter((one) => one.text.includes('каждый месяц'))).toHaveLength(1);
     expect(await offerCount()).toBe(1);
+  });
+});
+
+describe('выбранное время вступает в силу сразу (задача 3.26)', () => {
+  /**
+   * Дефект найден ручным прогоном на боевом 01.09.2026.
+   *
+   * Человек выбрал на онбординге утро 09:00, а задание осталось на 08:30
+   * — значение по умолчанию. Порядок такой: онбординг идёт **после**
+   * первой выгрузки (§12.2), и планировщик к этому времени уже разложил
+   * ближайшие полтора суток по прежним настройкам.
+   *
+   * **Прежние тесты этого не воспроизводили.** Они задают настройки до
+   * первого прохода и планируют один раз, а дефект живёт именно в
+   * порядке: сперва разложили, потом человек выбрал. Поэтому проверка
+   * здесь идёт по шагам, а не одним вызовом.
+   */
+
+  /** Во сколько поставлено задание — в местном времени человека. */
+  async function morningAt(): Promise<string | undefined> {
+    const rows = await testDb()
+      .select({ dueAt: reminders.dueAt })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    const [row] = rows;
+    if (row === undefined) return undefined;
+
+    return new Intl.DateTimeFormat('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(row.dueAt);
+  }
+
+  it('утро, выбранное после раскладки, переносит задание', async () => {
+    await planReminders(deps(), { now: NOW });
+    expect(await morningAt()).toBe('08:30');
+
+    await setMorning(testDb(), userId, '09:00');
+    await planReminders(deps(), { now: NOW });
+
+    expect(await morningAt()).toBe('09:00');
+  });
+
+  it('вечер тоже', async () => {
+    await planReminders(deps(), { now: NOW });
+
+    await setEvening(testDb(), userId, '20:00');
+    await planReminders(deps(), { now: NOW });
+
+    const rows = await testDb()
+      .select({ dueAt: reminders.dueAt })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'evening')));
+
+    const hours = rows.map((row) =>
+      new Intl.DateTimeFormat('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(row.dueAt),
+    );
+
+    expect(hours).toEqual(['20:00']);
+  });
+
+  it('заданий не задваивается: старое снято, а не оставлено', async () => {
+    await planReminders(deps(), { now: NOW });
+    await setMorning(testDb(), userId, '09:00');
+    await planReminders(deps(), { now: NOW });
+
+    expect(await countReminders('morning')).toBe(1);
+  });
+
+  it('отправленное не снимается — оно уже история', async () => {
+    /**
+     * Важная граница. По отправленным считается серия молчания (3.17), и
+     * если снятие заденет их, снижение частоты сломается молча.
+     */
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: new Date(NOW.getTime() + 3 * 60 * 60_000) });
+
+    const sentBefore = await testDb()
+      .select({ id: reminders.id })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), sql`sent_at is not null`));
+
+    expect(sentBefore.length).toBeGreaterThan(0);
+
+    await setMorning(testDb(), userId, '09:00');
+
+    const sentAfter = await testDb()
+      .select({ id: reminders.id })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), sql`sent_at is not null`));
+
+    expect(sentAfter.length).toBe(sentBefore.length);
   });
 });
