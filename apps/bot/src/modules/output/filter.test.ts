@@ -396,3 +396,147 @@ describe('проект не вытесняет выполнимые дела', (
     expect(result.shown).toHaveLength(1);
   });
 });
+
+describe('выдача про то, что человек только что сказал', () => {
+  /**
+   * Случай с боевого, 31.08.2026 (задача 3.22).
+   *
+   * Проджект заказчицы назвал шесть дел и попросил разложить. В ответе
+   * увидел три чужих — «сходить с собакой» и два «к врачу» из прошлых
+   * выгрузок. Решил, что бот сломался, и отправил то же голосовое ещё
+   * дважды: в базе стало восемнадцать записей вместо шести.
+   *
+   * Набор ниже снят с боевой базы, а не придуман.
+   */
+
+  /** Понедельник, 31 августа 2026, 12:12 по Москве. */
+  const THEN = new Date('2026-08-31T09:12:30.000Z');
+
+  const old = [
+    item({
+      text: 'записать к врачу в четверг',
+      createdAt: new Date('2026-08-31T04:39:00.000Z'),
+      deadlineAt: new Date('2026-09-02T21:00:00.000Z'),
+    }),
+    item({
+      text: 'Записаться к врачу в пятницу',
+      createdAt: new Date('2026-08-31T04:45:00.000Z'),
+      deadlineAt: new Date('2026-09-03T21:00:00.000Z'),
+    }),
+    item({
+      text: 'Нужно сходить с собакой погулять',
+      priority: 'NOW',
+      createdAt: new Date('2026-08-31T07:35:00.000Z'),
+    }),
+  ];
+
+  const said = [
+    item({ text: 'съездить в магазин', sourceOrder: 0 }),
+    item({ text: 'оплатить бухгалтеру налоги', sourceOrder: 1 }),
+    item({ text: 'позвонить заказчику', sourceOrder: 2 }),
+    item({ text: 'отправить ссылки на сайт', sourceOrder: 3 }),
+    item({ text: 'купить себе витамины', priority: 'LATER', sourceOrder: 4 }),
+    item({ text: 'заплатить по учёбе', sourceOrder: 5 }),
+  ].map((one) => ({ ...one, createdAt: new Date('2026-08-31T09:12:00.000Z') }));
+
+  const mentioned = new Set(said.map((one) => one.id));
+  const select = (marks?: ReadonlySet<string>) =>
+    selectForOutput([...old, ...said], {
+      energy: 'normal',
+      now: THEN,
+      timeZone: MOSCOW,
+      ...(marks === undefined ? {} : { mentioned: marks }),
+    });
+
+  it('показывает названное сейчас, а не старое', () => {
+    expect(select(mentioned).shown.map((one) => one.text)).toEqual([
+      'съездить в магазин',
+      'оплатить бухгалтеру налоги',
+      'позвонить заказчику',
+    ]);
+  });
+
+  it('без пометки — прежнее поведение, то самое из жалобы', () => {
+    /**
+     * Не украшение теста, а страховка. Пометка приходит из конвейера, и
+     * если однажды перестанет доходить, разница должна быть видна здесь,
+     * а не на боевом.
+     */
+    expect(select().shown.map((one) => one.text)).toEqual([
+      'Нужно сходить с собакой погулять',
+      'записать к врачу в четверг',
+      'Записаться к врачу в пятницу',
+    ]);
+  });
+
+  it('внутри выгрузки важное впереди, а при равной важности — порядок слов', () => {
+    // «купить витамины» названо пятым и с приоритетом LATER: оно и не
+    // должно обгонять «позвонить заказчику».
+    const shown = select(mentioned).shown;
+
+    expect(shown.some((one) => one.text === 'купить себе витамины')).toBe(false);
+  });
+
+  it('просроченное всё равно впереди свежего', () => {
+    /**
+     * Граница правила. У просроченного нет второго шанса — срок уже
+     * кончился; у свежего есть утренняя сводка и меню «Сегодня». Ради
+     * свежести прятать догоревшее нельзя.
+     */
+    const overdue = item({
+      text: 'сдать отчёт',
+      createdAt: new Date('2026-08-20T10:00:00.000Z'),
+      deadlineAt: new Date('2026-08-28T21:00:00.000Z'),
+    });
+
+    const result = selectForOutput([overdue, ...old, ...said], {
+      energy: 'normal',
+      now: THEN,
+      timeZone: MOSCOW,
+      mentioned,
+    });
+
+    expect(result.shown[0]?.text).toBe('сдать отчёт');
+    expect(result.shown.slice(1).map((one) => one.text)).toEqual([
+      'съездить в магазин',
+      'оплатить бухгалтеру налоги',
+    ]);
+  });
+
+  it('срок сегодня — тоже впереди свежего', () => {
+    const today = item({
+      text: 'забрать посылку',
+      createdAt: new Date('2026-08-25T10:00:00.000Z'),
+      deadlineAt: new Date('2026-08-31T15:00:00.000Z'),
+    });
+
+    const result = selectForOutput([today, ...old, ...said], {
+      energy: 'normal',
+      now: THEN,
+      timeZone: MOSCOW,
+      mentioned,
+    });
+
+    expect(result.shown[0]?.text).toBe('забрать посылку');
+  });
+
+  it('когда выгрузка ничего не завела, показывается бэклог как прежде', () => {
+    // Вопрос «что у нас сегодня» новых записей не создаёт, и пометка
+    // приходит пустая. Ответ на такой вопрос обязан остаться прежним.
+    const result = selectForOutput([...old, ...said], {
+      energy: 'normal',
+      now: THEN,
+      timeZone: MOSCOW,
+      mentioned: new Set<string>(),
+    });
+
+    expect(result.shown[0]?.text).toBe('Нужно сходить с собакой погулять');
+  });
+
+  it('в выдаче ровно три дела, остальное сосчитано', () => {
+    const result = select(mentioned);
+
+    expect(result.shown).toHaveLength(3);
+    expect(result.hidden).toBe(6);
+  });
+});

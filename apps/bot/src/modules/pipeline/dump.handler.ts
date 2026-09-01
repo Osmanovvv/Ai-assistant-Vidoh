@@ -15,6 +15,7 @@ import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { contextOf, nextStepOf } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
+import { knownByText, splitKnown } from '../items/same-text.js';
 import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
@@ -467,6 +468,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const touchedTopics = new Set<string>();
 
+    /**
+     * Записи, о которых человек говорил в этой выгрузке.
+     *
+     * Не только заведённые сейчас: поправленное и закрытое человек тоже
+     * назвал вслух, и в ответе оно должно стоять впереди старого. Ровно
+     * поэтому здесь набор ключей, а не номер выгрузки, — по номеру
+     * правки не найти, у поправленной записи он от прошлой выгрузки.
+     */
+    const mentioned = new Set<string>();
+
     /** Закрылось ли в этой выгрузке хоть одно дело — для вопроса §2.8. */
     let closedSomething = false;
     /**
@@ -533,6 +544,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     if (settled.kind === 'applied' && settled.applied !== undefined) {
       saidSomething = true;
       rememberTopics(touchedTopics, settled.applied);
+      mentioned.add(settled.applied.after.id);
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await reply(
         db,
@@ -596,6 +608,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       if (outcome.kind === 'applied') {
         saidSomething = true;
         rememberTopics(touchedTopics, outcome.applied);
+        mentioned.add(outcome.applied.after.id);
         if (outcome.applied.action === 'complete') closedSomething = true;
         await reply(
           db,
@@ -809,7 +822,29 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Сохранение ──────────────────────────────────────────────────────
     const toSave = await withEmbeddings(db, deps, batch, units);
-    const saved = await saveItems(db, { userId: batch.userId, batchId: batch.id, items: toSave });
+
+    /**
+     * Повтор той же выгрузки не заводит вторую запись (см. same-text.ts).
+     *
+     * Открытые записи всё равно читаются ниже для отбора — но читать их
+     * надо **до** вставки, иначе только что вставленное само себе
+     * покажется повтором.
+     *
+     * Сверка идёт по трёмстам свежайшим открытым записям — потолку
+     * `openItemsFor`. Повтор того, что человек говорил триста записей
+     * назад, пройдёт незамеченным, и это осознанный предел: тянуть в
+     * память весь бэклог ради редкого случая дороже одной лишней строки.
+     */
+    const before = await openItemsFor(db, batch.userId);
+    const split = splitKnown(toSave, knownByText(before));
+
+    const saved = await saveItems(db, {
+      userId: batch.userId,
+      batchId: batch.id,
+      items: split.fresh,
+    });
+
+    for (const item of [...saved, ...split.known]) mentioned.add(item.id);
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
@@ -826,6 +861,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       energy: energyNow,
       now,
       timeZone: context.timeZone,
+      mentioned,
       /**
        * §13.7 и §21 п.7: если человек сказал о своём состоянии, действие
        * в ответе ровно одно — «короткое признание, сокращение объёма,
@@ -879,7 +915,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * про сферы жизни без всякого повода. Поймали два старых теста.
        */
       asked: askedSomething || startOnboarding !== undefined || onboardingOpen,
-      created: saved.length,
+      /**
+       * Считается всё, что вышло из выгрузки, а не только заведённое.
+       *
+       * Отсев повторов не должен менять **разговор** — только базу. Иначе
+       * «добавь ещё купить витамины» на уже имеющемся деле переставало бы
+       * быть быстрым добавлением и отвечало полным разбором: человек
+       * сказал одно дело, а получил список.
+       */
+      created: saved.length + split.known.length,
       hidden: selection.hidden,
       emotions: composition.emotions,
       spoken: dumpText,
@@ -933,7 +977,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         segments: routed.segments.length,
         deferred: deferred.length,
         units: extracted.units.length,
-        saved: toSave.length,
+        saved: split.fresh.length,
+        known: split.known.length,
         shown: selection.shown.length,
         hidden: selection.hidden,
         corrections: classified.corrections,

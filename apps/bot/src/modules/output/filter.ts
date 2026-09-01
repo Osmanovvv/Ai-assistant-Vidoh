@@ -50,6 +50,14 @@ export interface SelectContext {
    * действия» не выполнялось ни одним из них.
    */
   readonly cap?: number | undefined;
+  /**
+   * Записи, о которых человек говорил **в этой выгрузке**: и заведённые
+   * сейчас, и поправленные, и те, что он повторил, а они уже были.
+   *
+   * Пусто — значит спрашивают не про выгрузку (меню «Сегодня», утренняя
+   * сводка), и тогда порядок обычный.
+   */
+  readonly mentioned?: ReadonlySet<string> | undefined;
 }
 
 export interface SelectionResult {
@@ -67,16 +75,57 @@ export interface SelectionResult {
  *
  * Порядок задан планом: просроченные, срок сегодня, `NOW`, `SOON`
  * с ближайшим сроком, остальное.
+ *
+ * **Между «сегодня» и «NOW» добавлено «из этой выгрузки» — 01.09.2026,
+ * по жалобе с боевого.** Человек назвал шесть дел и попросил разложить,
+ * а в ответе увидел три чужих: «сходить с собакой» и два «к врачу» из
+ * прошлых выгрузок. Он решил, что бот сломался, и отправил то же
+ * голосовое ещё дважды.
+ *
+ * Причина была не в случайности, а в устройстве: `compareWithin` ставит
+ * дела со сроком раньше бессрочных, а у только что сказанного срока
+ * обычно нет — его в речи и не называют. Значит **одно старое дело с
+ * датой навсегда вытесняло из ответа всё свежее**. §13.2 показывает в
+ * своём примере дела из той же выгрузки, то есть это было отклонение от
+ * ТЗ, а не спорное решение.
+ *
+ * **Почему просроченное и «срок сегодня» всё же выше выгрузки.** У них
+ * нет второго шанса: срок кончается сегодня. У остального шанс есть —
+ * утренняя сводка, напоминание по сроку, меню «Сегодня». Прятать
+ * догорающее ради свежего было бы обменом хуже исходного.
+ *
+ * **А почему выгрузка выше `NOW` — довод другой, и он важнее.** Срок и
+ * «сказано только что» — это **факты**: и то, и другое человек произнёс
+ * вслух. `NOW` против `SOON` — это **догадка модели**. В том самом
+ * случае с боевого «сходить с собакой погулять» получило `NOW`, а
+ * «оплатить бухгалтеру налоги» — `SOON`; спорить с этим бессмысленно,
+ * но и пускать догадку впереди факта не стоит. Порядок такой: сначала
+ * то, что человек сказал, потом то, что модель предположила.
  */
 const BUCKET = {
   overdue: 0,
   today: 1,
-  now: 2,
-  soon: 3,
-  rest: 4,
+  mentioned: 2,
+  now: 3,
+  soon: 4,
+  rest: 5,
 } as const;
 
 type Bucket = (typeof BUCKET)[keyof typeof BUCKET];
+
+/**
+ * Важность внутри очереди: `NOW` раньше `SOON`, `SOON` раньше `LATER`.
+ *
+ * До появления очереди «из этой выгрузки» приоритет разбирался самими
+ * очередями и здесь не был нужен. Теперь в одной очереди сходятся дела
+ * разной важности, и «купить витамины когда-нибудь» не должно обгонять
+ * «позвонить заказчику сегодня» только потому, что названо раньше.
+ */
+const BY_PRIORITY: Readonly<Record<string, number>> = { NOW: 0, SOON: 1, LATER: 2, NONE: 3 };
+
+function priorityRank(item: Item): number {
+  return BY_PRIORITY[item.priority ?? 'NONE'] ?? 3;
+}
 
 /**
  * Годится ли запись для выдачи вообще.
@@ -94,13 +143,20 @@ export function isShowable(item: Item): boolean {
   return OPEN_STATUSES.has(item.status);
 }
 
-function bucketOf(item: Item, todayStart: Date, tomorrowStart: Date): Bucket {
+function bucketOf(
+  item: Item,
+  todayStart: Date,
+  tomorrowStart: Date,
+  mentioned: ReadonlySet<string> | undefined,
+): Bucket {
   const deadline = item.deadlineAt?.getTime();
 
   if (deadline !== undefined) {
     if (deadline < todayStart.getTime()) return BUCKET.overdue;
     if (deadline < tomorrowStart.getTime()) return BUCKET.today;
   }
+
+  if (mentioned?.has(item.id) === true) return BUCKET.mentioned;
 
   if (item.priority === 'NOW') return BUCKET.now;
   if (item.priority === 'SOON') return BUCKET.soon;
@@ -112,10 +168,14 @@ function bucketOf(item: Item, todayStart: Date, tomorrowStart: Date): Bucket {
  * Порядок внутри очереди.
  *
  * Сначала по сроку: у кого раньше, тот важнее, а бессрочные после
- * срочных. Потом по времени создания и по идентификатору — это и делает
- * выдачу воспроизводимой. Без последнего шага две записи с одинаковым
- * сроком менялись бы местами от запуска к запуску, и критерий
- * «одинаковая выдача» стал бы недостижим.
+ * срочных. Потом по важности, потом по времени создания и по
+ * идентификатору — последнее и делает выдачу воспроизводимой. Без него
+ * две записи с одинаковым сроком менялись бы местами от запуска к
+ * запуску, и критерий «одинаковая выдача» стал бы недостижим.
+ *
+ * **Правило «бессрочные после срочных» действует только внутри очереди.**
+ * Пока очереди были одни на всё, оно решало и судьбу свежих дел — и
+ * решало неверно, см. `BUCKET`.
  */
 function compareWithin(left: Item, right: Item): number {
   // §13.2: большая цель не ставится в выдачу целиком. «Выбрать торт»
@@ -135,6 +195,9 @@ function compareWithin(left: Item, right: Item): number {
   const rightDeadline = right.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY;
 
   if (leftDeadline !== rightDeadline) return leftDeadline - rightDeadline;
+
+  const byPriority = priorityRank(left) - priorityRank(right);
+  if (byPriority !== 0) return byPriority;
 
   const byCreated = left.createdAt.getTime() - right.createdAt.getTime();
   if (byCreated !== 0) return byCreated;
@@ -171,7 +234,8 @@ export function selectForOutput(items: readonly Item[], context: SelectContext):
 
   const ranked = [...showable].sort((left, right) => {
     const byBucket =
-      bucketOf(left, todayStart, tomorrowStart) - bucketOf(right, todayStart, tomorrowStart);
+      bucketOf(left, todayStart, tomorrowStart, context.mentioned) -
+      bucketOf(right, todayStart, tomorrowStart, context.mentioned);
     return byBucket === 0 ? compareWithin(left, right) : byBucket;
   });
 
@@ -225,12 +289,25 @@ export function selectForToday(items: readonly Item[], context: SelectContext): 
     context.timeZone,
   );
 
+  /**
+   * Очередь «из этой выгрузки» здесь не участвует, и намеренно.
+   *
+   * Меню отвечает на вопрос «что у меня на сегодня», а не «что я сейчас
+   * сказала»: подмешивать сюда свежесть значило бы показывать разное на
+   * одном и том же экране в зависимости от того, говорил человек минуту
+   * назад или нет. Поэтому `mentioned` не передаётся, и очередь
+   * недостижима — но список очередей ниже перечислен поимённо, а не
+   * отсечён по номеру: номера меняются, смысл нет.
+   */
+  const wanted = new Set<Bucket>([BUCKET.overdue, BUCKET.today, BUCKET.now]);
+
   return items
     .filter((item) => isShowable(item))
-    .filter((item) => bucketOf(item, todayStart, tomorrowStart) <= BUCKET.now)
+    .filter((item) => wanted.has(bucketOf(item, todayStart, tomorrowStart, undefined)))
     .sort((left, right) => {
       const byBucket =
-        bucketOf(left, todayStart, tomorrowStart) - bucketOf(right, todayStart, tomorrowStart);
+        bucketOf(left, todayStart, tomorrowStart, undefined) -
+        bucketOf(right, todayStart, tomorrowStart, undefined);
       return byBucket === 0 ? compareWithin(left, right) : byBucket;
     });
 }
