@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { loadDataset } from '../eval/dataset.js';
-import { checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
+import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
 import { runDataset } from '../eval/runner.js';
 import { modelEnvSchema } from '../config/env.js';
 import { closeDb, getDb } from '../infra/db.js';
@@ -111,6 +111,40 @@ try {
         );
       }
     }
+    /**
+     * Тема, важность и повторение считались числом, но построчно не
+     * печатались.
+     *
+     * Из-за этого просадку было видно, а причину — нет: 01.09.2026
+     * точность темы упала с 43 из 43 до 42, и найти виновную запись
+     * оказалось нечем. Отчёт, который говорит «стало хуже» и не говорит
+     * «где именно», заставляет гадать — а стенд затевали как раз против
+     * гадания.
+     */
+    for (const { expected, actual } of outcome.result.matched) {
+      if (expected.topic !== ANY && actual.topic !== expected.topic) {
+        process.stdout.write(
+          `  тема [${outcome.id}] «${actual.text}»: ожидалась ${expected.topic}, получена ${actual.topic}\n`,
+        );
+      }
+
+      if (expected.priority !== ANY && actual.priority !== expected.priority) {
+        process.stdout.write(
+          `  важность [${outcome.id}] «${actual.text}»: ожидалась ${expected.priority}, получена ${actual.priority}\n`,
+        );
+      }
+
+      const kind =
+        actual.recurrence?.text !== undefined && actual.recurrence.rule === undefined
+          ? 'unclear'
+          : (actual.recurrence?.rule?.kind ?? 'none');
+
+      if (kind !== expected.recurrence) {
+        process.stdout.write(
+          `  повторение [${outcome.id}] «${actual.text}»: ожидалось ${expected.recurrence}, получено ${kind}\n`,
+        );
+      }
+    }
     for (const { expected, actual } of outcome.result.matched) {
       const accuracy = actual.deadline?.accuracy ?? 'none';
       if (expected.deadline === '*' || accuracy === expected.deadline) continue;
@@ -157,10 +191,31 @@ try {
       : `\nПорог качества НЕ пройден:\n${verdict.failures.map((line) => `  — ${line}`).join('\n')}\n`,
   );
 
-  await mkdir(runs, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
-  await writeFile(join(runs, `${stamp}.json`), JSON.stringify(report, null, 2), 'utf8');
-  logger.info({ файл: `${stamp}.json` }, 'Прогон сохранён');
+  /**
+   * Прогон, в котором не разобрался ни один случай, в замеры не идёт.
+   *
+   * **Случилось 01.09.2026.** Набор запустили без залитых промптов, все
+   * три случая отказали — и этот ноль лёг в `runs` и стал точкой
+   * сравнения. Следующий прогон бодро показал «+100 процентных пунктов»
+   * ко всему, то есть скрыл настоящую разницу с последним настоящим
+   * замером. Такой файл хуже отсутствующего: он не измеряет ничего, но
+   * выглядит как измерение.
+   *
+   * Отказ **части** случаев сохраняется: это уже наблюдение о качестве.
+   */
+  const nothingMeasured = report.failed === report.cases && report.cases > 0;
+
+  if (nothingMeasured) {
+    logger.warn(
+      { случаев: report.cases },
+      'Ни один случай не разобрался — прогон не сохранён, чтобы не стать точкой сравнения',
+    );
+  } else {
+    await mkdir(runs, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
+    await writeFile(join(runs, `${stamp}.json`), JSON.stringify(report, null, 2), 'utf8');
+    logger.info({ файл: `${stamp}.json` }, 'Прогон сохранён');
+  }
 
   await closeDb();
   process.exit(verdict.passed ? 0 : 1);

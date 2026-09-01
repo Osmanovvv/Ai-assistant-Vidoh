@@ -10,7 +10,7 @@ import type {
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
-import { describeNow, resolveDeadline, type ResolvedDeadline } from './dates.js';
+import { describeToday, resolveDeadline, type ResolvedDeadline } from './dates.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -111,7 +111,7 @@ function buildInput(params: ClassifyParams, now: Date): string {
   const units = params.units.map((unit, index) => `${String(index + 1)}. ${unit.text}`).join('\n');
 
   return [
-    describeNow(now, params.timeZone),
+    describeToday(now, params.timeZone),
     '',
     `Доступные темы: ${params.topics.join(', ')}.`,
     '',

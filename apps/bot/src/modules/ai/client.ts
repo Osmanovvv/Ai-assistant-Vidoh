@@ -8,6 +8,7 @@ import { meterCall } from '../metering/ai-calls.repo.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import type { PromptRegistry } from './prompts/registry.js';
 import type { LlmProvider } from './providers/types.js';
+import { temperatureFor } from './temperature.js';
 
 /**
  * Обращение к языковой модели со строгой схемой (задача 2.3).
@@ -167,7 +168,7 @@ export async function requestStructured<T>(
                   prompt,
                   input: request.input,
                   jsonSchema: active.jsonSchema,
-                  temperature: request.temperature,
+                  temperature: request.temperature ?? temperatureFor(request.stage),
                   maxTokens: request.maxTokens,
                 }),
               timeoutMs,

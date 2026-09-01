@@ -1,6 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
-import { describeNow, localDateParts } from '../classifier/dates.js';
+import { describeToday, localDateParts } from '../classifier/dates.js';
 import type { Candidate } from './candidates.js';
 import { decide, type Decision, type ResolverThresholds } from './decision.js';
 
@@ -127,7 +127,7 @@ function buildInput(params: ResolveParams, now: Date): string {
     .join('\n');
 
   return [
-    describeNow(now, params.timeZone),
+    describeToday(now, params.timeZone),
     '',
     'Записи человека:',
     list,
