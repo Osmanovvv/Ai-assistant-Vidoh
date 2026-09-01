@@ -15,7 +15,13 @@ import {
 import { buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
 import { cardKeyboard } from './handlers/card.js';
-import { MENU_ACTION } from './handlers/menu.js';
+import { MENU_ACTION, rootKeyboard } from './handlers/menu.js';
+import { questionMessage } from './handlers/question.js';
+import { fitKeyboard, rowFits } from '../modules/presenter/keyboard.js';
+import { deadlineButtons, projectButtons } from '../modules/scheduler/reminder-actions.js';
+import { suggestButtons } from '../modules/recurrence/suggest-text.js';
+import { questionButtons, undoButtons } from '../modules/resolver/change-text.js';
+import { RETURNING_ACTION } from '../modules/returning/returning-actions.js';
 import { ANSWER_ACTION } from '../modules/presenter/presenter.service.js';
 import { DELETE_CANCEL, DELETE_STEP_ONE, DELETE_STEP_TWO } from './handlers/privacy.js';
 import { CALLBACK_DATA_LIMIT, callbackDataSize, toShortId } from '../modules/shared/short-id.js';
@@ -215,5 +221,169 @@ describe('идентификаторы действий не пересекаю�
         expect(action.startsWith(prefix), `${action} начинается с ${prefix}`).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * Ширина кнопок на телефоне (дефект найден ручным прогоном 01.09.2026).
+ *
+ * **Проверка того же рода, что предел в 64 байта, и по той же причине.**
+ * Три кнопки §13.2 стояли одной строкой с подписью в семнадцать знаков, и
+ * на телефоне человек видел «Остави…потом». На компьютере всё выглядело
+ * прилично, поэтому дефект дожил до боевого бота: ни один из полутора
+ * тысяч тестов не смотрел, **как** кнопка выглядит.
+ *
+ * Собираются настоящие клавиатуры продукта, а не выдуманные пары: именно
+ * на удобных примерах эта ошибка и держалась.
+ */
+
+/** Все строки всех клавиатур продукта — подписями. */
+function everyRow(): { where: string; labels: string[] }[] {
+  const found: { where: string; labels: string[] }[] = [];
+  const texts = defaultTexts;
+
+  const fromKeyboard = (where: string, keyboard: InlineKeyboard): void => {
+    for (const row of keyboard.inline_keyboard) {
+      const labels = row.map((button) => button.text);
+      if (labels.length > 0) found.push({ where, labels });
+    }
+  };
+
+  const id = randomUUID();
+
+  // Первый экран (§13.1) и меню (§12.1).
+  fromKeyboard(
+    'start',
+    fitKeyboard([
+      [
+        { label: texts.start.buttonVoice, action: 'start:voice' },
+        { label: texts.start.buttonText, action: 'start:text' },
+      ],
+    ]),
+  );
+  fromKeyboard('menu:root', rootKeyboard(texts));
+
+  // Настройки (§11): каждый выключатель — своей строкой.
+  for (const label of [
+    texts.settings.buttonRemindersOff,
+    texts.settings.buttonRemindersOn,
+    texts.settings.buttonQuietOff,
+    texts.settings.buttonQuietOn,
+  ]) {
+    found.push({ where: 'menu:settings', labels: [label] });
+  }
+
+  // Приватность (§16): согласие на необратимое удаление.
+  fromKeyboard(
+    'privacy:first',
+    fitKeyboard([
+      [
+        { label: texts.privacy.deleteConfirmButton, action: DELETE_STEP_ONE },
+        { label: texts.privacy.deleteCancelButton, action: DELETE_CANCEL },
+      ],
+    ]),
+  );
+  fromKeyboard(
+    'privacy:final',
+    fitKeyboard([
+      [
+        { label: texts.privacy.deleteFinalButton, action: DELETE_STEP_TWO },
+        { label: texts.privacy.deleteCancelButton, action: DELETE_CANCEL },
+      ],
+    ]),
+  );
+
+  // Онбординг (§12.2): все шаги, города, сферы, предложение сферы.
+  for (const step of Object.values(STEP)) {
+    const question = questionFor(step, { texts, name: 'Аня' });
+    if (question) fromKeyboard(`onboarding:${String(step)}`, fitKeyboard(question.rows));
+  }
+  fromKeyboard('onboarding:timezones', fitKeyboard(timezoneQuestion(texts).rows));
+  fromKeyboard('onboarding:topics', fitKeyboard(topicRows(texts, ['семья'])));
+  const offer = offerTopicsQuestion(texts, ['здоровье', 'покупки']);
+  if (offer) fromKeyboard('onboarding:offer', fitKeyboard(offer.rows));
+
+  // Ответ на выгрузку (§13.2) — тот самый случай.
+  fromKeyboard(
+    'answer',
+    fitKeyboard([
+      buildReply({
+        texts,
+        acknowledgement: 'Я тебя услышала.',
+        actions: [LONG_TEXT],
+        hidden: 3,
+        tired: false,
+      }).buttons,
+    ]),
+  );
+
+  // Карточка записи (§12.2) и уточняющий вопрос (§7.3).
+  fromKeyboard('card', cardKeyboard(itemFixture(), texts, MENU_ACTION.root));
+  fromKeyboard('question', questionMessage(id, LONG_TEXT, texts).keyboard);
+
+  // Напоминания (§9), предложение регулярности (§6.5), откат (§7.3).
+  fromKeyboard('reminder:deadline', fitKeyboard([deadlineButtons(id, texts)]));
+  fromKeyboard('reminder:project', fitKeyboard([projectButtons(id, texts)]));
+  fromKeyboard('suggest', fitKeyboard([suggestButtons(id, texts)]));
+  fromKeyboard('undo', fitKeyboard([undoButtons(id, texts)]));
+  fromKeyboard('question:pipeline', fitKeyboard([questionButtons(id, texts)]));
+
+  // Возвращение после перерыва (§13.6) и «продолжаем ли» (§13.9).
+  fromKeyboard(
+    'returning',
+    fitKeyboard([
+      [
+        { label: texts.returning.buttonContinue, action: RETURNING_ACTION.keep },
+        { label: texts.returning.buttonFresh, action: RETURNING_ACTION.fresh },
+      ],
+    ]),
+  );
+  fromKeyboard(
+    'goOn',
+    fitKeyboard([
+      [
+        { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
+        { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
+      ],
+    ]),
+  );
+
+  return found;
+}
+
+describe('ширина кнопок на телефоне', () => {
+  it('ни одна строка кнопок не обрезается', () => {
+    for (const { where, labels } of everyRow()) {
+      expect(rowFits(labels), `${where}: «${labels.join(' | ')}»`).toBe(true);
+    }
+  });
+
+  it('кнопки §13.2 разъехались на две строки', () => {
+    /**
+     * Дословно случай со скриншота. Проверяется не «влезает», а именно
+     * состав строк: «влезает» станет правдой и если кнопка потеряется.
+     */
+    const rows = everyRow().filter((one) => one.where === 'answer');
+
+    expect(rows.map((one) => one.labels)).toEqual([
+      [defaultTexts.answer.buttonDoNow, defaultTexts.answer.buttonShowAll],
+      [defaultTexts.answer.buttonLater],
+    ]);
+  });
+
+  it('самая длинная подпись продукта влезает, если стоит одна', () => {
+    // «Да, удалить безвозвратно» — двадцать четыре знака. Если однажды не
+    // влезет и одна, спасёт только сокращение слов, а это §13 и согласие
+    // заказчицы. Пусть тест скажет об этом заранее.
+    expect(rowFits([defaultTexts.privacy.deleteFinalButton])).toBe(true);
+  });
+
+  it('проверка ловит перебор, а не пропускает его', () => {
+    // Страж, который врёт, хуже отсутствующего.
+    expect(rowFits([defaultTexts.answer.buttonDoNow, defaultTexts.answer.buttonLater])).toBe(false);
+  });
+
+  it('собрано не пусто: проверка правда что-то проверяет', () => {
+    expect(everyRow().length).toBeGreaterThan(25);
   });
 });

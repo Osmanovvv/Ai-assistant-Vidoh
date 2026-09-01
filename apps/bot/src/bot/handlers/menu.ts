@@ -19,6 +19,7 @@ import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { pageOf } from '../../modules/backlog/backlog.service.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 
 /**
  * Меню и списки (§12.1 ТЗ, задача 2.18).
@@ -59,16 +60,17 @@ export const MENU_ACTION = {
   toggleQuiet: 'menu:set:q',
 } as const;
 
-function rootKeyboard(texts: TextProfile): InlineKeyboard {
-  return new InlineKeyboard()
-    .text(texts.menu.buttonAll, MENU_ACTION.all)
-    .text(texts.menu.buttonToday, MENU_ACTION.today)
-    .row()
-    .text(texts.menu.buttonHelp, MENU_ACTION.help)
-    .row()
-    .text(texts.menu.buttonSettings, MENU_ACTION.settings)
-    .row()
-    .text(texts.menu.buttonDeleteData, DELETE_STEP_ONE);
+/** Наружу — чтобы страж ширины в `keyboards.test.ts` её проверял. */
+export function rootKeyboard(texts: TextProfile): InlineKeyboard {
+  return fitKeyboard([
+    [
+      { label: texts.menu.buttonAll, action: MENU_ACTION.all },
+      { label: texts.menu.buttonToday, action: MENU_ACTION.today },
+    ],
+    [{ label: texts.menu.buttonHelp, action: MENU_ACTION.help }],
+    [{ label: texts.menu.buttonSettings, action: MENU_ACTION.settings }],
+    [{ label: texts.menu.buttonDeleteData, action: DELETE_STEP_ONE }],
+  ]);
 }
 
 function backKeyboard(texts: TextProfile): InlineKeyboard {

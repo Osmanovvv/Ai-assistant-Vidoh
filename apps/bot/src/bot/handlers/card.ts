@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { InlineKeyboard, type Bot } from 'grammy';
+import type { InlineKeyboard, Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import { items, type Item } from '../../db/schema.js';
@@ -12,6 +12,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 
 /**
  * Карточка записи (§12.2 ТЗ, задача 2.18).
@@ -89,14 +90,17 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
 export function cardKeyboard(item: Item, texts: TextProfile, back: string): InlineKeyboard {
   const code = toShortId(item.id);
 
-  return new InlineKeyboard()
-    .text(texts.card.buttonDone, `${CARD_ACTION.done}${code}`)
-    .text(texts.card.buttonSnooze, `${CARD_ACTION.snooze}${code}`)
-    .row()
-    .text(texts.card.buttonEdit, `${CARD_ACTION.edit}${code}`)
-    .text(texts.card.buttonDelete, `${CARD_ACTION.remove}${code}`)
-    .row()
-    .text(texts.menu.buttonBack, back);
+  return fitKeyboard([
+    [
+      { label: texts.card.buttonDone, action: `${CARD_ACTION.done}${code}` },
+      { label: texts.card.buttonSnooze, action: `${CARD_ACTION.snooze}${code}` },
+    ],
+    [
+      { label: texts.card.buttonEdit, action: `${CARD_ACTION.edit}${code}` },
+      { label: texts.card.buttonDelete, action: `${CARD_ACTION.remove}${code}` },
+    ],
+    [{ label: texts.menu.buttonBack, action: back }],
+  ]);
 }
 
 export interface CardDeps {
