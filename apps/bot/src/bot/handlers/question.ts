@@ -1,4 +1,4 @@
-import { InlineKeyboard, type Bot } from 'grammy';
+import type { InlineKeyboard, Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
@@ -12,8 +12,13 @@ import { topicsFor } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
-import { describeChange, QUESTION_ACTION } from '../../modules/resolver/change-text.js';
+import { fromShortId } from '../../modules/shared/short-id.js';
+import {
+  describeChange,
+  QUESTION_ACTION,
+  questionButtons,
+} from '../../modules/resolver/change-text.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { undoKeyboard } from './undo.js';
 
 /**
@@ -46,13 +51,17 @@ export function questionMessage(
   itemTitle: string,
   texts: TextProfile,
 ): { readonly text: string; readonly keyboard: InlineKeyboard } {
-  const code = toShortId(questionId);
-
   return {
     text: texts.resolver.question(itemTitle),
-    keyboard: new InlineKeyboard()
-      .text(texts.resolver.buttonAttach, `${QUESTION_ACTION.attach}${code}`)
-      .text(texts.resolver.buttonSeparate, `${QUESTION_ACTION.separate}${code}`),
+    /**
+     * Кнопки берутся из `questionButtons`, а не собираются здесь заново.
+     *
+     * Две копии одной клавиатуры уже расходились: «Добавить к прошлой»
+     * (восемнадцать знаков) стояло тут в одной строке с «Это новое» и
+     * обрезалось на телефоне, хотя в конвейере та же пара шла через общую
+     * раскладку.
+     */
+    keyboard: fitKeyboard([questionButtons(questionId, texts)]),
   };
 }
 

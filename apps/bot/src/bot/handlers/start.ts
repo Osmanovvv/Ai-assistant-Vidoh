@@ -1,6 +1,7 @@
-import { InlineKeyboard, type Bot } from 'grammy';
+import type { Bot } from 'grammy';
 
 import { defaultTexts } from '../../texts/index.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 
 /**
  * Экран первого запуска (задача 1.10).
@@ -22,9 +23,12 @@ export function registerStartHandlers(bot: Bot, privacyPolicyUrl: string): void 
   // показывается до регистрации, и выбирать ещё некому (§13.1).
   const texts = defaultTexts;
 
-  const keyboard = new InlineKeyboard()
-    .text(texts.start.buttonVoice, 'start:voice')
-    .text(texts.start.buttonText, 'start:text');
+  const keyboard = fitKeyboard([
+    [
+      { label: texts.start.buttonVoice, action: 'start:voice' },
+      { label: texts.start.buttonText, action: 'start:text' },
+    ],
+  ]);
 
   bot.command('start', async (ctx) => {
     await ctx.reply(texts.start.screen(privacyPolicyUrl), {

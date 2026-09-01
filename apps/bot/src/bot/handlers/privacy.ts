@@ -1,4 +1,4 @@
-import { InlineKeyboard, InputFile, type Bot } from 'grammy';
+import { InputFile, type Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
@@ -7,6 +7,7 @@ import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 
 /**
  * Удаление и экспорт данных (задача 1.20).
@@ -47,9 +48,12 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
     const texts = await textsOf(ctx.from?.id);
 
     await ctx.reply(texts.privacy.deleteFirstStep, {
-      reply_markup: new InlineKeyboard()
-        .text(texts.privacy.deleteConfirmButton, DELETE_STEP_ONE)
-        .text(texts.privacy.deleteCancelButton, DELETE_CANCEL),
+      reply_markup: fitKeyboard([
+        [
+          { label: texts.privacy.deleteConfirmButton, action: DELETE_STEP_ONE },
+          { label: texts.privacy.deleteCancelButton, action: DELETE_CANCEL },
+        ],
+      ]),
     });
   });
 
@@ -83,9 +87,17 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
     const texts = await textsOf(ctx.from.id);
 
     await ctx.editMessageText(texts.privacy.deleteSecondStep, {
-      reply_markup: new InlineKeyboard()
-        .text(texts.privacy.deleteFinalButton, DELETE_STEP_TWO)
-        .text(texts.privacy.deleteCancelButton, DELETE_CANCEL),
+      /**
+       * «Да, удалить безвозвратно» — двадцать четыре знака: рядом с
+       * «Отмена» на телефоне читалось как «Да, удали…». Согласие на
+       * необратимое удаление нельзя давать по огрызку подписи.
+       */
+      reply_markup: fitKeyboard([
+        [
+          { label: texts.privacy.deleteFinalButton, action: DELETE_STEP_TWO },
+          { label: texts.privacy.deleteCancelButton, action: DELETE_CANCEL },
+        ],
+      ]),
     });
   });
 

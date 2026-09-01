@@ -180,7 +180,19 @@ describe('текст вопроса', () => {
     );
 
     expect(message.text).toContain('запись к врачу');
-    expect(message.keyboard.inline_keyboard[0]).toHaveLength(2);
+
+    /**
+     * Кнопок две — как требует §7.3. Раньше здесь стояло «две кнопки в
+     * первой строке», и это оказалось лишним: «Добавить к прошлой» — это
+     * восемнадцать знаков, и рядом с «Это новое» на телефоне подпись
+     * обрезалась. Теперь раскладка разводит их по строкам, а требование
+     * ТЗ — про число кнопок, а не про число строк.
+     */
+    expect(message.keyboard.inline_keyboard.flat()).toHaveLength(2);
+    expect(message.keyboard.inline_keyboard.flat().map((one) => one.text)).toEqual([
+      defaultTexts.resolver.buttonAttach,
+      defaultTexts.resolver.buttonSeparate,
+    ]);
   });
 });
 
