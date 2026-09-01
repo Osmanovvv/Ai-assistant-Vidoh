@@ -72,9 +72,10 @@ try {
       const target = outcome.targetOk ? '' : ' (не та запись)';
       const deadline = outcome.deadlineOk ? '' : ' (не тот срок)';
       const mode = outcome.modeOk ? '' : ' (замена вместо дополнения)';
+      const rewrite = outcome.textOk ? '' : ' (переписал слова человека)';
 
       process.stdout.write(
-        `  ${mark} ${outcome.id.padEnd(24)} ждали ${outcome.expected.padEnd(7)} получили ${outcome.actual}${target}${deadline}${mode}\n`,
+        `  ${mark} ${outcome.id.padEnd(24)} ждали ${outcome.expected.padEnd(7)} получили ${outcome.actual}${target}${deadline}${mode}${rewrite}\n`,
       );
     },
   );

@@ -346,6 +346,72 @@ describe('регулярность (задача 2.18а)', () => {
     expect(result.corrections.recurrence).toBe(0);
   });
 
+  it('у регулярного дела срок дневной, даже если модель сказала «неделя»', async () => {
+    /**
+     * Задача 3.30. «Каждый вторник» модель помечала точностью `week`, и
+     * планировщик такому делу напоминание накануне не ставил: `remindable`
+     * пропускает только `day`. Человек заводил «каждый вторник» ровно
+     * затем, чтобы ему напомнили, а напоминания не было.
+     *
+     * Спорить с моделью тут не о чем: правило вообще не строится без
+     * конкретной даты, значит срок точный по построению.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'возить сына на плавание',
+            deadline: '2026-09-08',
+            deadlineAccuracy: 'week',
+            recurrenceKind: 'weekly',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый вторник',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('каждый вторник плавание'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [item] = result.items;
+    expect(item?.deadline?.accuracy).toBe('day');
+    expect(item?.recurrence?.rule).toBeDefined();
+    // Несогласованность ответа модели считается поправкой, как и прочие.
+    expect(result.corrections.deadline).toBe(1);
+  });
+
+  it('у разового дела «неделя» остаётся неделей', async () => {
+    // Граница правила: без регулярности точность модели не трогаем —
+    // «на следующей неделе» и правда не день, и напоминание накануне
+    // сработало бы не в тот.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'разобрать шкаф',
+            deadline: '2026-09-08',
+            deadlineAccuracy: 'week',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('на следующей неделе шкаф'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items[0]?.deadline?.accuracy).toBe('week');
+  });
+
   it('непонятая регулярность сохраняется фразой и считается поправкой', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({

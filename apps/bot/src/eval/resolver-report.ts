@@ -23,6 +23,8 @@ export interface ResolverCaseOutcome {
   readonly deadlineOk: boolean;
   /** Совпал ли режим §7.4, если случай его задавал. */
   readonly modeOk: boolean;
+  /** Заголовок переписан там и только там, где это ожидалось. */
+  readonly textOk: boolean;
   /** Уверенность, как её назвала модель. Для разбора расхождений. */
   readonly confidence: number | undefined;
   readonly failed: boolean;
@@ -58,6 +60,8 @@ export interface ResolverReport {
    * применение, только заметить его труднее: решение выглядит верным.
    */
   readonly wrongMode: number;
+  /** Слова человека подменены пересказом там, где не просили. */
+  readonly rewrittenText: number;
   /** Модель не ответила или ответила не по схеме. */
   readonly failed: number;
   readonly promptVersion: string;
@@ -79,6 +83,7 @@ export function collectResolver(
     wrongTarget: count((outcome) => outcome.expected === outcome.actual && !outcome.targetOk),
     wrongDeadline: count((outcome) => !outcome.deadlineOk),
     wrongMode: count((outcome) => !outcome.modeOk),
+    rewrittenText: count((outcome) => !outcome.textOk),
     failed: count((outcome) => outcome.failed),
     promptVersion,
   };
@@ -172,6 +177,7 @@ export function formatResolver(report: ResolverReport): string {
     `  не та запись:          ${String(report.wrongTarget)}`,
     `  не тот срок:           ${String(report.wrongDeadline)}`,
     `  замена вместо допол.:  ${String(report.wrongMode)}`,
+    `  переписал слова:       ${String(report.rewrittenText)}`,
     `  модель не ответила:    ${String(report.failed)}`,
     '',
   ].join('\n');
