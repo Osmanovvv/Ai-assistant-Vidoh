@@ -59,6 +59,21 @@ export async function runResolverCase(
    */
   const modeOk = item.expected.mode === undefined ? true : result.mode === item.expected.mode;
 
+  /**
+   * Переписан ли заголовок — и там ли, где просили.
+   *
+   * Самая тихая из ошибок разбора: запись остаётся, срок верный, а слова
+   * человека подменены пересказом модели. Заметить это можно только
+   * сверкой, потому оно и мерится.
+   */
+  const rewritten = (result.changes?.text ?? '').trim().length > 0;
+  const textOk =
+    item.expected.text === undefined
+      ? true
+      : item.expected.text === 'rewritten'
+        ? rewritten
+        : !rewritten;
+
   return {
     id: item.id,
     expected: item.expected.kind,
@@ -66,6 +81,7 @@ export async function runResolverCase(
     targetOk,
     deadlineOk,
     modeOk,
+    textOk,
     confidence: result.confidence,
     failed: !result.ok,
   };

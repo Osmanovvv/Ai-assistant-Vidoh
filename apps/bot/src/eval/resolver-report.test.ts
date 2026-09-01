@@ -24,6 +24,7 @@ function outcome(overrides: Partial<ResolverCaseOutcome> = {}): ResolverCaseOutc
     targetOk: true,
     deadlineOk: true,
     modeOk: true,
+    textOk: true,
     confidence: 0.9,
     failed: false,
     ...overrides,
@@ -116,5 +117,30 @@ describe('пороги заданы там, где их видно', () => {
     // шестнадцати на то, чего мы ещё не видели.
     expect(RESOLVER_THRESHOLD.decisions).toBeGreaterThanOrEqual(0.8);
     expect(RESOLVER_THRESHOLD.decisions).toBeLessThan(1);
+  });
+});
+
+describe('подмена слов человека считается ошибкой', () => {
+  it('переписанный без спроса заголовок виден в отчёте', () => {
+    /**
+     * Самая тихая ошибка разбора: запись на месте, срок верный, а слова
+     * подменены пересказом модели. Заметить её можно только сверкой —
+     * поэтому она и мерится отдельным числом.
+     */
+    const report = collectResolver([outcome({ textOk: false })], 'resolver@test');
+
+    expect(report.rewrittenText).toBe(1);
+    /**
+     * Само решение при этом верное: запись найдена, вид действия тот.
+     * Потому подмена слов и считается отдельно — в общем счёте она
+     * растворилась бы, а вреда от неё столько же.
+     */
+    expect(report.decisionCorrect).toBe(1);
+  });
+
+  it('когда переписывать и просили, ошибки нет', () => {
+    const report = collectResolver([outcome()], 'resolver@test');
+
+    expect(report.rewrittenText).toBe(0);
   });
 });
