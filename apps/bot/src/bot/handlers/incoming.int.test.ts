@@ -83,6 +83,22 @@ function textUpdate(text: string): Update {
   } as unknown as Update;
 }
 
+/**
+ * Команда — то же сообщение, но с разметкой сущности.
+ *
+ * Без `entities` grammY считает это обычным текстом, и проверка «команды
+ * потолок пропускает» проверяла бы не то.
+ */
+function commandUpdate(command: string): Update {
+  const update = textUpdate(command) as Update & {
+    message: { entities?: unknown[] };
+  };
+
+  update.message.entities = [{ type: 'bot_command', offset: 0, length: command.length }];
+
+  return update;
+}
+
 /** Уже состоявшиеся выгрузки этих суток. */
 async function seedDumps(count: number): Promise<void> {
   if (count === 0) return;
@@ -145,6 +161,33 @@ describe('потолок выгрузок за сутки', () => {
     await bot.handleUpdate(textUpdate('купить продукты'));
 
     expect(await dumpCount()).toBe(30);
+  });
+
+  it('команды потолок пропускает — путь к записям не закрыт', async () => {
+    /**
+     * Реплика о потолке говорит человеку: «посмотреть можно через
+     * /menu». Если бы потолок глушил и команды, эта фраза была бы
+     * ложью, а человек — заперт от собственных записей до утра.
+     *
+     * Найдено живым прогоном 03.09.2026: на вопрос «что у меня на
+     * сегодня?» бот ответил про потолок. Вопрос действительно упирается
+     * в потолок — проверка стоит до разбора, — но записи при этом
+     * доступны, и реплика обязана на них указать.
+     */
+    await seedDumps(30);
+
+    const { bot, calls } = createTestBot();
+    await bot.handleUpdate(commandUpdate('/menu'));
+
+    const refusals = calls.filter(
+      (call) => call.payload['text'] === defaultTexts.limits.tooManyDumps,
+    );
+    expect(refusals).toHaveLength(0);
+  });
+
+  it('реплика о потолке называет путь к записям', () => {
+    // Иначе она тупик: человек не знает, что его дела на месте и видны.
+    expect(defaultTexts.limits.tooManyDumps).toContain('/menu');
   });
 
   it('тридцатая ещё принимается: граница там, где написано', async () => {
