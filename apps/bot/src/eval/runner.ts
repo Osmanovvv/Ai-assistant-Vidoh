@@ -141,6 +141,16 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       topics: item.topics,
       defaultTopic: item.defaultTopic,
       timeZone: item.timeZone,
+      /**
+       * Исходная речь передаётся, как и в бою.
+       *
+       * **Не передавалась — и набор мерил не то, что работает.** Тот же
+       * изъян, что с температурой сутки назад: стенд шёл своим путём и
+       * потому не видел ни одной потерянной даты, показывая точность
+       * срока 100%. Расхождение стенда с боем опаснее самого дефекта:
+       * оно делает замер успокоительным.
+       */
+      spoken: item.text,
       now,
       ...owner,
     });
