@@ -188,6 +188,28 @@ export function nearestWeekday(
 }
 
 /**
+ * Ближайший из названных дней недели.
+ *
+ * Названо два («вторник и четверг») — берём ближайший из них: выбрать за
+ * человека нельзя, но поставить дату на понедельник — тем более. Замер
+ * 27.08.2026: на «каждый вторник и четверг» модель вернула понедельник.
+ */
+function nearestWeekdayAmong(
+  named: readonly number[],
+  context: { readonly now: Date; readonly timeZone: string },
+): Date {
+  const days = named
+    .map((weekday) => nearestWeekday(weekday, context))
+    .sort((left, right) => left.getTime() - right.getTime());
+
+  // Пустым список сюда не приходит: вызов стоит под проверкой длины. Но
+  // типы об этом не знают, а `noUncheckedIndexedAccess` — тем более.
+  return (
+    days[0] ?? startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone)
+  );
+}
+
+/**
  * Проверяет и привязывает к поясу то, что вернула модель.
  *
  * Пустой срок — не ошибка: у большинства мыслей срока нет. А вот срок в
@@ -332,8 +354,36 @@ export function resolveDeadline(
      * Подтверждённая цитата участвует наравне со словами о деле: день
      * недели человек мог назвать только в ней.
      */
-    const named = weekdaysIn(quote === '' ? context.said : `${context.said} ${quote}`);
-    if (named.length > 0 && !named.includes(weekdayOf(at, context.timeZone))) {
+    const words = quote === '' ? context.said : `${context.said} ${quote}`;
+    const named = weekdaysIn(words);
+
+    /**
+     * Назван день недели — берётся **ближайший** такой день (задача 3.39).
+     *
+     * Проверка выше требовала, чтобы дата была названным днём, но не
+     * требовала, чтобы он был ближайшим. Модель этим и пользовалась:
+     * 03.09.2026, в четверг, на «в четверг забрать справку» она вернула
+     * **10 сентября** — тоже четверг, проверка пропустила, справка уехала
+     * на неделю. Найдено живым прогоном в Telegram.
+     *
+     * Правило это уже записано у `nearestWeekday`: «человек говорит о
+     * ближайшем, иначе он сказал бы „в следующий"». Не хватало только
+     * применить его и к дате, которая по дню недели совпала.
+     *
+     * **Кроме случая, когда человек как раз и сказал „в следующий".**
+     * Тогда дальний день — его выбор, и трогать его нельзя. Список
+     * закрытый: это правило, а не догадка.
+     */
+    const distant = /следующ|через недел|через две недел|через полторы недел|на той недел/iu.test(
+      words,
+    );
+
+    const off =
+      named.length > 0 &&
+      (!named.includes(weekdayOf(at, context.timeZone)) ||
+        (!distant && at.getTime() > nearestWeekdayAmong(named, context).getTime()));
+
+    if (off) {
       /**
        * Дата обязана быть одним из названных дней.
        *
@@ -342,17 +392,13 @@ export function resolveDeadline(
        * тем более. Замер 27.08.2026: на «каждый вторник и четверг»
        * модель вернула понедельник.
        */
-      const nearest = named
-        .map((weekday) => nearestWeekday(weekday, context))
-        .sort((left, right) => left.getTime() - right.getTime())[0];
+      const nearest = nearestWeekdayAmong(named, context);
 
-      if (nearest !== undefined) {
-        return {
-          ok: true,
-          deadline: { at: nearest, accuracy: raw.accuracy },
-          corrected: 'weekday',
-        };
-      }
+      return {
+        ok: true,
+        deadline: { at: nearest, accuracy: raw.accuracy },
+        corrected: 'weekday',
+      };
     }
   }
 
