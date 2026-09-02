@@ -277,11 +277,24 @@ test.describe('темы в Telegram Web', () => {
     await page.setViewportSize({ width: 360, height: 740 });
     await openChat(page);
 
-    const answer = page.getByText(defaultTexts.answer.actionsLead, { exact: false }).first();
+    /**
+     * Ждём именно **клавиатуру**, а не текст ответа.
+     *
+     * Первая версия искала фразу «На сегодня я бы взяла вот это:» — и
+     * находила её в **старом** ответе, прокрученном выше. У прокрученного
+     * сообщения Telegram клавиатуру не рисует вовсе, и тест сообщал «ни
+     * одной кнопки», хотя внизу они были. Прогон 02.09.2026 на это и
+     * наткнулся.
+     */
+    const keyboard = page.locator('.reply-markup-button').last();
     await expect(
-      answer,
-      `на экране нет ответа разбора («${defaultTexts.answer.actionsLead}»)`,
-    ).toBeVisible();
+      keyboard,
+      [
+        'На экране нет ни одной кнопки под ответом.',
+        'Нужен свежий разбор: отправь боту выгрузку или запусти',
+        'npx tsx tests/visual/talk.ts "надо купить хлеб и позвонить в банк".',
+      ].join(' '),
+    ).toBeVisible({ timeout: 30_000 });
 
     await page.waitForTimeout(1500);
     await shot(page, '04-knopki-uzkiy-ekran');
@@ -295,11 +308,20 @@ test.describe('темы в Telegram Web', () => {
     const seen = await page.evaluate((labels: string[]) => {
       const textOf = (element: Element): string => element.textContent.trim();
 
-      const found = labels.filter((label) =>
-        Array.from(document.querySelectorAll('button, div, span')).some(
-          (element) => textOf(element) === label,
-        ),
+      /**
+       * Кнопки берутся по своему селектору, а не по `button, div, span`.
+       *
+       * Первая версия искала по всем узлам подряд и не находила ничего:
+       * Telegram рисует подпись во вложенном узле, и текст ближайшего
+       * `button` с подписью не совпадал. Прогон 02.09.2026 сказал
+       * «подписи нет», хотя на экране они были — а драйвер `talk.ts`,
+       * читающий по `.reply-markup-button`, видел их прекрасно.
+       */
+      const buttons = Array.from(
+        document.querySelectorAll('.reply-markup-button, .reply-markup-row button'),
       );
+
+      const found = labels.filter((label) => buttons.some((element) => textOf(element) === label));
 
       /**
        * Обрезанные подписи собираются для сообщения об ошибке.
@@ -308,14 +330,10 @@ test.describe('темы в Telegram Web', () => {
        * скриншотом. С ними сразу видно, во что она превратилась.
        */
       const clipped = Array.from(
-        new Set(
-          Array.from(document.querySelectorAll('button, div, span'))
-            .map(textOf)
-            .filter((text) => text.length > 0 && text.length < 40 && text.includes('…')),
-        ),
+        new Set(buttons.map(textOf).filter((text) => text.length > 0 && text.includes('…'))),
       );
 
-      return { found, clipped };
+      return { found, clipped, seen: buttons.map(textOf) };
     }, wanted);
 
     const missing = wanted.filter((label) => !seen.found.includes(label));
@@ -323,7 +341,8 @@ test.describe('темы в Telegram Web', () => {
     expect(
       missing,
       `подписи видны не целиком: ${missing.join(', ')}. ` +
-        `Обрезанное на экране: ${seen.clipped.join(' | ') || 'ничего не нашлось'}. ` +
+        `Обрезанное: ${seen.clipped.join(' | ') || 'нет'}. ` +
+        `Кнопки на экране: ${seen.seen.join(' | ') || 'ни одной'}. ` +
         'Проверь, что у аккаунта на экране есть свежий ответ разбора с кнопками',
     ).toEqual([]);
   });
