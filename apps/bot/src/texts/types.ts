@@ -394,6 +394,8 @@ export interface TextProfile {
    * В каждой реплике ровно один вопрос — §13.9.
    */
   readonly onboarding: {
+    /** Рамка перед первым вопросом опроса: см. onboarding.service.ts. */
+    readonly opening: string;
     readonly nameConfirm: (name: string) => string;
     readonly buttonNameYes: string;
     readonly buttonNameLater: string;

@@ -79,7 +79,7 @@ function createTestBot(options: { withIncoming?: boolean; gateway?: FakeTopicGat
   if (options.withIncoming !== false) {
     bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
   }
-  registerStartHandlers(bot, POLICY_URL);
+  registerStartHandlers(bot, { db: testDb(), logger, privacyPolicyUrl: POLICY_URL });
 
   const gateway = options.gateway ?? new FakeTopicGateway();
   registerPrivacyHandlers(bot, { db: testDb(), logger, topics: gateway });
