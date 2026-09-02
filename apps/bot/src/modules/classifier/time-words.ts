@@ -129,6 +129,42 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/ё/gu, 'е');
 }
 
+/** Событие — не время: вырезается вместе со своими же словами. */
+function withoutEvents(normalized: string): string {
+  let text = normalized;
+  for (const phrase of EVENT_PHRASES) {
+    text = text.split(normalize(phrase)).join(' ');
+  }
+  return text;
+}
+
+function hasTimeRoot(normalized: string): boolean {
+  return TIME_WORDS.some((word) => normalized.includes(normalize(word)));
+}
+
+/**
+ * Части суток и часы в тех формах, в которых их произносят **после
+ * числа**: «до 6 вечера», «к 9 утра», «часов в 11».
+ *
+ * Зачем отдельным списком, а не добавить их в основной. Основной список
+ * держит наречия — «вечером», «утром», — и его узость измерена: каждое
+ * добавление туда ослабляет **главную** проверку, ту, что отсекает
+ * выдуманные сроки. «Утра» в основном списке поймало бы и «утрату».
+ *
+ * Здесь другая цена ошибки: эти слова нужны, только чтобы признать
+ * цитату, которая **и так обязана дословно найтись в речи**. Ослабить
+ * главную проверку они не могут.
+ */
+const CLOCK_WORDS = ['вечера', 'утра', 'ночи', 'дня', 'часов', 'часа', 'полудня'] as const;
+
+function namesTime(text: string): boolean {
+  const normalized = withoutEvents(normalize(text));
+
+  return (
+    hasTimeRoot(normalized) || CLOCK_WORDS.some((word) => normalized.includes(normalize(word)))
+  );
+}
+
 /**
  * Есть ли в тексте хоть одно слово о времени.
  *
@@ -137,16 +173,64 @@ function normalize(text: string): string {
  * потерянного.
  */
 export function hasTimeWord(text: string): boolean {
-  let normalized = normalize(text);
-
-  // Событие — не время. Сначала убираем его вместе с его же словами.
-  for (const phrase of EVENT_PHRASES) {
-    normalized = normalized.split(normalize(phrase)).join(' ');
-  }
+  const normalized = withoutEvents(normalize(text));
 
   if (DIGITS.test(normalized)) return true;
 
-  return TIME_WORDS.some((word) => normalized.includes(normalize(word)));
+  return hasTimeRoot(normalized);
+}
+
+/**
+ * Текст словами: только буквы и цифры, разделённые одиночными пробелами,
+ * с пробелами по краям.
+ *
+ * Пробелы по краям — не украшение: по ним поиск цитаты попадает **на
+ * границы слов**. Без них цитата «год» нашлась бы внутри «годовщины», а
+ * «мая» — внутри «замаячило».
+ */
+function words(text: string): string {
+  const bare = normalize(text)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+
+  return bare === '' ? '' : ` ${bare} `;
+}
+
+/**
+ * Цитата о времени, **подтверждённая речью человека** (задача 3.37).
+ *
+ * Проверка `hasTimeWord` смотрит в слова человека об этом деле — и это
+ * заслуженная строгость: когда она смотрела во всю выгрузку, одного
+ * «успеть» хватало, чтобы пропустить выдуманные сроки у двадцати дел.
+ * Но извлечение ведущее слово о времени выбрасывает («сегодня вечером
+ * надо погулять с собакой» → «Погулять с собакой»), и тогда проверка
+ * отбрасывает **верную** дату: за сутки 02.09.2026 таких шесть, все на
+ * днях, которые человек назвал.
+ *
+ * Связи мысли с предложением речи у кода нет, и **догадываться о ней
+ * нельзя** — цена догадки это выдуманный срок. Но догадываться и не
+ * надо: связь называет сама модель, а код её проверяет.
+ *
+ * Три условия, все обязательны:
+ *
+ * 1. в цитате есть слово о времени — и **не просто цифра**: цифра есть
+ *    почти в любой речи, «5 заказов» не срок;
+ * 2. цитата встречается в речи **дословно, по границам слов**;
+ * 3. в ней есть что проверять — меньше трёх знаков не цитата.
+ *
+ * Выдумать срок после этого значит выдумать цитату, которая дословно
+ * есть в речи. А если модель перескажет вместо цитаты, проверка не
+ * пройдёт и получится прежнее поведение: **худший случай равен тому, что
+ * было, лучший возвращает потерянные дни.**
+ */
+export function timeQuoteInSpeech(quote: string, speech: string): boolean {
+  const needle = words(quote);
+  if (needle.trim().length < 3) return false;
+
+  // Цифра сама по себе не считается: см. условие 1.
+  if (!namesTime(quote)) return false;
+
+  return words(speech).includes(needle);
 }
 
 /**

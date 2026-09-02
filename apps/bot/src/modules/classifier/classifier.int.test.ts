@@ -36,6 +36,7 @@ const answer = (
     recurrenceKind: string;
     recurrenceInterval: number;
     recurrenceText: string;
+    deadlineText: string;
   }>[],
 ) =>
   JSON.stringify({
@@ -51,6 +52,7 @@ const answer = (
       recurrenceKind: 'none',
       recurrenceInterval: 0,
       recurrenceText: '',
+      deadlineText: '',
       ...item,
     })),
   });
@@ -325,6 +327,7 @@ describe('регулярность (задача 2.18а)', () => {
             recurrenceKind: 'weekly',
             recurrenceInterval: 1,
             recurrenceText: 'каждый вторник',
+            deadlineText: '',
           },
         ]),
       ],

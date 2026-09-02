@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveDeadline } from './dates.js';
-import { hasTimeWord, weekdayIn } from './time-words.js';
+import { hasTimeWord, timeQuoteInSpeech, weekdayIn } from './time-words.js';
 
 /**
  * Проверка сроков словами человека (задача 2.7).
@@ -158,6 +158,136 @@ describe('день недели считает код, а не модель', ()
     if (outcome.ok && outcome.deadline) {
       expect(outcome.corrected).toBeUndefined();
       expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-27');
+    }
+  });
+});
+
+describe('цитата о времени, подтверждённая речью (задача 3.37)', () => {
+  const SPEECH =
+    'так сегодня мне надо сходить в магазин купить продукты молоко хлеб яйца ' +
+    'и ещё в четверг заехать к родителям завезти им вещи ' +
+    'на выходных надо разобрать балкон и забрать посылку до 6 вечера';
+
+  it('дословная цитата из речи признаётся', () => {
+    expect(timeQuoteInSpeech('сегодня', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('в четверг', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('на выходных', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('до 6 вечера', SPEECH)).toBe(true);
+  });
+
+  it('цитаты, которой в речи нет, не признаёт', () => {
+    // Ровно то, ради чего проверка и заведена: выдумать срок теперь
+    // значит выдумать цитату, дословно присутствующую в речи.
+    expect(timeQuoteInSpeech('в пятницу', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('на следующей неделе', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('завтра', SPEECH)).toBe(false);
+  });
+
+  it('пересказ вместо цитаты не проходит', () => {
+    // Слова есть оба, но не подряд: «в четверг… завезти» — это пересказ.
+    expect(timeQuoteInSpeech('в четверг завезти вещи', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('сегодня вечером', SPEECH)).toBe(false);
+  });
+
+  it('цифра сама по себе временем не считается', () => {
+    // Цифра есть почти в любой речи: «5 заказов» — не срок. Иначе
+    // проверку можно было бы обойти, процитировав любое число.
+    expect(timeQuoteInSpeech('6', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('магазин', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('', SPEECH)).toBe(false);
+  });
+
+  it('цитата ищется по границам слов', () => {
+    // «год» внутри «годовщины» — не слово о времени, а часть другого.
+    expect(timeQuoteInSpeech('год', 'спланировать годовщину родителей')).toBe(false);
+    expect(timeQuoteInSpeech('в мае', 'поехать в майские куда-нибудь')).toBe(false);
+  });
+
+  it('регистр, «ё» и знаки не мешают', () => {
+    expect(timeQuoteInSpeech('В ЧЕТВЕРГ', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('в четверг,', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('на выходных!', 'на выходных разобрать балкон')).toBe(true);
+  });
+});
+
+describe('цитата возвращает сроки, которые проверка теряла (задача 3.37)', () => {
+  const SPEECH = 'сегодня мне надо сходить в магазин купить продукты и в четверг к родителям';
+
+  it('слово о времени выброшено извлечением, но цитата его вернула', () => {
+    // Живой журнал 02.09.2026: шесть таких сроков за сутки. Модель
+    // называла день верно, а код его отбрасывал.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-27', accuracy: 'day' },
+      {
+        now: NOW,
+        timeZone: ZONE,
+        said: 'купить продукты',
+        quoted: 'сегодня',
+        spoken: SPEECH,
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.deadline.at.toISOString()).toBe('2026-08-26T21:00:00.000Z');
+    }
+  });
+
+  it('выдуманная цитата срок не спасает', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      {
+        now: NOW,
+        timeZone: ZONE,
+        said: 'купить пуфики',
+        quoted: 'завтра',
+        spoken: SPEECH,
+      },
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('которой в речи нет');
+  });
+
+  it('без цитаты причина остаётся прежней', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'купить пуфики', quoted: '', spoken: SPEECH },
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('человеком не назван');
+  });
+
+  it('без речи ветка цитаты не работает', () => {
+    // Проверять цитату тогда нечем, и признавать её на слово нельзя.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-27', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'купить продукты', quoted: 'сегодня' },
+    );
+
+    expect(outcome.ok).toBe(false);
+  });
+
+  it('день недели из цитаты пересчитывает дату', () => {
+    // Раньше день недели проверялся только по тексту дела — а человек
+    // назвал его в речи, и проверять было нечем.
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-02', accuracy: 'day' },
+      {
+        now: NOW,
+        timeZone: ZONE,
+        said: 'заехать к родителям',
+        quoted: 'в четверг',
+        spoken: SPEECH,
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBe('weekday');
+      // Ближайший четверг от четверга 27 августа — он сам.
+      expect(outcome.deadline.at.toISOString()).toBe('2026-08-26T21:00:00.000Z');
     }
   });
 });
