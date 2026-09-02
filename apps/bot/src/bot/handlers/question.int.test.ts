@@ -58,6 +58,7 @@ function classifierSaying(text: string): AiClientDeps {
               recurrenceKind: 'none',
               recurrenceInterval: 0,
               recurrenceText: '',
+              deadlineText: '',
             },
           ],
         }),

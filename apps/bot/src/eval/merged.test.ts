@@ -39,6 +39,7 @@ const item = (
   recurrenceKind: 'none',
   recurrenceInterval: 0,
   recurrenceText: '',
+  deadlineText: '',
 });
 
 const GOOD = JSON.stringify({

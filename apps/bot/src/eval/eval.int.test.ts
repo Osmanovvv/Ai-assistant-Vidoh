@@ -60,6 +60,7 @@ const classified = (
   recurrenceKind: 'none',
   recurrenceInterval: 0,
   recurrenceText: '',
+  deadlineText: '',
 });
 
 /** Модель, которая отвечает верно: ровно то, что в ожидании набора. */

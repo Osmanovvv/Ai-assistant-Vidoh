@@ -4,7 +4,9 @@ import type { AiStage } from '../../../db/schema.js';
 
 import {
   classifierSchema,
+  classifierV2Schema,
   CLASSIFIER_SCHEMA_NAME,
+  CLASSIFIER_V2_SCHEMA_NAME,
   DEADLINE_ACCURACY,
   ITEM_TYPES,
   PRIORITIES,
@@ -44,6 +46,9 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [ROUTER_SCHEMA_NAME]: routerSchema,
   [EXTRACTOR_SCHEMA_NAME]: extractorSchema,
   [CLASSIFIER_SCHEMA_NAME]: classifierSchema,
+  // На вторую версию ссылаются classifier@4 и @5, лежащие в базе:
+  // выкинуть её значит закрыть себе откат.
+  [CLASSIFIER_V2_SCHEMA_NAME]: classifierV2Schema,
   [PRESENTER_SCHEMA_NAME]: presenterSchema,
   [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
@@ -126,7 +131,14 @@ export { extractorSchema, EXTRACTOR_SCHEMA_NAME };
 export { decomposerSchema, DECOMPOSER_SCHEMA_NAME };
 export type { DecomposedSteps } from './decomposer.js';
 export { routerSchema, ROUTER_SCHEMA_NAME, INTENTS };
-export { classifierSchema, CLASSIFIER_SCHEMA_NAME, ITEM_TYPES, PRIORITIES, DEADLINE_ACCURACY };
+export {
+  classifierSchema,
+  CLASSIFIER_SCHEMA_NAME,
+  CLASSIFIER_V2_SCHEMA_NAME,
+  ITEM_TYPES,
+  PRIORITIES,
+  DEADLINE_ACCURACY,
+};
 export { presenterSchema, PRESENTER_SCHEMA_NAME };
 export { resolverSchema, RESOLVER_SCHEMA_NAME, RESOLVER_ACTIONS, RESOLVER_MODES };
 export type { ExtractedUnits } from './extractor.js';
