@@ -23,6 +23,14 @@ import {
  * ненавистной за месяц**, и раздражение копится быстрее доверия.
  */
 
+/**
+ * Часы прогона. Передаются **во все** вызовы, включая `recordOffer`.
+ *
+ * Без этого `created_at` предложения брался из настоящих часов базы, а
+ * сравнивался с `NOW` из этой строки: тест зеленел, пока календарь не
+ * уходил от неё дальше недели, и падал сам собой. Поймано 02.09.2026,
+ * ровно через сутки после того, как ту же ловушку чинили в `recordOffer`.
+ */
 const NOW = new Date('2026-09-01T09:00:00.000Z');
 const DAY = 24 * 60 * 60_000;
 const MONTHLY: Rhythm = { kind: 'monthly', interval: 1, medianDays: 30 };
@@ -69,6 +77,7 @@ describe('отказ помнится навсегда', () => {
       itemId: ids[0] ?? '',
       itemIds: ids,
       rhythm: MONTHLY,
+      now: NOW,
     });
 
     await resolveOffer(testDb(), { suggestionId: offer.id, userId, outcome: 'declined' });
@@ -89,6 +98,7 @@ describe('отказ помнится навсегда', () => {
       itemId: first,
       itemIds: [first, second],
       rhythm: MONTHLY,
+      now: NOW,
     });
     await resolveOffer(testDb(), { suggestionId: offer.id, userId, outcome: 'declined' });
 
@@ -105,6 +115,7 @@ describe('отказ помнится навсегда', () => {
       itemId: ids[0] ?? '',
       itemIds: ids,
       rhythm: MONTHLY,
+      now: NOW,
     });
 
     await resolveOffer(testDb(), { suggestionId: offer.id, userId, outcome: 'accepted' });
@@ -122,6 +133,7 @@ describe('не чаще раза в неделю', () => {
       itemId: first[0] ?? '',
       itemIds: first,
       rhythm: MONTHLY,
+      now: NOW,
     });
 
     const other = [await sow('Пропить курс витаминов')];
@@ -137,6 +149,7 @@ describe('не чаще раза в неделю', () => {
       itemId: first[0] ?? '',
       itemIds: first,
       rhythm: MONTHLY,
+      now: NOW,
     });
 
     const other = [await sow('Пропить курс витаминов')];
