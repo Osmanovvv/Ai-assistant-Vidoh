@@ -10,6 +10,7 @@ import { localDateParts, startOfDayInZone } from '../../modules/classifier/dates
 import type { PipelineJob } from '../../infra/queue.js';
 import {
   ACTION,
+  onboardingStateOf,
   STEP,
   topicRows,
   type Button,
@@ -20,6 +21,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { incomingMiddleware } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
 import { registerStartHandlers } from './start.js';
+import type { QuestionSender } from '../../modules/presenter/telegram-sender.js';
 
 /**
  * Онбординг через настоящие обработчики бота (задача 2.13).
@@ -49,7 +51,30 @@ const stubQueue = {
 let seq = 0;
 let userId: string;
 
-function createTestBot(): { bot: Bot; calls: ApiCall[] } {
+/**
+ * Отправитель вопросов опроса: без него `/start` опрос не начинает.
+ *
+ * Записывает заданное, чтобы проверять и текст, и кнопки: рамка опроса
+ * должна появиться ровно один раз, у первого вопроса.
+ */
+function recordingQuestions(): {
+  sender: QuestionSender;
+  asked: { text: string; rows: string[][] }[];
+} {
+  const asked: { text: string; rows: string[][] }[] = [];
+
+  return {
+    asked,
+    sender: {
+      ask: ({ text, rows }) => {
+        asked.push({ text, rows: rows.map((row) => row.map((one) => one.label)) });
+        return Promise.resolve(asked.length);
+      },
+    },
+  };
+}
+
+function createTestBot(questions?: QuestionSender): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -75,7 +100,12 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
   });
 
   bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
-  registerStartHandlers(bot, POLICY_URL);
+  registerStartHandlers(bot, {
+    db: testDb(),
+    logger,
+    privacyPolicyUrl: POLICY_URL,
+    ...(questions === undefined ? {} : { onboarding: questions }),
+  });
   registerOnboardingHandlers(bot, testDb(), logger);
 
   return { bot, calls };
@@ -698,5 +728,93 @@ describe('предложение добавить сферу (§6.4)', () => {
 
     const names = await topicNames();
     expect(names.filter((name) => name === 'покупки')).toHaveLength(1);
+  });
+});
+
+describe('опрос начинается с первого запуска (запрос на изменение №2)', () => {
+  /**
+   * До 02.09.2026 опрос шёл **после** первой выгрузки — так трижды
+   * требовало ТЗ (§12.2 и §13.1). Правку дал автор самого ТЗ, посмотрев
+   * на живой первый запуск: разбор приходил и сразу за ним вопрос про
+   * имя и время, то есть два призыва к действию в одном обмене.
+   */
+
+  it('«/start» задаёт первый вопрос и ставит шаг', async () => {
+    const questions = recordingQuestions();
+    const { bot } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('/start'));
+
+    expect(questions.asked).toHaveLength(1);
+    expect(questions.asked[0]?.text).toContain(defaultTexts.onboarding.opening);
+
+    const state = await onboardingStateOf(testDb(), userId);
+    expect(state.step).toBe(STEP.name);
+  });
+
+  it('рамка опроса появляется один раз, а не у каждого вопроса', async () => {
+    // «Пара вопросов…» перед каждым шагом читалось бы как заклинание.
+    const questions = recordingQuestions();
+    const { bot, calls } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
+
+    // Первый вопрос уходит через отправителя опроса, следующие —
+    // обработчиком, правкой той же реплики. Смотреть надо в оба места.
+    expect(questions.asked).toHaveLength(1);
+
+    const texts = calls
+      .filter((one) => one.method === 'sendMessage' || one.method === 'editMessageText')
+      .map((one) => (typeof one.payload['text'] === 'string' ? one.payload['text'] : ''));
+
+    // После имени идёт пояс, а не время: порядок шагов — name → timezone.
+    const second = texts.filter((text) => text.includes(defaultTexts.onboarding.timezoneMoscow));
+
+    expect(second, `реплики: ${texts.join(' | ')}`).toHaveLength(1);
+    expect(second[0]).not.toContain(defaultTexts.onboarding.opening);
+  });
+
+  it('повторный «/start» опрос не перезапускает', async () => {
+    // Человек может нажать «/start» и на десятый день: спрашивать заново
+    // значило бы стереть его ответы.
+    const questions = recordingQuestions();
+    const { bot } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(textUpdate('/start'));
+
+    expect(questions.asked).toHaveLength(1);
+  });
+
+  it('ответ на вопрос опроса считается согласием (§16)', async () => {
+    /**
+     * Пока опрос шёл после выгрузки, сообщение человека всегда было
+     * раньше и согласие успевало записаться. Теперь опрос идёт первым, а
+     * отвечают на него кнопками — без этого бот узнавал бы имя, пояс и
+     * время, не имея согласия вовсе.
+     */
+    const questions = recordingQuestions();
+    const { bot } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('/start'));
+
+    const [before] = await testDb().select().from(users).where(eq(users.id, userId));
+    expect(before?.consentAt, 'команда согласием не считается').toBeNull();
+
+    await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
+
+    const [after] = await testDb().select().from(users).where(eq(users.id, userId));
+    expect(after?.consentAt).not.toBeNull();
+  });
+
+  it('без отправителя вопросов первый запуск работает как прежде', async () => {
+    // Так поднимают бота там, где онбординг не проверяется.
+    const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(textUpdate('/start'));
+
+    expect(calls.some((one) => one.method === 'sendMessage')).toBe(true);
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(0);
   });
 });

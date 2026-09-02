@@ -189,6 +189,14 @@ export interface QuestionContext {
   readonly name: string;
   /** Уже отмеченные сферы: состояние живёт в клавиатуре самой реплики. */
   readonly chosen?: readonly string[] | undefined;
+  /**
+   * Это первый вопрос опроса — к нему добавляется рамка.
+   *
+   * Ставит тот, кто опрос начинает: обработчик `/start` или конвейер,
+   * если человек заговорил, не нажимая ничего. Сам `questionFor` этого
+   * знать не может — его зовут и на переспрос.
+   */
+  readonly opening?: boolean | undefined;
 }
 
 /**
@@ -218,13 +226,21 @@ export function questionFor(step: number, context: QuestionContext): Question | 
   const { texts, name } = context;
   const onboarding = texts.onboarding;
 
+  /** Рамка перед первым вопросом: см. `opening` в контексте. */
+  const framed = (text: string): string =>
+    context.opening === true
+      ? `${onboarding.opening}
+
+${text}`
+      : text;
+
   switch (step) {
     case STEP.name:
       // Подтверждать нечего: см. firstStep.
       if (!hasLetters(name)) return undefined;
 
       return {
-        text: onboarding.nameConfirm(name),
+        text: framed(onboarding.nameConfirm(name)),
         rows: [
           [
             { label: onboarding.buttonNameYes, action: ACTION.nameYes },
@@ -235,7 +251,7 @@ export function questionFor(step: number, context: QuestionContext): Question | 
 
     case STEP.timezone:
       return {
-        text: onboarding.timezoneMoscow,
+        text: framed(onboarding.timezoneMoscow),
         rows: [
           [
             { label: onboarding.buttonTimezoneMoscow, action: ACTION.timezoneMoscow },
@@ -246,7 +262,7 @@ export function questionFor(step: number, context: QuestionContext): Question | 
 
     case STEP.morning:
       return {
-        text: onboarding.morning,
+        text: framed(onboarding.morning),
         rows: [
           MORNING_TIMES.map((time) => ({
             label: time,

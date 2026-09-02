@@ -269,7 +269,12 @@ async function main(): Promise<void> {
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
   bot.use(incomingMiddleware({ db, queue, sender }));
-  registerStartHandlers(bot, env.PRIVACY_POLICY_URL);
+  registerStartHandlers(bot, {
+    db,
+    logger,
+    privacyPolicyUrl: env.PRIVACY_POLICY_URL,
+    onboarding: questions,
+  });
   registerPrivacyHandlers(bot, { db, logger, topics: topicGateway });
   registerMembershipHandlers(bot, db, logger);
   registerOnboardingHandlers(bot, db, logger, topicGateway);
