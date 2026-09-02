@@ -63,6 +63,8 @@ export interface QuickAddCheck {
   readonly hidden: number;
   /** Нужен ли уточняющий вопрос: он важнее короткого ответа. */
   readonly asked: boolean;
+  /** Что-то из сказанного не разобралось и ждёт в черновике. */
+  readonly parked?: boolean | undefined;
   /** Было ли в выгрузке высказанное состояние (§13.7). */
   readonly emotions: number;
   /** Сказанное человеком целиком. */
@@ -79,12 +81,15 @@ export interface QuickAddCheck {
  * - **состояния не было** — §13.7 требует признать сказанное, а
  *   «Добавила.» в ответ на «сил нет» звучит глухо;
  * - **есть маркер добавления** — без него «купить витамины» это обычная
- *   мысль, и отвечать на неё односложно значит промолчать.
+ *   мысль, и отвечать на неё односложно значит промолчать;
+ * - **всё разобралось** — если часть выгрузки ушла в черновик,
+ *   «Записала.» делает вид, что всё в порядке.
  */
 export function isQuickAdd(check: QuickAddCheck): boolean {
   if (check.created !== 1) return false;
   if (check.asked) return false;
   if (check.emotions > 0) return false;
+  if (check.parked === true) return false;
 
   return hasMarker(check.spoken);
 }

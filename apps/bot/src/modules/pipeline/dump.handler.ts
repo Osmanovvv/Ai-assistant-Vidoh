@@ -371,6 +371,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       closed: false,
       /** Занят ли статусный слот: вторая реплика уходит своим сообщением. */
       statusTaken: false,
+      /**
+       * Ушло ли что-то из сказанного в черновик (задача 3.32).
+       *
+       * Нужно быстрому добавлению: односложным «Записала.» нельзя
+       * отвечать на выгрузку, часть которой не разобралась.
+       */
+      parked: false,
     };
 
     const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
@@ -711,6 +718,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * человека не теряется и так.
          */
         if (happened.asked) {
+          happened.parked = true;
           await saveDraft(db, {
             userId: batch.userId,
             batchId: batch.id,
@@ -741,6 +749,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           return;
         }
 
+        happened.parked = true;
         await saveDraft(db, {
           userId: batch.userId,
           batchId: batch.id,
@@ -755,6 +764,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         return;
       }
 
+      happened.parked = true;
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
@@ -1099,6 +1109,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * про сферы жизни без всякого повода. Поймали два старых теста.
        */
       asked: happened.asked || startOnboarding !== undefined || onboardingOpen,
+      /**
+       * Часть сказанного не разобралась — значит не быстрое добавление
+       * (задача 3.32, найдено живым прогоном через Telegram 02.09.2026).
+       *
+       * Человек повторил выгрузку целиком: одно дело узналось как уже
+       * имеющееся, а поправка к нему ушла в черновик. Осталась одна
+       * запись и маркер «ещё» в тексте — и бот ответил «Записала.» на то,
+       * чего не записывал, промолчав о неразобранном.
+       *
+       * §13.3 задумано для «добавь ещё X» — короткой просьбы и ничего
+       * больше. Если в выгрузке осталось непонятое, короткой репликой
+       * отвечать нельзя: она делает вид, что всё в порядке.
+       */
+      parked: happened.parked,
       /**
        * Считается всё, что вышло из выгрузки, а не только заведённое.
        *
