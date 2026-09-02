@@ -305,3 +305,77 @@ describe('цитата возвращает сроки, которые пров�
     }
   });
 });
+
+describe('назван день недели — берётся ближайший (задача 3.39)', () => {
+  /** Четверг, 27 августа 2026. Следующий четверг — 3 сентября. */
+  const SAID = 'забрать справку из поликлиники';
+
+  it('дальний четверг подтягивается к ближайшему', () => {
+    // Живой прогон 03.09.2026, в четверг: на «в четверг забрать справку»
+    // модель вернула 10 сентября — тоже четверг, и прежняя проверка это
+    // пропускала. Справка уезжала на неделю.
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-03', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: `${SAID} в четверг` },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBe('weekday');
+      // Ближайший четверг от четверга — он сам, 27 августа.
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
+    }
+  });
+
+  it('«в следующий четверг» остаётся дальним — это его выбор', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-03', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: `${SAID} в следующий четверг` },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBeUndefined();
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-09-02');
+    }
+  });
+
+  it('«через неделю в пятницу» тоже не трогается', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-04', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'сдать отчёт через неделю в пятницу' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('ближайший день недели не трогается', () => {
+    // Пятница 28 августа — ближайшая от четверга.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'сдать отчёт в пятницу' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('правило работает и через цитату', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-03', accuracy: 'day' },
+      {
+        now: NOW,
+        timeZone: ZONE,
+        said: SAID,
+        quoted: 'в четверг',
+        spoken: 'в четверг забрать справку из поликлиники',
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
+    }
+  });
+});
