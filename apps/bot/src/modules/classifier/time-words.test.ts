@@ -479,3 +479,62 @@ describe('«сегодня» и «завтра» считает код (зада
     }
   });
 });
+
+describe('«на выходных» — неделя, а не день (задача 3.50)', () => {
+  it('точность становится недельной, дата — на субботу', () => {
+    // §2.7: `week` — назван период. «Выходные» это два дня, и выдавать
+    // их за один нельзя. В наборе модель четыре прогона подряд отдавала
+    // «день» на «разобрать балкон на выходных».
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-30', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'на выходных разобрать балкон' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBe('weekend');
+      expect(outcome.deadline.accuracy).toBe('week');
+      // Ближайшая суббота от четверга 27 августа — 29-е.
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-28');
+    }
+  });
+
+  it('названный день главнее выходных', () => {
+    // «В субботу на выходных» — день назван, и решает он.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-29', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'в субботу на выходных разобрать балкон' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.deadline.accuracy).toBe('day');
+    }
+  });
+
+  it('точность недели и месяца не трогается', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-29', accuracy: 'week' },
+      { now: NOW, timeZone: ZONE, said: 'на выходных разобрать балкон' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBeUndefined();
+      expect(outcome.deadline.accuracy).toBe('week');
+    }
+  });
+
+  it('слова внутри других слов не считаются выходными', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'завтра проверить выходные данные отчёта' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      // «Завтра» названо — им и решается, точность дневная.
+      expect(outcome.deadline.accuracy).toBe('day');
+    }
+  });
+});

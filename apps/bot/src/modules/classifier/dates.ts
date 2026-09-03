@@ -32,7 +32,7 @@ export type DeadlineOutcome =
        * Что пришлось поправить за моделью. Пока одно: день недели не
        * совпал с названным человеком, и дата пересчитана кодом.
        */
-      readonly corrected?: 'weekday' | 'relative' | undefined;
+      readonly corrected?: 'weekday' | 'relative' | 'weekend' | undefined;
     }
   | { readonly ok: false; readonly reason: string }
   /** Срока просто нет — это не ошибка. */
@@ -372,7 +372,33 @@ export function resolveDeadline(
      * Только при точности `day`: «на этой неделе» и «в сентябре» словом
      * о дне не опровергаются.
      */
+    /**
+     * «На выходных» — период, а не день (задача 3.50).
+     *
+     * §2.7 задаёт точность так: `day` — назван конкретный день, `week` —
+     * названа неделя. «Выходные» это два дня, и выдавать их за один
+     * нельзя: напоминание придёт в субботу к делу, которое человек мог
+     * держать на воскресенье, — а он не выбирал.
+     *
+     * Модель здесь ошибается устойчиво: в контрольном наборе «разобрать
+     * балкон на выходных» она четыре прогона подряд отдавала `day`. Дата
+     * ставится на субботу — начало периода, — и точность становится
+     * недельной.
+     *
+     * Только когда «выходные» единственное обозначение дня: сказано «в
+     * субботу на выходных» — значит день назван, и решает он.
+     */
+    const weekend = /(?<!\p{L})выходн/u.test(words.toLowerCase());
     const shifts = relativeDaysIn(words);
+
+    if (raw.accuracy === 'day' && weekend && named.length === 0 && shifts.length === 0) {
+      return {
+        ok: true,
+        deadline: { at: nearestWeekday(6, context), accuracy: 'week' },
+        corrected: 'weekend',
+      };
+    }
+
     if (raw.accuracy === 'day' && named.length === 0 && shifts.length === 1) {
       const shift = shifts[0] ?? 0;
       const wanted = new Date(

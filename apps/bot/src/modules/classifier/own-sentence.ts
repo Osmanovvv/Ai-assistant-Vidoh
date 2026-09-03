@@ -138,22 +138,45 @@ function marksIn(sentence: string): readonly DayMark[] {
 }
 
 /**
- * Самая длинная цепочка слов мысли, идущая в речи подряд.
+ * Самая длинная цепочка слов мысли, идущая подряд **внутри одного
+ * предложения**, и предложения, где она встречается.
  *
  * Не короче двух слов: одно слово встречается в речи слишком часто,
  * чтобы что-то доказывать.
+ *
+ * **Внутри предложения, а не по всей речи, и это не мелочь.** Сперва
+ * цепочка искалась по речи целиком, склеенной в одну строку, — и
+ * захватывала слова через точку. Живой прогон 04.09.2026: у мысли
+ * «Разобрать балкон: коробки разобрать, ненужное выкинуть, посмотреть,
+ * сколько свободного места останется» нашлась цепочка «коробки разобрать
+ * ненужное выкинуть **посмотреть сколько**», а речь там разделена точкой:
+ * «…ненужное выкинуть. Посмотреть, сколько…». Такой цепочки не было ни в
+ * одном предложении, и правило молча выходило ни с чем — «на выходных»
+ * терялось.
+ *
+ * Длина берётся от большего к меньшему: чем длиннее доказанная цепочка,
+ * тем надёжнее связь. Нашлась в двух предложениях — связь неоднозначна, и
+ * более короткая цепочка её однозначной не сделает: она встречается по
+ * меньшей мере там же.
  */
-function longestRun(item: readonly string[], speech: string): string {
-  const haystack = ` ${tokens(speech).join(' ')} `;
+function longestRun(
+  item: readonly string[],
+  sentences: readonly string[],
+): { readonly run: string; readonly owning: readonly string[] } {
+  const asWords = sentences.map((sentence) => ` ${tokens(sentence).join(' ')} `);
 
   for (let length = item.length; length >= 2; length--) {
     for (let start = 0; start + length <= item.length; start++) {
       const run = item.slice(start, start + length).join(' ');
-      if (haystack.includes(` ${run} `)) return run;
+      const owning = sentences.filter((_unused, index) =>
+        (asWords[index] ?? '').includes(` ${run} `),
+      );
+
+      if (owning.length > 0) return { run, owning };
     }
   }
 
-  return '';
+  return { run: '', owning: [] };
 }
 
 export function dayFromOwnSentence(params: {
@@ -165,13 +188,8 @@ export function dayFromOwnSentence(params: {
   const item = tokens(params.itemText);
   if (item.length < 2) return undefined;
 
-  const run = longestRun(item, params.spoken);
-  if (run === '') return undefined;
-
-  const owning = sentencesOf(params.spoken).filter((sentence) =>
-    ` ${tokens(sentence).join(' ')} `.includes(` ${run} `),
-  );
-  if (owning.length !== 1) return undefined;
+  const { run, owning } = longestRun(item, sentencesOf(params.spoken));
+  if (run === '' || owning.length !== 1) return undefined;
 
   const marks = marksIn(owning[0] ?? '');
   if (marks.length !== 1) return undefined;
