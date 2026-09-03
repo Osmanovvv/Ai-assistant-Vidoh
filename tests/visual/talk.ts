@@ -1,4 +1,4 @@
-import { connect, press, readSettled, send, shot, type Reply } from './telegram.js';
+import { connect, press, readSettled, send, sendCommand, shot, type Reply } from './telegram.js';
 
 /**
  * Одна реплика боевому боту из командной строки (задача 3.31).
@@ -17,6 +17,7 @@ import { connect, press, readSettled, send, shot, type Reply } from './telegram.
  * Запуск:
  *   npx tsx tests/visual/talk.ts "надо купить хлеб и позвонить в банк"
  *   npx tsx tests/visual/talk.ts --press Отменить
+ *   npx tsx tests/visual/talk.ts --command /menu
  *   npx tsx tests/visual/talk.ts               # только прочитать последнее
  */
 
@@ -50,6 +51,15 @@ try {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? '';
+
+    // `--command /menu` отправляет команду в обход подсказки Telegram Web.
+    if (arg === '--command') {
+      const command = args[index + 1] ?? '';
+      index += 1;
+      say(`  → ${command} (команда)`);
+      show(await sendCommand(page, command));
+      continue;
+    }
 
     // `--press Подпись` нажимает кнопку вместо отправки текста.
     if (arg === '--press') {
