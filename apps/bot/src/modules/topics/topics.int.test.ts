@@ -9,7 +9,13 @@ import { upsertUser } from '../users/users.repo.js';
 import { FakeTopicGateway } from './fake-gateway.js';
 import { buildSummary, itemsOfTopic, refreshSummary, refreshSummaries } from './summary.service.js';
 import { appendTopics, archiveTopicsExcept, createTopics, listTopics } from './topics.repo.js';
-import { ensureThread, forgetThread, moveItemToTopic, topicByThread } from './topics.service.js';
+import {
+  ensureThread,
+  forgetThread,
+  moveItemToTopic,
+  removeThread,
+  topicByThread,
+} from './topics.service.js';
 
 /**
  * Ветки личного чата и сводки тем (задачи 2.15–2.17).
@@ -610,5 +616,59 @@ describe('невыбранные сферы уходят в архив и воз
     });
 
     expect(gateway.created.map((thread) => thread.name)).toEqual(['покупки']);
+  });
+});
+
+describe('удаление ветки не оставляет сирот (задача 3.46)', () => {
+  const noSleep = (): Promise<void> => Promise.resolve();
+
+  it('«подождите» от Telegram — пауза и повтор, ветка удалена', async () => {
+    // Иначе ветка осталась бы в чате навсегда: в базе её уже нет, а
+    // перечислить темы чата Bot API не умеет — ровно сирота от 29 августа.
+    const gateway = new FakeTopicGateway({ throttleDeletesFirst: { times: 1, retryAfterSec: 2 } });
+    const waited: number[] = [];
+
+    const outcome = await removeThread(
+      {
+        ...deps(gateway),
+        sleep: (ms) => {
+          waited.push(ms);
+          return noSleep();
+        },
+      },
+      { chatId: CHAT, threadId: 501 },
+    );
+
+    expect(outcome).toBe('deleted');
+    expect(waited).toEqual([2000]);
+    expect(gateway.deletedThreads.map((one) => one.threadId)).toEqual([501]);
+  });
+
+  it('ветки уже нет — это сделанное, а не отказ', async () => {
+    const gateway = new FakeTopicGateway({ goneThreads: new Set([502]) });
+
+    await expect(removeThread(deps(gateway), { chatId: CHAT, threadId: 502 })).resolves.toBe(
+      'gone',
+    );
+  });
+
+  it('второе «подождите» подряд уже не глотается', async () => {
+    // Один повтор, не цикл: если и он упёрся, темп надо снижать не здесь.
+    const gateway = new FakeTopicGateway({ throttleDeletesFirst: { times: 2, retryAfterSec: 1 } });
+
+    await expect(
+      removeThread({ ...deps(gateway), sleep: noSleep }, { chatId: CHAT, threadId: 503 }),
+    ).rejects.toThrow();
+  });
+
+  it('чужой отказ уходит наверх, а не глотается', async () => {
+    const gateway = new FakeTopicGateway();
+    const broken: typeof gateway = Object.assign(Object.create(gateway) as typeof gateway, {
+      deleteThread: () => Promise.reject(new Error('сеть оборвалась')),
+    });
+
+    await expect(removeThread(deps(broken), { chatId: CHAT, threadId: 504 })).rejects.toThrow(
+      'сеть оборвалась',
+    );
   });
 });

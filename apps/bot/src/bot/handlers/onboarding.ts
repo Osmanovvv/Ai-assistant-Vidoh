@@ -25,7 +25,7 @@ import {
 } from '../../modules/onboarding/onboarding.service.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
-import { isThreadGone } from '../../modules/topics/gateway.js';
+import { removeThread } from '../../modules/topics/topics.service.js';
 import {
   appendTopics,
   archiveTopicsExcept,
@@ -359,14 +359,9 @@ export function registerOnboardingHandlers(
       for (const topic of archived) {
         if (topic.tgThreadId === null) continue;
         try {
-          await gateway.deleteThread({ chatId, threadId: topic.tgThreadId });
+          await removeThread({ db, gateway, logger }, { chatId, threadId: topic.tgThreadId });
         } catch (error) {
-          if (!isThreadGone(error)) {
-            logger.warn(
-              { err: error, topic: topic.name },
-              'Не удалось убрать ветку архивной сферы',
-            );
-          }
+          logger.warn({ err: error, topic: topic.name }, 'Не удалось убрать ветку архивной сферы');
         }
       }
     }

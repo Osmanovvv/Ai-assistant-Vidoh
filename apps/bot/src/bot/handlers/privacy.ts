@@ -3,7 +3,8 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
-import { isThreadGone, type TopicGateway } from '../../modules/topics/gateway.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { removeThread } from '../../modules/topics/topics.service.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -145,15 +146,15 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
 
       for (const threadId of report.threadIds) {
         try {
-          await deps.topics.deleteThread({ chatId, threadId });
-          deleted++;
+          const outcome = await removeThread(
+            { db, gateway: deps.topics, logger },
+            { chatId, threadId },
+          );
+          if (outcome === 'deleted') deleted++;
+          else gone++;
         } catch (error) {
-          if (isThreadGone(error)) {
-            gone++;
-          } else {
-            failed++;
-            logger.warn({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
-          }
+          failed++;
+          logger.warn({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
         }
       }
 

@@ -30,6 +30,8 @@ export interface FakeGatewayOptions {
   readonly rejectUnchangedEdits?: boolean;
   /** Первые столько отправок отвечают 429 с просьбой подождать. */
   readonly throttleFirst?: { readonly times: number; readonly retryAfterSec: number };
+  /** Первые столько удалений веток отвечают 429 с просьбой подождать. */
+  readonly throttleDeletesFirst?: { readonly times: number; readonly retryAfterSec: number };
 }
 
 /** Отказ Telegram нужной формы: код, текст и параметры, как у настоящего. */
@@ -115,7 +117,19 @@ export class FakeTopicGateway implements TopicGateway {
   /** Удалённые ветки: пара «чат, ветка» на каждый вызов. */
   readonly deletedThreads: { chatId: number; threadId: number }[] = [];
 
+  private deletesThrottled = 0;
+
   deleteThread(params: { chatId: number; threadId: number }): Promise<void> {
+    const throttle = this.options.throttleDeletesFirst;
+    if (throttle && this.deletesThrottled < throttle.times) {
+      this.deletesThrottled++;
+      return Promise.reject(
+        telegramError(429, 'Too Many Requests: retry after', {
+          retry_after: throttle.retryAfterSec,
+        }),
+      );
+    }
+
     if (this.options.goneThreads?.has(params.threadId) === true) {
       return Promise.reject(telegramError(400, 'Bad Request: message thread not found'));
     }
