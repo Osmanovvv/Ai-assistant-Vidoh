@@ -241,11 +241,11 @@ export function correctItems(
     let deadline: ResolvedDeadline | undefined;
     if (resolved.ok) {
       deadline = resolved.deadline;
-      if (resolved.deadline !== undefined && resolved.corrected === 'weekday') {
+      if (resolved.deadline !== undefined && resolved.corrected !== undefined) {
         corrections.deadline++;
         logger?.info(
-          { promptVersion },
-          'День недели у срока не совпал с названным, дата пересчитана',
+          { promptVersion, повод: resolved.corrected },
+          'Срок не совпал с названным человеком днём, дата пересчитана кодом',
         );
       }
     } else {

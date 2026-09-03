@@ -103,7 +103,6 @@ describe('buildReply', () => {
 
   it('при усталости объём сокращается, а разговор закрывается без вопроса', () => {
     // §13.7: короткое признание, одно действие, выход из разговора.
-    // В эталонном ответе ТЗ фразы о сохранённом нет вовсе.
     const reply = buildReply({
       texts,
       acknowledgement: texts.answer.acknowledgementTiredFallback,
@@ -113,9 +112,52 @@ describe('buildReply', () => {
     });
 
     expect(reply.text).toContain(texts.answer.closingTired);
-    expect(reply.text).not.toContain(texts.answer.restSaved);
     expect(reply.text).not.toContain(texts.answer.question);
     expect(countQuestions(reply.text)).toBe(0);
+  });
+
+  it('при усталости остальное всё равно обещано и достижимо', () => {
+    /**
+     * Прежде эта ветка молчала о сохранённом и не давала кнопки к
+     * остальным делам — по эталону §13.7, где фразы о сохранённом нет.
+     * Живая выгрузка проджекта 03.09.2026 показала цену: двадцать дел
+     * словами «давай всё запишем, я просто хочу выдохнуть» — и в ответ
+     * одно действие без единого слова о том, что остальное записано.
+     *
+     * §13.9 требует безусловно: «Завершение короткое: остальное
+     * сохранено, держать в голове не нужно». А в главном эталоне §13.2
+     * усталость названа прямо, и фраза с кнопкой «Разобрать все» там
+     * есть.
+     */
+    const reply = buildReply({
+      texts,
+      acknowledgement: texts.answer.acknowledgementTiredFallback,
+      actions: ['Записать сына к врачу'],
+      hidden: 16,
+      tired: true,
+    });
+
+    expect(reply.text).toContain(texts.answer.restSaved);
+    expect(reply.buttons.map((button) => button.label)).toEqual([
+      texts.answer.buttonDoNow,
+      texts.answer.buttonShowAll,
+      texts.answer.buttonLater,
+    ]);
+    // Сокращение объёма §13.7 при этом на месте: вопроса нет.
+    expect(countQuestions(reply.text)).toBe(0);
+  });
+
+  it('при усталости и пустом остатке ничего не обещает', () => {
+    // Обещать нечего — значит и фразы нет, и кнопки нет.
+    const reply = buildReply({
+      texts,
+      acknowledgement: texts.answer.acknowledgementTiredFallback,
+      actions: ['Записать сына к врачу'],
+      hidden: 0,
+      tired: true,
+    });
+
+    expect(reply.text).not.toContain(texts.answer.restSaved);
     expect(reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonDoNow,
       texts.answer.buttonLater,
