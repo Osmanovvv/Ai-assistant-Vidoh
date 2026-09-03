@@ -8,7 +8,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { upsertUser } from '../users/users.repo.js';
 import { FakeTopicGateway } from './fake-gateway.js';
 import { buildSummary, itemsOfTopic, refreshSummary, refreshSummaries } from './summary.service.js';
-import { createTopics } from './topics.repo.js';
+import { appendTopics, archiveTopicsExcept, createTopics, listTopics } from './topics.repo.js';
 import { ensureThread, forgetThread, moveItemToTopic, topicByThread } from './topics.service.js';
 
 /**
@@ -534,5 +534,81 @@ describe('темп обращений к Telegram', () => {
     expect(touched).toBe(0);
     // Обе темы попробованы, ни одна не уронила заход.
     expect(gateway.sent).toHaveLength(0);
+  });
+});
+
+describe('невыбранные сферы уходят в архив и возвращаются (задача 3.43)', () => {
+  /**
+   * Базовые сферы теперь появляются на первой выгрузке, до опроса. Значит
+   * к шагу «какие сферы важны» у человека уже есть темы, которых он мог
+   * не выбрать, — и его ответ обязан их убрать, иначе выбор пуст.
+   */
+
+  it('архивирует всё, кроме выбранного и темы по умолчанию', async () => {
+    await seedTopics(['семья', 'здоровье', 'работа', 'покупки', 'личное']);
+    await testDb().update(topics).set({ tgThreadId: 41 }).where(eq(topics.name, 'работа'));
+
+    const archived = await archiveTopicsExcept(testDb(), userId, ['семья', 'здоровье']);
+
+    expect(archived.map((topic) => topic.name).sort()).toEqual(['покупки', 'работа']);
+    // Ветку архивной темы предстоит убрать из чата — её номер возвращается.
+    expect(archived.find((topic) => topic.name === 'работа')?.tgThreadId).toBe(41);
+
+    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
+    expect(alive).toEqual(['здоровье', 'личное', 'семья']);
+
+    // В базе строка остаётся: записи темы никуда не деваются (§8.2).
+    const row = await topicRow('работа');
+    expect(row?.isArchived).toBe(true);
+    expect(row?.tgThreadId).toBeNull();
+  });
+
+  it('«ё» и регистр в выборе не архивируют лишнего', async () => {
+    await seedTopics(['семья', 'здоровье', 'личное']);
+
+    const archived = await archiveTopicsExcept(testDb(), userId, ['Семья', 'Здоровье']);
+
+    expect(archived).toHaveLength(0);
+  });
+
+  it('согласие добавить сферу возвращает её из архива, а не плодит двойника', async () => {
+    // §6.4: невыбранная сфера ушла в архив, бот предложил её создать,
+    // человек согласился. Прежде вставка упиралась в уникальность имени и
+    // молча ничего не делала.
+    await seedTopics(['семья', 'здоровье', 'покупки', 'личное']);
+    await archiveTopicsExcept(testDb(), userId, ['семья', 'здоровье']);
+
+    const result = await appendTopics(testDb(), userId, ['покупки']);
+
+    expect(result.added).toEqual(['покупки']);
+    const alive = await listTopics(testDb(), userId);
+    expect(alive.map((topic) => topic.name).sort()).toEqual([
+      'здоровье',
+      'личное',
+      'покупки',
+      'семья',
+    ]);
+    // Одна строка, а не две: имя уникально на человека.
+    const rows = await testDb().select().from(topics).where(eq(topics.name, 'покупки'));
+    expect(rows).toHaveLength(1);
+    // Вернувшаяся сфера встаёт в конец списка, как и любая добавленная.
+    expect(alive.at(-1)?.name).toBe('покупки');
+  });
+
+  it('вернувшаяся сфера получает новую ветку при первой же сводке', async () => {
+    await seedTopics(['семья', 'покупки', 'личное']);
+    await testDb().update(topics).set({ tgThreadId: 77 }).where(eq(topics.name, 'покупки'));
+    await archiveTopicsExcept(testDb(), userId, ['семья']);
+    await appendTopics(testDb(), userId, ['покупки']);
+
+    const gateway = new FakeTopicGateway();
+    await refreshSummary(deps(gateway), {
+      userId,
+      chatId: CHAT,
+      topicName: 'покупки',
+      timeZone: MOSCOW,
+    });
+
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['покупки']);
   });
 });

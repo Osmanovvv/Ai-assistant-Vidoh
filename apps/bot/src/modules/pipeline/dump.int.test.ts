@@ -1746,9 +1746,17 @@ describe('онбординг: края', () => {
     expect(settings?.onboardingStep).toBe(STEP.timezone);
   });
 
-  it('пока опрос не закончен, разбор своего вопроса не задаёт', async () => {
-    // Человек мог наговорить ещё раз, не ответив. Тот вопрос никуда не
-    // делся, и второй к нему добавлять нельзя (§13.9).
+  it('застрявший опрос дозадаётся, а разбор своего вопроса не задаёт', async () => {
+    /**
+     * Человек мог наговорить ещё раз, не ответив. Прежде тот вопрос
+     * «никуда не делся» лишь на словах: заново его никто не задавал, и
+     * кто стал говорить дальше, оставался на своём шаге навсегда. Так
+     * проджект заказчицы простоял сутки на вопросе про вечер — и без
+     * последнего шага у него не появилось ни одной сферы (задача 3.43).
+     *
+     * §13.9 при этом цел: свой вопрос разбор не задаёт, место занимает
+     * вопрос опроса — один на реплику.
+     */
     const prompts = await seedPrompts();
     await testDb()
       .update(userSettings)
@@ -1777,8 +1785,136 @@ describe('онбординг: края', () => {
     expect(reply).toContain('Ещё одно дело');
     expect(countQuestions(reply)).toBe(0);
 
-    // И второй вопрос онбординга не задан: человек ещё на прежнем шаге.
-    expect(questions.asked).toHaveLength(0);
+    // Вопрос текущего шага задан заново — тот же, про утро, а не
+    // следующий: шаг человек не проходил.
+    expect(questions.asked).toHaveLength(1);
+    expect(questions.asked[0]).toBe(defaultTexts.onboarding.morning);
+
+    const [settings] = await testDb()
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.onboardingStep).toBe(STEP.morning);
+  });
+});
+
+describe('базовые сферы появляются на первой выгрузке (задача 3.43)', () => {
+  /**
+   * До этого темы рождались только на последнем шаге опроса. Проджект
+   * заказчицы застрял на предпоследнем и стал наговаривать дальше, как
+   * §12.2 и разрешает: тридцать две записи с метками сфер — и ни одной
+   * ветки в чате. §8.1 обещает «сразу видит ветки по сферам жизни», а
+   * §13.1 запрещает опрос до первой выгрузки. Значит ветки не могут
+   * ждать ответов.
+   */
+
+  async function topicNames(): Promise<string[]> {
+    const rows = await testDb().select().from(topics).where(eq(topics.userId, userId));
+    return rows.map((row) => row.name).sort();
+  }
+
+  it('первая разобранная выгрузка создаёт базовый набор и все ветки', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+    expect(await topicNames()).toEqual([]);
+
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына к врачу', offsetMs: 0 }]);
+    const { sender } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          topics: gateway,
+        }),
+      },
+      userId,
+    );
+
+    // Базовый набор §6.4 целиком, с темой по умолчанию.
+    expect(await topicNames()).toEqual(['здоровье', 'личное', 'покупки', 'работа', 'семья']);
+
+    // Ветки — все пять, включая пустые: человек видит структуру целиком,
+    // а не только ту сферу, куда попало первое дело.
+    expect(gateway.created.map((thread) => thread.name).sort()).toEqual([
+      'здоровье',
+      'личное',
+      'покупки',
+      'работа',
+      'семья',
+    ]);
+
+    // Запись сразу ссылается на свою тему, а не висит сиротой до опроса.
+    const [saved] = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved?.topicId).not.toBeNull();
+  });
+
+  it('следующая выгрузка сферы не пересоздаёт и трогает только своё', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына к врачу', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, topics: gateway }),
+      },
+      userId,
+    );
+    const threadsAfterFirst = gateway.created.length;
+    const writesAfterFirst = gateway.writes;
+
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 120_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          topics: gateway,
+          now: at(180_000),
+        }),
+      },
+      userId,
+    );
+
+    expect(gateway.created).toHaveLength(threadsAfterFirst);
+    expect(await topicNames()).toHaveLength(5);
+    // Сводка обновилась, но не у всех пяти — только у затронутой.
+    expect(gateway.writes - writesAfterFirst).toBeLessThan(5);
+    expect(gateway.writes).toBeGreaterThan(writesAfterFirst);
+  });
+
+  it('выгрузка без разбора сферы не создаёт', async () => {
+    // «Привет» — не повод строить человеку структуру жизни.
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, topics: gateway }),
+      },
+      userId,
+    );
+
+    expect(await topicNames()).toEqual([]);
+    expect(gateway.created).toHaveLength(0);
   });
 });
 

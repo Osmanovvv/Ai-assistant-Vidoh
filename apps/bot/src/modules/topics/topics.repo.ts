@@ -206,9 +206,9 @@ export async function appendTopics(
   names: readonly string[],
 ): Promise<AppendResult> {
   const existing = await listTopics(db, userId);
-  const taken = new Set(existing.map((topic) => topic.name.toLowerCase()));
+  const taken = new Set(existing.map((topic) => normalizeTopicName(topic.name)));
 
-  const fresh = names.filter((name) => !taken.has(name.toLowerCase()));
+  const fresh = names.filter((name) => !taken.has(normalizeTopicName(name)));
   if (fresh.length === 0) return { added: [], limited: false };
 
   const room = Math.max(0, MAX_TOPICS - existing.length);
@@ -218,17 +218,94 @@ export async function appendTopics(
 
   const nextOrder = existing.reduce((max, topic) => Math.max(max, topic.sortOrder), -1) + 1;
 
-  const rows = await db
-    .insert(topics)
-    .values(
-      allowed.map((name, index) => ({
-        userId,
-        name,
-        sortOrder: nextOrder + index,
-      })),
-    )
-    .onConflictDoNothing()
-    .returning({ name: topics.name });
+  /**
+   * Архивная тема с тем же именем **возвращается**, а не создаётся заново
+   * (задача 3.43).
+   *
+   * Иначе круг не замыкался: сфера, не выбранная на онбординге, уходит в
+   * архив, бот тут же предлагает её создать (§6.4), человек соглашается —
+   * а вставка упирается в уникальность имени и молча ничего не делает.
+   * Ветки у архивной темы уже нет, сводка создаст новую при надобности.
+   */
+  const archived = await db
+    .select({ id: topics.id, name: topics.name })
+    .from(topics)
+    .where(and(eq(topics.userId, userId), eq(topics.isArchived, true)));
 
-  return { added: rows.map((row) => row.name), limited: allowed.length < fresh.length };
+  const revivable = new Map(archived.map((topic) => [normalizeTopicName(topic.name), topic]));
+  const added: string[] = [];
+  let order = nextOrder;
+
+  for (const name of allowed) {
+    const dormant = revivable.get(normalizeTopicName(name));
+
+    if (dormant) {
+      await db
+        .update(topics)
+        .set({ isArchived: false, sortOrder: order })
+        .where(eq(topics.id, dormant.id));
+      added.push(dormant.name);
+      order++;
+      continue;
+    }
+
+    const rows = await db
+      .insert(topics)
+      .values({ userId, name, sortOrder: order })
+      .onConflictDoNothing()
+      .returning({ name: topics.name });
+
+    for (const row of rows) added.push(row.name);
+    order++;
+  }
+
+  return { added, limited: allowed.length < fresh.length };
+}
+
+export interface ArchivedTopic {
+  readonly id: string;
+  readonly name: string;
+  /** Ветка, которая была у темы: её ещё предстоит убрать из чата. */
+  readonly tgThreadId: number | null;
+}
+
+/**
+ * Убирает в архив сферы, которых человек не выбрал (задача 3.43).
+ *
+ * Понадобилось, когда базовые сферы стали появляться до онбординга: до
+ * этого шаг «какие сферы важны» создавал темы с нуля, и невыбранных
+ * просто не существовало. Теперь они есть — и ответ человека обязан
+ * их убрать, иначе выбор ничего не значит.
+ *
+ * Тема по умолчанию не архивируется никогда: §6.4 держит на ней всё,
+ * что не подошло никуда. Пустой выбор сюда не приходит — он означает
+ * «базовый набор», то есть оставить всё как есть.
+ *
+ * Ветка и сводка забываются здесь же: ветку удалит вызывающий, а тема
+ * без ветки при возвращении из архива получит новую (см. `appendTopics`).
+ */
+export async function archiveTopicsExcept(
+  db: Executor,
+  userId: string,
+  keep: readonly string[],
+): Promise<readonly ArchivedTopic[]> {
+  const wanted = new Set(keep.map(normalizeTopicName));
+  const existing = await listTopics(db, userId);
+
+  const doomed = existing.filter(
+    (topic) => !topic.isDefault && !wanted.has(normalizeTopicName(topic.name)),
+  );
+  if (doomed.length === 0) return [];
+
+  await db
+    .update(topics)
+    .set({ isArchived: true, tgThreadId: null, summaryMessageId: null })
+    .where(
+      inArray(
+        topics.id,
+        doomed.map((topic) => topic.id),
+      ),
+    );
+
+  return doomed.map((topic) => ({ id: topic.id, name: topic.name, tgThreadId: topic.tgThreadId }));
 }

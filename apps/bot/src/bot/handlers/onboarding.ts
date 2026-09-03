@@ -25,7 +25,14 @@ import {
 } from '../../modules/onboarding/onboarding.service.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
-import { appendTopics, listTopics, topicsFor } from '../../modules/topics/topics.repo.js';
+import { isThreadGone } from '../../modules/topics/gateway.js';
+import {
+  appendTopics,
+  archiveTopicsExcept,
+  listTopics,
+  topicsFor,
+  type ArchivedTopic,
+} from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textsFor } from '../../texts/index.js';
 import { findByTgId, recordConsentIfAbsent } from '../../modules/users/users.repo.js';
@@ -290,6 +297,26 @@ export function registerOnboardingHandlers(
     const { userId, state } = active;
     const chosen = chosenFromLabels(labelsOf(ctx), state.texts);
     const result = await createChosenTopics(db, userId, chosen);
+
+    /**
+     * Невыбранные сферы уходят в архив (задача 3.43).
+     *
+     * Базовые сферы теперь появляются на первой выгрузке, до опроса.
+     * Значит к этому шагу у человека уже есть темы, которых он мог не
+     * выбрать, — и его ответ обязан их убрать, иначе выбор пуст. Пустой
+     * ответ означает «базовый набор» и не архивирует ничего.
+     *
+     * Отказ архива не роняет опрос — тот же довод, что у переноса ниже.
+     */
+    let archived: readonly ArchivedTopic[] = [];
+    if (chosen.length > 0) {
+      try {
+        archived = await archiveTopicsExcept(db, userId, chosen);
+      } catch (error) {
+        logger.error({ err: error, userId }, 'Не удалось убрать невыбранные сферы в архив');
+      }
+    }
+
     await finish(db, userId, new Date());
 
     /**
@@ -322,6 +349,28 @@ export function registerOnboardingHandlers(
      */
     let summaries = 0;
     const chatId = ctx.chat?.id;
+
+    /**
+     * Ветки архивных сфер убираются из чата: оставить их — значит
+     * показывать человеку структуру, от которой он только что отказался.
+     * Пропавшая ветка — не ошибка: он мог удалить её сам.
+     */
+    if (gateway && chatId !== undefined) {
+      for (const topic of archived) {
+        if (topic.tgThreadId === null) continue;
+        try {
+          await gateway.deleteThread({ chatId, threadId: topic.tgThreadId });
+        } catch (error) {
+          if (!isThreadGone(error)) {
+            logger.warn(
+              { err: error, topic: topic.name },
+              'Не удалось убрать ветку архивной сферы',
+            );
+          }
+        }
+      }
+    }
+
     if (gateway && chatId !== undefined) {
       const context = await outputContextOf(db, userId);
       summaries = await refreshSummaries(
@@ -337,7 +386,15 @@ export function registerOnboardingHandlers(
     }
 
     logger.info(
-      { userId, created: result.created, fallback: result.fallback, moved, orphaned, summaries },
+      {
+        userId,
+        created: result.created,
+        archived: archived.map((topic) => topic.name),
+        fallback: result.fallback,
+        moved,
+        orphaned,
+        summaries,
+      },
       'Онбординг пройден',
     );
 

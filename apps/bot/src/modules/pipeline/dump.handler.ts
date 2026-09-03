@@ -25,6 +25,7 @@ import type { Applied } from '../resolver/patch.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { effectiveEnergy, selectForOutput } from '../output/filter.js';
 import {
+  createChosenTopics,
   firstStep,
   onboardingStateOf,
   questionFor,
@@ -941,7 +942,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     // ── Классификация ───────────────────────────────────────────────────
-    const topics = await topicsFor(db, batch.userId);
+    /**
+     * Базовые сферы появляются на первой разобранной выгрузке, а не на
+     * онбординге (задача 3.43).
+     *
+     * До этого темы рождались только на последнем шаге опроса. Проджект
+     * заказчицы застрял на предпоследнем — не ответил и стал наговаривать
+     * дальше, как §12.2 и разрешает. Итог: тридцать две записи с метками
+     * сфер и ни одной ветки в чате. Его слова: «он даже по сферам не
+     * распределяет».
+     *
+     * §8.1 обещает: «женщина открывает бота и сразу видит ветки по сферам
+     * жизни». §13.1 запрещает опрос до первой выгрузки. Вместе это значит
+     * одно: ветки не могут ждать ответов. Базовый набор §6.4 — и так
+     * то, что создаётся при пустом ответе; здесь он создаётся раньше, а
+     * шаг «какие сферы важны» потом его уточняет: невыбранное уходит в
+     * архив, выбранное добавляется.
+     */
+    const known = await topicsFor(db, batch.userId);
+    const spheresCreated = known.own
+      ? false
+      : (await createChosenTopics(db, batch.userId, [])).created > 0;
+    if (spheresCreated) {
+      deps.logger?.info({ userId: batch.userId }, 'Базовые сферы созданы на первой выгрузке');
+    }
+    const topics = spheresCreated ? await topicsFor(db, batch.userId) : known;
 
     const classified = await classifyUnits(heavy, {
       units: extracted.units,
@@ -1076,13 +1101,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const onboarding = await onboardingStateOf(db, batch.userId);
 
-    // Отправитель и адресат забираются сразу вместе: разбирать их по
-    // отдельности ниже пришлось бы второй раз, и проверка задвоилась бы.
-    const startOnboarding =
-      onboarding.step === 0 && deps.onboarding !== undefined && target !== undefined
-        ? { sender: deps.onboarding, target, step: firstStep(onboarding.name) }
-        : undefined;
-
     /**
      * Пока опрос идёт, разбор своего вопроса не задаёт.
      *
@@ -1091,6 +1109,29 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * значит нарушить §13.9 — пусть и двумя репликами, а не одной.
      */
     const onboardingOpen = onboarding.step > 0 && onboarding.step < STEP.done;
+
+    /**
+     * Застрявший опрос дозадаётся, а не только начинается (задача 3.43).
+     *
+     * Прежде вопрос уходил только с нуля. Кто не ответил и стал говорить
+     * дальше, оставался на своём шаге навсегда: 2.13 обещала, что
+     * «незаданные вопросы дождутся своей очереди», а очередь не
+     * наступала. Так проджект заказчицы простоял сутки на вопросе про
+     * вечер — и без последнего шага у него не появилось ни одной сферы.
+     *
+     * Один вопрос на реплику при этом соблюдён: свой вопрос разбор в
+     * это время не задаёт (см. выше), место занимает вопрос опроса.
+     */
+    const startOnboarding =
+      deps.onboarding !== undefined &&
+      target !== undefined &&
+      (onboarding.step === 0 || onboardingOpen)
+        ? {
+            sender: deps.onboarding,
+            target,
+            step: onboarding.step === 0 ? firstStep(onboarding.name) : onboarding.step,
+          }
+        : undefined;
 
     /**
      * §13.3: короткое добавление не порождает выдачу действий.
@@ -1218,7 +1259,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         {
           userId: batch.userId,
           chatId: target.chatId,
-          topicNames: [...new Set([...toSave.map((item) => item.topic), ...touchedTopics])],
+          /**
+           * Сферы только что появились — ветки создаются **все**, включая
+           * пустые: человек должен увидеть свою структуру целиком, а не
+           * только те сферы, куда что-то попало. То же правило, что на
+           * онбординге. Дальше — только затронутые.
+           */
+          topicNames: spheresCreated
+            ? [...topics.names]
+            : [...new Set([...toSave.map((item) => item.topic), ...touchedTopics])],
           timeZone: context.timeZone,
           profile: context.textProfile,
         },

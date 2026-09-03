@@ -15,6 +15,8 @@ import {
   topicRows,
   type Button,
 } from '../../modules/onboarding/onboarding.service.js';
+import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
+import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -74,7 +76,10 @@ function recordingQuestions(): {
   };
 }
 
-function createTestBot(questions?: QuestionSender): { bot: Bot; calls: ApiCall[] } {
+function createTestBot(
+  questions?: QuestionSender,
+  gateway?: FakeTopicGateway,
+): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -106,7 +111,7 @@ function createTestBot(questions?: QuestionSender): { bot: Bot; calls: ApiCall[]
     privacyPolicyUrl: POLICY_URL,
     ...(questions === undefined ? {} : { onboarding: questions }),
   });
-  registerOnboardingHandlers(bot, testDb(), logger);
+  registerOnboardingHandlers(bot, testDb(), logger, gateway);
 
   return { bot, calls };
 }
@@ -816,5 +821,116 @@ describe('опрос начинается с первого запуска (за
 
     expect(calls.some((one) => one.method === 'sendMessage')).toBe(true);
     expect((await onboardingStateOf(testDb(), userId)).step).toBe(0);
+  });
+});
+
+describe('сферы, появившиеся до опроса (задача 3.43)', () => {
+  /**
+   * Базовые сферы теперь создаются на первой выгрузке. К шагу «какие
+   * сферы важны» они уже есть — и ответ человека обязан их убрать, иначе
+   * выбор ничего не значит.
+   */
+
+  const BASE = ['семья', 'здоровье', 'работа', 'покупки', 'личное'] as const;
+
+  async function baseSpheresWithThreads(): Promise<void> {
+    await createTopics(
+      testDb(),
+      userId,
+      BASE.map((name) => ({ name, isDefault: name === 'личное' })),
+    );
+    // Две ветки уже созданы в чате — как после первой выгрузки.
+    await testDb().update(topics).set({ tgThreadId: 501 }).where(eq(topics.name, 'работа'));
+    await testDb().update(topics).set({ tgThreadId: 502 }).where(eq(topics.name, 'покупки'));
+  }
+
+  async function itemIn(topic: string): Promise<string> {
+    const [row] = await testDb().select().from(topics).where(eq(topics.name, topic));
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'купить пуфики',
+        type: 'TASK',
+        priority: 'LATER',
+        topic,
+        topicId: row?.id ?? null,
+        sourceOrder: 0,
+      })
+      .returning({ id: items.id });
+    return item?.id ?? '';
+  }
+
+  async function walkToSpheres(bot: Bot): Promise<void> {
+    await startedAt(STEP.timezone);
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
+    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
+  }
+
+  it('невыбранные сферы уходят в архив, их ветки убраны, дела переехали', async () => {
+    const gateway = new FakeTopicGateway();
+    const { bot } = createTestBot(undefined, gateway);
+    await bot.init();
+
+    await baseSpheresWithThreads();
+    const itemId = await itemIn('покупки');
+    await walkToSpheres(bot);
+
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
+    );
+
+    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
+    expect(alive).toEqual(['здоровье', 'личное', 'семья']);
+
+    // Строки в базе остались, помечены архивными.
+    const all = await testDb().select().from(topics).where(eq(topics.userId, userId));
+    expect(
+      all
+        .filter((topic) => topic.isArchived)
+        .map((topic) => topic.name)
+        .sort(),
+    ).toEqual(['покупки', 'работа']);
+
+    // Ветки архивных сфер убраны из чата — обе, у которых они были.
+    expect(gateway.deletedThreads.map((thread) => thread.threadId).sort()).toEqual([501, 502]);
+
+    // Дело из «покупок» уехало в тему по умолчанию вместе со ссылкой.
+    const [moved] = await testDb().select().from(items).where(eq(items.id, itemId));
+    const fallback = all.find((topic) => topic.name === 'личное');
+    expect(moved?.topic).toBe('личное');
+    expect(moved?.topicId).toBe(fallback?.id);
+  });
+
+  it('пустой выбор оставляет базовый набор как есть', async () => {
+    const gateway = new FakeTopicGateway();
+    const { bot } = createTestBot(undefined, gateway);
+    await bot.init();
+
+    await baseSpheresWithThreads();
+    await walkToSpheres(bot);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, [])));
+
+    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
+    expect(alive).toEqual(['здоровье', 'личное', 'покупки', 'работа', 'семья']);
+    expect(gateway.deletedThreads).toHaveLength(0);
+  });
+
+  it('выбранное сверх базового добавляется, а не упирается в существующее', async () => {
+    const gateway = new FakeTopicGateway();
+    const { bot } = createTestBot(undefined, gateway);
+    await bot.init();
+
+    await baseSpheresWithThreads();
+    await walkToSpheres(bot);
+
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'дети'])),
+    );
+
+    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
+    expect(alive).toEqual(['дети', 'личное', 'семья']);
   });
 });
