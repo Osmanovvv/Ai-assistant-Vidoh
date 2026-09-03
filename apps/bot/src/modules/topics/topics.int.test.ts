@@ -54,13 +54,14 @@ async function addItem(params: {
   readonly text: string;
   readonly deadlineAt?: Date | undefined;
   readonly status?: 'new' | 'done';
+  readonly type?: 'TASK' | 'DESIRE' | 'IDEA' | 'INFO' | 'EMOTION';
 }): Promise<string> {
   const [row] = await testDb()
     .insert(items)
     .values({
       userId,
       text: params.text,
-      type: 'TASK',
+      type: params.type ?? 'TASK',
       priority: 'SOON',
       topic: params.topic,
       sourceOrder: 0,
@@ -670,5 +671,84 @@ describe('удаление ветки не оставляет сирот (зад
     await expect(removeThread(deps(broken), { chatId: CHAT, threadId: 504 })).rejects.toThrow(
       'сеть оборвалась',
     );
+  });
+});
+
+describe('эмоции в сводку не попадают (задача 3.48)', () => {
+  /**
+   * §13.7: «эмоция распознаётся как отдельный тип, но **не создаёт
+   * записи**». У нас она хранится — из неё бот понимает состояние, и она
+   * входит в выгрузку данных §16, — но показывать её человеку пунктом
+   * списка нельзя.
+   *
+   * Найдено 03.09.2026 на живой сводке: в ветке «личное» строкой висело
+   * «Я уже задолбался всё это в голове держать» наравне с «позвонить в
+   * банк». Решение заказчика: убрать из сводок только эмоции, желания и
+   * замыслы оставить.
+   */
+
+  it('эмоция не показывается, а дело, желание и замысел — да', async () => {
+    await seedTopics(['личное']);
+    await addItem({ topic: 'личное', text: 'Позвонить в банк' });
+    await addItem({ topic: 'личное', text: 'Хочу выучить испанский', type: 'DESIRE' });
+    await addItem({ topic: 'личное', text: 'Может быть, стеллаж на балкон', type: 'IDEA' });
+    await addItem({ topic: 'личное', text: 'Садик оплачивается пятого', type: 'INFO' });
+    await addItem({
+      topic: 'личное',
+      text: 'Задолбался всё это держать в голове',
+      type: 'EMOTION',
+    });
+
+    const shown = await itemsOfTopic(testDb(), userId, 'личное');
+
+    expect(shown.map((item) => item.text)).toEqual([
+      'Позвонить в банк',
+      'Хочу выучить испанский',
+      'Может быть, стеллаж на балкон',
+      'Садик оплачивается пятого',
+    ]);
+  });
+
+  it('в тексте сводки эмоции нет', async () => {
+    await seedTopics(['личное']);
+    await addItem({ topic: 'личное', text: 'Позвонить в банк' });
+    await addItem({ topic: 'личное', text: 'Я на нуле совсем', type: 'EMOTION' });
+
+    const gateway = new FakeTopicGateway();
+    await refreshSummary(deps(gateway), {
+      userId,
+      chatId: CHAT,
+      topicName: 'личное',
+      timeZone: MOSCOW,
+    });
+
+    const text = gateway.sent[0]?.text ?? '';
+    expect(text).toContain('Позвонить в банк');
+    expect(text).not.toContain('на нуле');
+  });
+
+  it('сфера из одной эмоции выглядит пустой, а не заполненной', async () => {
+    // Иначе человек открыл бы ветку и увидел там свою же жалобу.
+    await seedTopics(['личное']);
+    await addItem({ topic: 'личное', text: 'Устала от всего этого', type: 'EMOTION' });
+
+    const gateway = new FakeTopicGateway();
+    await refreshSummary(deps(gateway), {
+      userId,
+      chatId: CHAT,
+      topicName: 'личное',
+      timeZone: MOSCOW,
+    });
+
+    expect(gateway.sent[0]?.text ?? '').toContain(defaultTexts.summary.empty);
+  });
+
+  it('эмоция при этом остаётся в базе: из неё бот понимает состояние', async () => {
+    await seedTopics(['личное']);
+    const id = await addItem({ topic: 'личное', text: 'Я на нуле совсем', type: 'EMOTION' });
+
+    const [row] = await testDb().select().from(items).where(eq(items.id, id));
+    expect(row?.type).toBe('EMOTION');
+    expect(row?.status).toBe('new');
   });
 });
