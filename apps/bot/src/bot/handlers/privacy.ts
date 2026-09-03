@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
-import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { isThreadGone, type TopicGateway } from '../../modules/topics/gateway.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -131,13 +131,33 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
     const chatId = ctx.chat?.id;
 
     if (chatId !== undefined) {
+      /**
+       * Итог уборки — в журнал на уровне `info`, отказы — `warn`.
+       *
+       * Раньше отказ писался как `debug`, то есть в бою был невидим: когда
+       * 03.09.2026 человек после удаления увидел ветки на месте, ответить,
+       * удалял ли их бот, было нечем — пришлось звать Telegram напрямую.
+       * (Удалял: ветки были уже сняты, а клиент показывал кэш.)
+       */
+      let deleted = 0;
+      let gone = 0;
+      let failed = 0;
+
       for (const threadId of report.threadIds) {
         try {
           await deps.topics.deleteThread({ chatId, threadId });
+          deleted++;
         } catch (error) {
-          logger.debug({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
+          if (isThreadGone(error)) {
+            gone++;
+          } else {
+            failed++;
+            logger.warn({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
+          }
         }
       }
+
+      logger.info({ tgId, deleted, gone, failed }, 'Ветки после удаления данных');
     }
 
     await ctx.editMessageText(texts.privacy.deleteDone);

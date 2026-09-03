@@ -84,6 +84,12 @@ const THREAD_GONE_DESCRIPTIONS = [
   'topic deleted',
   'topic_closed',
   'thread not found',
+  /**
+   * Так Telegram отвечает на удаление ветки, которой уже нет (проверено
+   * прямым вызовом 03.09.2026): свежая ветка удаляется с `ok`, а повторное
+   * удаление той же — `TOPIC_ID_INVALID`. Это «уже сделано», а не отказ.
+   */
+  'topic_id_invalid',
 ];
 
 export function isThreadGone(error: unknown): boolean {
@@ -106,6 +112,14 @@ const TOPICS_OFF_DESCRIPTIONS = [
   'the chat is not a forum',
   'not enough rights to manage topics',
   'method is available only for forum',
+  /**
+   * Те же отказы в другой записи (03.09.2026): так отвечает заглушка
+   * сквозного (`TOPICS_ARE_NOT_ENABLED`) и так — настоящий Telegram на
+   * методы форума в личном чате («the chat is not a supergroup forum»).
+   * Без них выключенный режим тем читался бы как поломка.
+   */
+  'topics_are_not_enabled',
+  'not a supergroup forum',
 ];
 
 export function isTopicsUnavailable(error: unknown): boolean {
