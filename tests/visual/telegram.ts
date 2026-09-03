@@ -227,7 +227,17 @@ export async function send(page: Page, text: string): Promise<Reply> {
   const composer = page.locator('[contenteditable="true"]').first();
   await composer.click();
   await composer.fill('');
-  await composer.pressSequentially(text, { delay: 8 });
+  /**
+   * Длинный текст печатается без задержки и с запасом по времени.
+   *
+   * Расшифровка настоящего голосового — это две-три тысячи знаков. При
+   * задержке 8 мс на знак печать занимает полминуты и упирается в предел
+   * Playwright: 03.09.2026 выгрузка проджекта так и не ушла.
+   */
+  await composer.pressSequentially(text, {
+    delay: text.length > 400 ? 0 : 8,
+    timeout: 180_000,
+  });
   await page.keyboard.press('Enter');
 
   return await waitForReply(page, before, SILENCE_MS + 8000);
