@@ -131,9 +131,16 @@ export async function openChat(page: Page): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first();
   const loginScreen = page.getByText('Log in by QR Code', { exact: false }).first();
 
+  /**
+   * Две минуты, а не сорок пять секунд. Снимок отказа 03.09.2026 показал
+   * одни обои чата: страница ещё грузилась, ни поля ввода, ни формы
+   * входа. Telegram Web в медленный час рисует список сообщений долго, и
+   * ронять прогон раньше времени — значит путать медленную сеть с
+   * поломкой.
+   */
   await Promise.race([
-    composer.waitFor({ state: 'visible', timeout: 45_000 }).catch(() => undefined),
-    loginScreen.waitFor({ state: 'visible', timeout: 45_000 }).catch(() => undefined),
+    composer.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined),
+    loginScreen.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined),
   ]);
 
   if (await loginScreen.isVisible()) {
