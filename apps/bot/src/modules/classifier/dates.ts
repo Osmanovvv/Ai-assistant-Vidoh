@@ -1,5 +1,5 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
-import { hasTimeWord, timeQuoteInSpeech, weekdaysIn } from './time-words.js';
+import { hasTimeWord, relativeDaysIn, timeQuoteInSpeech, weekdaysIn } from './time-words.js';
 
 /**
  * Разрешение сроков (задача 2.7).
@@ -32,7 +32,7 @@ export type DeadlineOutcome =
        * Что пришлось поправить за моделью. Пока одно: день недели не
        * совпал с названным человеком, и дата пересчитана кодом.
        */
-      readonly corrected?: 'weekday' | undefined;
+      readonly corrected?: 'weekday' | 'relative' | undefined;
     }
   | { readonly ok: false; readonly reason: string }
   /** Срока просто нет — это не ошибка. */
@@ -356,6 +356,38 @@ export function resolveDeadline(
      */
     const words = quote === '' ? context.said : `${context.said} ${quote}`;
     const named = weekdaysIn(words);
+
+    /**
+     * «Сегодня», «завтра», «послезавтра» — дата считается кодом (3.41).
+     *
+     * Живая выгрузка проджекта 03.09.2026: «ещё **сегодня** хотел
+     * позвонить бабушке» модель датировала **завтрашним** днём. Слово
+     * названо прямо, и дата из него следует однозначно — значит это
+     * работа кода, ровно как со днём недели.
+     *
+     * Только когда названо **одно** такое слово и день недели не назван:
+     * «сегодня купить продукты на завтра» толковать за человека нельзя,
+     * а «в четверг» разбирается правилом ниже.
+     *
+     * Только при точности `day`: «на этой неделе» и «в сентябре» словом
+     * о дне не опровергаются.
+     */
+    const shifts = relativeDaysIn(words);
+    if (raw.accuracy === 'day' && named.length === 0 && shifts.length === 1) {
+      const shift = shifts[0] ?? 0;
+      const wanted = new Date(
+        startOfDayInZone(
+          localDateParts(context.now, context.timeZone),
+          context.timeZone,
+        ).getTime() +
+          shift * 24 * 60 * 60_000,
+      );
+      const at2 = startOfDayInZone(localDateParts(wanted, context.timeZone), context.timeZone);
+
+      if (at2.getTime() !== at.getTime()) {
+        return { ok: true, deadline: { at: at2, accuracy: raw.accuracy }, corrected: 'relative' };
+      }
+    }
 
     /**
      * Назван день недели — берётся **ближайший** такой день (задача 3.39).

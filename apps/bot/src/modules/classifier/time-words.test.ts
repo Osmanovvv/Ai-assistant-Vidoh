@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveDeadline } from './dates.js';
-import { hasTimeWord, timeQuoteInSpeech, weekdayIn } from './time-words.js';
+import { hasTimeWord, relativeDaysIn, timeQuoteInSpeech, weekdayIn } from './time-words.js';
 
 /**
  * Проверка сроков словами человека (задача 2.7).
@@ -376,6 +376,98 @@ describe('назван день недели — берётся ближайши
     expect(outcome.ok).toBe(true);
     if (outcome.ok && outcome.deadline) {
       expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
+    }
+  });
+});
+
+describe('«сегодня» и «завтра» считает код (задача 3.41)', () => {
+  /** Четверг, 27 августа 2026, полдень по Москве. */
+  it('«сегодня» кладёт дату на сегодня, что бы ни сказала модель', () => {
+    // Живая выгрузка проджекта 03.09.2026: «ещё сегодня хотел позвонить
+    // бабушке» модель датировала завтрашним днём.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      {
+        now: NOW,
+        timeZone: ZONE,
+        said: 'позвонить бабушке',
+        quoted: 'сегодня',
+        spoken: 'ещё сегодня хотел позвонить бабушке',
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBe('relative');
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
+    }
+  });
+
+  it('«завтра» — ровно следующий день', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-01', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'отнести ноутбук в сервис завтра' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-27');
+    }
+  });
+
+  it('«послезавтра» не путается с «завтра»', () => {
+    // Слово содержит «завтра» целиком: без порядка поиска вышло бы два
+    // смещения сразу, и правило отказалось бы работать.
+    expect(relativeDaysIn('английский послезавтра')).toEqual([2]);
+    expect(relativeDaysIn('завтра в банк')).toEqual([1]);
+    expect(relativeDaysIn('сегодня вечером')).toEqual([0]);
+  });
+
+  it('верную дату не трогает', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-27', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'сегодня купить продукты' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('два слова о дне — за человека не решаем', () => {
+    // «Сегодня купить продукты на завтра»: какой из двух дней срок —
+    // догадка, а её цена неверный срок.
+    const outcome = resolveDeadline(
+      { deadline: '2026-08-28', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'сегодня купить продукты на завтра' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('назван день недели — правило дня недели главнее', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-03', accuracy: 'day' },
+      { now: NOW, timeZone: ZONE, said: 'сегодня решить, а сделать в четверг' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      // Ближайший четверг, а не сегодня.
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
+    }
+  });
+
+  it('неделя и месяц словом о дне не опровергаются', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-02', accuracy: 'week' },
+      { now: NOW, timeZone: ZONE, said: 'сегодня подумать про отчёт на этой неделе' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBeUndefined();
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-09-01');
     }
   });
 });

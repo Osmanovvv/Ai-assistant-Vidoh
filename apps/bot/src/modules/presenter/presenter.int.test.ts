@@ -150,7 +150,21 @@ describe('presentDump', () => {
     expect(result.reply.text).toContain(defaultTexts.answer.actionsLeadSingle);
     expect(result.reply.text).toContain(defaultTexts.answer.closingTired);
     expect(countQuestions(result.reply.text)).toBe(0);
-    expect(result.reply.buttons).toHaveLength(2);
+
+    /**
+     * Сокращается список, а не гарантия (исправлено 03.09.2026 по
+     * живой выгрузке проджекта). §13.9 требует безусловно: «остальное
+     * сохранено, держать в голове не нужно», а в главном эталоне §13.2
+     * усталость названа прямо и кнопка «Разобрать все» на месте.
+     *
+     * Спрятано семь дел — значит и фраза, и путь к ним обязаны быть.
+     */
+    expect(result.reply.text).toContain(defaultTexts.answer.restSaved);
+    expect(result.reply.buttons.map((button) => button.label)).toEqual([
+      defaultTexts.answer.buttonDoNow,
+      defaultTexts.answer.buttonShowAll,
+      defaultTexts.answer.buttonLater,
+    ]);
   });
 
   it('неизвестный профиль берёт словарь по умолчанию', async () => {
