@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { saveDraft } from '../items/items.repo.js';
-import { readAnswer } from './answer.js';
+import { answerRemainder, readAnswer } from './answer.js';
 import { applyDecision, type Applied } from './patch.js';
 import { answerQuestion, closeOpenQuestion, openQuestionOf } from './questions.repo.js';
 
@@ -50,6 +50,15 @@ export interface PendingResult {
    * и лишний вызов стоил бы денег ради того же результата.
    */
   readonly carryOver?: string | undefined;
+  /**
+   * В ответе были слова сверх ответа, и они сохранены черновиком (3.44).
+   *
+   * «Да, к прошлой, и ещё купить чехол»: правка применена, а «купить
+   * чехол» не выброшено — §9.1. Черновиком, а не записью: остаток
+   * ответа может быть и пояснением («к прошлой, той что про врача»), и
+   * выдавать его за дело нельзя.
+   */
+  readonly leftoverSaved?: boolean | undefined;
 }
 
 export interface SettleParams {
@@ -100,6 +109,32 @@ export async function settlePendingQuestion(
     return { kind: 'unclear' };
   }
 
+  /**
+   * Это была мысль, а не ответ (3.44): маршрутизатор ошибся. Вопрос
+   * снимается, как при любой новой выгрузке без ответа, сказанное тогда
+   * сохраняется, а сама реплика уходит в разбор — через `carryOver`.
+   */
+  if (reading === 'content') {
+    await closeOpenQuestion(db, params.userId, 'superseded', now);
+    await park('вопрос снят новой мыслью — ответа не было');
+
+    params.logger?.info({ userId: params.userId }, 'Ответом оказалась новая мысль, вопрос снят');
+    return { kind: 'superseded', carryOver: params.answerText };
+  }
+
+  /** Слова сверх ответа — в черновик, чтобы не пропали (§9.1, 3.44). */
+  const leftover = answerRemainder(params.answerText);
+  const keepLeftover = async (): Promise<boolean> => {
+    if (leftover === '') return false;
+    await saveDraft(db, {
+      userId: params.userId,
+      batchId: open.batchId,
+      text: leftover,
+      reason: 'слова из ответа на вопрос — сохранены отдельно',
+    });
+    return true;
+  };
+
   const outcome = await answerQuestion(db, {
     questionId: open.id,
     userId: params.userId,
@@ -111,7 +146,9 @@ export async function settlePendingQuestion(
   // нажатие кнопки, пришедшее пока шла расшифровка.
   if (outcome.kind === 'stale') return { kind: 'none' };
 
-  if (reading === 'separate') return { kind: 'separate', carryOver: open.segment };
+  if (reading === 'separate') {
+    return { kind: 'separate', carryOver: open.segment, leftoverSaved: await keepLeftover() };
+  }
 
   const applied = await applyDecision(db, {
     userId: params.userId,
@@ -125,5 +162,9 @@ export async function settlePendingQuestion(
     changedBy: 'user',
   });
 
-  return applied === undefined ? { kind: 'nothingToApply' } : { kind: 'applied', applied };
+  const leftoverSaved = await keepLeftover();
+
+  return applied === undefined
+    ? { kind: 'nothingToApply', leftoverSaved }
+    : { kind: 'applied', applied, leftoverSaved };
 }

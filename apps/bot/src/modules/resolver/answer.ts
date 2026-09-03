@@ -20,6 +20,15 @@ export type AnswerReading =
   | 'attach'
   /** «Это новое». */
   | 'separate'
+  /**
+   * Это не ответ, а новая мысль (задача 3.44).
+   *
+   * Маршрутизатор счёл реплику ответом на открытый вопрос, но в ней
+   * есть содержание сверх слов ответа: «добавь ещё купить чехол для
+   * зонта». Прочитать её как «добавь к прошлой» значило бы применить
+   * отложенную правку и **выбросить** «купить чехол» — §9 запрещает.
+   */
+  | 'content'
   /** Ответ есть, но что он значит — непонятно. */
   | 'unclear';
 
@@ -59,11 +68,36 @@ const ATTACH_PHRASES = [
   'про нее',
   'про него',
   'это про',
-  'добавь',
-  'добавить',
-  'поправь',
-  'исправь',
-  'перенеси',
+];
+
+/**
+ * Глаголы, которые сами по себе значат «к прошлой» — но **только сами по
+ * себе** (задача 3.44).
+ *
+ * «Добавь» в ответ на «это про запись к врачу или отдельная история?» —
+ * согласие. А «добавь ещё купить чехол для зонта» — быстрое добавление
+ * §13.3, которое случайно пришло, пока висел вопрос. Живой прогон
+ * 03.09.2026: второе прочиталось как первое, правка применилась, а
+ * «купить чехол» пропало без следа.
+ */
+const ATTACH_VERBS = ['добавь', 'добавить', 'поправь', 'исправь', 'перенеси'];
+
+/** Связки, которые не несут содержания и не делают реплику мыслью. */
+const FILLERS = [
+  'и',
+  'а',
+  'ну',
+  'вот',
+  'тоже',
+  'еще',
+  'пожалуйста',
+  'ладно',
+  'ок',
+  'окей',
+  'хорошо',
+  'давай',
+  'это',
+  'же',
 ];
 
 /** Явное «это новое». */
@@ -112,6 +146,26 @@ function hasPhrase(words: readonly string[], phrase: string): boolean {
   );
 }
 
+/**
+ * Слова реплики, которые не относятся к ответу на вопрос.
+ *
+ * Из реплики вычитается весь словарь ответов и связки; что осталось —
+ * содержание. Меньше двух слов содержанием не считается: «добавь
+ * записи» — огрызок, а не мысль.
+ */
+export function answerRemainder(text: string): string {
+  const words = wordsOf(text);
+  const vocabulary = new Set<string>();
+
+  for (const list of [UNSURE, ATTACH_PHRASES, SEPARATE_PHRASES]) {
+    for (const phrase of list) for (const part of phrase.split(' ')) vocabulary.add(part);
+  }
+  for (const word of [...ATTACH_VERBS, ...YES, ...NO, ...FILLERS]) vocabulary.add(word);
+
+  const rest = words.filter((word) => !vocabulary.has(word));
+  return rest.length >= 2 ? rest.join(' ') : '';
+}
+
 export function readAnswer(text: string): AnswerReading {
   const words = wordsOf(text);
   if (words.length === 0) return 'unclear';
@@ -128,6 +182,17 @@ export function readAnswer(text: string): AnswerReading {
   if (ATTACH_PHRASES.some((phrase) => hasPhrase(words, phrase))) return 'attach';
   if (SEPARATE_PHRASES.some((phrase) => hasPhrase(words, phrase))) return 'separate';
 
+  /**
+   * Дальше — только если в реплике нет содержания сверх ответа (3.44).
+   *
+   * Направление названо явно — оно и решает, а остаток слов сохранится
+   * отдельно (см. `answerRemainder`). А вот согласие, отказ и голый
+   * глагол при содержании в два слова и больше — это мысль, которую
+   * маршрутизатор принял за ответ. Её место в разборе, а не в правке.
+   */
+  if (answerRemainder(text) !== '') return 'content';
+
+  if (ATTACH_VERBS.some((word) => words.includes(word))) return 'attach';
   if (YES.some((word) => words.includes(word))) return 'attach';
   if (NO.some((word) => words.includes(word))) return 'separate';
 
