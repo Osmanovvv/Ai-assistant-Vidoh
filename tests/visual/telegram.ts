@@ -254,7 +254,14 @@ export async function sendCommand(page: Page, command: string): Promise<Reply> {
 export async function press(page: Page, label: string): Promise<Reply> {
   const before = await readSettled(page);
 
-  const button = page.locator('.reply-markup-button', { hasText: label }).last();
+  /**
+   * Подпись сверяется **целиком**, а не как подстрока. Иначе «Удалить»
+   * находит и «Удалить мои данные» — 03.09.2026 прогон удаления нажал не
+   * ту кнопку и сбился на шаг.
+   */
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const exact = new RegExp(`^\\s*${escaped}\\s*$`, 'u');
+  const button = page.locator('.reply-markup-button', { hasText: exact }).last();
   if ((await button.count()) === 0) {
     throw new Error(`Кнопки «${label}» нет на экране. Есть: ${before.rows.flat().join(', ')}`);
   }
