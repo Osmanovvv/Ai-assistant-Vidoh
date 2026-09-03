@@ -11,6 +11,7 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline } from './dates.js';
+import { dayFromOwnSentence } from './own-sentence.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -254,6 +255,38 @@ export function correctItems(
         { promptVersion, reason: resolved.reason },
         'Срок не прошёл проверку, запись сохраняется без срока',
       );
+    }
+
+    /**
+     * Запасной путь: день из своего предложения речи (задача 3.49).
+     *
+     * Живая выгрузка проджекта 03.09.2026: «Ещё **сегодня** хотел
+     * позвонить бабушке» и «Вот **на выходных** надо бы разобрать
+     * балкон» — модель не дала этим делам срока вовсе. Слово о дне стоит
+     * в том же предложении речи, и берётся оно только при трёх
+     * доказанных условиях — дословность, единственность предложения,
+     * единственность обозначения дня (см. `own-sentence.ts`).
+     *
+     * Только когда своего срока не вышло: дату модели здесь никто не
+     * перебивает. И только у дел: лишний срок у желания — выдуманный
+     * срок, худшая из ошибок разбора.
+     */
+    if (deadline === undefined && isActionable(type) && ctx.spoken !== undefined) {
+      const fromSentence = dayFromOwnSentence({
+        itemText: item.text,
+        spoken: ctx.spoken,
+        now,
+        timeZone: ctx.timeZone,
+      });
+
+      if (fromSentence) {
+        deadline = { at: fromSentence.at, accuracy: fromSentence.accuracy };
+        corrections.deadline++;
+        logger?.info(
+          { promptVersion, точность: fromSentence.accuracy },
+          'Срок взят из своего предложения речи: модель его не дала',
+        );
+      }
     }
 
     /**
