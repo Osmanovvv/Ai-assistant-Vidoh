@@ -120,8 +120,13 @@ export async function readSettled(page: Page): Promise<Reply> {
 }
 
 export async function openChat(page: Page): Promise<void> {
-  await page.goto(`${BASE}#@${BOT}`);
-  await page.waitForLoadState('domcontentloaded');
+  /**
+   * Ждём только разметку, а не полную загрузку: Telegram Web тянет
+   * ресурсы долго и не всегда доводит `load` до конца — 03.09.2026 драйвер
+   * дважды упал на этом, хотя переписка была на экране. Готовность
+   * проверяется ниже по полю ввода, а не по событию страницы.
+   */
+  await page.goto(`${BASE}#@${BOT}`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
 
   const composer = page.locator('[contenteditable="true"]').first();
   const loginScreen = page.getByText('Log in by QR Code', { exact: false }).first();
@@ -141,7 +146,10 @@ export async function openChat(page: Page): Promise<void> {
   }
 
   if (!(await composer.isVisible())) {
-    throw new Error(`Не открылась переписка с @${BOT}`);
+    // Снимок при отказе: без него непонятно, что именно было на экране —
+    // пустая страница, другая раскладка или просьба войти заново.
+    const failure = await shot(page, 'open-failed');
+    throw new Error(`Не открылась переписка с @${BOT}. Снимок: ${failure}`);
   }
 }
 
@@ -197,6 +205,37 @@ export async function send(page: Page, text: string): Promise<Reply> {
   await page.keyboard.press('Enter');
 
   return await waitForReply(page, before, SILENCE_MS + 8000);
+}
+
+/**
+ * Отправляет команду вроде `/menu` — в обход подсказки Telegram Web.
+ *
+ * Обычный `send` для команд не годится: при вводе слэша открывается
+ * список команд, и Enter выбирает из него **первую**, а не набранную
+ * (03.09.2026 вместо `/menu` ушёл `/start`). Escape закрывает список,
+ * текст в поле остаётся, и Enter отправляет именно его.
+ */
+export async function sendCommand(page: Page, command: string): Promise<Reply> {
+  const before = await readSettled(page);
+
+  const composer = page.locator('[contenteditable="true"]').first();
+  await composer.click();
+  await composer.fill('');
+  await composer.pressSequentially(command, { delay: 8 });
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await page.keyboard.press('Enter');
+
+  // Команда обрабатывается сразу, мимо окна склейки.
+  const deadline = Date.now() + PRESS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(2500);
+    const now = await readChat(page);
+    if (now.text !== before.text && now.text.length > 0) return now;
+  }
+
+  return { text: '(бот не ответил на команду за отведённое время)', rows: [] };
 }
 
 /**
