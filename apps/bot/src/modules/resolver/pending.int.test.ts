@@ -179,3 +179,50 @@ describe('человек не ответил и прислал новое', () =
     expect((await reread()).deadlineAt).toBeNull();
   });
 });
+
+describe('слова сверх ответа не пропадают (§9.1, задача 3.44)', () => {
+  it('«к прошлой, и ещё купить чехол»: правка применена, остаток в черновике', async () => {
+    await ask();
+
+    const result = await settle('да, к прошлой, и ещё купить чехол');
+
+    expect(result.kind).toBe('applied');
+    expect(result.leftoverSaved).toBe(true);
+    expect(await draftTexts()).toContain('купить чехол');
+  });
+
+  it('«это новое, и купить хлеб»: сказанное в разбор, остаток в черновике', async () => {
+    await ask();
+
+    const result = await settle('нет, это новое, и купить хлеб');
+
+    expect(result.kind).toBe('separate');
+    expect(result.carryOver).toBe('нет, в пятницу');
+    expect(result.leftoverSaved).toBe(true);
+    expect(await draftTexts()).toContain('купить хлеб');
+  });
+
+  it('короткий ответ черновиков не плодит', async () => {
+    await ask();
+
+    const result = await settle('да, к прошлой');
+
+    expect(result.leftoverSaved).toBe(false);
+    expect(await draftTexts()).toEqual([]);
+  });
+
+  it('мысль вместо ответа: вопрос снят, сказанное сохранено, мысль уходит в разбор', async () => {
+    // Живой прогон 03.09.2026: «добавь ещё купить чехол для зонта»
+    // прочиталось как «добавь к прошлой», и чехол пропал.
+    await ask();
+
+    const result = await settle('добавь ещё купить чехол для зонта');
+
+    expect(result.kind).toBe('superseded');
+    expect(result.carryOver).toBe('добавь ещё купить чехол для зонта');
+    // Запись, о которой спрашивали, не тронута.
+    expect((await reread()).deadlineAt).toBeNull();
+    // Сказанное к вопросу — черновиком, как при любом снятом вопросе.
+    expect(await draftTexts()).toContain('нет, в пятницу');
+  });
+});

@@ -627,6 +627,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       parsed.push({ intent: 'DUMP', text: settled.carryOver });
     }
 
+    /**
+     * В ответе были слова сверх ответа — они сохранены черновиком, и
+     * человеку об этом сказано (3.44). Иначе он увидит «Перенесла…» и
+     * решит, что остальное бот пропустил мимо ушей.
+     */
+    if (settled.leftoverSaved === true) {
+      happened.said = true;
+      await tell(texts.resolver.leftoverSaved);
+    }
+
     if (settled.kind === 'applied' && settled.applied !== undefined) {
       happened.said = true;
       rememberTopics(touchedTopics, settled.applied);

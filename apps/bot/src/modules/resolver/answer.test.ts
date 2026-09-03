@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readAnswer } from './answer.js';
+import { answerRemainder, readAnswer } from './answer.js';
 
 /**
  * Чтение голосового ответа на уточняющий вопрос (§7.3 ТЗ, задача 3.6).
@@ -70,8 +70,15 @@ describe('чего словарь не должен путать', () => {
     // «Нести», «неделя», «дать» содержат «не» и «да» подстрокой.
     // Границы слова через `\b` кириллицу не видят, отсюда разбиение.
     for (const text of ['нести продукты', 'неделя', 'дать ответ']) {
-      expect(readAnswer(text), text).toBe('unclear');
+      expect(readAnswer(text), text).not.toBe('separate');
+      expect(readAnswer(text), text).not.toBe('attach');
     }
+
+    // Одно слово — непонятно; два слова содержания — мысль (3.44),
+    // и она уйдёт в разбор, а не пропадёт.
+    expect(readAnswer('неделя')).toBe('unclear');
+    expect(readAnswer('нести продукты')).toBe('content');
+    expect(readAnswer('дать ответ')).toBe('content');
   });
 
   it('пустой и бессмысленный ответ — непонятно', () => {
@@ -82,5 +89,47 @@ describe('чего словарь не должен путать', () => {
 
   it('«ё» и регистр не мешают', () => {
     expect(readAnswer('Да, про неё')).toBe('attach');
+  });
+});
+
+describe('содержание — не ответ (задача 3.44)', () => {
+  /**
+   * Живой прогон 03.09.2026: бот спросил «это про „Купить зонт" или
+   * отдельная история?», человек сказал «добавь ещё купить чехол для
+   * зонта». Голый глагол «добавь» прочитался как «к прошлой»: правка
+   * применилась, а «купить чехол» пропало без следа. §9 запрещает.
+   */
+  it('глагол с содержанием — мысль, а не согласие', () => {
+    expect(readAnswer('добавь ещё купить чехол для зонта')).toBe('content');
+    expect(readAnswer('запиши купить хлеб и молоко')).toBe('content');
+    expect(readAnswer('перенеси встречу с бухгалтером')).toBe('content');
+  });
+
+  it('согласие или отказ с содержанием — тоже мысль', () => {
+    expect(readAnswer('да, купить хлеб')).toBe('content');
+    expect(readAnswer('нет, позвонить маме вечером')).toBe('content');
+  });
+
+  it('голый глагол и короткое согласие остаются ответом', () => {
+    expect(readAnswer('добавь')).toBe('attach');
+    expect(readAnswer('перенеси')).toBe('attach');
+    expect(readAnswer('да')).toBe('attach');
+    expect(readAnswer('нет')).toBe('separate');
+    // Одно слово содержания — не мысль: «добавь записи» огрызок.
+    expect(readAnswer('добавь туда')).toBe('attach');
+  });
+
+  it('названное направление решает, даже если дальше есть слова', () => {
+    // Человек сказал, куда, — это ответ. Остаток сохранится отдельно.
+    expect(readAnswer('да, к прошлой, и ещё купить чехол')).toBe('attach');
+    expect(readAnswer('нет, это новое, и купить хлеб')).toBe('separate');
+  });
+
+  it('остаток ответа — слова сверх словаря, не меньше двух', () => {
+    expect(answerRemainder('да, к прошлой, и ещё купить чехол')).toBe('купить чехол');
+    expect(answerRemainder('добавь ещё купить чехол для зонта')).toBe('купить чехол для зонта');
+    expect(answerRemainder('да, к прошлой')).toBe('');
+    expect(answerRemainder('добавь туда')).toBe('');
+    expect(answerRemainder('')).toBe('');
   });
 });

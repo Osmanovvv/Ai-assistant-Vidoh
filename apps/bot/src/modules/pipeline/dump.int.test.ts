@@ -2200,6 +2200,86 @@ describe('ответ на уточняющий вопрос голосом (§7.
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts.map((row) => row.text)).toContain('нет, в пятницу');
   });
+
+  it('мысль, принятая за ответ, становится записью, а не правкой (задача 3.44)', async () => {
+    /**
+     * Живой прогон 03.09.2026: бот спросил «это про „Купить зонт" или
+     * отдельная история?», человек сказал «добавь ещё купить чехол для
+     * зонта». Маршрутизатор счёл это ответом, словарь прочитал «добавь»
+     * как «к прошлой»: перенос применился, а «купить чехол» пропало.
+     */
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion();
+    const { sender, all, said } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'добавь ещё купить чехол для зонта', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'ANSWER', text: 'добавь ещё купить чехол для зонта' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Чехол стал записью, а не пропал.
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const cover = saved.find((row) => row.text.toLowerCase().includes('чехол'));
+    expect(cover).toBeDefined();
+    expect(cover?.isDraft).toBe(false);
+
+    // Запись, о которой спрашивали, не тронута: правки не было.
+    const [asked] = saved.filter((row) => row.id === itemId);
+    expect(asked?.deadlineAt).toBeNull();
+
+    // Вопрос снят, сказанное к нему сохранено черновиком.
+    const [question] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(question?.outcome).toBe('superseded');
+    expect(saved.filter((row) => row.isDraft).map((row) => row.text)).toContain('нет, в пятницу');
+
+    // И кнопки отката нет: отменять нечего.
+    expect(said.flatMap((one) => one.buttons)).not.toContain(defaultTexts.resolver.buttonUndo);
+    expect(all.join(NEWLINE)).not.toContain('Перенесла');
+  });
+
+  it('ответ с лишними словами: правка применена, лишнее сохранено и названо', async () => {
+    const prompts = await seedPrompts();
+    await itemAndQuestion();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'да, к прошлой, и ещё купить чехол', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'ANSWER', text: 'да, к прошлой, и ещё купить чехол' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts.map((row) => row.text)).toContain('купить чехол');
+    expect(all.join(NEWLINE)).toContain(defaultTexts.resolver.leftoverSaved);
+  });
 });
 
 describe('правка доходит до резолвера (§7, задача 3.6а)', () => {

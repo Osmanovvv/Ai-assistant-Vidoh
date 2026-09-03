@@ -153,6 +153,7 @@ export const reserved: TextProfile = {
     buttonAttach: 'Добавить к прошлой',
     buttonSeparate: 'Это новое',
     attached: 'Добавила к прошлой.',
+    leftoverSaved: 'Остальное из этой фразы сохранила отдельно — разберём потом.',
     separated: 'Хорошо, завела отдельно.',
     noticed: (title, dates, howOften) => `Ты писала про «${title}» ${dates}. Это ${howOften}?`,
     buttonRemember: 'Да, запомни',
