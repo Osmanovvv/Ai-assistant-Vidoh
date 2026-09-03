@@ -36,6 +36,7 @@ import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.se
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
+import { saysNoStrength } from '../output/exhaustion.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
@@ -294,21 +295,34 @@ async function withEmbeddings(
   return result;
 }
 
-/** §13.7: высказанное состояние уменьшает объём выдачи и больше ничего. */
+/**
+ * §13.7: высказанное состояние уменьшает объём выдачи и больше ничего.
+ *
+ * **Уровень снижает только «сил нет вовсе» (задача 3.47).** Прежде любая
+ * эмоция опускала уровень до «мало», а сверху ещё стоял предел «одно
+ * дело» — и человек, сказавший «задолбался всё это в голове держать»,
+ * получал на двадцать дел одну строку. Заказчик попросил показывать три
+ * самых важных, и ТЗ это различие делает само: «вообще без сил» — одно
+ * действие, «ничего не успеваю» — сокращённая выдача, а главный эталон
+ * §13.2 при названной усталости показывает три.
+ *
+ * Короткая форма §13.7 при этом остаётся при любой эмоции: она задаётся
+ * составом выгрузки в представлении, а не уровнем сил.
+ */
 async function applyEmotion(
   db: Database,
   deps: DumpHandlerDeps,
   userId: string,
-  hasEmotion: boolean,
+  emotions: readonly string[],
   current: EnergyLevelValue,
   now: Date,
 ): Promise<EnergyLevelValue> {
-  if (!hasEmotion) return current;
+  if (!emotions.some((text) => saysNoStrength(text))) return current;
 
-  const lowered = await lowerEnergy(db, userId, 'low', { at: now, current });
+  const lowered = await lowerEnergy(db, userId, 'empty', { at: now, current });
   if (lowered) {
-    deps.logger?.debug({ userId }, 'Уровень сил снижен: в выгрузке было состояние');
-    return 'low';
+    deps.logger?.info({ userId }, 'Уровень сил снижен: человек сказал, что сил нет');
+    return 'empty';
   }
 
   return current;
@@ -1077,11 +1091,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
+    /** Слова человека о состоянии: по ним решается, сколько дел показать. */
+    const emotionTexts = units.filter((unit) => unit.type === 'EMOTION').map((unit) => unit.text);
+    const noStrength = emotionTexts.some((text) => saysNoStrength(text));
+
     const energyNow = await applyEmotion(
       db,
       deps,
       batch.userId,
-      composition.emotions > 0,
+      emotionTexts,
       effectiveEnergy(context.state, context.energyDefault, { now, timeZone: context.timeZone }),
       now,
     );
@@ -1092,12 +1110,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       timeZone: context.timeZone,
       mentioned,
       /**
-       * §13.7 и §21 п.7: если человек сказал о своём состоянии, действие
-       * в ответе ровно одно — «короткое признание, сокращение объёма,
-       * одно действие». Не два, как даёт уровень «сил мало»: два дела
-       * человеку, который только что сказал «сил нет», — это спор с ним.
+       * §13.7 и §21 п.7: «сил нет вовсе» — действие в ответе ровно одно.
+       *
+       * Предел ставится здесь, а не только через уровень сил: требование
+       * про **эту** выгрузку, и оно не должно зависеть от того, каким
+       * оказался сохранённый уровень. Два дела человеку, который только
+       * что сказал «сил нет», — это спор с ним.
+       *
+       * **Прочие состояния предела не ставят (задача 3.47).** «Задолбался»
+       * и «ничего не успеваю» дают три дела: так просил заказчик, и так
+       * же поступает главный эталон §13.2, где усталость названа прямо.
        */
-      ...(composition.emotions > 0 ? { cap: 1 } : {}),
+      ...(noStrength ? { cap: 1 } : {}),
     });
 
     /**

@@ -739,50 +739,94 @@ describe('разбор', () => {
     expect(batch?.status).toBe('queued');
   });
 
-  it('высказанное состояние снижает уровень сил и оставляет одно действие', async () => {
-    // §13.7 ТЗ: эмоция влияет ровно на одно — на число действий в выдаче.
-    //
-    // Одно, а не два. Раньше здесь ожидалось два дела — по уровню «сил
-    // мало», — и это противоречило ТЗ: §2 сценарий 7 и §21 п.7 говорят
-    // «выдача сокращена до одного действия», §13.7 задаёт формулу
-    // «признание, сокращение объёма, одно действие». Нашёл сквозной тест
-    // этапа: модули были правы каждый по себе, требование не выполнял
-    // никто.
+  /** Выгрузка из трёх дел и одного состояния. Текст состояния — параметр. */
+  function threeTasksAnd(emotion: string): string {
+    return JSON.stringify({
+      items: [
+        ...['первое дело', 'второе дело', 'третье дело'].map((text) => ({
+          text,
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'личное',
+          isProject: false,
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+          deadlineText: '',
+        })),
+        {
+          text: emotion,
+          type: 'EMOTION',
+          priority: 'NONE',
+          topic: 'личное',
+          isProject: false,
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+          deadlineText: '',
+        },
+      ],
+    });
+  }
+
+  it('усталость сокращает форму, но оставляет три дела (задача 3.47)', async () => {
+    /**
+     * Запрос заказчика 03.09.2026: «при усталости одно действие
+     * показывается, сделай чтобы три самых важных показывало».
+     *
+     * ТЗ это различие делает само, в таблице сигналов §13.7: «вообще без
+     * сил» — одно действие, «ничего не успеваю» — **сокращённая
+     * выдача**, а не одна строка. Главный эталон §13.2 при названной
+     * усталости показывает три дела.
+     *
+     * Короткая форма при этом остаётся: закрытие без вопроса.
+     */
     const prompts = await seedPrompts();
     await queuedBatchOf([{ kind: 'text', text: 'дела и усталость', offsetMs: 0 }]);
     const { sender, all } = recordingSender();
 
     const llm = echoingLlm({
-      classifier: JSON.stringify({
-        items: [
-          ...['первое дело', 'второе дело', 'третье дело'].map((text) => ({
-            text,
-            type: 'TASK',
-            priority: 'SOON',
-            topic: 'личное',
-            isProject: false,
-            deadline: '',
-            deadlineAccuracy: 'none',
-            recurrenceKind: 'none',
-            recurrenceInterval: 0,
-            recurrenceText: '',
-            deadlineText: '',
-          })),
-          {
-            text: 'я ничего не успеваю',
-            type: 'EMOTION',
-            priority: 'NONE',
-            topic: 'личное',
-            isProject: false,
-            deadline: '',
-            deadlineAccuracy: 'none',
-            recurrenceKind: 'none',
-            recurrenceInterval: 0,
-            recurrenceText: '',
-            deadlineText: '',
-          },
-        ],
-      }),
+      classifier: threeTasksAnd('я ничего не успеваю'),
+      presenter: JSON.stringify({ acknowledgement: 'Поняла. Сегодня тяжело.' }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply).toContain('Первое дело');
+    expect(reply).toContain('Второе дело');
+    expect(reply).toContain('Третье дело');
+
+    // Форма всё равно короткая: §13.7 требует выхода из разговора.
+    expect(reply).toContain(defaultTexts.answer.closingTired);
+    expect(countQuestions(reply)).toBe(0);
+
+    // И уровень сил не снижен: досада — не «сил нет».
+    const [state] = await testDb().select().from(userState);
+    expect(state?.energy ?? 'нет записи').toBe('нет записи');
+  });
+
+  it('«сил нет вовсе» оставляет одно действие и снижает уровень', async () => {
+    // §13.7, таблица сигналов: «Я сегодня вообще без сил» → признание в
+    // одну строку и одно действие. Это единственный случай, когда выдача
+    // сжимается до одной строки.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'дела и совсем нет сил', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      classifier: threeTasksAnd('я на нуле совсем'),
       presenter: JSON.stringify({ acknowledgement: 'Поняла. Сегодня тяжело.' }),
     });
 
@@ -796,7 +840,7 @@ describe('разбор', () => {
     );
 
     const [state] = await testDb().select().from(userState);
-    expect(state?.energy).toBe('low');
+    expect(state?.energy).toBe('empty');
 
     // Дело ровно одно, и это первое сказанное, а не произвольное:
     // порядок внутри выгрузки сохранён.
@@ -804,8 +848,6 @@ describe('разбор', () => {
     expect(reply).toContain('Первое дело');
     expect(reply).not.toContain('второе дело');
     expect(reply).not.toContain('третье дело');
-    // Уровень «сил мало» при этом остаётся уровнем: следующая выгрузка
-    // того же дня получит свои два дела. Предел был на этот ответ.
     expect(reply).toContain(defaultTexts.answer.closingTired);
   });
 
