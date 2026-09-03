@@ -3,7 +3,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { items } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
-import type { TopicList } from '../topics/topics.repo.js';
+import { listTopics, type TopicList } from '../topics/topics.repo.js';
 
 /**
  * Домиграция первой выгрузки (задача 2.14).
@@ -137,6 +137,17 @@ export async function moveItemsToOwnTopics(
   const orphaned = new Set<string>();
   let moved = 0;
 
+  /**
+   * Ссылка на тему переезжает вместе с названием (задача 3.43).
+   *
+   * Раньше менялось только название: до онбординга тем не было, и
+   * ссылки у записей были пустыми. Теперь базовые сферы появляются на
+   * первой выгрузке, записи сразу получают ссылку — и запись, уехавшая в
+   * тему по умолчанию именем, продолжала бы ссылаться на архивную.
+   */
+  const own = await listTopics(db, userId);
+  const fallback = own.find((topic) => topic.isDefault) ?? own[0];
+
   for (const row of rows) {
     if (row.topic === null) continue;
     if (known.has(row.topic.toLowerCase().replace(/ё/gu, 'е'))) continue;
@@ -144,7 +155,7 @@ export async function moveItemsToOwnTopics(
     orphaned.add(row.topic);
     await db
       .update(items)
-      .set({ topic: topics.defaultName, updatedAt: new Date() })
+      .set({ topic: topics.defaultName, topicId: fallback?.id ?? null, updatedAt: new Date() })
       .where(eq(items.id, row.id));
     moved++;
   }
