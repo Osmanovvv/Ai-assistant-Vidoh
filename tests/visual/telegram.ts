@@ -36,6 +36,17 @@ const REPLY_TIMEOUT_MS = Number(process.env['VISUAL_REPLY_MS'] ?? 180_000);
 /** Нажатие обрабатывается вне очереди выгрузок — ждать столько не нужно. */
 const PRESS_TIMEOUT_MS = 60_000;
 
+/**
+ * Сколько ждать, пока Telegram Web нарисует переписку.
+ *
+ * Шесть минут, и это измерено, а не выдумано: зонд 03.09.2026 показал,
+ * что после удаления и создания веток в чате сеанс догоняет состояние
+ * **302 секунды**, а потом открывается как ни в чём не бывало. В обычный
+ * день хватает десяти секунд — лишнего ожидания не будет, драйвер
+ * продолжает, как только поле ввода появилось.
+ */
+const OPEN_TIMEOUT_MS = Number(process.env['VISUAL_OPEN_MS'] ?? 360_000);
+
 export interface Reply {
   /** Текст последней реплики бота. */
   readonly text: string;
@@ -139,8 +150,8 @@ export async function openChat(page: Page): Promise<void> {
    * поломкой.
    */
   await Promise.race([
-    composer.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined),
-    loginScreen.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined),
+    composer.waitFor({ state: 'visible', timeout: OPEN_TIMEOUT_MS }).catch(() => undefined),
+    loginScreen.waitFor({ state: 'visible', timeout: OPEN_TIMEOUT_MS }).catch(() => undefined),
   ]);
 
   if (await loginScreen.isVisible()) {
@@ -159,7 +170,7 @@ export async function openChat(page: Page): Promise<void> {
      * второй открывался. Снимок — на случай, если не откроется и так.
      */
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 90_000 });
-    await composer.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined);
+    await composer.waitFor({ state: 'visible', timeout: OPEN_TIMEOUT_MS }).catch(() => undefined);
   }
 
   if (!(await composer.isVisible())) {
