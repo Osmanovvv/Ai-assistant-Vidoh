@@ -3,7 +3,12 @@ import type { Logger } from 'pino';
 
 import { items, topics, type Topic } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { isThreadGone, isTopicsUnavailable, type TopicGateway } from './gateway.js';
+import {
+  isThreadGone,
+  isTopicsUnavailable,
+  retryAfterSeconds,
+  type TopicGateway,
+} from './gateway.js';
 import { listTopics, normalizeTopicName } from './topics.repo.js';
 
 /**
@@ -202,6 +207,55 @@ export async function moveItemToTopic(
     .where(eq(items.id, params.itemId));
 
   return { moved: true, from: before.topic, to: target.name };
+}
+
+export type RemoveThreadOutcome = 'deleted' | 'gone';
+
+/**
+ * Удаляет ветку так, чтобы она не осталась сиротой (задача 3.46).
+ *
+ * Ветка снимается в двух местах — при удалении данных (§16) и при
+ * архиве невыбранной сферы (3.43) — и в обоих база меняется раньше, чем
+ * Telegram отвечает. Если он ответил «подождите», а мы не повторили,
+ * ветка остаётся в чате навсегда: в базе её уже нет, перечислить темы
+ * чата Bot API не умеет, и снять её можно только рукой. Ровно так
+ * выглядела сирота от 29 августа (3.45).
+ *
+ * Поэтому одна пауза и один повтор, как у сводок. «Ветки уже нет» —
+ * не отказ, а сделанное. Прочие отказы — наверх: решать, страшно ли
+ * это, должен вызывающий (при удалении данных — нет, §16 важнее).
+ */
+export async function removeThread(
+  deps: TopicServiceDeps & { readonly sleep?: ((ms: number) => Promise<void>) | undefined },
+  params: { readonly chatId: number; readonly threadId: number },
+): Promise<RemoveThreadOutcome> {
+  const attempt = async (): Promise<RemoveThreadOutcome> => {
+    try {
+      await deps.gateway.deleteThread(params);
+      return 'deleted';
+    } catch (error) {
+      if (isThreadGone(error)) return 'gone';
+      throw error;
+    }
+  };
+
+  try {
+    return await attempt();
+  } catch (error) {
+    const wait = retryAfterSeconds(error);
+    if (wait === undefined) throw error;
+
+    deps.logger?.warn({ threadId: params.threadId, секунд: wait }, 'Telegram просит подождать');
+    const sleep =
+      deps.sleep ??
+      ((ms: number): Promise<void> =>
+        new Promise((resolve) => {
+          setTimeout(resolve, ms).unref();
+        }));
+    await sleep(wait * 1000);
+
+    return await attempt();
+  }
 }
 
 export { isThreadGone };
