@@ -153,8 +153,16 @@ export async function openChat(page: Page): Promise<void> {
   }
 
   if (!(await composer.isVisible())) {
-    // Снимок при отказе: без него непонятно, что именно было на экране —
-    // пустая страница, другая раскладка или просьба войти заново.
+    /**
+     * Одна перезагрузка перед отказом. 03.09.2026 Telegram Web трижды
+     * за день зависал на пустой странице при первой загрузке, а со
+     * второй открывался. Снимок — на случай, если не откроется и так.
+     */
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 90_000 });
+    await composer.waitFor({ state: 'visible', timeout: 120_000 }).catch(() => undefined);
+  }
+
+  if (!(await composer.isVisible())) {
     const failure = await shot(page, 'open-failed');
     throw new Error(`Не открылась переписка с @${BOT}. Снимок: ${failure}`);
   }
