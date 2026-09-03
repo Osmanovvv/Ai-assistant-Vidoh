@@ -183,10 +183,18 @@ describe('цитата о времени, подтверждённая речь�
     expect(timeQuoteInSpeech('завтра', SPEECH)).toBe(false);
   });
 
-  it('пересказ вместо цитаты не проходит', () => {
-    // Слова есть оба, но не подряд: «в четверг… завезти» — это пересказ.
-    expect(timeQuoteInSpeech('в четверг завезти вещи', SPEECH)).toBe(false);
-    expect(timeQuoteInSpeech('сегодня вечером', SPEECH)).toBe(false);
+  it('пересказ проходит, только если день из него назван в речи (3.49)', () => {
+    // «Завтра вечером» при сказанном «купить завтра»: рядом таких слов
+    // нет, но день — «завтра» — человек назвал, и дата из него одна.
+    // Живой прогон 03.09.2026: без этого верная дата корма отбрасывалась.
+    expect(timeQuoteInSpeech('сегодня вечером', SPEECH)).toBe(true);
+    expect(timeQuoteInSpeech('в четверг завезти вещи', SPEECH)).toBe(true);
+
+    // А день, которого в речи нет, пересказ не спасает.
+    expect(timeQuoteInSpeech('в пятницу вечером', SPEECH)).toBe(false);
+    expect(timeQuoteInSpeech('завтра утром', SPEECH)).toBe(false);
+    // Только час без дня — тоже нет: дату из него не вывести.
+    expect(timeQuoteInSpeech('вечером в семь', SPEECH)).toBe(false);
   });
 
   it('цифра сама по себе временем не считается', () => {
