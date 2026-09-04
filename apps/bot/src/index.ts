@@ -55,6 +55,7 @@ const env = getEnv();
 const logger = createLogger({
   level: env.LOG_LEVEL,
   pretty: env.NODE_ENV === 'development',
+  ...(env.LOG_FILE === undefined ? {} : { file: env.LOG_FILE }),
 });
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
