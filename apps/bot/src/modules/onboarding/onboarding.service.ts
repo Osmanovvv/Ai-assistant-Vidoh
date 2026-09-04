@@ -102,6 +102,10 @@ export interface Question {
 export const ACTION = {
   nameYes: 'onb:name:yes',
   nameLater: 'onb:name:later',
+  /** «Напишу своё» — дальше ответ приходит сообщением (задача 3.61). */
+  nameOwn: 'onb:name:own',
+  morningOwn: 'onb:morning:own',
+  eveningOwn: 'onb:evening:own',
   timezoneMoscow: 'onb:tz:msk',
   timezoneOther: 'onb:tz:other',
   /** `onb:tz:zone:Asia/Omsk` — 26 байт, лимит callback_data 64. */
@@ -239,13 +243,21 @@ ${text}`
       // Подтверждать нечего: см. firstStep.
       if (!hasLetters(name)) return undefined;
 
+      /**
+       * Три кнопки в два ряда, а не в один (задача 3.61).
+       *
+       * «Напишу своё» рядом с «Да» и «Поправлю потом» в одну строку не
+       * влезает на телефоне: подписи обрезаются, и человек не понимает,
+       * что ему предлагают.
+       */
       return {
         text: framed(onboarding.nameConfirm(name)),
         rows: [
           [
             { label: onboarding.buttonNameYes, action: ACTION.nameYes },
-            { label: onboarding.buttonNameLater, action: ACTION.nameLater },
+            { label: onboarding.buttonNameOwn, action: ACTION.nameOwn },
           ],
+          [{ label: onboarding.buttonNameLater, action: ACTION.nameLater }],
         ],
       };
 
@@ -268,6 +280,9 @@ ${text}`
             label: time,
             action: `${ACTION.morningPrefix}${time}`,
           })),
+          // Четыре круглых часа закрывают большинство, но не всех: кому
+          // нужно 7:30, тот пишет словами (задача 3.61).
+          [{ label: onboarding.buttonTimeOwn, action: ACTION.morningOwn }],
         ],
       };
 
@@ -279,7 +294,10 @@ ${text}`
             label: time,
             action: `${ACTION.eveningPrefix}${time}`,
           })),
-          [{ label: onboarding.buttonEveningOff, action: ACTION.eveningOff }],
+          [
+            { label: onboarding.buttonTimeOwn, action: ACTION.eveningOwn },
+            { label: onboarding.buttonEveningOff, action: ACTION.eveningOff },
+          ],
         ],
       };
 
@@ -356,6 +374,7 @@ export async function onboardingStateOf(db: Executor, userId: string): Promise<O
     .select({
       step: userSettings.onboardingStep,
       firstName: users.firstName,
+      preferred: userSettings.preferredName,
       profile: userSettings.textProfile,
     })
     .from(userSettings)
@@ -363,10 +382,18 @@ export async function onboardingStateOf(db: Executor, userId: string): Promise<O
     .where(eq(userSettings.userId, userId))
     .limit(1);
 
+  /**
+   * Имя, названное человеком, сильнее имени из Telegram (задача 3.61).
+   *
+   * И хранится отдельно не для порядка: `upsertUser` перезаписывает
+   * `users.first_name` тем, что пришло от Telegram, на каждом сообщении.
+   */
+  const preferred = row?.preferred?.trim() ?? '';
+
   return {
     step: row?.step ?? STEP.done,
     // Имя из Telegram может отсутствовать: у части аккаунтов его нет.
-    name: row?.firstName?.trim() ?? '',
+    name: preferred === '' ? (row?.firstName?.trim() ?? '') : preferred,
     texts: textsFor(row?.profile),
   };
 }

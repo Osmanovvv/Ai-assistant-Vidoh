@@ -7,6 +7,7 @@ import type { Database } from '../../infra/db.js';
 import { localDateParts } from '../../modules/classifier/dates.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { nextDeadlineAfterDone } from '../../modules/recurrence/recurrence.service.js';
+import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -248,16 +249,22 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
   changeStatus(CARD_ACTION.remove, 'cancelled', (texts) => texts.card.deleted);
 
   /**
-   * Изменить: подсказка сказать словами.
+   * Изменить: бот ждёт новый текст дела словами (задача 3.61).
    *
-   * **Подсказка приходит всплывающим окном, а не правкой сообщения.**
-   * Раньше она затирала карточку и не возвращала клавиатуру — и текст
-   * «кнопками рядом» указывал на кнопки, которые сам же и стёр. У трёх
-   * остальных кнопок замена карточки уместна: действие совершено, и
-   * держать её незачем. Здесь действия нет, а человек терял экран за
-   * нажатие, которое ничего не меняет.
+   * **Была заглушкой.** Кнопка говорила «пока меняю только статус и срок
+   * — кнопками рядом», то есть обещала правку и не делала её. Заказчик
+   * назвал это заглушкой прямо, и он прав: кнопка, которая ничего не
+   * меняет, хуже отсутствующей.
    *
-   * Найдено ручной проверкой на боевом боте 29.08.2026.
+   * Теперь она просит написать новый текст, и следующая реплика человека
+   * его перепишет — с кнопкой отмены, как любая правка резолвера. Срок и
+   * статус остаются на своих кнопках: у них правка одним тапом, и гонять
+   * человека через текст ради того, что решается кнопкой, незачем.
+   *
+   * **Карточка остаётся на экране.** Просьба приходит отдельным
+   * сообщением, а не правкой карточки: правка затирала бы кнопки, на
+   * которые сама же и указывает. Найдено ручной проверкой 29.08.2026, и
+   * это свойство сохранено.
    */
   bot.callbackQuery(new RegExp(`^${CARD_ACTION.edit}`, 'u'), async (ctx) => {
     const active = await ownItem(ctx.from.id, ctx.callbackQuery.data, CARD_ACTION.edit);
@@ -269,6 +276,8 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       return;
     }
 
-    await ctx.answerCallbackQuery({ text: active.texts.card.editHint, show_alert: true });
+    await ctx.answerCallbackQuery();
+    await setAwaiting(db, active.userId, `${AWAITING.editPrefix}${active.item.id}`);
+    await ctx.reply(active.texts.card.editHint);
   });
 }

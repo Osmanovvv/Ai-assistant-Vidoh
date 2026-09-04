@@ -8,6 +8,7 @@ import {
   onboardingStateOf,
   questionFor,
   setStep,
+  type Question,
 } from '../../modules/onboarding/onboarding.service.js';
 import type { QuestionSender } from '../../modules/presenter/telegram-sender.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -17,6 +18,13 @@ import { defaultTexts } from '../../texts/index.js';
  * Экран первого запуска (задача 1.10).
  *
  * §13.1 ТЗ: одно короткое приветствие и две кнопки.
+ *
+ * **Кнопок больше нет, а приветствие несёт первый вопрос опроса** — правка
+ * заказчика от 04.09.2026: «может сделаем опрос первым сообщением».
+ * Раньше на `/start` уходило два сообщения подряд, и во втором был вопрос,
+ * то есть два призыва к действию в одном обмене — ровно то, от чего ушёл
+ * запрос на изменение №2, только на первом экране. Подсказка про голос и
+ * текст, которую давали те две кнопки, теперь стоит в самом приветствии.
  *
  * **Опрос теперь идёт здесь же, а не после первой выгрузки** — запрос на
  * изменение №2 от 02.09.2026. ТЗ трижды требовало обратного («никаких
@@ -39,6 +47,9 @@ import { defaultTexts } from '../../texts/index.js';
  *
  * Кнопки не ограничивают ввод: это подсказка, а не режим. Можно сразу
  * писать текстом или прислать голосовое, ничего не нажимая.
+ *
+ * Экран с двумя кнопками остался запасным путём: он показывается, когда
+ * опрос уже пройден или идёт, — тогда вопрос повторять незачем.
  */
 export interface StartDeps {
   readonly db: Database;
@@ -62,23 +73,23 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
    * Молча ничего не делает, когда опрос уже идёт или пройден: `/start`
    * человек может нажать и на десятый день.
    */
-  async function startOnboarding(tgId: number, chatId: number): Promise<void> {
-    if (!sender) return;
+  async function firstQuestion(tgId: number): Promise<Question | undefined> {
+    if (!sender) return undefined;
 
     const user = await findByTgId(db, tgId);
-    if (!user) return;
+    if (!user) return undefined;
 
     const state = await onboardingStateOf(db, user.id);
-    if (state.step !== 0) return;
+    if (state.step !== 0) return undefined;
 
     const step = firstStep(state.name);
     const question = questionFor(step, { texts: defaultTexts, name: state.name, opening: true });
-    if (!question) return;
+    if (!question) return undefined;
 
     await setStep(db, user.id, step);
-    await sender.ask({ chatId, text: question.text, rows: question.rows });
-
     logger.info({ userId: user.id, step }, 'Опрос начат с первого запуска');
+
+    return question;
   }
 
   // Профиль по умолчанию, а не выбранный человеком: этот экран
@@ -93,15 +104,34 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
   ]);
 
   bot.command('start', async (ctx) => {
-    await ctx.reply(texts.start.screen(privacyPolicyUrl), {
-      reply_markup: keyboard,
+    /**
+     * Приветствие и первый вопрос — **одним** сообщением (задача 3.61).
+     *
+     * Заказчик: «может сделаем опрос первым сообщением». Раньше приходило
+     * два сообщения подряд, и во втором был вопрос — то есть два призыва
+     * к действию в одном обмене. Кнопки «Наговорить» и «Написать» при
+     * этом уходят: единственное, что они давали, — подсказку про голос и
+     * текст, и она теперь в самом приветствии.
+     *
+     * Опрос не открылся (уже пройден, идёт, или отправителя нет) — экран
+     * работает как прежде, со своими двумя кнопками.
+     */
+    const question = ctx.from === undefined ? undefined : await firstQuestion(ctx.from.id);
+
+    if (question === undefined) {
+      await ctx.reply(texts.start.screen(privacyPolicyUrl), {
+        reply_markup: keyboard,
+        parse_mode: 'Markdown',
+        link_preview_options: { is_disabled: true },
+      });
+      return;
+    }
+
+    await ctx.reply(texts.start.screenWithQuestion(privacyPolicyUrl, question.text), {
+      reply_markup: fitKeyboard(question.rows.map((row) => [...row])),
       parse_mode: 'Markdown',
       link_preview_options: { is_disabled: true },
     });
-
-    // Приветствие первым, вопрос вторым: человек должен успеть прочитать,
-    // куда он попал, прежде чем его о чём-то спрашивают.
-    if (ctx.from !== undefined) await startOnboarding(ctx.from.id, ctx.chat.id);
   });
 
   bot.callbackQuery('start:voice', async (ctx) => {

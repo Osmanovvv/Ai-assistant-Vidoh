@@ -59,6 +59,13 @@ export interface ExportedData {
     readonly energyDefault: string;
     readonly textProfile: string;
     readonly onboardingDoneAt: string | null;
+    /**
+     * Имя, которое человек назвал себе сам (задача 3.61).
+     *
+     * §16: в выгрузке обязано быть всё, что бот о человеке знает. Это имя
+     * он сказал сам, и оно тем более его.
+     */
+    readonly preferredName: string | null;
   } | null;
   /**
    * Сегодняшний уровень сил — вывод бота о человеке, а не его слова.
@@ -258,6 +265,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
           energyDefault: settings.energyDefault,
           textProfile: settings.textProfile,
           onboardingDoneAt: iso(settings.onboardingDoneAt),
+          preferredName: settings.preferredName,
         }
       : null,
     state: state ? { energy: state.energy, energyAt: state.energyAt.toISOString() } : null,
