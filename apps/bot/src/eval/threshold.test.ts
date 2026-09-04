@@ -72,3 +72,50 @@ describe('порог ловит потерю единиц', () => {
     expect(checkThreshold(report({ falseDeadlines: 1 })).passed).toBe(false);
   });
 });
+
+describe('порог на лишние записи (задача 3.52)', () => {
+  /**
+   * §13.2: «бот не вываливает список». Разбор дробит одно дело на
+   * несколько — «купить продукты: молоко, хлеб, яйца, сыр и воду»
+   * превращается то в одну запись, то в семь, — и для человека это второй
+   * список. Отчёт лишние записи печатал, а страж на них не смотрел.
+   */
+
+  /** Претензии именно про лишние записи, без остальных полей заготовки. */
+  function extraFailures(expected: number, extra: number): readonly string[] {
+    const verdict = checkThreshold(report({ expected, found: expected, extra }));
+    return verdict.failures.filter((one) => one.includes('лишних записей'));
+  }
+
+  it('нынешний уровень проходит: порог ловит ухудшение, а не шум', () => {
+    // За двадцать чистых прогонов лишних было от 10 до 14 из 58.
+    for (const extra of [10, 11, 12, 14]) {
+      expect(extraFailures(58, extra), `лишних ${String(extra)}`).toEqual([]);
+    }
+  });
+
+  it('заметное дробление не проходит', () => {
+    const failures = extraFailures(58, 20);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain('34.5%');
+  });
+
+  it('порог считается долей, а не числом', () => {
+    /**
+     * Иначе он поедет при следующем пополнении набора: на двух выгрузках
+     * лишних было 2–4, после третьей стало 10–14. Двенадцать лишних при
+     * сорока трёх ожидаемых — это уже 27,9%, и такое проходить не должно,
+     * хотя то же число при пятидесяти восьми проходит.
+     */
+    expect(extraFailures(58, 12)).toEqual([]);
+    expect(extraFailures(43, 12)).toHaveLength(1);
+  });
+
+  it('порог на лишние вообще задан', () => {
+    // Ту же ошибку уже допускали с долей найденного: поля не было, и
+    // регрессия проходила молча.
+    expect(STAGE2_THRESHOLD.extra).toBeGreaterThan(0);
+    expect(STAGE2_THRESHOLD.extra).toBeLessThan(1);
+  });
+});

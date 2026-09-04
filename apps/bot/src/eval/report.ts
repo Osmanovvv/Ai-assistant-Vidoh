@@ -88,6 +88,15 @@ export interface Shares {
   readonly topic: number;
   readonly recurrence: number;
   readonly deadline: number;
+  /**
+   * Доля лишних записей от ожидаемых (задача 3.52).
+   *
+   * Долей, а не числом: набор пополняется, и абсолютное число поедет при
+   * каждой новой выгрузке. Историю это подтверждает — на двух выгрузках
+   * лишних было 2–4, после третьей стало 10–14, и сравнивать одно с
+   * другим бессмысленно.
+   */
+  readonly extra: number;
 }
 
 export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
@@ -208,6 +217,7 @@ export function shares(report: EvalReport): Shares {
 
   return {
     recall: report.expected === 0 ? 0 : report.found / report.expected,
+    extra: report.expected === 0 ? 0 : report.extra / report.expected,
     type: of(report.typeCorrect),
     priority: of(report.priorityCorrect),
     topic: of(report.topicCorrect),
@@ -252,7 +262,7 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     '',
     `Найдено единиц:      ${percent(now.recall)}${delta(now.recall, was?.recall)}   (${String(report.found)} из ${String(report.expected)})`,
     `Потеряно:            ${String(report.missed)}${deltaCount(report.missed, previous?.missed)}`,
-    `Лишних:              ${String(report.extra)}${deltaCount(report.extra, previous?.extra)}`,
+    `Лишних:              ${String(report.extra)}, это ${percent(now.extra)} от ожидаемых${deltaCount(report.extra, previous?.extra)}`,
     '',
     `Точность типа:       ${percent(now.type)}${delta(now.type, was?.type)}`,
     `Точность важности:   ${percent(now.priority)}${delta(now.priority, was?.priority)}`,
@@ -311,6 +321,25 @@ export interface Threshold {
    * не ниже 95,3%. Сорок — это 93%, и такого не было ни разу.
    */
   readonly found: number;
+  /**
+   * Сколько лишних записей допустимо, долей от ожидаемых (задача 3.52).
+   *
+   * **Порога на это не было, и он был нужен.** Разбор дробит одно дело на
+   * несколько: «сегодня надо сходить в магазин, купить продукты — молоко,
+   * хлеб, яйца, сыр и воду» превращается то в одну запись, то в семь. Для
+   * человека это второй список из двадцати пунктов — ровно то, чего §13.2
+   * велит не делать: «бот не вываливает список».
+   *
+   * Отчёт лишние записи печатал, но страж на них не смотрел, поэтому
+   * дробление годами оставалось «известной мелочью». Мерить его начали
+   * тогда же, когда взялись править: сперва число, потом промпт.
+   *
+   * Число 0,25 взято из наблюдённого разброса, а не выдумано: за двадцать
+   * чистых прогонов на нынешнем наборе лишних было от 10 до 14 из 58, то
+   * есть от 17,2% до 24,1%. Порог стоит чуть выше худшего — он ловит
+   * ухудшение, а не сегодняшний шум. По мере правки его надо опускать.
+   */
+  readonly extra: number;
 }
 
 export const STAGE2_THRESHOLD: Threshold = {
@@ -318,6 +347,7 @@ export const STAGE2_THRESHOLD: Threshold = {
   falseTasks: 0,
   falseDeadlines: 0,
   found: 0.95,
+  extra: 0.25,
 };
 
 export interface ThresholdVerdict {
@@ -338,6 +368,13 @@ export function checkThreshold(
     failures.push(
       `найдено единиц ${percent(now.recall)} ниже порога ${percent(threshold.found)}` +
         ` (${String(report.found)} из ${String(report.expected)})`,
+    );
+  }
+
+  if (now.extra > threshold.extra) {
+    failures.push(
+      `лишних записей ${percent(now.extra)} выше порога ${percent(threshold.extra)}` +
+        ` (${String(report.extra)} при ожидаемых ${String(report.expected)})`,
     );
   }
 
