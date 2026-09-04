@@ -509,3 +509,115 @@ describe('регулярность (задача 2.18а)', () => {
     expect(result.corrections.recurrence).toBe(1);
   });
 });
+
+/**
+ * Важность и срок обязаны быть согласны (задача 3.57).
+ *
+ * Найдено живым прогоном 04.09.2026. «Помыть машину в пятницу» получило
+ * тип `TASK`, срок на сегодня — и важность `NONE`. В списке «на сегодня»
+ * дела не было вовсе: выдача отсекает `NONE`, и отсекает правильно, §6.3
+ * держит так желания и эмоции вне выдачи. Человек назвал день и не увидел
+ * дела в этот день.
+ */
+describe('у дела со сроком важности «никакая» не бывает', () => {
+  it('дело со сроком и важностью NONE поднимается до SOON', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'помыть машину в пятницу',
+            type: 'TASK',
+            priority: 'NONE',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в пятницу',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('помыть машину в пятницу'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items[0]?.priority).toBe('SOON');
+    expect(result.items[0]?.deadline).not.toBeUndefined();
+    expect(result.corrections.priority).toBe(1);
+  });
+
+  it('до NOW не поднимается: «прямо сейчас» решает человек', async () => {
+    // Место в сегодняшнем списке даёт сам срок, а не важность. Ставить
+    // NOW за человека значило бы двигать дело вперёд чужих.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            type: 'TASK',
+            priority: 'NONE',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в пятницу',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('дело в пятницу'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.priority).toBe('SOON');
+  });
+
+  it('дело без срока с важностью NONE не трогается', async () => {
+    /**
+     * Правило следует из срока, а не из типа. У дела без срока «никакая»
+     * важность — законный ответ модели: человек назвал дело, но ничем не
+     * показал, что оно срочное.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ type: 'TASK', priority: 'NONE' }])],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('когда-нибудь помыть машину'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.priority).toBe('NONE');
+    expect(result.corrections.priority).toBe(0);
+  });
+
+  it('желание со сроком остаётся NONE: §6.3 сильнее', async () => {
+    // Иначе правило вернуло бы в выдачу то, что §6.3 из неё убирает.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            type: 'DESIRE',
+            priority: 'NONE',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в пятницу',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('хочу помыть машину в пятницу'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.priority).toBe('NONE');
+  });
+});
