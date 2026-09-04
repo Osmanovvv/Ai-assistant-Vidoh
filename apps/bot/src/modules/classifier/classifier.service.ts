@@ -11,7 +11,7 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline } from './dates.js';
-import { dayFromOwnSentence } from './own-sentence.js';
+import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -285,6 +285,39 @@ export function correctItems(
         logger?.info(
           { promptVersion, точность: fromSentence.accuracy },
           'Срок взят из своего предложения речи: модель его не дала',
+        );
+      }
+    }
+
+    /**
+     * Человек передумал вслух (задача 3.56).
+     *
+     * **Единственное место, где день модели перебивается.** Обычно её
+     * дату не трогают: модель видит фразу целиком. Но здесь человек
+     * отменил день своими словами — «Ещё в четверг хотел заехать я на
+     * мойку. Хотя нет, давай мойку лучше в пятницу», — и слушать надо
+     * его, а не разбор. Дело на отменённый день выглядит так, будто бот
+     * не слушал вовсе.
+     *
+     * Условия перебивки — в `own-sentence.ts`, и их четыре, все
+     * проверяемые: слова отмены в начале предложения, по одному
+     * определённому дню с каждой стороны, общее значимое слово и
+     * дословная цепочка мысли в отменённом предложении.
+     */
+    if (isActionable(type) && ctx.spoken !== undefined) {
+      const moved = dayAfterRetraction({
+        itemText: item.text,
+        spoken: ctx.spoken,
+        now,
+        timeZone: ctx.timeZone,
+      });
+
+      if (moved && deadline?.at.getTime() !== moved.at.getTime()) {
+        deadline = { at: moved.at, accuracy: moved.accuracy };
+        corrections.deadline++;
+        logger?.info(
+          { promptVersion, точность: moved.accuracy },
+          'День перенесён: человек отменил прежний вслух',
         );
       }
     }

@@ -70,7 +70,13 @@ function stopped(item: EvalCase, version: string): MergedOutcome {
     id: item.id,
     note: item.note,
     timeZone: item.timeZone,
-    result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
+    result: {
+      matched: [],
+      missed: [...item.expected.units],
+      extra: [],
+      ambiguous: [],
+      retracted: [],
+    },
     crisis: { detected: true, expected: item.expected.crisis },
     promptVersions: { classifier: version },
     tokensIn: 0,
@@ -88,7 +94,13 @@ function failed(
     id: item.id,
     note: item.note,
     timeZone: item.timeZone,
-    result: { matched: [], missed: [...item.expected.units], extra: [], ambiguous: [] },
+    result: {
+      matched: [],
+      missed: [...item.expected.units],
+      extra: [],
+      ambiguous: [],
+      retracted: [],
+    },
     crisis: { detected: false, expected: item.expected.crisis },
     failed: problem,
     promptVersions: { classifier: version },
@@ -195,7 +207,7 @@ export async function runMergedCase(
 }
 
 function matchItems(item: EvalCase, items: readonly ClassifiedItem[]): MatchResult {
-  return match(item.expected.units, items);
+  return match(item.expected.units, items, item.expected.retracted);
 }
 
 export async function runMergedDataset(

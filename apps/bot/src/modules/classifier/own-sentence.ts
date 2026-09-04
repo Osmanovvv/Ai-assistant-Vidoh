@@ -109,6 +109,8 @@ type DayMark =
   | { readonly kind: 'relative'; readonly shift: number }
   | { readonly kind: 'weekday'; readonly weekday: number }
   | { readonly kind: 'weekend' }
+  /** «Следующая неделя» — период, у которого дата всё же считается. */
+  | { readonly kind: 'nextWeek' }
   /** Срок назван, но дня в нём нет: недели, месяцы, «через». */
   | { readonly kind: 'vague' };
 
@@ -119,29 +121,69 @@ function keyOf(mark: DayMark): string {
   return mark.kind;
 }
 
+/**
+ * «Следующая неделя» — двусловное обозначение, и потому проверяется
+ * раньше одиночных слов (задача 3.56).
+ *
+ * Слово «неделю» само по себе расплывчато и стоит в `VAGUE`: из «через
+ * неделю-две» дня не вывести. Но «на следующую неделю» — период с
+ * известным началом, и человек назвал его прямо. Живой прогон
+ * 04.09.2026: «позвонить стоматологу, записаться **на следующую
+ * неделю**» — единственный срок, который был в речи, но не доехал до
+ * записи вовсе.
+ */
+const NEXT_WEEK: readonly (readonly [string, string])[] = [
+  ['следующую', 'неделю'],
+  ['следующей', 'неделе'],
+  ['следующей', 'недели'],
+  ['будущей', 'неделе'],
+  ['будущую', 'неделю'],
+];
+
+function isNextWeek(word: string, next: string): boolean {
+  return NEXT_WEEK.some(([first, second]) => word === first && next === second);
+}
+
+/**
+ * Обозначение, начинающееся ровно на этом слове.
+ *
+ * Нужно там, где важно не «названо ли где-то в предложении», а «стоит ли
+ * прямо здесь»: см. `dayRightAfterItsWords`.
+ */
+function markAt(words: readonly string[], index: number): DayMark | undefined {
+  const word = words[index];
+  if (word === undefined) return undefined;
+
+  const next = words[index + 1];
+  if (next !== undefined && isNextWeek(word, next)) return { kind: 'nextWeek' };
+
+  for (const [name, shift] of RELATIVE) {
+    if (word === name) return { kind: 'relative', shift };
+  }
+  for (const [name, weekday] of WEEKDAYS) {
+    if (word === name) return { kind: 'weekday', weekday };
+  }
+  if (WEEKEND.includes(word)) return { kind: 'weekend' };
+  if (VAGUE.includes(word)) return { kind: 'vague' };
+
+  return undefined;
+}
+
 function marksIn(sentence: string): readonly DayMark[] {
   const words = tokens(sentence);
-  const marks: DayMark[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, DayMark>();
 
-  const remember = (key: string, mark: DayMark): void => {
-    if (seen.has(key)) return;
-    seen.add(key);
-    marks.push(mark);
-  };
+  for (let index = 0; index < words.length; index++) {
+    const mark = markAt(words, index);
+    if (mark === undefined) continue;
 
-  for (const word of words) {
-    for (const [name, shift] of RELATIVE) {
-      if (word === name) remember(`r${String(shift)}`, { kind: 'relative', shift });
-    }
-    for (const [name, weekday] of WEEKDAYS) {
-      if (word === name) remember(`w${String(weekday)}`, { kind: 'weekday', weekday });
-    }
-    if (WEEKEND.includes(word)) remember('weekend', { kind: 'weekend' });
-    if (VAGUE.includes(word)) remember('vague', { kind: 'vague' });
+    seen.set(keyOf(mark), mark);
+    // «следующую неделю» занимает два слова: второе повторно не читаем,
+    // иначе «неделю» добавит ещё и расплывчатое обозначение.
+    if (mark.kind === 'nextWeek') index++;
   }
 
-  return marks;
+  return [...seen.values()];
 }
 
 /**
@@ -198,8 +240,15 @@ export function dayFromOwnSentence(params: {
   const item = tokens(params.itemText);
   if (item.length < 2) return undefined;
 
+  /**
+   * Дословной цепочки не нашлось вовсе — но это ещё не отказ (задача
+   * 3.56). Запись «Записаться к стоматологу» в речи не звучит: человек
+   * сказал «позвонить стоматологу, записаться». Цепочки из двух слов
+   * подряд нет, а единственное слово «записаться» место в речи указывает
+   * однозначно, и сразу за ним стоит срок.
+   */
   const owning = touchedSentences(item, sentencesOf(params.spoken));
-  if (owning.length === 0) return undefined;
+  if (owning.length === 0) return dayRightAfterItsWords(params);
 
   /**
    * Однозначность проверяется **по дню**, а не по числу предложений:
@@ -212,18 +261,34 @@ export function dayFromOwnSentence(params: {
   }
 
   const marks = [...seen.values()];
-  if (marks.length !== 1) return undefined;
+
+  /**
+   * Обозначений два и больше — предложение неоднозначно, и тогда
+   * пробуется второе правило: **срок, стоящий сразу за словами дела**
+   * (задача 3.56). Оно точнее: смотрит не на предложение целиком, а на
+   * место в речи вплотную за словом самой мысли.
+   */
+  if (marks.length !== 1) {
+    return dayRightAfterItsWords(params);
+  }
 
   const mark = marks[0];
-  if (mark === undefined || mark.kind === 'vague') return undefined;
+  if (mark === undefined) return undefined;
 
-  const today = startOfDayInZone(localDateParts(params.now, params.timeZone), params.timeZone);
-  const context = { now: params.now, timeZone: params.timeZone };
+  return dateOf(mark, params.now, params.timeZone) ?? dayRightAfterItsWords(params);
+}
+
+/** Дата обозначения. Считается один раз, уже убедившись, что оно одно. */
+function dateOf(mark: DayMark, now: Date, timeZone: string): SentenceDay | undefined {
+  if (mark.kind === 'vague') return undefined;
+
+  const context = { now, timeZone };
 
   if (mark.kind === 'relative') {
+    const today = startOfDayInZone(localDateParts(now, timeZone), timeZone);
     const shifted = new Date(today.getTime() + mark.shift * 24 * 60 * 60_000);
     return {
-      at: startOfDayInZone(localDateParts(shifted, params.timeZone), params.timeZone),
+      at: startOfDayInZone(localDateParts(shifted, timeZone), timeZone),
       accuracy: 'day',
     };
   }
@@ -232,7 +297,195 @@ export function dayFromOwnSentence(params: {
     return { at: nearestWeekday(mark.weekday, context), accuracy: 'day' };
   }
 
+  // Следующая неделя: её начало, ближайший понедельник. Точность
+  // недельная — человек назвал период, а не день.
+  if (mark.kind === 'nextWeek') {
+    return { at: nearestWeekday(1, context), accuracy: 'week' };
+  }
+
   // Выходные: ближайшая суббота, точность «неделя» — человек назвал
   // период, а не день, и притворяться, что день, нельзя.
   return { at: nearestWeekday(6, context), accuracy: 'week' };
+}
+
+/**
+ * Предлоги, через которые срок может стоять сразу за словом дела.
+ *
+ * Ровно один и только из этого списка. «Записаться **на** следующую
+ * неделю» — предлог, «английский **у меня** послезавтра» — уже два слова,
+ * и правило молчит: там связь не доказана.
+ */
+const LINKING = ['на', 'в', 'во', 'до', 'к', 'ко', 'по'];
+
+/** Сколько раз слово встречается во всей речи как отдельное слово. */
+function timesInSpeech(spoken: string, word: string): number {
+  return tokens(spoken).filter((one) => one === word).length;
+}
+
+/**
+ * Срок, стоящий **сразу за словами дела** (задача 3.56).
+ *
+ * **Зачем понадобилось второе правило.** Живой прогон 04.09.2026:
+ * «...вот в пятницу тогда надо помыть машину, ещё позвонить стоматологу,
+ * записаться на следующую неделю. Конкретно время к стоматологу я пока не
+ * знаю». Дело про стоматолога осталось **без срока вовсе**, хотя срок в
+ * речи назван.
+ *
+ * Правило по предложению помочь не могло, и оба раза по делу:
+ *
+ * - в первом предложении названы и «пятницу», и «следующую неделю» —
+ *   какой из двух сроков чей, оттуда не видно;
+ * - а дословная цепочка записи «Записаться к стоматологу» попадает лишь
+ *   во **второе** предложение, где дня нет вовсе: «время к стоматологу».
+ *
+ * **Условия, и каждое проверяется.** Берётся слово мысли, которое во всей
+ * речи встречается **ровно один раз**, — тогда место в речи найдено
+ * однозначно, без догадок. Сразу за ним, через ноль или один предлог из
+ * закрытого списка, должно **начинаться** обозначение срока. И в том же
+ * предложении: за точкой начинается речь о другом, и «вынести мусор. Ещё
+ * **сегодня** хотел позвонить бабушке» иначе отдало бы «сегодня» мусору.
+ *
+ * Если таких мест несколько и они называют разные сроки — правило
+ * молчит: спор решать не ему.
+ */
+function dayRightAfterItsWords(params: {
+  readonly itemText: string;
+  readonly spoken: string;
+  readonly now: Date;
+  readonly timeZone: string;
+}): SentenceDay | undefined {
+  const own = new Set(tokens(params.itemText));
+  const found = new Map<string, DayMark>();
+
+  for (const sentence of sentencesOf(params.spoken)) {
+    const words = tokens(sentence);
+
+    for (let index = 0; index < words.length; index++) {
+      const word = words[index];
+      if (word === undefined || !own.has(word)) continue;
+      // Слово должно быть единственным в речи: иначе место не найдено.
+      if (timesInSpeech(params.spoken, word) !== 1) continue;
+
+      let after = index + 1;
+      if (LINKING.includes(words[after] ?? '')) after++;
+
+      const mark = markAt(words, after);
+      if (mark !== undefined) found.set(keyOf(mark), mark);
+    }
+  }
+
+  if (found.size !== 1) return undefined;
+
+  const mark = [...found.values()][0];
+  if (mark === undefined) return undefined;
+
+  return dateOf(mark, params.now, params.timeZone);
+}
+
+/**
+ * Слова, которыми человек отменяет только что сказанное.
+ *
+ * Закрытый список, и проверяется он **в начале предложения**: «хотя нет»
+ * посреди фразы может быть чем угодно, а первым словом — это отмена.
+ */
+const RETRACTION: readonly (readonly string[])[] = [
+  ['хотя', 'нет'],
+  ['хотя', 'давай'],
+  ['а', 'нет'],
+  ['нет', 'давай'],
+  ['нет', 'лучше'],
+  ['передумал'],
+  ['передумала'],
+];
+
+function opensWithRetraction(words: readonly string[]): boolean {
+  return RETRACTION.some((opener) => opener.every((word, at) => words[at] === word));
+}
+
+/** Служебные слова: общими они ничего не доказывают. */
+const FUNCTION_WORDS = new Set([
+  'надо',
+  'нужно',
+  'хотел',
+  'хотела',
+  'давай',
+  'лучше',
+  'тогда',
+  'вот',
+  'еще',
+  'это',
+  'меня',
+  'мне',
+  'уже',
+  'там',
+  'потом',
+]);
+
+/** Обозначение дня, из которого дата выводится однозначно. */
+function isDefinite(mark: DayMark): boolean {
+  return mark.kind === 'relative' || mark.kind === 'weekday';
+}
+
+/**
+ * День, на который человек **перенёс дело, передумав вслух** (задача 3.56).
+ *
+ * **Зачем.** Живой прогон 04.09.2026: «Ещё в четверг хотел заехать я на
+ * мойку. Хотя нет, давай мойку лучше в пятницу». Бот завёл «Заехать на
+ * мойку в четверг» — дело на день, от которого человек отказался сам,
+ * через полсекунды. В списке это выглядит так, будто бот не слушал.
+ *
+ * **Это единственное место, где день модели перебивается.** Обычно
+ * дату модели не трогают: она видит фразу целиком. Но отмена сказана
+ * прямо, своими словами, и слушать надо человека.
+ *
+ * **Четыре условия, и каждое проверяется:**
+ *
+ * 1. Следующее предложение **начинается** словами отмены из закрытого
+ *    списка.
+ * 2. В прежнем предложении назван ровно один определённый день, и в
+ *    отменяющем — ровно один, и они разные.
+ * 3. У двух предложений есть **общее значимое слово** — оно доказывает,
+ *    что речь об одном и том же деле, а не о новом.
+ * 4. Дословная цепочка самой мысли лежит в **прежнем** предложении: это
+ *    её день отменили, а не чей-то ещё.
+ */
+export function dayAfterRetraction(params: {
+  readonly itemText: string;
+  readonly spoken: string;
+  readonly now: Date;
+  readonly timeZone: string;
+}): SentenceDay | undefined {
+  const sentences = sentencesOf(params.spoken);
+  const item = tokens(params.itemText);
+  if (item.length < 2) return undefined;
+
+  for (let index = 0; index + 1 < sentences.length; index++) {
+    const before = sentences[index] ?? '';
+    const after = sentences[index + 1] ?? '';
+
+    if (!opensWithRetraction(tokens(after))) continue;
+
+    const wasMarks = marksIn(before).filter(isDefinite);
+    const nowMarks = marksIn(after).filter(isDefinite);
+    if (wasMarks.length !== 1 || nowMarks.length !== 1) continue;
+
+    const was = wasMarks[0];
+    const moved = nowMarks[0];
+    if (was === undefined || moved === undefined) continue;
+    if (keyOf(was) === keyOf(moved)) continue;
+
+    // Общее значимое слово: без него это отмена чего-то другого.
+    const shared = tokens(before).some(
+      (word) => word.length >= 4 && !FUNCTION_WORDS.has(word) && tokens(after).includes(word),
+    );
+    if (!shared) continue;
+
+    // И отменили день именно этой мысли: её слова лежат в прежнем
+    // предложении, дословно.
+    if (!touchedSentences(item, sentences).includes(before)) continue;
+
+    return dateOf(moved, params.now, params.timeZone);
+  }
+
+  return undefined;
 }
