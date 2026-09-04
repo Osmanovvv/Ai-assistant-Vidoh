@@ -147,7 +147,7 @@ try {
     }
     for (const { expected, actual } of outcome.result.matched) {
       const accuracy = actual.deadline?.accuracy ?? 'none';
-      if (expected.deadline === '*' || accuracy === expected.deadline) continue;
+      if (expected.deadline === '*') continue;
 
       /**
        * Дата печатается в поясе человека, а не в UTC.
@@ -157,15 +157,41 @@ try {
        * off-by-one, которой не было. Сравнение всегда считалось в поясе —
        * врал только вывод, то есть ровно то, на что смотрят.
        */
-      const date =
+      const isoDate =
         actual.deadline === undefined
           ? ''
-          : ` ${new Intl.DateTimeFormat('sv-SE', { timeZone: outcome.timeZone }).format(actual.deadline.at)}`;
+          : new Intl.DateTimeFormat('sv-SE', { timeZone: outcome.timeZone }).format(
+              actual.deadline.at,
+            );
+      const date = isoDate === '' ? '' : ` ${isoDate}`;
 
-      process.stdout.write(
-        `  срок [${outcome.id}] «${actual.text}»: ожидался ${expected.deadline}, получен ${accuracy}${date}
+      if (accuracy !== expected.deadline) {
+        process.stdout.write(
+          `  срок [${outcome.id}] «${actual.text}»: ожидался ${expected.deadline}, получен ${accuracy}${date}
 `,
-      );
+        );
+        continue;
+      }
+
+      /**
+       * Верная точность при неверной дате тоже промах — и он был невидим
+       * (задача 3.59).
+       *
+       * Счёт «точность срока» такой промах учитывал, а построчно он не
+       * печатался: проверка выше выходила, как только точность совпала.
+       * 04.09.2026 на живой расшифровке «позвонить бабушке» получало
+       * 05.09 вместо 04.09 — точность дневная, дата чужая, — и отчёт
+       * показывал 97,4% без единой строки, где именно. Я прочёл это как
+       * «на стенде верно», и это было неправдой.
+       */
+      if (expected.deadlineDate !== undefined && isoDate !== expected.deadlineDate) {
+        process.stdout.write(
+          `  дата [${outcome.id}] «${actual.text}»: ожидалась ${expected.deadlineDate}, получена ${
+            isoDate === '' ? 'нет' : isoDate
+          }
+`,
+        );
+      }
     }
     for (const item of outcome.result.extra) {
       process.stdout.write(`  лишнее [${outcome.id}] «${item.text}»\n`);
