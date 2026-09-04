@@ -55,13 +55,30 @@ export interface CreateLoggerOptions {
   readonly level?: LogLevel;
   /** Человекочитаемый вывод для разработки. В тестах и проде выключен. */
   readonly pretty?: boolean;
+  /**
+   * Файл журнала — вторым потоком, рядом со стандартным выводом (3.51).
+   *
+   * **Зачем понадобился.** Журнал жил только в `docker logs`, а он
+   * привязан к контейнеру: каждая выкладка пересоздаёт контейнер, и всё
+   * сказанное до неё исчезает. 04.09.2026 из-за этого не удалось
+   * ответить на простой вопрос — кто удалил данные проджекта: событие
+   * было в тот час, а контейнер к тому времени сменился дважды.
+   *
+   * Файл лежит на томе хозяина, поэтому переживает и выкладку, и
+   * перезапуск. Стандартный вывод при этом остаётся: `docker logs`
+   * по-прежнему показывает свежее, и ничего в привычках не меняется.
+   *
+   * Не задан — ведём себя как прежде. Ни один служебный скрипт от этого
+   * не зависит.
+   */
+  readonly file?: string | undefined;
 }
 
 export function createLogger(
   options: CreateLoggerOptions = {},
   destination?: DestinationStream,
 ): Logger {
-  const { level = 'info', pretty = false } = options;
+  const { level = 'info', pretty = false, file } = options;
 
   const base = {
     level,
@@ -75,6 +92,29 @@ export function createLogger(
 
   if (destination) {
     return pino(base, destination);
+  }
+
+  /**
+   * Два потока: стандартный вывод и файл.
+   *
+   * **Отказ файла не роняет бот.** Не создалась папка, кончилось место,
+   * нет прав — журнал должен ухудшиться, а не остановить продукт.
+   * Поэтому при ошибке остаётся один поток, и об этом говорится в него
+   * же: молча потерять журнал хуже, чем потерять его громко.
+   */
+  if (file !== undefined && file !== '') {
+    try {
+      const streams = [
+        { level, stream: pino.destination({ dest: 1, sync: false }) },
+        { level, stream: pino.destination({ dest: file, append: true, mkdir: true, sync: false }) },
+      ];
+
+      return pino(base, pino.multistream(streams, { levels: pino.levels.values }));
+    } catch (error) {
+      const fallback = pino(base);
+      fallback.error({ err: error, file }, 'Журнал в файл не открылся, пишу только в вывод');
+      return fallback;
+    }
   }
 
   if (pretty) {

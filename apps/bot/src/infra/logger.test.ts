@@ -1,7 +1,10 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { REDACTION_PLACEHOLDER, createLogger, currentRequestId, withRequestId } from './logger.js';
 
@@ -185,5 +188,96 @@ describe('currentRequestId', () => {
 
   it('возвращает undefined вне контекста', () => {
     expect(currentRequestId()).toBeUndefined();
+  });
+});
+
+describe('журнал в файл (задача 3.51)', () => {
+  /**
+   * `docker logs` живёт вместе с контейнером: выкладка пересоздаёт его и
+   * стирает всё сказанное до неё. 04.09.2026 из-за этого не удалось
+   * выяснить, кто удалил данные пользователя — событие было в тот час, а
+   * контейнер к тому времени сменился дважды.
+   */
+
+  let dir = '';
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'vydoh-log-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Ждём, пока pino допишет: поток асинхронный. */
+  async function contentsOf(file: string): Promise<string> {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await delay(25);
+      try {
+        const text = await readFile(file, 'utf8');
+        if (text.trim() !== '') return text;
+      } catch {
+        // Файла ещё нет — это нормально, ждём.
+      }
+    }
+
+    return '';
+  }
+
+  it('пишет записи в указанный файл', async () => {
+    const file = join(dir, 'vydoh.log');
+    const logger = createLogger({ level: 'info', file });
+
+    logger.info({ batchId: 'b-1' }, 'Выгрузка разобрана');
+
+    const written = await contentsOf(file);
+    const record = JSON.parse(written.trim().split('\n')[0] ?? '{}') as LogRecord;
+
+    expect(record.msg).toBe('Выгрузка разобрана');
+    expect(record.service).toBe('vydoh-bot');
+    expect(record['batchId']).toBe('b-1');
+  });
+
+  it('создаёт папку, если её ещё нет', async () => {
+    // На чистом сервере тома нет до первого запуска.
+    const file = join(dir, 'глубже', 'ещё', 'vydoh.log');
+    const logger = createLogger({ level: 'info', file });
+
+    logger.warn('Папки не было');
+
+    expect((await contentsOf(file)).trim()).toContain('Папки не было');
+  });
+
+  it('в файле работает то же скрытие содержимого, что в выводе (§16)', async () => {
+    // Иначе файл на диске стал бы дырой в том, что redact закрывает.
+    const file = join(dir, 'redact.log');
+    const logger = createLogger({ level: 'info', file });
+
+    logger.info({ text: 'купить хлеб', token: 'секрет' }, 'Сохранено');
+
+    const record = JSON.parse((await contentsOf(file)).trim()) as LogRecord;
+    expect(record['text']).toBe(REDACTION_PLACEHOLDER);
+    expect(record['token']).toBe(REDACTION_PLACEHOLDER);
+  });
+
+  it('уровень уважается и в файле', async () => {
+    const file = join(dir, 'level.log');
+    const logger = createLogger({ level: 'warn', file });
+
+    logger.debug('этого быть не должно');
+    logger.warn('а это должно');
+
+    const written = await contentsOf(file);
+    expect(written).toContain('а это должно');
+    expect(written).not.toContain('этого быть не должно');
+  });
+
+  it('без файла ведёт себя как прежде', () => {
+    // Ни один служебный скрипт не должен от настройки зависеть.
+    const logger = createLogger({ level: 'info' });
+
+    expect(() => {
+      logger.info('в вывод');
+    }).not.toThrow();
   });
 });
