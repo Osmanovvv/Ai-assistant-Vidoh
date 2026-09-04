@@ -440,6 +440,16 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
    *
    * Клавиатура снимается вместе с ответом: разговор закончен, и кнопки,
    * которые ведут обратно в него, тут не к месту.
+   *
+   * **А сводка остаётся.** Боевое 04.09.2026: человек прислал голосовое на
+   * полторы минуты, бот разобрал семнадцать записей и показал три дела,
+   * человек нажал «Оставить на потом» — и сводка **исчезла**, под
+   * голосовым осталась одна строка «Всё на месте». Выглядело так, будто
+   * бот не сделал ничего, и заказчик именно так это и прочёл.
+   *
+   * «Без упреков» значит без счёта накопившегося и без нового вопроса.
+   * Стирать то, что человек только что увидел, §13.2 не просит: строка
+   * прощания дописывается под сводку, а не вместо неё.
    */
   bot.callbackQuery(ANSWER_ACTION.later, async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -449,7 +459,12 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     // реплика короткая, и молчать вместо неё было бы хуже.
     const texts = active?.texts ?? textsFor(null);
 
-    await ctx.editMessageText(texts.answer.laterAccepted);
+    // Сообщение могло стать недоступным (слишком старое, удалено) — тогда
+    // текста у него нет, и остаётся только прощание.
+    const shown = ctx.msg?.text?.trim() ?? '';
+    const farewell = texts.answer.laterAccepted;
+
+    await ctx.editMessageText(shown === '' ? farewell : `${shown}\n\n${farewell}`);
   });
 }
 

@@ -113,12 +113,34 @@ describe('sweepOnce', () => {
     const result = await sweepOnce({
       db: testDb(),
       logger,
-      now: () => at(60_000),
+      // Потолок обработки три минуты; четыре — точно застряла (задача 3.58).
+      now: () => at(4 * 60_000),
       process: () => Promise.resolve(),
     });
 
     expect(result.requeued).toBe(1);
     expect(await statusOf(batchId)).toBe('queued');
+  });
+
+  it('живую обработку не трогает', async () => {
+    /**
+     * Боевое 04.09.2026, 18:25:31: досмотр вернул в очередь выгрузку,
+     * разбор которой шёл и закончился через четыре секунды. Замок на
+     * пользователя спас от двойного ответа, но журнал врал «очередь
+     * забыла».
+     */
+    const batchId = await openBatchAt(0);
+    await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => at(60_000),
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.requeued).toBe(0);
+    expect(await statusOf(batchId)).toBe('processing');
   });
 
   it('на пустой базе ничего не делает и никого не будит', async () => {
