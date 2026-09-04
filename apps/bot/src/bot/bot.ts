@@ -1,6 +1,8 @@
 import { Bot } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 
+import { retryOnConnectFailure } from './retry.js';
+
 export interface BotOptions {
   /**
    * Известный botInfo: тогда bot.init() не ходит в сеть. Нужен и тестам,
@@ -25,10 +27,16 @@ export interface BotOptions {
 
 /** Экземпляр бота (задача 1.7). */
 export function createBot(token: string, options: BotOptions = {}): Bot {
-  return new Bot(token, {
+  const bot = new Bot(token, {
     ...(options.botInfo === undefined ? {} : { botInfo: options.botInfo }),
     ...(options.apiRoot === undefined ? {} : { client: { apiRoot: options.apiRoot } }),
   });
+
+  // Отказ соединения с Telegram повторяется один раз (задача 3.60):
+  // иначе ответ пропадает молча, а человек видит свою команду и тишину.
+  bot.api.config.use(retryOnConnectFailure());
+
+  return bot;
 }
 
 /**

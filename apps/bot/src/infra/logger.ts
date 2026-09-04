@@ -45,11 +45,70 @@ const REDACTED_FIELDS = [
 const REDACT_PATHS = [
   ...REDACTED_FIELDS,
   ...REDACTED_FIELDS.map((field) => `*.${field}`),
+  /**
+   * Глубже одного уровня (задача 3.60).
+   *
+   * Боевое 04.09.2026, 19:28: отправка ответа на `/menu` отвалилась по
+   * сети, grammY поднял `BotError`, и в журнал ушёл **весь контекст
+   * апдейта** — с токеном бота в `err.ctx.api.token` и с текстом
+   * сообщения человека в `err.ctx.update.message.text`. Маска `*.token`
+   * достаёт на один уровень, а здесь три.
+   */
+  ...REDACTED_FIELDS.map((field) => `*.*.${field}`),
+  ...REDACTED_FIELDS.map((field) => `*.*.*.${field}`),
+  'err.ctx',
   'req.headers.authorization',
   'req.headers.cookie',
 ];
 
 export const REDACTION_PLACEHOLDER = '[скрыто]';
+
+/**
+ * Токен бота, вклеенный в строку: `bot123456:AAAA…` внутри адреса запроса.
+ *
+ * Маска по полям до строк не достаёт, а grammY кладёт адрес запроса вместе
+ * с токеном в `message` и `stack` сетевой ошибки. Токен — это доступ к
+ * боту целиком; строка с ним в журнале равна строке с паролем.
+ */
+const BOT_TOKEN_IN_TEXT = /bot\d{6,}:[A-Za-z0-9_-]{20,}/gu;
+
+function scrubText(value: unknown): unknown {
+  return typeof value === 'string' ? value.replace(BOT_TOKEN_IN_TEXT, 'bot[скрыто]') : value;
+}
+
+/**
+ * Ошибка в журнал — без контекста апдейта и без токена в строках.
+ *
+ * Стандартный сериализатор pino берёт `message`, `stack` и `type`, а всё
+ * остальное копирует как есть. Здесь то же, но: `ctx` (контекст grammY
+ * с токеном и текстом человека) выбрасывается, а вложенные причины
+ * (`error`, `cause`) проходят ту же чистку, потому что токен сидит в
+ * `err.error.error.message` — на третьем уровне.
+ */
+function scrubError(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value !== 'object' || depth > 5) return scrubText(value);
+
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  if (value instanceof Error) {
+    out['type'] = value.name;
+    out['message'] = scrubText(value.message);
+    if (value.stack !== undefined) out['stack'] = scrubText(value.stack);
+  }
+
+  for (const [key, field] of Object.entries(source)) {
+    if (key === 'ctx') continue;
+    if (key === 'message' || key === 'stack') {
+      out[key] = scrubText(field);
+      continue;
+    }
+    out[key] =
+      typeof field === 'object' && field !== null ? scrubError(field, depth + 1) : scrubText(field);
+  }
+
+  return out;
+}
 
 export interface CreateLoggerOptions {
   readonly level?: LogLevel;
@@ -84,6 +143,7 @@ export function createLogger(
     level,
     base: { service: 'vydoh-bot' },
     redact: { paths: REDACT_PATHS, censor: REDACTION_PLACEHOLDER },
+    serializers: { err: scrubError },
     mixin: (): Record<string, string> => {
       const context = storage.getStore();
       return context ? { requestId: context.requestId } : {};
