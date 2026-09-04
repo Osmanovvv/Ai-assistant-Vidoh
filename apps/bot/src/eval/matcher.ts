@@ -1,5 +1,5 @@
 import type { ClassifiedItem } from '../modules/classifier/classifier.service.js';
-import type { ExpectedUnit } from './dataset.js';
+import type { ExpectedUnit, RetractedPlan } from './dataset.js';
 
 /**
  * Сопоставление разобранного с ожидаемым (задача 2.19).
@@ -14,6 +14,15 @@ import type { ExpectedUnit } from './dataset.js';
  * «купить пуфики»: оба про покупку. Требование всех корней делает
  * совпадение однозначным, а если оно всё же двоякое — виноват набор, и
  * это видно по двум ожиданиям, поймавшим одну запись.
+ *
+ * **Внутри одного корня можно перечислить замены через «|»** (задача
+ * 3.56). Одно и то же дело человек называет двумя словами, и оба его:
+ * «Ещё в четверг хотел заехать я на мойку… вот в пятницу тогда надо
+ * помыть машину». Разбор вправе назвать это и «заехать на мойку», и
+ * «помыть машину», и требовать одно из двух значило бы мерить не
+ * качество разбора, а нашу догадку о его словах. Корень «мойк|машин»
+ * подходит, если есть **любой** из них; между разными корнями правило
+ * прежнее — нужны все.
  */
 
 /** «Ё» приравнивается к «е», регистр не считается. */
@@ -34,11 +43,33 @@ export interface MatchResult {
   readonly extra: readonly ClassifiedItem[];
   /** Одно ожидание поймало несколько записей: набор размечен двояко. */
   readonly ambiguous: readonly ExpectedUnit[];
+  /**
+   * Отменённое человеком, что разбор всё же завёл записью (задача 3.56).
+   *
+   * Подмножество `extra`: считается и там, и здесь. В «лишних» — потому
+   * что запись действительно лишняя, отдельным числом — потому что порог
+   * по ней ноль, а у лишних он 25%.
+   */
+  readonly retracted: readonly ClassifiedItem[];
+}
+
+/** Один корень: подходит, если найдена любая из замен, перечисленных «|». */
+function hasRoot(text: string, keyword: string): boolean {
+  return normalize(keyword)
+    .split('|')
+    .filter((one) => one.length > 0)
+    .some((one) => text.includes(one));
 }
 
 function fits(unit: ExpectedUnit, item: ClassifiedItem): boolean {
   const text = normalize(item.text);
-  return unit.keywords.every((keyword) => text.includes(normalize(keyword)));
+  return unit.keywords.every((keyword) => hasRoot(text, keyword));
+}
+
+/** Узнаётся ли в записи отменённый замысел: правило то же, что у ожиданий. */
+function fitsPlan(plan: RetractedPlan, item: ClassifiedItem): boolean {
+  const text = normalize(item.text);
+  return plan.keywords.every((keyword) => hasRoot(text, keyword));
 }
 
 /**
@@ -51,6 +82,7 @@ function fits(unit: ExpectedUnit, item: ClassifiedItem): boolean {
 export function match(
   expected: readonly ExpectedUnit[],
   actual: readonly ClassifiedItem[],
+  retracted: readonly RetractedPlan[] = [],
 ): MatchResult {
   const taken = new Set<ClassifiedItem>();
   const matched: Match[] = [];
@@ -94,10 +126,21 @@ export function match(
     matched.push({ expected: unit, actual: free });
   }
 
+  const leftovers = actual.filter((item) => !taken.has(item));
+
+  /**
+   * Отменённое ищется только среди незанятых записей (задача 3.56).
+   *
+   * Запись, закрывшая ожидание, законна по определению: разметка её ждала.
+   * Нарушение — добавочная запись с отменённым замыслом.
+   */
+  const cancelled = leftovers.filter((item) => retracted.some((plan) => fitsPlan(plan, item)));
+
   return {
     matched,
     missed,
-    extra: actual.filter((item) => !taken.has(item)),
+    extra: leftovers,
     ambiguous,
+    retracted: cancelled,
   };
 }

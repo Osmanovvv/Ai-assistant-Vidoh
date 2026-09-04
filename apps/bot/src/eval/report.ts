@@ -57,6 +57,22 @@ export interface EvalReport {
   readonly falseTasksFromDesires: number;
   readonly falseTasksFromEmotions: number;
 
+  /**
+   * Отменённое человеком, что всё же стало записью (задача 3.56).
+   *
+   * Отдельным числом с порогом ноль. Человек передумывает вслух: «Ещё в
+   * четверг хотел заехать я на мойку. Хотя нет, давай мойку лучше в
+   * пятницу». Запись про четверг противоречит сказанному прямо, и человек
+   * это видит сразу — а доля лишних с порогом 25% такую одну запись
+   * пропускает, потому что там же живёт законное дробление.
+   *
+   * **Поймано живым прогоном 04.09.2026, а не набором.** Набор этой фразы
+   * не содержал вовсе: в нём лежала расшифровка от 02.09.2026, короче
+   * боевой на 546 знаков. Три зелёных прогона мерили текст без
+   * самопоправки.
+   */
+  readonly retractedKept: number;
+
   readonly crisisExpected: number;
   readonly crisisDetected: number;
   /** Сработал там, где не ждали. Ложное срабатывание — тоже промах. */
@@ -118,6 +134,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
   let ambiguous = 0;
   let deadlineCorrect = 0;
   let falseDeadlines = 0;
+  let retractedKept = 0;
 
   const versions: Record<string, string> = {};
 
@@ -127,6 +144,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     missed += outcome.result.missed.length;
     extra += outcome.result.extra.length;
     ambiguous += outcome.result.ambiguous.length;
+    retractedKept += outcome.result.retracted.length;
     if (outcome.failed !== undefined) failed++;
 
     if (outcome.crisis.expected) crisisExpected++;
@@ -193,6 +211,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     falseDeadlines,
     falseTasksFromDesires,
     falseTasksFromEmotions,
+    retractedKept,
     crisisExpected,
     crisisDetected,
     crisisFalse,
@@ -273,6 +292,7 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     `Ложных задач из желаний: ${String(report.falseTasksFromDesires)}${deltaCount(report.falseTasksFromDesires, previous?.falseTasksFromDesires)}`,
     `Ложных задач из эмоций:  ${String(report.falseTasksFromEmotions)}${deltaCount(report.falseTasksFromEmotions, previous?.falseTasksFromEmotions)}`,
     `Выдуманных сроков:       ${String(report.falseDeadlines)}${deltaCount(report.falseDeadlines, previous?.falseDeadlines)}`,
+    `Отменённого в записях:   ${String(report.retractedKept)}${deltaCount(report.retractedKept, previous?.retractedKept)}`,
     '',
     `Кризис: ожидался ${String(report.crisisExpected)}, сработал ${String(report.crisisDetected)}, ложных ${String(report.crisisFalse)}, пропущено ${String(report.crisisMissed)}`,
     `Разбор не удался: ${String(report.failed)}`,
@@ -307,6 +327,15 @@ export interface Threshold {
    * решает, что бот не понял главного.
    */
   readonly falseDeadlines: number;
+  /**
+   * Сколько отменённого человеком допустимо в записях (задача 3.56).
+   *
+   * Ноль. Человек сказал «хотя нет, давай лучше в пятницу» — запись про
+   * четверг противоречит сказанному, и это видно сразу, без разметки.
+   * Через долю лишних такое не поймать: у неё порог 25%, потому что там
+   * же считается законное дробление.
+   */
+  readonly retractedKept: number;
   /**
    * Какую долю ожидаемых единиц обязан находить разбор.
    *
@@ -346,6 +375,7 @@ export const STAGE2_THRESHOLD: Threshold = {
   type: 0.85,
   falseTasks: 0,
   falseDeadlines: 0,
+  retractedKept: 0,
   found: 0.95,
   extra: 0.25,
 };
@@ -392,6 +422,13 @@ export function checkThreshold(
 
   if (report.falseDeadlines > threshold.falseDeadlines) {
     failures.push(`выдуманных сроков: ${String(report.falseDeadlines)}`);
+  }
+
+  if (report.retractedKept > threshold.retractedKept) {
+    failures.push(
+      `отменённого человеком в записях: ${String(report.retractedKept)}` +
+        ' — запись противоречит сказанному вслух',
+    );
   }
 
   if (report.failed > 0) {
