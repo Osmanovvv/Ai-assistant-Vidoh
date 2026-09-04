@@ -24,7 +24,7 @@ function unit(keywords: readonly string[], overrides: Partial<ExpectedUnit> = {}
     optional: false,
     why: '',
     ...overrides,
-  } as ExpectedUnit;
+  };
 }
 
 function item(text: string): ClassifiedItem {
