@@ -37,6 +37,7 @@ import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { saysNoStrength } from '../output/exhaustion.js';
+import { weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
@@ -942,9 +943,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     const dumpText = parsed.map((segment) => segment.text).join('\n');
 
+    /**
+     * Разбору — речь с правками на своих местах (задача 3.57).
+     *
+     * Отдельно от `dumpText`: тот идёт в промпт классификации под словами
+     * «человек сказал так» и в презентацию, и менять его — другая задача с
+     * другим замером. Условия вплетения — в `patch-in-place.ts`.
+     */
+    const forExtraction = weaveForExtraction(parsed, routed.segments);
+
     // ── Единицы ─────────────────────────────────────────────────────────
     const extracted = await extractUnits(heavy, {
-      input: dumpText,
+      input: forExtraction,
       userId: batch.userId,
       batchId: batch.id,
     });

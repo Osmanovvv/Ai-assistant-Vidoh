@@ -5,6 +5,7 @@ import { batches } from '../db/schema.js';
 import type { AiClientDeps } from '../modules/ai/client.js';
 import { classifyUnits } from '../modules/classifier/classifier.service.js';
 import { extractUnits } from '../modules/extractor/extractor.service.js';
+import { weaveForExtraction } from '../modules/pipeline/patch-in-place.js';
 import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
 import { routeIntents } from '../modules/router/router.service.js';
 import type { EvalCase } from './dataset.js';
@@ -119,13 +120,20 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
 
     if (detectCrisis(item.text, routed.crisis).detected) return stopped();
 
-    const dumpText = routed.segments
-      .filter((segment) => segment.intent === 'DUMP')
-      .map((segment) => segment.text)
-      .join('\n');
+    const parsed = routed.segments.filter((segment) => segment.intent === 'DUMP');
+    const dumpText = parsed.map((segment) => segment.text).join('\n');
+
+    /**
+     * Вход извлечения собирается **тем же кодом, что в бою** (задача 3.57).
+     *
+     * Правило выучено дорого: пять раз набор мерил не то, что работает, и
+     * каждый раз потому, что собирал вход сам. Поэтому вплетение правок
+     * зовётся здесь той же функцией, а не повторяется «эквивалентом».
+     */
+    const forExtraction = weaveForExtraction(parsed, routed.segments);
 
     const extracted = await extractUnits(deps.ai, {
-      input: dumpText === '' ? item.text : dumpText,
+      input: forExtraction === '' ? item.text : forExtraction,
       ...owner,
     });
     versions.extractor = extracted.promptVersion;
