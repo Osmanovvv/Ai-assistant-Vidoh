@@ -92,7 +92,7 @@ function tokens(text: string): readonly string[] {
 }
 
 /** Предложения речи. Точка, вопрос, восклицание и перевод строки. */
-function sentencesOf(speech: string): readonly string[] {
+export function sentencesOf(speech: string): readonly string[] {
   return speech
     .split(/[.!?\n]+/u)
     .map((one) => one.trim())
@@ -403,7 +403,7 @@ function opensWithRetraction(words: readonly string[]): boolean {
 }
 
 /** Служебные слова: общими они ничего не доказывают. */
-const FUNCTION_WORDS = new Set([
+export const FUNCTION_WORDS = new Set([
   'надо',
   'нужно',
   'хотел',
@@ -420,6 +420,25 @@ const FUNCTION_WORDS = new Set([
   'там',
   'потом',
 ]);
+
+/**
+ * Есть ли у двух отрывков речи общее значимое слово (задача 3.56).
+ *
+ * Доказывает, что речь об одном и том же деле, а не о новом. Служебные
+ * слова не считаются: «надо», «лучше», «тогда» есть в любой фразе и
+ * ничего не доказывают. Короткие тоже: «в», «на», «то» соединяют что
+ * угодно с чем угодно.
+ *
+ * Вынесено наружу, потому что тем же признаком решается, вплетать ли
+ * правку в разбор (`patch-in-place.ts`). Признак один — и правило одно.
+ */
+export function sharesSignificantWord(one: string, other: string): boolean {
+  const theirs = new Set(tokens(other));
+
+  return tokens(one).some(
+    (word) => word.length >= 4 && !FUNCTION_WORDS.has(word) && theirs.has(word),
+  );
+}
 
 /** Обозначение дня, из которого дата выводится однозначно. */
 function isDefinite(mark: DayMark): boolean {
@@ -475,10 +494,7 @@ export function dayAfterRetraction(params: {
     if (keyOf(was) === keyOf(moved)) continue;
 
     // Общее значимое слово: без него это отмена чего-то другого.
-    const shared = tokens(before).some(
-      (word) => word.length >= 4 && !FUNCTION_WORDS.has(word) && tokens(after).includes(word),
-    );
-    if (!shared) continue;
+    if (!sharesSignificantWord(before, after)) continue;
 
     // И отменили день именно этой мысли: её слова лежат в прежнем
     // предложении, дословно.
