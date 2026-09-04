@@ -996,6 +996,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       units: extracted.units,
       // §3.8б: «запомни» живёт в сказанном, а не в единицах.
       spoken: dumpText,
+      /**
+       * А правилам дня — речь целиком (задача 3.56). Маршрутизатор
+       * убирает из `dumpText` отрезки с намерением `PATCH`, и вместе с
+       * ними уходит отмена дня: «Хотя нет, давай мойку лучше в пятницу».
+       */
+      speech: combined,
       topics: topics.names,
       defaultTopic: threadTopic?.name ?? topics.defaultName,
       timeZone: context.timeZone,
