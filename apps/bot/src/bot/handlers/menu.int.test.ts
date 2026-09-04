@@ -520,14 +520,20 @@ describe('карточка записи', () => {
     );
   });
 
-  it('«Изменить» подсказывает словами и не съедает карточку', async () => {
-    // §7 ТЗ строит правку на речи. Учить человека формам вместо разговора
-    // значит идти против продукта.
-    //
-    // **Подсказка приходила правкой сообщения и стирала клавиатуру** —
-    // при том что сама говорит «кнопками рядом». Нажатие, которое ничего
-    // не меняет, отнимало у человека экран. Найдено ручной проверкой
-    // 29.08.2026; здесь проверяется, что карточка на месте.
+  it('«Изменить» просит написать текст и не съедает карточку', async () => {
+    /**
+     * §7 ТЗ строит правку на речи. Учить человека формам вместо разговора
+     * значит идти против продукта.
+     *
+     * **Подсказка приходила правкой сообщения и стирала клавиатуру** —
+     * при том что сама говорит «кнопками рядом». Нажатие, которое ничего
+     * не меняет, отнимало у человека экран. Найдено ручной проверкой
+     * 29.08.2026; здесь по-прежнему проверяется, что карточка на месте.
+     *
+     * **А с задачи 3.61 кнопка перестала быть заглушкой.** Она просит
+     * написать новый текст дела — отдельным сообщением, чтобы карточка
+     * осталась, — и запоминает, чего ждёт.
+     */
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -535,13 +541,21 @@ describe('карточка записи', () => {
 
     await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
 
-    const answer = calls.filter((call) => call.method === 'answerCallbackQuery').at(-1);
-    expect(textOf(answer)).toBe(defaultTexts.card.editHint);
-    expect(answer?.payload['show_alert']).toBe(true);
+    const asked = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(asked)).toBe(defaultTexts.card.editHint);
 
     // Ни одной правки сообщения: карточка с кнопками осталась как была.
     expect(calls.filter((call) => call.method === 'editMessageText')).toHaveLength(0);
     expect((await itemRow(itemId))?.status).toBe('new');
+
+    // И бот запомнил, чего ждёт: без этого следующая реплика человека
+    // ушла бы в разбор, а не в правку.
+    const [settings] = await testDb()
+      .select({ awaiting: userSettings.awaitingInput })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+
+    expect(settings?.awaiting).toBe(`edit:${itemId}`);
   });
 
   it('«Изменить» по исчезнувшей записи карточку как раз заменяет', async () => {

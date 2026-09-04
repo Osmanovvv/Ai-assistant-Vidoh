@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { moveItemsToOwnTopics, recalcDeadlines } from '../../modules/onboarding/backfill.js';
+import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import {
   ACTION,
   chosenFromLabels,
@@ -182,6 +183,35 @@ export function registerOnboardingHandlers(
       // настройки (задача 4.9). Спрашивать его текстом нельзя — ответ
       // ушёл бы в буфер выгрузки.
       await advance(ctx, active, STEP.timezone);
+    });
+  }
+
+  /**
+   * «Напишу своё» и «Другое время» (задача 3.61).
+   *
+   * Шаг **не двигается**: человек ещё не ответил, он только выбрал способ
+   * ответить. Реплика правится на просьбу написать, кнопки снимаются —
+   * иначе рядом с просьбой остались бы кнопки прежнего вопроса.
+   *
+   * Ожидание живёт четверть часа и снимается само, если присланное на
+   * ответ не похоже: подробности в `awaiting.ts`.
+   */
+  const asksForWords: readonly { action: string; step: number; awaiting: string }[] = [
+    { action: ACTION.nameOwn, step: STEP.name, awaiting: AWAITING.name },
+    { action: ACTION.morningOwn, step: STEP.morning, awaiting: AWAITING.morning },
+    { action: ACTION.eveningOwn, step: STEP.evening, awaiting: AWAITING.evening },
+  ];
+
+  for (const { action, step, awaiting } of asksForWords) {
+    bot.callbackQuery(action, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const active = await acting(ctx.from.id, step);
+      if (!active) return;
+
+      await setAwaiting(db, active.userId, awaiting);
+
+      const { onboarding } = active.state.texts;
+      await ctx.editMessageText(step === STEP.name ? onboarding.nameAsk : onboarding.timeAsk);
     });
   }
 

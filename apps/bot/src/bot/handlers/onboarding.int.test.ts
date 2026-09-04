@@ -20,6 +20,7 @@ import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
+import { consumeAwaited } from './awaiting.js';
 import { incomingMiddleware } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
 import { registerStartHandlers } from './start.js';
@@ -104,7 +105,15 @@ function createTestBot(
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
+  bot.use(
+    incomingMiddleware({
+      db: testDb(),
+      queue: stubQueue,
+      // Ответ словами (задача 3.61): без этого текстовая реплика
+      // уходит в буфер выгрузки, как было до задачи.
+      consume: consumeAwaited({ db: testDb(), logger }),
+    }),
+  );
   registerStartHandlers(bot, {
     db: testDb(),
     logger,
@@ -175,6 +184,13 @@ function callbackUpdate(data: string, keyboard?: readonly (readonly Button[])[])
 function textOf(call: ApiCall | undefined): string {
   const value = call?.payload['text'];
   return typeof value === 'string' ? value : '';
+}
+
+/** Подписи кнопок реплики: нужны там, где важно, чьи это кнопки. */
+function keyboardOf(call: ApiCall | undefined): { text: string; callback_data?: string }[] {
+  const markup = call?.payload['reply_markup'] as
+    { inline_keyboard: { text: string; callback_data?: string }[][] } | undefined;
+  return (markup?.inline_keyboard ?? []).flat();
 }
 
 async function settingsOf(): Promise<typeof userSettings.$inferSelect | undefined> {
@@ -744,14 +760,34 @@ describe('опрос начинается с первого запуска (за
    * имя и время, то есть два призыва к действию в одном обмене.
    */
 
-  it('«/start» задаёт первый вопрос и ставит шаг', async () => {
+  it('«/start» задаёт первый вопрос одним сообщением и ставит шаг', async () => {
+    /**
+     * **Приветствие и вопрос — одно сообщение** (задача 3.61, правка
+     * заказчика 04.09.2026: «может сделаем опрос первым сообщением»).
+     * Раньше уходило два сообщения подряд, и во втором был вопрос, то
+     * есть два призыва к действию в одном обмене.
+     */
     const questions = recordingQuestions();
-    const { bot } = createTestBot(questions.sender);
+    const { bot, calls } = createTestBot(questions.sender);
 
     await bot.handleUpdate(textUpdate('/start'));
 
-    expect(questions.asked).toHaveLength(1);
-    expect(questions.asked[0]?.text).toContain(defaultTexts.onboarding.opening);
+    // Вторым сообщением вопрос больше не приходит.
+    expect(questions.asked).toEqual([]);
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent).toHaveLength(1);
+
+    const screen = textOf(sent[0]);
+    expect(screen).toContain('Привет. Я ВЫДОХ.');
+    expect(screen).toContain(defaultTexts.onboarding.opening);
+    expect(screen).toContain(defaultTexts.onboarding.nameConfirm('Аня'));
+
+    // И кнопки на нём — вопроса, а не приветствия.
+    const labels = keyboardOf(sent[0]).map((button) => button.text);
+    expect(labels).toContain(defaultTexts.onboarding.buttonNameYes);
+    expect(labels).toContain(defaultTexts.onboarding.buttonNameOwn);
+    expect(labels).not.toContain(defaultTexts.start.buttonVoice);
 
     const state = await onboardingStateOf(testDb(), userId);
     expect(state.step).toBe(STEP.name);
@@ -765,9 +801,9 @@ describe('опрос начинается с первого запуска (за
     await bot.handleUpdate(textUpdate('/start'));
     await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
 
-    // Первый вопрос уходит через отправителя опроса, следующие —
-    // обработчиком, правкой той же реплики. Смотреть надо в оба места.
-    expect(questions.asked).toHaveLength(1);
+    // Первый вопрос теперь внутри приветствия, следующие — правкой той
+    // же реплики. Отдельным сообщением не уходит ни один.
+    expect(questions.asked).toEqual([]);
 
     const texts = calls
       .filter((one) => one.method === 'sendMessage' || one.method === 'editMessageText')
@@ -784,12 +820,22 @@ describe('опрос начинается с первого запуска (за
     // Человек может нажать «/start» и на десятый день: спрашивать заново
     // значило бы стереть его ответы.
     const questions = recordingQuestions();
-    const { bot } = createTestBot(questions.sender);
+    const { bot, calls } = createTestBot(questions.sender);
 
     await bot.handleUpdate(textUpdate('/start'));
     await bot.handleUpdate(textUpdate('/start'));
 
-    expect(questions.asked).toHaveLength(1);
+    const screens = calls
+      .filter((call) => call.method === 'sendMessage')
+      .map((call) => textOf(call));
+
+    // Два экрана, но вопрос — только на первом: второй показывает
+    // приветствие с прежними двумя кнопками.
+    expect(screens).toHaveLength(2);
+    expect(screens.filter((text) => text.includes(defaultTexts.onboarding.opening))).toHaveLength(
+      1,
+    );
+    expect(questions.asked).toEqual([]);
   });
 
   it('ответ на вопрос опроса считается согласием (§16)', async () => {
@@ -932,5 +978,160 @@ describe('сферы, появившиеся до опроса (задача 3.4
 
     const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
     expect(alive).toEqual(['дети', 'личное', 'семья']);
+  });
+});
+
+/**
+ * Ответ словами вместо кнопки (задача 3.61).
+ *
+ * Пять пунктов заказчика от 04.09.2026, из них здесь два: своё имя
+ * («может кто-то хочет, чтобы её называли Леночка») и своё время («если
+ * человек хочет 7-30»).
+ *
+ * Опрос был целиком на кнопках намеренно: свободный ответ приходит
+ * обычным сообщением и попадает в буфер выгрузки. Поэтому главное, что
+ * проверяется ниже, — **мысль человека не теряется ни в одном случае**.
+ */
+describe('ответ словами', () => {
+  async function awaitingOfUser(): Promise<string | null> {
+    return (await settingsOf())?.awaitingInput ?? null;
+  }
+
+  const repliesOf = (calls: readonly ApiCall[]): string[] =>
+    calls.filter((one) => one.method === 'sendMessage').map((one) => textOf(one));
+
+  it('«Напишу своё» просит имя и запоминает, чего ждёт', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+
+    expect(textOf(calls.filter((one) => one.method === 'editMessageText').at(-1))).toBe(
+      defaultTexts.onboarding.nameAsk,
+    );
+    expect(await awaitingOfUser()).toBe('name');
+
+    // Шаг не двинулся: человек ещё не ответил, он выбрал способ ответить.
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.name);
+  });
+
+  it('присланное имя сохраняется и опрос идёт дальше', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+    await bot.handleUpdate(textUpdate('Леночка'));
+
+    expect((await settingsOf())?.preferredName).toBe('Леночка');
+    expect(await awaitingOfUser()).toBeNull();
+
+    // Видно сразу, как теперь зовут: разбор имени строгий, но не
+    // безошибочный, и промах человек должен заметить в ту же секунду.
+    const replies = repliesOf(calls);
+    expect(replies).toContain(defaultTexts.onboarding.nameSaved('Леночка'));
+
+    // И следующий вопрос задан — опрос не встал.
+    expect(replies.some((text) => text.includes(defaultTexts.onboarding.timezoneMoscow))).toBe(
+      true,
+    );
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.timezone);
+  });
+
+  it('имя человека сильнее имени из Telegram', async () => {
+    /**
+     * `upsertUser` перезаписывает `users.first_name` тем, что пришло от
+     * Telegram, на **каждом** сообщении. Выбранное имя, положенное туда,
+     * исчезло бы со следующей репликой — поэтому оно в своей колонке.
+     */
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+    await bot.handleUpdate(textUpdate('Ксюша'));
+
+    // Ещё одно сообщение — то самое, на котором имя раньше и терялось.
+    await bot.handleUpdate(textUpdate('надо купить хлеб'));
+
+    expect((await onboardingStateOf(testDb(), userId)).name).toBe('Ксюша');
+  });
+
+  it('мысль вместо имени уходит в разбор, а не в имя', async () => {
+    // Ровно то, из-за чего опрос был на кнопках. Ожидание снимается,
+    // человеку сказано, что бот не понял, и сообщение идёт обычным путём.
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+    await bot.handleUpdate(textUpdate('надо купить продукты и позвонить бабушке'));
+
+    expect((await settingsOf())?.preferredName).toBeNull();
+    expect(await awaitingOfUser()).toBeNull();
+    expect(repliesOf(calls)).toContain(defaultTexts.onboarding.nameNotUnderstood);
+  });
+
+  it('«Другое время» принимает 7:30 и идёт к вечеру', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.morning);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.morningOwn));
+    expect(await awaitingOfUser()).toBe('morning');
+
+    await bot.handleUpdate(textUpdate('7:30'));
+
+    expect((await settingsOf())?.morningTime).toBe('07:30:00');
+    expect(await awaitingOfUser()).toBeNull();
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.evening);
+    expect(repliesOf(calls)).toContain(defaultTexts.onboarding.morningSaved('07:30'));
+  });
+
+  it('вечернее время словами тоже принимается', async () => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.evening);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.eveningOwn));
+    await bot.handleUpdate(textUpdate('в 21 45'));
+
+    const settings = await settingsOf();
+    expect(settings?.eveningTime).toBe('21:45:00');
+    expect(settings?.eveningOn).toBe(true);
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.topics);
+  });
+
+  it('не время — настройка не меняется, мысль идёт в разбор', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.morning);
+
+    const before = (await settingsOf())?.morningTime;
+
+    await bot.handleUpdate(callbackUpdate(ACTION.morningOwn));
+    await bot.handleUpdate(textUpdate('когда получится'));
+
+    expect((await settingsOf())?.morningTime).toBe(before);
+    expect(await awaitingOfUser()).toBeNull();
+    expect(repliesOf(calls)).toContain(defaultTexts.onboarding.timeNotUnderstood);
+  });
+
+  it('пока бот ничего не ждёт, сообщение идёт обычным путём', async () => {
+    /**
+     * Главное свойство всей задачи: колонка пуста почти всегда, и тогда
+     * путь входящего ровно такой, каким был. Ни одной реплики от приёма
+     * ответа быть не должно.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('надо купить хлеб'));
+
+    const replies = repliesOf(calls);
+    expect(replies).not.toContain(defaultTexts.onboarding.nameNotUnderstood);
+    expect(replies).not.toContain(defaultTexts.onboarding.timeNotUnderstood);
+    expect(await awaitingOfUser()).toBeNull();
   });
 });

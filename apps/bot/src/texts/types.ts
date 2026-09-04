@@ -29,6 +29,13 @@ export interface TextProfile {
      * меняются.
      */
     readonly screen: (policyUrl: string) => string;
+    /**
+     * Приветствие вместе с первым вопросом опроса (задача 3.61).
+     *
+     * Отдельная строка, а не склейка в обработчике: реплика, собранная не
+     * в словаре, нарушает инвариант 4.
+     */
+    readonly screenWithQuestion: (policyUrl: string, question: string) => string;
     readonly buttonVoice: string;
     readonly buttonText: string;
     readonly hintVoice: string;
@@ -170,8 +177,15 @@ export interface TextProfile {
     /**
      * Правка голосом, а не кнопками: §7 ТЗ строит её на речи, и учить
      * человека формам вместо разговора значит идти против продукта.
+     *
+     * **Была заглушкой до задачи 3.61.** Кнопка «Изменить» говорила «пока
+     * меняю только статус и срок» — то есть обещала и не делала. Теперь
+     * она просит написать новый текст дела и переписывает его, с кнопкой
+     * отмены. Срок и статус так и остаются на своих кнопках рядом.
      */
     readonly editHint: string;
+    /** Правка не легла: записи нет или текст тот же. */
+    readonly editNotApplied: string;
     readonly gone: string;
   };
 
@@ -404,6 +418,16 @@ export interface TextProfile {
     readonly nameConfirm: (name: string) => string;
     readonly buttonNameYes: string;
     readonly buttonNameLater: string;
+    /**
+     * «Напишу своё» (задача 3.61, пункт 2 заказчика).
+     *
+     * Telegram даёт имя из профиля — «Никита AI - web digital», — а человек
+     * хочет «Леночка». Кнопки «да» и «поправлю потом» такого не дают.
+     */
+    readonly buttonNameOwn: string;
+    readonly nameAsk: string;
+    readonly nameSaved: (name: string) => string;
+    readonly nameNotUnderstood: string;
 
     readonly timezoneMoscow: string;
     readonly buttonTimezoneMoscow: string;
@@ -413,6 +437,16 @@ export interface TextProfile {
     readonly morning: string;
     readonly evening: string;
     readonly buttonEveningOff: string;
+    /**
+     * «Другое время» (задача 3.61, пункт 4 заказчика).
+     *
+     * Кнопок четыре круглых часа, а человек может хотеть 7:30.
+     */
+    readonly buttonTimeOwn: string;
+    readonly timeAsk: string;
+    readonly morningSaved: (time: string) => string;
+    readonly eveningSaved: (time: string) => string;
+    readonly timeNotUnderstood: string;
 
     readonly topics: string;
     readonly buttonTopicsDone: string;

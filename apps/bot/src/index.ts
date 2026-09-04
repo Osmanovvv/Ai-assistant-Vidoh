@@ -5,6 +5,7 @@ import type { Api } from 'grammy';
 
 import { createBot } from './bot/bot.js';
 import { publishCommands } from './bot/commands.js';
+import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
@@ -269,7 +270,16 @@ async function main(): Promise<void> {
   });
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
-  bot.use(incomingMiddleware({ db, queue, sender }));
+  bot.use(
+    incomingMiddleware({
+      db,
+      queue,
+      sender,
+      // Ответ словами на вопрос опроса и правка записи из карточки
+      // (задача 3.61). Ждёт бот чего-то или нет — решает база.
+      consume: consumeAwaited({ db, logger }),
+    }),
+  );
   registerStartHandlers(bot, {
     db,
     logger,
