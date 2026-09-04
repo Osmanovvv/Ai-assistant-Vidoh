@@ -52,6 +52,28 @@ export interface ClassifyParams {
    * по исходным словам.
    */
   readonly spoken?: string | undefined;
+  /**
+   * Речь человека **целиком и без отбора**, как он её сказал (задача 3.56).
+   *
+   * Отличается от `spoken`, и это не дублирование. `spoken` — выгрузка,
+   * пересобранная маршрутизатором: только отрезки с намерением `DUMP`,
+   * склеенные переводами строк. Так и надо для промпта: показывать
+   * модели правку как новую выгрузку нельзя.
+   *
+   * Но правилам дня нужна речь, а не выгрузка. 04.09.2026 маршрутизатор
+   * отнёс «Хотя нет, давай мойку лучше в пятницу, вот в пятницу тогда
+   * надо помыть машину, ещё позвонить стоматологу, записаться на
+   * следующую неделю» к намерению `PATCH`. В `spoken` этого отрезка нет
+   * вовсе — 169 знаков, и в них единственная отмена дня и единственное
+   * «на следующую неделю». Правила молчали не по своей логике, а потому
+   * что читать было нечего: человек в бою видел дело на день, который
+   * сам же отменил вслух.
+   *
+   * Поэтому вопрос «назвал ли человек день для этого дела» решается по
+   * `speech`. Условия правил от этого не слабеют: дословность,
+   * единственность слова в речи, один день на предложение.
+   */
+  readonly speech?: string | undefined;
   readonly now?: Date | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
@@ -143,6 +165,8 @@ function buildInput(params: ClassifyParams, now: Date): string {
 export interface CorrectionContext {
   /** Сказанное целиком: по нему видно, просили ли запомнить (3.8б). */
   readonly spoken?: string | undefined;
+  /** Речь без отбора по намерениям: по ней решается день (задача 3.56). */
+  readonly speech?: string | undefined;
   readonly topics: readonly string[];
   readonly defaultTopic: string;
   readonly timeZone: string;
@@ -271,10 +295,12 @@ export function correctItems(
      * перебивает. И только у дел: лишний срок у желания — выдуманный
      * срок, худшая из ошибок разбора.
      */
-    if (deadline === undefined && isActionable(type) && ctx.spoken !== undefined) {
+    const heard = ctx.speech ?? ctx.spoken;
+
+    if (deadline === undefined && isActionable(type) && heard !== undefined) {
       const fromSentence = dayFromOwnSentence({
         itemText: item.text,
-        spoken: ctx.spoken,
+        spoken: heard,
         now,
         timeZone: ctx.timeZone,
       });
@@ -304,10 +330,10 @@ export function correctItems(
      * определённому дню с каждой стороны, общее значимое слово и
      * дословная цепочка мысли в отменённом предложении.
      */
-    if (isActionable(type) && ctx.spoken !== undefined) {
+    if (isActionable(type) && heard !== undefined) {
       const moved = dayAfterRetraction({
         itemText: item.text,
-        spoken: ctx.spoken,
+        spoken: heard,
         now,
         timeZone: ctx.timeZone,
       });
@@ -450,6 +476,7 @@ export async function classifyUnits(
     timeZone: params.timeZone,
     now,
     said: params.units.map((unit) => unit.text),
+    ...(params.speech === undefined ? {} : { speech: params.speech }),
     promptVersion: outcome.promptVersion,
     logger: deps.logger,
   });
