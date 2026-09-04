@@ -281,3 +281,72 @@ describe('журнал в файл (задача 3.51)', () => {
     }).not.toThrow();
   });
 });
+
+/**
+ * Токен и контекст апдейта не попадают в журнал (задача 3.60).
+ *
+ * Боевое 04.09.2026, 19:28: отправка ответа отвалилась по сети, grammY
+ * поднял BotError с полным контекстом апдейта — и в журнал ушли токен
+ * бота (`err.ctx.api.token`, плюс адрес запроса в `message` и `stack`
+ * вложенной ошибки) и текст сообщения человека.
+ */
+describe('ошибка grammY в журнале', () => {
+  const TOKEN = 'bot8848538335:AAFPGJi2RkzYDdfVRn4l8Abi2T-9r46osWU';
+
+  function grammyLikeError(): Error {
+    const fetchError = Object.assign(
+      new Error(`request to https://api.telegram.org/${TOKEN}/sendMessage failed, reason: `),
+      { code: 'ETIMEDOUT' },
+    );
+    const httpError = Object.assign(new Error('Network request for sendMessage failed!'), {
+      error: fetchError,
+    });
+    return Object.assign(new Error('HttpError in middleware: Network request failed!'), {
+      error: httpError,
+      ctx: {
+        update: { update_id: 1, message: { text: 'Позвонить бабушке сегодня' } },
+        api: { token: TOKEN.slice(3) },
+      },
+    });
+  }
+
+  function serialized(): string {
+    const { logger, records } = loggerWithSink();
+    logger.error({ err: grammyLikeError() }, 'Сбой обработки апдейта');
+    return JSON.stringify(records);
+  }
+
+  it('токен не встречается нигде — ни в полях, ни в строках', () => {
+    const out = serialized();
+    expect(out).not.toContain('AAFPGJi2RkzYDdfVRn4l8Abi2T-9r46osWU');
+    expect(out).not.toContain('8848538335');
+  });
+
+  it('контекст апдейта с текстом человека выброшен целиком', () => {
+    const out = serialized();
+    expect(out).not.toContain('Позвонить бабушке');
+    expect(out).not.toContain('"ctx"');
+  });
+
+  it('сама ошибка остаётся читаемой: тип, сообщение, код сети', () => {
+    const { logger, records } = loggerWithSink();
+    logger.error({ err: grammyLikeError() }, 'Сбой обработки апдейта');
+    const err = records[0]?.['err'] as Record<string, unknown>;
+
+    expect(err['message']).toContain('Network request failed');
+    const inner = err['error'] as Record<string, unknown>;
+    const fetchErr = inner['error'] as Record<string, unknown>;
+    expect(fetchErr['code']).toBe('ETIMEDOUT');
+    expect(String(fetchErr['message'])).toContain('bot[скрыто]/sendMessage');
+  });
+
+  it('обычная ошибка сериализуется как прежде', () => {
+    const { logger, records } = loggerWithSink();
+    logger.error({ err: new RangeError('мало места') }, 'x');
+    const err = records[0]?.['err'] as Record<string, unknown>;
+
+    expect(err['type']).toBe('RangeError');
+    expect(err['message']).toBe('мало места');
+    expect(typeof err['stack']).toBe('string');
+  });
+});
