@@ -33,12 +33,31 @@ export async function recoverStuckBatches(
   const limits = params.limits ?? DEFAULT_LIMITS;
 
   return await db.transaction(async (tx): Promise<RecoveryReport> => {
-    // Процесс умер посреди обработки: статус processing остался висеть.
-    // Возвращаем в очередь — обработка идемпотентна на уровне выгрузки.
+    /**
+     * Процесс умер посреди обработки: статус processing остался висеть.
+     * Возвращаем в очередь — обработка идемпотентна на уровне выгрузки.
+     *
+     * **Но только застрявшую, а не идущую.** Досмотр зовёт это правило
+     * каждые полминуты, и без порога оно возвращало в очередь живой
+     * разбор: боевое 04.09.2026, 18:25:31 — выгрузка закрыта в 18:24:49,
+     * разбор шёл, и через сорок секунд досмотр счёл его умершим. Замок на
+     * пользователя спас от двойного ответа, но журнал врал «очередь
+     * забыла», а с потерянным замком ответ пришёл бы дважды.
+     *
+     * Возраст считается от закрытия: обработка начинается сразу за ним.
+     * Открытая дата — на случай выгрузки, закрытой не через очередь.
+     */
+    const processingThreshold = new Date(now.getTime() - limits.maxProcessingMs);
+
     const requeued = await tx
       .update(batches)
       .set({ status: 'queued' })
-      .where(eq(batches.status, 'processing'))
+      .where(
+        and(
+          eq(batches.status, 'processing'),
+          sql`coalesce(${batches.closedAt}, ${batches.openedAt}) <= ${processingThreshold}`,
+        ),
+      )
       .returning({ userId: batches.userId });
 
     // Открытая выгрузка старше жёсткого потолка: либо Redis потерял

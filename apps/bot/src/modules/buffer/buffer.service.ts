@@ -16,6 +16,15 @@ export interface BufferLimits {
   readonly silenceWindowMs: number;
   /** Жёсткий потолок: выгрузка не может быть открыта вечно. */
   readonly maxBatchAgeMs: number;
+  /**
+   * Сколько обработка вправе идти, прежде чем считать её умершей.
+   *
+   * Живой разбор занимает около минуты: маршрутизатор, извлечение,
+   * классификация, ответ. Досмотр, который возвращает в очередь **любую**
+   * выгрузку в обработке, ловил и живую (боевое 04.09.2026, 18:25:31 —
+   * ровно посреди разбора). Потолок отделяет застрявшую от идущей.
+   */
+  readonly maxProcessingMs: number;
   readonly maxMessagesPerBatch: number;
   /** §10.5 ТЗ: ограничение частоты выгрузок на пользователя. */
   readonly maxDumpsPerDay: number;
@@ -24,6 +33,8 @@ export interface BufferLimits {
 export const DEFAULT_LIMITS: BufferLimits = {
   silenceWindowMs: 30_000,
   maxBatchAgeMs: 5 * 60_000,
+  // Втрое дольше обычного разбора и короче потолка открытой выгрузки.
+  maxProcessingMs: 3 * 60_000,
   maxMessagesPerBatch: 15,
   maxDumpsPerDay: 30,
 };

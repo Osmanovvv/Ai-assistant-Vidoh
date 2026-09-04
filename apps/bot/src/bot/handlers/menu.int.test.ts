@@ -11,6 +11,7 @@ import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { toShortId } from '../../modules/shared/short-id.js';
 import { registerCardHandlers } from './card.js';
+import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
 
 /**
@@ -95,7 +96,7 @@ function commandUpdate(text: string, from = TG_ID): Update {
   } as unknown as Update;
 }
 
-function callbackUpdate(data: string, from = TG_ID): Update {
+function callbackUpdate(data: string, from = TG_ID, text?: string): Update {
   seq++;
   return {
     update_id: 700_000 + seq,
@@ -108,6 +109,9 @@ function callbackUpdate(data: string, from = TG_ID): Update {
         message_id: 1,
         date: 0,
         chat: { id: from, type: 'private', first_name: 'Аня' },
+        // Текст сообщения, на котором стоит кнопка: нужен там, где
+        // обработчик обязан его сохранить.
+        ...(text === undefined ? {} : { text }),
       },
     },
   } as unknown as Update;
@@ -594,5 +598,53 @@ describe('чужое по подобранному коду', () => {
     expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
       defaultTexts.card.gone,
     );
+  });
+});
+
+/**
+ * «Оставить на потом» не стирает сводку (боевое 04.09.2026).
+ *
+ * Человек прислал голосовое на полторы минуты, бот разобрал семнадцать
+ * записей и показал три дела, человек нажал «Оставить на потом» — и под
+ * голосовым осталась одна строка «Всё на месте». Выглядело так, будто бот
+ * не сделал ничего, и заказчик именно так это и прочёл.
+ */
+describe('«Оставить на потом» оставляет сводку на месте', () => {
+  const summary = `Записала. На сегодня три дела:
+— Помыть машину
+— Позвонить стоматологу`;
+
+  it('прощание дописывается под сводку, а не вместо неё', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.later, TG_ID, summary));
+
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    const text = textOf(edited);
+
+    expect(text.startsWith(summary)).toBe(true);
+    expect(text.endsWith(defaultTexts.answer.laterAccepted)).toBe(true);
+  });
+
+  it('клавиатура снимается: разговор закончен', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.later, TG_ID, summary));
+
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(keyboardOf(edited)).toEqual([]);
+  });
+
+  it('без текста у сообщения остаётся одно прощание', async () => {
+    // Сообщение могло стать недоступным — тогда стирать нечего.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.later));
+
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(edited)).toBe(defaultTexts.answer.laterAccepted);
   });
 });

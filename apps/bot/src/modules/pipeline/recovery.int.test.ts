@@ -47,6 +47,9 @@ async function statusOf(batchId: string): Promise<string | undefined> {
   return row?.status;
 }
 
+/** Закрыта на 31-й секунде; потолок обработки три минуты — значит, застряла. */
+const STUCK = 31_000 + 4 * 60_000;
+
 describe('выгрузка, застрявшая в обработке', () => {
   it('возвращается в очередь', async () => {
     const batchId = await openBatchAt(0);
@@ -54,10 +57,27 @@ describe('выгрузка, застрявшая в обработке', () => {
     // Имитация падения процесса посреди обработки.
     await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
 
-    const report = await recoverStuckBatches(testDb(), { now: at(60_000) });
+    const report = await recoverStuckBatches(testDb(), { now: at(STUCK) });
 
     expect(report.requeuedProcessing).toBe(1);
     expect(await statusOf(batchId)).toBe('queued');
+  });
+
+  it('живая обработка в очередь не возвращается', async () => {
+    /**
+     * Боевое 04.09.2026, 18:25:31: досмотр вернул в очередь выгрузку,
+     * разбор которой шёл сорок секунд и закончился через четыре. Замок на
+     * пользователя спас от двойного ответа, но журнал врал «очередь
+     * забыла», а без замка человек получил бы ответ дважды.
+     */
+    const batchId = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+    await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
+
+    const report = await recoverStuckBatches(testDb(), { now: at(31_000 + 40_000) });
+
+    expect(report.requeuedProcessing).toBe(0);
+    expect(await statusOf(batchId)).toBe('processing');
   });
 
   it('возвращает пользователя для повторной постановки в очередь', async () => {
@@ -65,7 +85,7 @@ describe('выгрузка, застрявшая в обработке', () => {
     await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
     await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
 
-    const report = await recoverStuckBatches(testDb(), { now: at(60_000) });
+    const report = await recoverStuckBatches(testDb(), { now: at(STUCK) });
 
     expect(report.userIds).toEqual([userId]);
   });
