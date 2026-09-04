@@ -112,6 +112,13 @@ type DayMark =
   /** Срок назван, но дня в нём нет: недели, месяцы, «через». */
   | { readonly kind: 'vague' };
 
+/** Ключ обозначения дня: по нему считается, сколько их названо разных. */
+function keyOf(mark: DayMark): string {
+  if (mark.kind === 'relative') return `r${String(mark.shift)}`;
+  if (mark.kind === 'weekday') return `w${String(mark.weekday)}`;
+  return mark.kind;
+}
+
 function marksIn(sentence: string): readonly DayMark[] {
   const words = tokens(sentence);
   const marks: DayMark[] = [];
@@ -138,45 +145,48 @@ function marksIn(sentence: string): readonly DayMark[] {
 }
 
 /**
- * Самая длинная цепочка слов мысли, идущая подряд **внутри одного
- * предложения**, и предложения, где она встречается.
+ * Предложения речи, которых мысль касается **дословно**.
  *
- * Не короче двух слов: одно слово встречается в речи слишком часто,
- * чтобы что-то доказывать.
+ * Берутся все цепочки слов мысли длиной от двух, идущие в предложении
+ * подряд; предложение попадает в набор, если такая цепочка встречается
+ * ровно в нём одном. Цепочка, найденная в двух предложениях, ничего не
+ * доказывает и отбрасывается.
  *
- * **Внутри предложения, а не по всей речи, и это не мелочь.** Сперва
- * цепочка искалась по речи целиком, склеенной в одну строку, — и
- * захватывала слова через точку. Живой прогон 04.09.2026: у мысли
- * «Разобрать балкон: коробки разобрать, ненужное выкинуть, посмотреть,
- * сколько свободного места останется» нашлась цепочка «коробки разобрать
- * ненужное выкинуть **посмотреть сколько**», а речь там разделена точкой:
- * «…ненужное выкинуть. Посмотреть, сколько…». Такой цепочки не было ни в
- * одном предложении, и правило молча выходило ни с чем — «на выходных»
- * терялось.
+ * **Почему все, а не самая длинная.** Сперва бралась одна, самая
+ * длинная, — на том основании, что чем длиннее совпадение, тем надёжнее
+ * связь. Живой прогон 04.09.2026 показал изъян: у мысли «Разобрать
+ * балкон, коробки, выкинуть ненужное, посмотреть, сколько свободного
+ * места останется» самой длинной оказалась «свободного места
+ * останется», а она сидит в **соседнем** предложении — «Посмотреть,
+ * сколько вообще свободного места останется», — где дня нет вовсе.
+ * Короткая цепочка «разобрать балкон» указывала на нужное предложение,
+ * с «на выходных», но до неё дело не доходило. Срок терялся молча.
  *
- * Длина берётся от большего к меньшему: чем длиннее доказанная цепочка,
- * тем надёжнее связь. Нашлась в двух предложениях — связь неоднозначна, и
- * более короткая цепочка её однозначной не сделает: она встречается по
- * меньшей мере там же.
+ * Мысль часто собрана из двух предложений речи, и день может стоять в
+ * любом из них. Поэтому смотреть надо на все, куда мысль дотянулась, а
+ * проверку однозначности делать по дню, а не по числу предложений.
  */
-function longestRun(
+function touchedSentences(
   item: readonly string[],
   sentences: readonly string[],
-): { readonly run: string; readonly owning: readonly string[] } {
+): readonly string[] {
   const asWords = sentences.map((sentence) => ` ${tokens(sentence).join(' ')} `);
+  const touched = new Set<number>();
 
   for (let length = item.length; length >= 2; length--) {
     for (let start = 0; start + length <= item.length; start++) {
-      const run = item.slice(start, start + length).join(' ');
-      const owning = sentences.filter((_unused, index) =>
-        (asWords[index] ?? '').includes(` ${run} `),
+      const run = ` ${item.slice(start, start + length).join(' ')} `;
+      const found = asWords.reduce<number[]>(
+        (all, words, index) => (words.includes(run) ? [...all, index] : all),
+        [],
       );
 
-      if (owning.length > 0) return { run, owning };
+      // Цепочка из двух предложений связь не доказывает: пропускаем её.
+      if (found.length === 1 && found[0] !== undefined) touched.add(found[0]);
     }
   }
 
-  return { run: '', owning: [] };
+  return [...touched].map((index) => sentences[index] ?? '');
 }
 
 export function dayFromOwnSentence(params: {
@@ -188,10 +198,20 @@ export function dayFromOwnSentence(params: {
   const item = tokens(params.itemText);
   if (item.length < 2) return undefined;
 
-  const { run, owning } = longestRun(item, sentencesOf(params.spoken));
-  if (run === '' || owning.length !== 1) return undefined;
+  const owning = touchedSentences(item, sentencesOf(params.spoken));
+  if (owning.length === 0) return undefined;
 
-  const marks = marksIn(owning[0] ?? '');
+  /**
+   * Однозначность проверяется **по дню**, а не по числу предложений:
+   * мысль часто собрана из двух, и это не повод отказываться. А вот два
+   * разных дня — повод: какой из них чей, отсюда не видно.
+   */
+  const seen = new Map<string, DayMark>();
+  for (const sentence of owning) {
+    for (const mark of marksIn(sentence)) seen.set(keyOf(mark), mark);
+  }
+
+  const marks = [...seen.values()];
   if (marks.length !== 1) return undefined;
 
   const mark = marks[0];
