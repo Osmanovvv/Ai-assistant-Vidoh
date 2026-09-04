@@ -57,12 +57,34 @@ export function match(
   const missed: ExpectedUnit[] = [];
   const ambiguous: ExpectedUnit[] = [];
 
-  for (const unit of expected) {
+  /**
+   * Обязательные ожидания разбираются первыми (задача 3.53).
+   *
+   * Иначе метка «двоякое дробление» не работает. В речи «Еще взять номер
+   * телефона. Домика в Волконке и узнать о наличии свободных мест может
+   * быть запланировать поездку на 5 7 сентября» разбор вправе сделать
+   * одну запись. Если необязательное ожидание «номер» стоит в списке
+   * раньше обязательного «поездк», оно забирает единственную запись
+   * себе — и «поездк» уходит в потери вместе со своей проверкой срока.
+   *
+   * Порядок внутри каждой группы сохраняется: он задан разметкой и
+   * повторяет порядок речи.
+   */
+  const byPriority = [
+    ...expected.filter((one) => !one.optional),
+    ...expected.filter((one) => one.optional),
+  ];
+
+  for (const unit of byPriority) {
     const candidates = actual.filter((item) => fits(unit, item));
     const free = candidates.find((item) => !taken.has(item));
 
     if (free === undefined) {
-      missed.push(unit);
+      /**
+       * Необязательное ожидание, которого разбор не сделал, — не потеря
+       * (задача 3.53). Оно помечено там, где оба чтения речи верны.
+       */
+      if (!unit.optional) missed.push(unit);
       continue;
     }
 
