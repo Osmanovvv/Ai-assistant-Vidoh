@@ -115,6 +115,30 @@ function edits(calls: readonly ApiCall[]): string[] {
     .map((call) => String(call.payload['text']));
 }
 
+/**
+ * Завтрашний день в поясе Москвы, строкой `ГГГГ-ММ-ДД`.
+ *
+ * **Дата считается, а не пишется руками.** Здесь стояло `2026-09-04`, и
+ * 05.09.2026 тест покраснел сам собой: срок стал прошлым, а прошлые сроки
+ * страж отбрасывает намеренно — «человек не ставит задачи на вчера»
+ * (`dates.ts`, задача 2.7). Обработчик нажатия времени не принимает, и
+ * подменить «сейчас» в нём нельзя, поэтому дату двигает тест.
+ *
+ * Завтра, а не сегодня: у сегодняшнего срока полночь уже прошла бы,
+ * попади прогон на конец суток.
+ */
+function tomorrowInMoscow(): string {
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(Date.now() + 24 * 60 * 60 * 1000));
+
+  // Формат `sv-SE` и есть `ГГГГ-ММ-ДД` — тот же, что ждёт разбор срока.
+  return parts;
+}
+
 async function ask(): Promise<string> {
   const question = await askQuestion(testDb(), {
     userId,
@@ -125,7 +149,7 @@ async function ask(): Promise<string> {
     changes: {
       note: '',
       text: '',
-      deadline: '2026-09-04',
+      deadline: tomorrowInMoscow(),
       deadlineAccuracy: 'day',
       recurrenceKind: 'none',
       recurrenceInterval: 0,
@@ -206,11 +230,21 @@ describe('«Добавить к прошлой»', () => {
     await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(questionId)}`));
 
     const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
-    expect(after?.deadlineAt?.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+
+    // Срок сверяется с той же посчитанной датой, а не с числом в коде.
+    const expected = tomorrowInMoscow();
+    const actual = after?.deadlineAt;
+    expect(actual).toBeDefined();
+    expect(
+      actual === null || actual === undefined
+        ? ''
+        : new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(actual),
+    ).toBe(expected);
 
     // §7.3: показать, что именно изменилось, и дать кнопку отмены.
+    const [, month, day] = expected.split('-');
     const edit = calls.find((call) => call.method === 'editMessageText');
-    expect(String(edit?.payload['text'])).toContain('04.09');
+    expect(String(edit?.payload['text'])).toContain(`${day ?? ''}.${month ?? ''}`);
     expect(edit?.payload['reply_markup']).toBeDefined();
   });
 

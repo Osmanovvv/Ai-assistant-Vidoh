@@ -162,6 +162,9 @@ export async function transcribeBatch(
     language: deps.language,
     pricing: deps.pricing,
     limits: deps.limits,
+    // Нужен одному замеру паузы (задача 3.59, шаг 1): поведение не
+    // меняется, числа идут только в журнал.
+    logger: deps.logger,
   };
 
   let truncated = false;
