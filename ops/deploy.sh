@@ -145,7 +145,9 @@ sshx "cd $REMOTE_DIR && $COMPOSE exec -T caddy caddy reload --config /etc/caddy/
 # каждый раз. Ловить надо здесь — на выкладке, до того как бот начнёт
 # отвечать людям.
 say "Сверяю схему базы с кодом"
-sshx "cd $REMOTE_DIR && $COMPOSE run --rm --no-deps -T bot npx tsx apps/bot/src/scripts/check-schema.ts"
+# Собранный путь, а не исходник: в боевом образе есть только dist —
+# на этом страж и упал при первой же выкладке.
+sshx "cd $REMOTE_DIR && $COMPOSE run --rm --no-deps -T bot node apps/bot/dist/scripts/check-schema.js"
 
 # ─── Проверка, что выкатилось живое ───────────────────────────────────────────
 
