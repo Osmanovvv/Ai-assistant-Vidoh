@@ -156,7 +156,13 @@ ssh $SSH_OPTS "$HOST" "bash -s" <<REMOTE
 set -euo pipefail
 cd "$REMOTE_DIR"
 
-for attempt in \$(seq 1 30); do
+# Три минуты, а не одна (05.09.2026).
+#
+# Минуты хватало, пока запуск шёл две секунды. В этот раз «Бот
+# инициализирован» пришло через 104 секунды: `getMe` у Telegram отвечал
+# долго — сеть у сервера моргает, это уже было в задаче 3.60. Выкладка
+# отчиталась провалом на здоровом боте и не дошла до промптов.
+for attempt in \$(seq 1 90); do
   state=\$(docker inspect --format '{{.State.Health.Status}}' \
     \$($COMPOSE ps -q bot) 2>/dev/null || echo "нет контейнера")
 
@@ -168,8 +174,16 @@ for attempt in \$(seq 1 30); do
   sleep 2
 done
 
+# Журнал берётся из файла, а не из `docker logs` (задача 3.51).
+#
+# В `docker logs` попадают только строки до того, как поднимется запись в
+# файл, — их всего две, и обе про настройку. Именно их выкладка и
+# показывала вместо причины: «PRIVACY_POLICY_URL заглушка» и «Postgres и
+# Redis отвечают». Диагностика, в которой заведомо нет ответа, хуже
+# отсутствующей.
 echo "не дождался готовности, последние строки журнала:" >&2
-$COMPOSE logs --tail 40 bot >&2
+tail -n 40 "$REMOTE_DIR/logs/vydoh.log" 2>/dev/null >&2 ||
+  $COMPOSE logs --tail 40 bot >&2
 exit 1
 REMOTE
 
