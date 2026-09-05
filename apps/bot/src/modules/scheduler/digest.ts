@@ -1,5 +1,6 @@
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
+import { titleUnderDayHeader } from '../items/item-text.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
@@ -28,14 +29,26 @@ import { titleWithoutDate } from '../resolver/title-date.js';
  */
 export const MORNING_ACTIONS_LIMIT = 3;
 
-/** Утренняя реплика: приглашение и, если есть, дела на сегодня. */
-export function morningText(texts: TextProfile, actions: readonly Item[]): string {
+/**
+ * Утренняя реплика: приглашение и, если есть, дела на сегодня.
+ *
+ * **День и пояс обязательны** (задача 3.78). Шапка списка называет
+ * сегодня, и у дела, чей срок и есть сегодня, вчерашнее «завтра» из слов
+ * человека срезается: иначе строка спорит с шапкой. Без пояса решить это
+ * нельзя, а необязательным параметр не сделан намеренно — забытый, он
+ * вернул бы противоречие молча.
+ */
+export function morningText(
+  texts: TextProfile,
+  actions: readonly Item[],
+  day: { readonly now: Date; readonly timeZone: string },
+): string {
   const lines = [texts.reminders.morningInvite];
 
   const shown = actions.slice(0, MORNING_ACTIONS_LIMIT);
   if (shown.length > 0) {
     lines.push('', texts.reminders.morningActions);
-    for (const item of shown) lines.push(texts.reminders.line(item.text));
+    for (const item of shown) lines.push(texts.reminders.line(titleUnderDayHeader(item, day)));
   }
 
   return lines.join('\n');

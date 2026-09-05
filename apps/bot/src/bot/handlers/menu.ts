@@ -8,6 +8,7 @@ import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
 import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
+import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
 import { listTopics } from '../../modules/topics/topics.repo.js';
@@ -349,13 +350,20 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     if (!active) return;
 
     const context = await outputContextOf(db, active.userId);
+
+    /**
+     * Один момент «сейчас» на весь заход.
+     *
+     * Прежде `new Date()` вызывался дважды: раз для силы, раз для
+     * раскладки. Разойтись они могут на границе суток — и тогда список
+     * собран за два разных дня. Стоит это ноль, а ловится годами.
+     */
+    const now = new Date();
+    const day = { now, timeZone: context.timeZone };
+
     const today = selectForToday(await openItemsFor(db, active.userId), {
-      energy: effectiveEnergy(context.state, context.energyDefault, {
-        now: new Date(),
-        timeZone: context.timeZone,
-      }),
-      now: new Date(),
-      timeZone: context.timeZone,
+      energy: effectiveEnergy(context.state, context.energyDefault, day),
+      ...day,
     });
 
     if (today.length === 0) {
@@ -363,13 +371,22 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       return;
     }
 
+    /**
+     * Шапка называет день, значит вчерашнее «завтра» на кнопке лишнее
+     * (задача 3.78). Срезается только у дела, чей срок и есть сегодня.
+     */
     await show(
       ctx,
       active.texts.menu.todayTitle,
-      itemsKeyboard(active.texts, today, MENU_ACTION.root, {
-        index: page,
-        action: (next) => `${MENU_ACTION.todayPage}${String(next)}`,
-      }),
+      itemsKeyboard(
+        active.texts,
+        today.map((item) => ({ id: item.id, text: titleUnderDayHeader(item, day) })),
+        MENU_ACTION.root,
+        {
+          index: page,
+          action: (next) => `${MENU_ACTION.todayPage}${String(next)}`,
+        },
+      ),
     );
   };
 

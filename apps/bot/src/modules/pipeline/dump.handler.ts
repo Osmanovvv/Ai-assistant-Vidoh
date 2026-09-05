@@ -33,6 +33,7 @@ import {
   STEP,
 } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
+import { titleUnderDayHeader } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
@@ -918,8 +919,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             ? texts.backlog.about
             : texts.backlog.nothing;
 
+      /**
+       * Шапка называет день — значит вчерашнее «завтра» в строке лишнее
+       * (задача 3.78). Срезается только у дела, чей срок и есть сегодня.
+       */
       const body =
-        answer.kind === 'nothing' ? [] : answer.items.map((item) => texts.backlog.line(item.text));
+        answer.kind === 'nothing'
+          ? []
+          : answer.items.map((item) =>
+              texts.backlog.line(
+                answer.kind === 'today'
+                  ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
+                  : item.text,
+              ),
+            );
 
       await tell([header, ...body].join('\n'));
     }
