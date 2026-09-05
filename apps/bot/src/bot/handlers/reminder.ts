@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 
 import { items, projectSteps } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
+import { isoDateIn, localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
 import { applyDecision } from '../../modules/resolver/patch.js';
 import { POSTPONE_DAYS, REMINDER_ACTION } from '../../modules/scheduler/reminder-actions.js';
 import { fromShortId } from '../../modules/shared/short-id.js';
@@ -118,7 +118,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       action: 'update',
       changes: {
         ...emptyChanges(),
-        deadline: dayIn(moved, active.timeZone),
+        deadline: isoDateIn(moved, active.timeZone),
         deadlineAccuracy: 'day',
       },
       timeZone: active.timeZone,
@@ -174,7 +174,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       action: 'update',
       changes: {
         ...emptyChanges(),
-        deadline: dayIn(new Date(), active.timeZone),
+        deadline: isoDateIn(new Date(), active.timeZone),
         deadlineAccuracy: 'day',
       },
       timeZone: active.timeZone,
@@ -222,17 +222,6 @@ function emptyChanges() {
     recurrenceInterval: 0,
     recurrenceText: '',
   };
-}
-
-/** Дата в поясе человека, как её ждёт применение: ГГГГ-ММ-ДД. */
-function dayIn(at: Date, timeZone: string): string {
-  const parts = localDateParts(at, timeZone);
-
-  return [
-    String(parts.year),
-    String(parts.month).padStart(2, '0'),
-    String(parts.day).padStart(2, '0'),
-  ].join('-');
 }
 
 /** «завтра» или «2 сентября» — то, что человек прочитает в ответе. */
