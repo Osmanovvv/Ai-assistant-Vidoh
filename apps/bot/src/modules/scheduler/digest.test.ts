@@ -23,7 +23,15 @@ import {
  * дороже, чем в ответе на вопрос.
  */
 
-const item = (text: string): Item => ({ text }) as Item;
+const item = (text: string, deadlineAt: Date | null = null): Item => ({ text, deadlineAt }) as Item;
+
+/** Полдень 5 сентября 2026 по Москве — «сегодня» для всех проверок ниже. */
+const NOW = new Date('2026-09-05T09:00:00.000Z');
+const MOSCOW = 'Europe/Moscow';
+const TODAY = { now: NOW, timeZone: MOSCOW };
+
+/** Полночь того же дня в поясе человека — так срок и хранится. */
+const todayAt = new Date('2026-09-04T21:00:00.000Z');
 
 /** Имена параметров функции — по ним видно, что ей вообще можно скормить. */
 function paramsOf(fn: (...args: never[]) => unknown): string[] {
@@ -36,8 +44,8 @@ function paramsOf(fn: (...args: never[]) => unknown): string[] {
 }
 
 const all = (): string[] => [
-  morningText(defaultTexts, []),
-  morningText(defaultTexts, [item('Позвонить в садик'), item('Забрать посылку')]),
+  morningText(defaultTexts, [], TODAY),
+  morningText(defaultTexts, [item('Позвонить в садик'), item('Забрать посылку')], TODAY),
   eveningText(defaultTexts, 0),
   eveningText(defaultTexts, 3),
   deadlineText(defaultTexts, { item: item('Оплатить квитанцию'), onDay: true }),
@@ -47,14 +55,14 @@ const all = (): string[] => [
 
 describe('утро', () => {
   it('без дел — только приглашение, одной строкой', () => {
-    const text = morningText(defaultTexts, []);
+    const text = morningText(defaultTexts, [], TODAY);
 
     expect(text.split('\n')).toHaveLength(1);
     expect(text).toMatch(/наговори|скажи|разложу/iu);
   });
 
   it('с делами — приглашение и список', () => {
-    const text = morningText(defaultTexts, [item('Позвонить в садик')]);
+    const text = morningText(defaultTexts, [item('Позвонить в садик')], TODAY);
 
     expect(text).toContain('Позвонить в садик');
   });
@@ -63,17 +71,50 @@ describe('утро', () => {
     // Иначе утро приносит стену дел — ровно ту гору, ради которой
     // человек и пришёл к продукту (§13.2).
     const many = Array.from({ length: 10 }, (_value, index) => item(`Дело ${String(index)}`));
-    const text = morningText(defaultTexts, many);
+    const text = morningText(defaultTexts, many, TODAY);
 
     expect(text).toContain('Дело 0');
     expect(text).not.toContain(`Дело ${String(MORNING_ACTIONS_LIMIT)}`);
+  });
+
+  it('вчерашнее «завтра» под шапкой «на сегодня» срезается', () => {
+    /**
+     * **Задача 3.78, найдено прогоном выдачи на боевых записях.** Сводка
+     * проджекта читалась «На сегодня: — Позвонить стоматологу завтра»:
+     * шапка про сегодня, строка про завтра. Он сказал «завтра» вчера,
+     * срок встал на сегодня, а слова остались вчерашние.
+     */
+    const text = morningText(defaultTexts, [item('Позвонить стоматологу завтра', todayAt)], TODAY);
+
+    expect(text).toContain('Позвонить стоматологу');
+    expect(text).not.toContain('завтра');
+  });
+
+  it('у дела без срока слова человека не трогает', () => {
+    /**
+     * «Завтра» в тексте без срока — единственное, что у человека есть
+     * про день: срок либо не назывался, либо не прошёл проверку §2.7.
+     * Срезать это значило бы спрятать то, чего больше нигде нет.
+     */
+    const text = morningText(defaultTexts, [item('Позвонить стоматологу завтра')], TODAY);
+
+    expect(text).toContain('Позвонить стоматологу завтра');
+  });
+
+  it('у дела с чужим днём слова человека не трогает', () => {
+    // Срок на послезавтра под шапкой «на сегодня» — случай не наш:
+    // такие дела в список не попадают вовсе (задача 3.71).
+    const later = new Date('2026-09-06T21:00:00.000Z');
+    const text = morningText(defaultTexts, [item('Забрать посылку в понедельник', later)], TODAY);
+
+    expect(text).toContain('Забрать посылку в понедельник');
   });
 
   it('не считает, сколько всего осталось', () => {
     // «И ещё 47» утром — это счёт несделанного, запрещённый §13.6.
     const many = Array.from({ length: 50 }, (_value, index) => item(`Дело ${String(index)}`));
 
-    expect(morningText(defaultTexts, many)).not.toMatch(/\d{2}/u);
+    expect(morningText(defaultTexts, many, TODAY)).not.toMatch(/\d{2}/u);
   });
 });
 
@@ -161,8 +202,12 @@ describe('§13.6: просроченное не провал', () => {
      * Имена, а не количество: считать параметры бесполезно, стоит кому-то
      * добавить `overdueCount` вместо чего-нибудь. Список имён падает
      * ровно на той правке, ради которой этот тест написан.
+     *
+     * `day` появился в задаче 3.78 и несёт ровно две вещи — «сейчас» и
+     * пояс, — что и написано в его типе. Подставить в него просроченное
+     * нельзя, а новое имя в этом списке потребует объяснения здесь.
      */
-    expect(paramsOf(morningText)).toEqual(['texts', 'actions']);
+    expect(paramsOf(morningText)).toEqual(['texts', 'actions', 'day']);
     expect(paramsOf(eveningText)).toEqual(['texts', 'closedToday', 'suggestion']);
   });
 });

@@ -416,6 +416,7 @@ async function composeOne(
         text: morningText(
           texts,
           today.filter((item) => !covered.has(item.id)),
+          { now, timeZone: context.timeZone },
         ),
         buttons: [],
       };

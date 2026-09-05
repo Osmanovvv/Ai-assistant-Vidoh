@@ -1,3 +1,6 @@
+import { isoDateIn } from '../classifier/dates.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
+
 /**
  * Заголовок записи: как он хранится (задача 3.25).
  *
@@ -131,4 +134,39 @@ export function withoutCardFields(text: string): string {
   if (tail === null || !CARD_VALUE.test((tail[1] ?? '').trim())) return joined;
 
   return joined.slice(0, tail.index).trimEnd();
+}
+
+/**
+ * Заголовок для списка, в шапке которого назван день (задача 3.78).
+ *
+ * **Найдено прогоном выдачи на боевых записях 05.09.2026.** Утренняя
+ * сводка проджекта читалась так:
+ *
+ * > На сегодня:
+ * > — Вынести мусор
+ * > — Позвонить стоматологу **завтра**
+ *
+ * Шапка говорит «сегодня», строка — «завтра», и человек читает это как
+ * поломку. Причина простая: он сказал «завтра» **вчера**, срок встал на
+ * сегодня, а слова в заголовке остались вчерашние.
+ *
+ * **Срезается только у дела, чей срок и есть названный в шапке день.**
+ * Тогда дата в словах человека провабельно устарела, и убрать её значит
+ * убрать противоречие, ничего не потеряв: настоящий день назван выше.
+ *
+ * **У дела без срока заголовок не трогается.** «Завтра» в его тексте —
+ * единственное, что у человека есть про день: срок либо не назывался,
+ * либо не прошёл проверку §2.7. Срезать это значило бы спрятать от него
+ * то, чего больше нигде нет.
+ */
+export function titleUnderDayHeader(
+  item: { readonly text: string; readonly deadlineAt: Date | null },
+  params: { readonly now: Date; readonly timeZone: string },
+): string {
+  if (item.deadlineAt === null) return item.text;
+
+  const day = isoDateIn(item.deadlineAt, params.timeZone);
+  if (day !== isoDateIn(params.now, params.timeZone)) return item.text;
+
+  return titleWithoutDate(item.text);
 }
