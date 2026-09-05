@@ -1135,3 +1135,115 @@ describe('ответ словами', () => {
     expect(await awaitingOfUser()).toBeNull();
   });
 });
+
+/**
+ * Город словами (задача 3.70, замечание проджекта 04.09.2026).
+ *
+ * «Другой город не выбирается, как ввести к примеру Краснодар». Кнопок
+ * одиннадцать, и это не города, а все часовые пояса России; он искал свой
+ * город и не нашёл.
+ *
+ * Здесь проверяется связка целиком: нажал, написал, пояс встал, опрос
+ * пошёл дальше. И то, чего быть не должно: неизвестный город пояс не
+ * меняет, а мысль человека не уходит в настройку.
+ */
+describe('город словами', () => {
+  async function awaitingOfUser(): Promise<string | null> {
+    return (await settingsOf())?.awaitingInput ?? null;
+  }
+
+  const repliesOf = (calls: readonly ApiCall[]): string[] =>
+    calls.filter((one) => one.method === 'sendMessage').map((one) => textOf(one));
+
+  it('«Напишу свой город» просит название и запоминает, чего ждёт', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.timezone);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOther));
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOwn));
+
+    expect(textOf(calls.filter((one) => one.method === 'editMessageText').at(-1))).toBe(
+      defaultTexts.onboarding.cityAsk,
+    );
+    expect(await awaitingOfUser()).toBe('city');
+
+    // Шаг не двинулся: человек выбрал способ ответить, а не ответил.
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.timezone);
+  });
+
+  it('Краснодар ставит время Москвы и опрос идёт дальше', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.timezone);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOwn));
+    await bot.handleUpdate(textUpdate('Краснодар'));
+
+    const zone = await timezoneOf();
+    expect(zone?.zone).toBe('Europe/Moscow');
+    expect(zone?.confirmed).toBe(true);
+    expect(await awaitingOfUser()).toBeNull();
+
+    // Какое время выбрано — человеку видно: справочник неполон намеренно.
+    const replies = repliesOf(calls);
+    expect(replies.some((text) => text.includes('Краснодар') && text.includes('Москва'))).toBe(
+      true,
+    );
+
+    // И следующий вопрос задан.
+    expect(replies.some((text) => text.includes(defaultTexts.onboarding.morning))).toBe(true);
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.morning);
+  });
+
+  it('город из другого пояса ставит свой пояс', async () => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.timezone);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOwn));
+    await bot.handleUpdate(textUpdate('я в Новосибирске'));
+
+    expect((await timezoneOf())?.zone).toBe('Asia/Krasnoyarsk');
+  });
+
+  it('неизвестный город пояс не меняет и возвращает список', async () => {
+    /**
+     * Здесь вся цена ошибки: неверный пояс ломает человеку **все** сроки
+     * сразу. Догадка по созвучию запрещена — бот честно говорит, что не
+     * знает, и показывает одиннадцать кнопок, как раньше.
+     */
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.timezone);
+
+    const before = (await timezoneOf())?.zone;
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOwn));
+    await bot.handleUpdate(textUpdate('Урюпинск'));
+
+    expect((await timezoneOf())?.zone).toBe(before);
+    expect(await awaitingOfUser()).toBeNull();
+
+    const replies = repliesOf(calls);
+    expect(replies).toContain(defaultTexts.onboarding.cityNotFound);
+    expect(replies.some((text) => text === defaultTexts.onboarding.timezoneChoose)).toBe(true);
+
+    // Шаг остался на поясе: человек ещё не ответил.
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.timezone);
+  });
+
+  it('мысль вместо города пояс не меняет', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.timezone);
+
+    const before = (await timezoneOf())?.zone;
+
+    await bot.handleUpdate(callbackUpdate(ACTION.timezoneOwn));
+    await bot.handleUpdate(textUpdate('надо купить продукты и позвонить бабушке'));
+
+    expect((await timezoneOf())?.zone).toBe(before);
+    expect(repliesOf(calls)).toContain(defaultTexts.onboarding.cityNotFound);
+  });
+});

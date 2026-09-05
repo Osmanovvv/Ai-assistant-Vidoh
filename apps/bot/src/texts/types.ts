@@ -453,6 +453,23 @@ export interface TextProfile {
     readonly buttonTimezoneMoscow: string;
     readonly buttonTimezoneOther: string;
     readonly timezoneChoose: string;
+    /**
+     * Город словами (задача 3.70, замечание проджекта).
+     *
+     * Кнопок одиннадцать, и это не города, а все часовые пояса России.
+     * Человек искал свой город и не нашёл — теперь может написать.
+     */
+    readonly buttonCityOwn: string;
+    readonly cityAsk: string;
+    /**
+     * Какое время выбрано — человеку видно.
+     *
+     * Справочник городов неполон намеренно и может устареть: пояса в
+     * России меняли не раз. Человек должен увидеть выбор, чтобы поймать
+     * промах, а не обнаружить его через неделю по сдвинутым срокам.
+     */
+    readonly citySaved: (city: string, zone: string) => string;
+    readonly cityNotFound: string;
 
     readonly morning: string;
     readonly evening: string;

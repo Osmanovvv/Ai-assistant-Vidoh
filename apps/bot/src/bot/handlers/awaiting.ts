@@ -9,9 +9,14 @@ import {
   setAwaiting,
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
+import { zoneOfCity } from '../../modules/onboarding/cities.js';
+import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
+  cityOfZone,
   onboardingStateOf,
   questionFor,
+  setTimezone,
+  timezoneQuestion,
   setEvening,
   setMorning,
   setStep,
@@ -110,6 +115,50 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
       logger.info({ userId }, 'Имя задано словами');
       await askNext(ctx, userId, STEP.timezone);
+      return true;
+    }
+
+    // ── Город словами ────────────────────────────────────────────────────
+    if (awaiting.kind === 'city') {
+      const zone = zoneOfCity(text);
+
+      if (zone === undefined) {
+        /**
+         * Города нет в справочнике — говорим честно и возвращаем список.
+         *
+         * Догадка по созвучию здесь запрещена: неверный пояс ломает
+         * человеку **все** сроки сразу. Подробности в `cities.ts`.
+         */
+        await setAwaiting(db, userId, null);
+        await ctx.reply(texts.onboarding.cityNotFound);
+
+        const again = timezoneQuestion(texts);
+        await ctx.reply(again.text, { reply_markup: keyboardOf(again) });
+        return true;
+      }
+
+      await setAwaiting(db, userId, null);
+      const change = await setTimezone(db, userId, zone);
+
+      /**
+       * Пересчёт сроков первой выгрузки — как у кнопки (задача 2.14).
+       *
+       * Отказ пересчёта не должен ронять опрос: пояс сохранён, и следующий
+       * вопрос человек получить обязан.
+       */
+      if (change.firstConfirmation && change.from !== change.to) {
+        try {
+          await recalcDeadlines(db, userId, change);
+        } catch (error) {
+          logger.error({ err: error, userId }, 'Не удалось пересчитать сроки под названный город');
+        }
+      }
+
+      // Какое время выбрано — человеку видно: справочник неполон намеренно.
+      await ctx.reply(texts.onboarding.citySaved(text.trim(), cityOfZone(zone) ?? zone));
+
+      logger.info({ userId, zone }, 'Пояс задан названием города');
+      await askNext(ctx, userId, STEP.morning);
       return true;
     }
 

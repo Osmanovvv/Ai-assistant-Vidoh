@@ -108,6 +108,8 @@ export const ACTION = {
   eveningOwn: 'onb:evening:own',
   timezoneMoscow: 'onb:tz:msk',
   timezoneOther: 'onb:tz:other',
+  /** «Напишу город» — дальше название приходит сообщением (3.70). */
+  timezoneOwn: 'onb:tz:own',
   /** `onb:tz:zone:Asia/Omsk` — 26 байт, лимит callback_data 64. */
   timezonePrefix: 'onb:tz:zone:',
   morningPrefix: 'onb:morning:',
@@ -349,7 +351,30 @@ export function timezoneQuestion(texts: TextProfile): Question {
     );
   }
 
+  /**
+   * «Напишу город» — последней строкой (задача 3.70).
+   *
+   * Замечание проджекта: «Другой город не выбирается, как ввести к примеру
+   * Краснодар». Кнопок одиннадцать, и это не города, а все часовые пояса
+   * России; он искал свой город и не нашёл. Теперь можно ответить так, как
+   * человек думает — названием своего города.
+   *
+   * Внизу, а не вверху: одиннадцать кнопок закрывают страну целиком, и
+   * большинству хватит их. Название — путь для того, кто не нашёл себя.
+   */
+  rows.push([{ label: texts.onboarding.buttonCityOwn, action: ACTION.timezoneOwn }]);
+
   return { text: texts.onboarding.timezoneChoose, rows };
+}
+
+/**
+ * Название пояса словами: «Europe/Moscow» → «Москва».
+ *
+ * Нужно, чтобы сказать человеку, какое время выбрано: справочник городов
+ * может быть неполон или устареть, и выбор он должен увидеть.
+ */
+export function cityOfZone(zone: string): string | undefined {
+  return TIMEZONES.find((item) => item.zone === zone)?.city;
 }
 
 /**
