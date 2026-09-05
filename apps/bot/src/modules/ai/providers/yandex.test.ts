@@ -1,3 +1,4 @@
+import { AccessDeniedError } from '../../../infra/failures.js';
 import { describe, expect, it } from 'vitest';
 
 import { PermanentLlmError, TransientLlmError } from './types.js';
@@ -162,10 +163,57 @@ describe('классификация ошибок', () => {
     await expect(provider.complete(request())).rejects.toBeInstanceOf(TransientLlmError);
   });
 
-  it('401 считается постоянной: повтор не исправит ключ', async () => {
+  /**
+   * **Этот случай переписан по смыслу 05.09.2026 (задача 3.72).**
+   *
+   * Он охранял решение «401 постоянна: повтор не исправит ключ». Для
+   * самого запроса это правда и сейчас. Но судьба выгрузки от этого
+   * решения зависела иначе: отказ в доступе хоронил слова человека
+   * навсегда, хотя доступ — наша сторона, а §17 требует дождаться.
+   *
+   * Проверка сохранена: неисправимость запроса охраняется случаем 400
+   * ниже, а отказ в доступе получил свой класс.
+   */
+  it('отказ в доступе — свой класс: слова человека дождутся ключа', async () => {
+    for (const status of [401, 402, 403]) {
+      const provider = new YandexLlmProvider({
+        ...options,
+        fetchImpl: fetchReturning(status, { code: 7, message: 'Permission denied' }),
+      });
+
+      await expect(provider.complete(request()), String(status)).rejects.toBeInstanceOf(
+        AccessDeniedError,
+      );
+    }
+  });
+
+  it('боевой отказ Yandex 05.09.2026 узнаётся дословно', async () => {
+    // Тело ответа знак в знак, как его прислал Yandex боевому боту.
     const provider = new YandexLlmProvider({
       ...options,
-      fetchImpl: fetchReturning(401, { code: 16, message: 'Unknown api key' }),
+      fetchImpl: fetchReturning(403, {
+        error: {
+          grpcCode: 7,
+          httpCode: 403,
+          message:
+            'Permission to [resource-manager.folder b1g8ig1quiddv9udf5en, resource-manager.cloud b1guh32ds2ubjqi83cie, organization-manager.organization bpfo9of4nv2v5oq8g7bj] denied',
+          httpStatus: 'Forbidden',
+        },
+      }),
+    });
+
+    await expect(provider.complete(request())).rejects.toBeInstanceOf(AccessDeniedError);
+  });
+
+  it('400 остаётся постоянной: своя ошибка в запросе повтором не лечится', async () => {
+    /**
+     * Половина смысла разделения — здесь. Отказ в доступе ждёт, а наша
+     * ошибка в запросе не должна ждать никогда: бесконечный повтор на
+     * ней сжигает деньги заказчицы и прячет причину.
+     */
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: fetchReturning(400, { message: 'unknown field' }),
     });
 
     await expect(provider.complete(request())).rejects.toBeInstanceOf(PermanentLlmError);

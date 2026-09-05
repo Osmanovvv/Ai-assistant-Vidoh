@@ -1,6 +1,12 @@
 import { readFile } from 'node:fs/promises';
 
 import {
+  ACCESS_DENIED_GRPC_CODES,
+  ACCESS_DENIED_STATUSES,
+  AccessDeniedError,
+} from '../../../infra/failures.js';
+
+import {
   PermanentSpeechError,
   TransientSpeechError,
   type SpeechProvider,
@@ -261,6 +267,17 @@ export function parseRecognition(body: string): ParsedRecognition {
 function operationFailure(error: Record<string, unknown>): Error {
   const message = asString(error['message']) ?? JSON.stringify(error).slice(0, 300);
   const code = error['code'];
+
+  /**
+   * Отказ в доступе приходит кодом операции, а не статусом (задача 3.72).
+   *
+   * Тот же файл с живым ключом расшифруется, поэтому просить человека
+   * «прислать текстом» здесь неправда: голосовое ждёт доступа.
+   */
+  if (typeof code === 'number' && ACCESS_DENIED_GRPC_CODES.has(code)) {
+    return new AccessDeniedError(`распознавание не удалось: ${message}`);
+  }
+
   const transient = typeof code === 'number' && TRANSIENT_GRPC_CODES.has(code);
 
   return transient
@@ -427,6 +444,17 @@ export class YandexSpeechProvider implements SpeechProvider {
 
     if (!response.ok) {
       const message = `SpeechKit ответил ${String(response.status)}: ${text.slice(0, 300)}`;
+
+      /**
+       * Отказ в доступе — не про запрос, а про нас (задача 3.72).
+       *
+       * Тот же запрос с живым ключом пройдёт, поэтому хоронить из-за
+       * него слова человека нельзя: выгрузка ждёт возвращения доступа.
+       */
+      if (ACCESS_DENIED_STATUSES.has(response.status)) {
+        throw new AccessDeniedError(message);
+      }
+
       throw TRANSIENT_STATUSES.has(response.status)
         ? new TransientSpeechError(message)
         : new PermanentSpeechError(message);

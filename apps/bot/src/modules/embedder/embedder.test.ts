@@ -1,3 +1,4 @@
+import { AccessDeniedError } from '../../infra/failures.js';
 import { describe, expect, it } from 'vitest';
 
 import { toVectorLiteral } from './embedder.service.js';
@@ -92,22 +93,33 @@ describe('провайдер Yandex', () => {
     expect(called).toBe(false);
   });
 
-  it('429 считается временной, 401 постоянной', async () => {
-    const transient = new YandexEmbeddingProvider({
-      ...options,
-      fetchImpl: () => Promise.resolve(new Response('busy', { status: 429 })),
-    });
-    const permanent = new YandexEmbeddingProvider({
-      ...options,
-      fetchImpl: () => Promise.resolve(new Response('bad key', { status: 401 })),
-    });
+  it('429 временной, 400 постоянной, отказ в доступе — своим классом', async () => {
+    /**
+     * **Переписан по смыслу 05.09.2026 (задача 3.72).**
+     *
+     * Прежде 401 охранялась как постоянная. Из-за этого вектор не
+     * считался, запись не находила своей темы — и виноват был наш
+     * доступ, а не текст. Постоянность сохранена там, где она правда:
+     * 400 — наша ошибка в запросе, и повтор её не вылечит.
+     */
+    const answering = (status: number, body: string) =>
+      new YandexEmbeddingProvider({
+        ...options,
+        fetchImpl: () => Promise.resolve(new Response(body, { status })),
+      });
+    const ask = (provider: YandexEmbeddingProvider) =>
+      provider.embed({ text: 'текст', purpose: 'document' as const });
 
-    await expect(transient.embed({ text: 'дело', purpose: 'document' })).rejects.toBeInstanceOf(
-      TransientEmbeddingError,
-    );
-    await expect(permanent.embed({ text: 'дело', purpose: 'document' })).rejects.toBeInstanceOf(
+    await expect(ask(answering(429, 'busy'))).rejects.toBeInstanceOf(TransientEmbeddingError);
+    await expect(ask(answering(400, 'unknown field'))).rejects.toBeInstanceOf(
       PermanentEmbeddingError,
     );
+
+    for (const status of [401, 402, 403]) {
+      await expect(ask(answering(status, 'bad key')), String(status)).rejects.toBeInstanceOf(
+        AccessDeniedError,
+      );
+    }
   });
 
   it('обрыв сети считается временной', async () => {

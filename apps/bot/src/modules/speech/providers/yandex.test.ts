@@ -1,3 +1,4 @@
+import { AccessDeniedError } from '../../../infra/failures.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -345,7 +346,16 @@ describe('классификация ошибок', () => {
     await expect(instance.transcribe(request())).rejects.toBeInstanceOf(TransientSpeechError);
   });
 
-  it('401 считается постоянной: повтор не исправит ключ', async () => {
+  /**
+   * **Переписан по смыслу 05.09.2026 (задача 3.72).**
+   *
+   * Охранял «401 постоянна: повтор не исправит ключ». Для запроса это
+   * правда, но голосовое из-за этого выбрасывалось навсегда, и человеку
+   * предлагали «прислать текстом» — притом что запись целая, а закрылся
+   * наш доступ. Неисправимость запроса охраняют случаи 404 и «без
+   * идентификатора операции» ниже.
+   */
+  it('отказ в доступе — свой класс: запись дождётся ключа', async () => {
     // Проверено живым вызовом с испорченным ключом: SpeechKit
     // отвечает именно 401 и кодом 16.
     const { instance } = provider({
@@ -353,7 +363,7 @@ describe('классификация ошибок', () => {
       startBody: { error: 'Unknown api key', code: 16 },
     });
 
-    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(PermanentSpeechError);
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(AccessDeniedError);
   });
 
   it('404 считается постоянной', async () => {
@@ -385,10 +395,19 @@ describe('классификация ошибок', () => {
     await expect(instance.transcribe(request())).rejects.toBeInstanceOf(PermanentSpeechError);
   });
 
-  it('отказ в доступе считается постоянной ошибкой', async () => {
-    const { instance } = provider({ operationError: { code: 7, message: 'permission denied' } });
+  it('отказ в доступе кодом операции узнаётся тоже', async () => {
+    /**
+     * SpeechKit отдаёт отказ доступа не статусом, а кодом операции: 7 —
+     * прав нет, 16 — ключа не признали. Проверить надо оба пути, иначе
+     * голосовое пропадало бы там, где текст дождался бы.
+     */
+    for (const code of [7, 16]) {
+      const { instance } = provider({ operationError: { code, message: 'permission denied' } });
 
-    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(PermanentSpeechError);
+      await expect(instance.transcribe(request()), String(code)).rejects.toBeInstanceOf(
+        AccessDeniedError,
+      );
+    }
   });
 
   it('ошибка операции без кода считается постоянной', async () => {

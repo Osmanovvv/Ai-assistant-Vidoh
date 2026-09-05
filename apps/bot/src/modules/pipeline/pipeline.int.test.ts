@@ -10,6 +10,7 @@ import { createRedis } from '../../infra/redis.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
+import { AccessDeniedError } from '../../infra/failures.js';
 import { TransientSpeechError } from '../speech/providers/types.js';
 import { processUserBatches } from './pipeline.service.js';
 
@@ -281,5 +282,112 @@ describe('судьба сбойной выгрузки', () => {
     const batch = await batchById(batchId);
     expect(batch?.status).toBe('done');
     expect(batch?.attempts).toBe(0);
+  });
+});
+
+/**
+ * Отказ в доступе к моделям (задача 3.72).
+ *
+ * **Найдено на боевом 05.09.2026.** Yandex начал отвечать `403 Permission
+ * to [folder, cloud, organization] denied` на любой запрос. Разбор считал
+ * это постоянным сбоем: выгрузка помечалась `failed`, к ней не
+ * возвращались никогда, а человек получал «попробуй ещё раз» — совет,
+ * который помочь не мог.
+ *
+ * §17 требует прямо: «модель недоступна → выгрузка сохраняется в очередь
+ * с повтором, пользователю честное короткое сообщение о задержке».
+ * Недоступность на **нашей** стороне — тот же случай: слова человека за
+ * наш простой платить не должны.
+ */
+describe('доступ к моделям закрыт', () => {
+  const failWith = (error: Error) => () => Promise.reject(error);
+
+  const denied = (): Error =>
+    new AccessDeniedError(
+      'модель ответила 403: Permission to [resource-manager.folder b1g8ig1quiddv9udf5en] denied',
+    );
+
+  it('выгрузка остаётся в очереди и попытку не тратит', async () => {
+    const batchId = await queuedBatch('надо позвонить стоматологу', 0);
+
+    await expect(
+      processUserBatches({ db: testDb(), lock, handleBatch: failWith(denied()) }, userId),
+    ).rejects.toThrow(/403/u);
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('queued');
+    expect(batch?.attempts).toBe(0);
+    expect(batch?.error).toContain('403');
+  });
+
+  it('переживает больше повторов, чем есть попыток', async () => {
+    /**
+     * Здесь вся суть. Попыток пять, и они рассчитаны на пять минут; а
+     * доступ возвращается через час. Если бы отказ тратил попытки,
+     * выгрузка умирала бы на шестом заходе досмотра — из-за нашего
+     * простоя, а не из-за своих слов.
+     */
+    const batchId = await queuedBatch('надо оплатить садик', 0);
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await expect(
+        processUserBatches({ db: testDb(), lock, handleBatch: failWith(denied()) }, userId),
+      ).rejects.toThrow();
+    }
+
+    expect((await batchById(batchId))?.status).toBe('queued');
+  });
+
+  it('человеку сказано о задержке, а не «попробуй ещё раз»', async () => {
+    const batchId = await queuedBatch('мысль', 0);
+    const reports: { retryable: boolean }[] = [];
+
+    await expect(
+      processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: failWith(denied()),
+          onFailure: (_db, _batch, failure) => {
+            reports.push({ retryable: failure.retryable });
+            return Promise.resolve();
+          },
+        },
+        userId,
+      ),
+    ).rejects.toThrow();
+
+    // Из `retryable` докладчик выбирает текст: правда — «ещё попробую»,
+    // ложь — «попробуй ещё раз». Второе здесь было бы обманом.
+    expect(reports).toEqual([{ retryable: true }]);
+    expect((await batchById(batchId))?.status).toBe('queued');
+  });
+
+  it('вернувшийся доступ разбирает те же слова', async () => {
+    /**
+     * Обещание «ничего не потерялось» проверяется только так: тем же
+     * заходом, что был отвергнут, без нового слова от человека.
+     */
+    const batchId = await queuedBatch('надо купить корм собаке', 0);
+
+    await expect(
+      processUserBatches({ db: testDb(), lock, handleBatch: failWith(denied()) }, userId),
+    ).rejects.toThrow();
+
+    const seen: string[] = [];
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: (_db, batch) => {
+          seen.push(batch.id);
+          return Promise.resolve();
+        },
+      },
+      userId,
+    );
+
+    expect(seen).toEqual([batchId]);
+    expect((await batchById(batchId))?.status).toBe('done');
   });
 });
