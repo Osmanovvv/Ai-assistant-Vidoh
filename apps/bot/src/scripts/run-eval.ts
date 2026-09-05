@@ -134,6 +134,26 @@ try {
         );
       }
 
+      /**
+       * Проект: своя строка, потому что число без неё ничего не доказывает.
+       *
+       * Урок дня 05.09.2026, и я наступил на него дважды. Сперва счёт
+       * «точность срока» учитывал промах по дате и не печатал строку — я
+       * прочёл молчание как «верно». Потом добавил счётчик проекта и снова
+       * забыл строку: отчёт сказал «3 из 5», а какая цель не распознана,
+       * узнать было нечем.
+       *
+       * Правило: добавил число — добавь строку.
+       */
+      if (expected.isProject !== ANY && actual.isProject !== expected.isProject) {
+        const asGoal = (flag: boolean): string => (flag ? 'большой целью' : 'обычным делом');
+
+        process.stdout.write(
+          `  проект [${outcome.id}] «${actual.text}»: ожидался ${asGoal(expected.isProject)}, ` +
+            `получен ${asGoal(actual.isProject)}\n`,
+        );
+      }
+
       const kind =
         actual.recurrence?.text !== undefined && actual.recurrence.rule === undefined
           ? 'unclear'

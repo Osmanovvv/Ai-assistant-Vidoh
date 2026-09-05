@@ -1,6 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
-import { looksLikeAppend } from './append.js';
+import { looksLikeAppend, looksLikeCorrection } from './append.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -185,7 +185,8 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * требует двух примет сразу, а не одной.
    */
   const marked = segments.map((segment) =>
-    segment.intent === 'DUMP' && looksLikeAppend(segment.text)
+    segment.intent === 'DUMP' &&
+    (looksLikeAppend(segment.text) || looksLikeCorrection(segment.text))
       ? { ...segment, intent: 'PATCH' as const }
       : segment,
   );
@@ -195,7 +196,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
   if (appended > 0) {
     deps.logger?.info(
       { promptVersion: outcome.promptVersion, count: appended },
-      'Сегмент похож на дополнение к сказанному, разбираем как правку',
+      'Сегмент похож на дополнение или поправку к сказанному, разбираем как правку',
     );
   }
 

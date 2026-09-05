@@ -159,14 +159,23 @@ describe('желание не становится задачей', () => {
     expect(result.corrections.priority).toBe(0);
   });
 
-  it('признак проекта у не-задачи снимается', async () => {
-    // §5.1 ТЗ: проект — поле у TASK, у остальных типов оно не значит ничего.
+  it('признак проекта у замысла снимается', async () => {
+    /**
+     * §5.1: проект — поле задачи. **С 05.09.2026 и желания** — решение
+     * заказчика: «хочу начать делать сайт» это цель с шагами, и люди
+     * говорят о таком именно через «хочу». Прежде здесь стоял `DESIRE`, и
+     * тест охранял правило, которого больше нет.
+     *
+     * Замыслу признак по-прежнему не положен: «есть идея когда-нибудь
+     * сделать канал, никаких действий по нему не ставь» — проект без
+     * шагов не проект. Проверка сохранена на нём.
+     */
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [answer([{ type: 'DESIRE', isProject: true }])],
+      responses: [answer([{ type: 'IDEA', isProject: true }])],
     });
 
-    const result = await classifyUnits(deps(provider, prompts), params('хочу на море'));
+    const result = await classifyUnits(deps(provider, prompts), params('есть идея сделать канал'));
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -619,5 +628,69 @@ describe('у дела со сроком важности «никакая» не
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items[0]?.priority).toBe('NONE');
+  });
+});
+
+/**
+ * Большая цель бывает и желанием (решение заказчика 05.09.2026).
+ *
+ * Живой прогон проджекта 04.09.2026 показал, чем было плохо прежнее
+ * правило: «хочу начать делать небольшой сайт для себя, пока ничего толком
+ * не сделано» модель относит к желанию — и верно, он так и сказал. А
+ * желание проектом быть не могло, признак снимался принудительно. Проектом
+ * же становился его собственный шаг: роли перевернулись, шагов ноль, и на
+ * вопрос «какой следующий шаг?» отвечать было нечем.
+ */
+describe('кому можно быть большой целью', () => {
+  const asProject = (type: string) =>
+    answer([{ text: 'сделать сайт', type, priority: 'NONE', isProject: true }]);
+
+  it('желание может быть большой целью', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [asProject('DESIRE')] });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('хочу начать делать небольшой сайт для себя'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items[0]?.type).toBe('DESIRE');
+    expect(result.items[0]?.isProject).toBe(true);
+    // Признак не правился — значит и в счёт правок он не попал.
+    expect(result.corrections.project).toBe(0);
+  });
+
+  it('задача может, как и раньше', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [asProject('TASK')] });
+
+    const result = await classifyUnits(deps(provider, prompts), params('делать сайт'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.isProject).toBe(true);
+  });
+
+  it('замысел, сведение и чувство большой целью быть не могут', async () => {
+    /**
+     * «Есть идея когда-нибудь сделать телеграм-канал, никаких действий и
+     * сроков по нему не ставь» — человек прямо запретил шаги, а проект без
+     * шагов не проект.
+     */
+    for (const type of ['IDEA', 'INFO', 'EMOTION']) {
+      const prompts = await prepare();
+      const provider = new MockLlmProvider({ responses: [asProject(type)] });
+
+      const result = await classifyUnits(deps(provider, prompts), params('когда-нибудь канал'));
+
+      expect(result.ok, type).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.items[0]?.isProject, type).toBe(false);
+      expect(result.corrections.project, type).toBe(1);
+    }
   });
 });

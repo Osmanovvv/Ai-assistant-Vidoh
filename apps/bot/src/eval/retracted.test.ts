@@ -30,6 +30,7 @@ function unit(keywords: readonly string[], overrides: Partial<ExpectedUnit> = {}
     priority: '*',
     topic: '*',
     recurrence: 'none',
+    isProject: '*' as const,
     deadline: 'none',
     optional: false,
     why: '',
@@ -145,6 +146,9 @@ describe('отчёт и порог', () => {
       priorityCorrect: 58,
       topicCorrect: 58,
       recurrenceCorrect: 58,
+      // Проекты в этом случае не размечены: доля не считается.
+      projectCorrect: 0,
+      projectChecked: 0,
       deadlineCorrect: 58,
       falseDeadlines: 0,
       falseTasksFromDesires: 0,

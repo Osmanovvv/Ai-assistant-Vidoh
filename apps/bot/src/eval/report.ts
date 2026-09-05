@@ -37,6 +37,15 @@ export interface EvalReport {
   readonly priorityCorrect: number;
   readonly topicCorrect: number;
   readonly recurrenceCorrect: number;
+  /**
+   * Верно ли распознана большая цель (§5, задача 3.68).
+   *
+   * Считается только там, где разметка решает: у случаев со звёздочкой
+   * признак не проверяется.
+   */
+  readonly projectCorrect: number;
+  /** Сколько единиц вообще проверялось на проект: без них доля лжёт. */
+  readonly projectChecked: number;
   /** Точность срока: совпала ли точность, а где задана — и сама дата. */
   readonly deadlineCorrect: number;
   /**
@@ -103,6 +112,8 @@ export interface Shares {
   readonly priority: number;
   readonly topic: number;
   readonly recurrence: number;
+  /** Доля верно распознанных проектов среди проверенных. */
+  readonly project: number;
   readonly deadline: number;
   /**
    * Доля лишних записей от ожидаемых (задача 3.52).
@@ -124,6 +135,8 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
   let priorityCorrect = 0;
   let topicCorrect = 0;
   let recurrenceCorrect = 0;
+  let projectCorrect = 0;
+  let projectChecked = 0;
   let falseTasksFromDesires = 0;
   let falseTasksFromEmotions = 0;
   let crisisExpected = 0;
@@ -173,6 +186,12 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
           : actualRecurrence;
       if (asKind === unit.recurrence) recurrenceCorrect++;
 
+      // Проект: считается только там, где разметка решает (задача 3.68).
+      if (unit.isProject !== ANY) {
+        projectChecked++;
+        if (actual.isProject === unit.isProject) projectCorrect++;
+      }
+
       /**
        * Срок: сначала точность, потом дата.
        *
@@ -207,6 +226,8 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     priorityCorrect,
     topicCorrect,
     recurrenceCorrect,
+    projectCorrect,
+    projectChecked,
     deadlineCorrect,
     falseDeadlines,
     falseTasksFromDesires,
@@ -241,6 +262,8 @@ export function shares(report: EvalReport): Shares {
     priority: of(report.priorityCorrect),
     topic: of(report.topicCorrect),
     recurrence: of(report.recurrenceCorrect),
+    // Знаменатель свой: доля считается от проверенных, а не от найденных.
+    project: report.projectChecked === 0 ? 0 : report.projectCorrect / report.projectChecked,
     deadline: of(report.deadlineCorrect),
   };
 }
@@ -287,6 +310,12 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     `Точность важности:   ${percent(now.priority)}${delta(now.priority, was?.priority)}`,
     `Точность темы:       ${percent(now.topic)}${delta(now.topic, was?.topic)}`,
     `Точность повторения: ${percent(now.recurrence)}${delta(now.recurrence, was?.recurrence)}`,
+    ...(report.projectChecked === 0
+      ? []
+      : [
+          `Точность проекта:    ${percent(now.project)}${delta(now.project, was?.project)}` +
+            `   (${String(report.projectCorrect)} из ${String(report.projectChecked)})`,
+        ]),
     `Точность срока:      ${percent(now.deadline)}${delta(now.deadline, was?.deadline)}`,
     '',
     `Ложных задач из желаний: ${String(report.falseTasksFromDesires)}${deltaCount(report.falseTasksFromDesires, previous?.falseTasksFromDesires)}`,
