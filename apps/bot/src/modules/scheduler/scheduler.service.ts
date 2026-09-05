@@ -234,7 +234,18 @@ async function staleProjectsOf(db: Database, userId: string, now: Date): Promise
         isNotNull(reminders.sentAt),
       ),
     )
-    .where(and(openItemsWhere(userId), eq(items.isProject, true)))
+    /**
+     * Окликаем только по **делам**, хотя большой целью с 05.09.2026 может
+     * быть и желание.
+     *
+     * Разрешение признака желанию сделано ради вопроса человека — «где мы»
+     * и «какой следующий шаг», — то есть ради ответа, когда спросили. А
+     * напоминание «неделя без движения» — это окликание, и желанию оно не
+     * годится: §6.3 держит желания списком «когда-нибудь», и давить ими
+     * нельзя. Человек, сказавший «хочу когда-нибудь свой сайт», не просил
+     * напоминать ему об этом каждую неделю.
+     */
+    .where(and(openItemsWhere(userId), eq(items.isProject, true), eq(items.type, 'TASK')))
     .groupBy(items.id, items.updatedAt);
 
   return rows

@@ -20,6 +20,7 @@ function unit(keywords: readonly string[], overrides: Partial<ExpectedUnit> = {}
     priority: '*',
     topic: '*',
     recurrence: 'none',
+    isProject: '*' as const,
     deadline: 'none',
     optional: false,
     why: '',
