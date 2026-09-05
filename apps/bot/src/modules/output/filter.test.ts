@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Item } from '../../db/schema.js';
-import { LIMIT_BY_ENERGY, effectiveEnergy, isShowable, selectForOutput } from './filter.js';
+import {
+  LIMIT_BY_ENERGY,
+  effectiveEnergy,
+  isShowable,
+  selectForOutput,
+  selectForToday,
+} from './filter.js';
 
 /**
  * Выдача — единственный шаг конвейера без спецификации в ТЗ, и при этом
@@ -538,5 +544,107 @@ describe('выдача про то, что человек только что с
 
     expect(result.shown).toHaveLength(3);
     expect(result.hidden).toBe(6);
+  });
+});
+
+/**
+ * Список «на сегодня» показывает только сегодняшнее (задача 3.71).
+ *
+ * **Найдено на живом прогоне проджекта 04.09.2026.** Он спросил, что у
+ * него по сайту, и увидел заголовок «На сегодня» со строками «Завтра надо
+ * купить собаке новый ошейник» и «Завтра нужно заехать в аптеку».
+ * Заголовок говорил про сегодня, строки — про завтра.
+ *
+ * Дело на завтра не попадает ни в «просрочено», ни в «сегодня», и
+ * проваливается к очереди «сейчас» — по важности. А список берёт как раз
+ * просроченное, сегодняшнее и «сейчас».
+ */
+describe('список на сегодня', () => {
+  /** Полдень 4 сентября 2026 по Москве. */
+  const today = new Date('2026-09-04T09:00:00.000Z');
+  const at = (iso: string): Date => new Date(`${iso}T00:00:00.000+03:00`);
+  const forToday = { energy: 'normal' as const, now: today, timeZone: MOSCOW };
+
+  const textsOf = (items: readonly Item[]): string[] => items.map((one) => one.text);
+
+  it('дело на завтра с важностью «сейчас» в список не идёт', () => {
+    const tomorrow = item({
+      text: 'Завтра надо купить собаке новый ошейник',
+      priority: 'NOW',
+      deadlineAt: at('2026-09-05'),
+      deadlineAccuracy: 'day',
+    });
+
+    expect(textsOf(selectForToday([tomorrow], forToday))).toEqual([]);
+  });
+
+  it('сегодняшнее, просроченное и бессрочно-срочное — идут', () => {
+    const overdue = item({ text: 'просрочено', priority: 'SOON', deadlineAt: at('2026-09-01') });
+    const now = item({ text: 'сегодня', priority: 'SOON', deadlineAt: at('2026-09-04') });
+    const undated = item({ text: 'без срока, но сейчас', priority: 'NOW', deadlineAt: null });
+
+    const shown = textsOf(selectForToday([overdue, now, undated], forToday));
+
+    expect(shown).toContain('просрочено');
+    expect(shown).toContain('сегодня');
+    expect(shown).toContain('без срока, но сейчас');
+  });
+
+  it('дело на следующую неделю не идёт, какой бы важности ни было', () => {
+    for (const priority of ['NOW', 'SOON', 'LATER'] as const) {
+      const later = item({
+        text: `на неделе, важность ${priority}`,
+        priority,
+        deadlineAt: at('2026-09-11'),
+      });
+
+      expect(textsOf(selectForToday([later], forToday)), priority).toEqual([]);
+    }
+  });
+
+  it('боевой случай проджекта целиком', () => {
+    /**
+     * Ровно те записи, что он увидел под заголовком «На сегодня». Из них
+     * сегодняшняя одна — мусор; остальные на завтра и на воскресенье.
+     */
+    const garbage = item({ text: 'Вынести мусор', priority: 'NOW', deadlineAt: at('2026-09-04') });
+    const collar = item({
+      text: 'Завтра надо купить собаке новый ошейник',
+      priority: 'NOW',
+      deadlineAt: at('2026-09-05'),
+    });
+    const pharmacy = item({
+      text: 'Завтра нужно заехать в аптеку и купить витамины',
+      priority: 'NOW',
+      deadlineAt: at('2026-09-05'),
+    });
+    const groomer = item({
+      text: 'В воскресенье надо отвезти собаку к грумеру',
+      priority: 'SOON',
+      deadlineAt: at('2026-09-06'),
+    });
+
+    expect(textsOf(selectForToday([garbage, collar, pharmacy, groomer], forToday))).toEqual([
+      'Вынести мусор',
+    ]);
+  });
+
+  it('свежесказанное на завтра в ответе на выгрузку остаётся', () => {
+    /**
+     * Правило меняет только списки, которые человек открывает потом.
+     * В ответе на саму выгрузку дело появиться обязано: он про него и
+     * говорил, а «ничего не потеряно» — обещание §13.2.
+     */
+    const tomorrow = item({
+      text: 'Завтра надо купить собаке новый ошейник',
+      priority: 'NOW',
+      deadlineAt: at('2026-09-05'),
+    });
+
+    const answer = selectForOutput([tomorrow], { ...forToday, mentioned: new Set([tomorrow.id]) });
+
+    expect(answer.shown.map((one) => one.text)).toEqual([
+      'Завтра надо купить собаке новый ошейник',
+    ]);
   });
 });
