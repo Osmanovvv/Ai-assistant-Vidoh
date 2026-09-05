@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeToday, localDateParts, resolveDeadline, startOfDayInZone } from './dates.js';
+import {
+  describeToday,
+  isoDateIn,
+  localDateParts,
+  resolveDeadline,
+  startOfDayInZone,
+} from './dates.js';
 
 /**
  * Сроки — самый частый источник тихих ошибок: они не падают, а ставят
@@ -240,5 +246,48 @@ describe('resolveDeadline', () => {
       if (outcome.ok) return;
       expect(outcome.reason).toContain('слишком далеко');
     });
+  });
+});
+
+/**
+ * Дата в поясе человека (задача 3.74).
+ *
+ * **Зачем понадобилась.** Якорь правила повторения брался из
+ * `toISOString()`, то есть по UTC, — а схема правила требует дату
+ * **в поясе человека**. Срок хранится мгновением: четверг у москвича —
+ * это среда 21:00 по UTC, и правило «каждый четверг» становилось
+ * правилом «каждую среду». Навсегда и у каждого, кто восточнее
+ * Гринвича, то есть у всех наших.
+ */
+describe('isoDateIn', () => {
+  it('полночь в поясе человека остаётся его датой', () => {
+    /**
+     * Так срок и хранится: полночь названного дня в его поясе. Именно
+     * здесь `toISOString()` и врал — каждый раз, а не на краю.
+     */
+    const cases: readonly [string, string, string][] = [
+      ['2026-09-04T18:00:00.000Z', 'Asia/Omsk', '2026-09-05'],
+      ['2026-09-02T21:00:00.000Z', 'Europe/Moscow', '2026-09-03'],
+      ['2026-09-04T22:00:00.000Z', 'Europe/Kaliningrad', '2026-09-05'],
+      ['2026-09-04T11:00:00.000Z', 'Asia/Kamchatka', '2026-09-04'],
+    ];
+
+    for (const [instant, timeZone, expected] of cases) {
+      expect(isoDateIn(new Date(instant), timeZone), `${instant} ${timeZone}`).toBe(expected);
+    }
+  });
+
+  it('утро омича — уже его сегодня, а не вчерашнее по UTC', () => {
+    // 05:00 в Омске (UTC+6) — это 23:00 предыдущего дня по Гринвичу.
+    expect(isoDateIn(new Date('2026-09-04T23:00:00.000Z'), 'Asia/Omsk')).toBe('2026-09-05');
+  });
+
+  it('в поясе Гринвича совпадает с ISO — иначе сверять было бы нечем', () => {
+    expect(isoDateIn(new Date('2026-09-05T10:00:00.000Z'), 'UTC')).toBe('2026-09-05');
+  });
+
+  it('день и месяц печатаются двумя знаками', () => {
+    // Якорь сверяется с образцом ГГГГ-ММ-ДД, и «2026-9-5» его не прошёл бы.
+    expect(isoDateIn(new Date('2026-01-05T12:00:00.000Z'), 'Europe/Moscow')).toBe('2026-01-05');
   });
 });

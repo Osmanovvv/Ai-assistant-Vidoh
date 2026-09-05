@@ -99,6 +99,24 @@ export function localDateParts(instant: Date, timeZone: string): DateParts {
 }
 
 /**
+ * Дата в поясе человека, ГГГГ-ММ-ДД (задача 3.74).
+ *
+ * **Нужна потому, что `toISOString()` здесь всегда неверен.** Срок
+ * хранится мгновением: полночь 05.09 у омича — это 04.09 18:00 по UTC, и
+ * `toISOString().slice(0, 10)` даёт 04.09. Промах не краевой: он бьёт
+ * каждый раз у каждого, кто восточнее Гринвича, то есть у всех наших.
+ *
+ * Собрана на `localDateParts`, а не своим `Intl`: одно понимание «какое
+ * сегодня число» на весь бот, а не два похожих.
+ */
+export function isoDateIn(instant: Date, timeZone: string): string {
+  const { year, month, day } = localDateParts(instant, timeZone);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+
+  return `${String(year)}-${pad(month)}-${pad(day)}`;
+}
+
+/**
  * Начало суток в поясе человека.
  *
  * В два прохода: первое смещение берётся на полночь по UTC, второе — уже

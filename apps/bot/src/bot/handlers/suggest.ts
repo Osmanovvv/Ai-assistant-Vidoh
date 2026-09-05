@@ -4,8 +4,8 @@ import type { Logger } from 'pino';
 
 import { items } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { resolveRecurrence } from '../../modules/recurrence/recurrence.js';
-import { SUGGEST_ACTION } from '../../modules/recurrence/suggest-text.js';
+import { isoDateIn } from '../../modules/classifier/dates.js';
+import { SUGGEST_ACTION, rhythmInWords } from '../../modules/recurrence/suggest-text.js';
 import { resolveOffer } from '../../modules/recurrence/suggestions.repo.js';
 import { applyDecision } from '../../modules/resolver/patch.js';
 import { undoKeyboard } from './undo.js';
@@ -65,14 +65,32 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
      * Тогда якорем становится сегодня: человек только что сказал о деле,
      * и следующее повторение отсчитывается отсюда. Выдумывать прошлое
      * ради ровной даты значило бы поставить напоминание не в тот день.
+     *
+     * **И «сегодня» здесь — его сегодня, а не по UTC** (задача 3.74).
+     * Дата из `toISOString()` у омича до шести утра — ещё вчерашняя, а
+     * срок, хранимый мгновением, она сдвигает на день назад всегда.
      */
-    const anchor = (item.deadlineAt ?? new Date()).toISOString().slice(0, 10);
+    const anchor = isoDateIn(item.deadlineAt ?? new Date(), active.timeZone);
 
-    const resolved = resolveRecurrence({
+    /**
+     * Фраза правила — наша, и без неё правило не строилось вовсе
+     * (задача 3.75).
+     *
+     * **Найдено 05.09.2026 первым же тестом этого обработчика.** Здесь
+     * стояло `text: ''`, а проверка правила отвергает вид без фразы —
+     * «показывать человеку „регулярное“ без того, что он сказал, нельзя:
+     * он не узнает своих слов». Правило не выставлялось ни разу, а бот
+     * отвечал «Запомнила». Обещание было ложным, и заметить это в
+     * переписке нельзя никак.
+     *
+     * Слова человека сюда взять и правда неоткуда: ритм заметил бот, а
+     * человек только нажал «Да, запомни». Поэтому фраза берётся из
+     * `rhythmInWords` — та же, что он **видел в вопросе**, — а источник
+     * называется `noticed`, чтобы в базе было видно: это не его слова.
+     */
+    const said = rhythmInWords({
       kind: offer.kind as 'daily' | 'weekly' | 'monthly' | 'yearly',
       interval: offer.interval,
-      text: '',
-      deadline: anchor,
     });
 
     const applied = await applyDecision(db, {
@@ -86,10 +104,9 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
         deadlineAccuracy: 'day',
         recurrenceKind: offer.kind as 'monthly',
         recurrenceInterval: offer.interval,
-        // Слова человека здесь взять неоткуда: правило заметил бот.
-        // Поэтому фраза наша, и источник — `noticed`, а не `asked`.
-        recurrenceText: resolved.text ?? '',
+        recurrenceText: said,
       },
+      recurrenceSource: 'noticed',
       timeZone: active.timeZone,
       reason: 'бот заметил повторяемость, человек подтвердил',
       changedBy: 'user',

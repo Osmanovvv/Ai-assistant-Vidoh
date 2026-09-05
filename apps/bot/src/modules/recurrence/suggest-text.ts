@@ -61,8 +61,21 @@ export function datesInWords(dates: readonly Date[], timeZone: string): string {
   return `${pieces.slice(0, -1).join(', ')} и ${last}`;
 }
 
+/**
+ * Что нужно, чтобы назвать ритм словами (задача 3.75).
+ *
+ * Медианный разрыв нужен детектору, а названию — нет: предложение из
+ * базы хранит только вид и промежуток, и требовать от него третье поле
+ * значило бы, что назвать его словами нельзя.
+ */
+export interface NamedRhythm {
+  readonly kind: Rhythm['kind'];
+  readonly interval: number;
+  readonly medianDays?: number;
+}
+
 /** Как назвать ритм по-человечески. */
-export function rhythmInWords(rhythm: Rhythm): string {
+export function rhythmInWords(rhythm: NamedRhythm): string {
   if (rhythm.kind === 'weekly') return rhythm.interval === 1 ? 'каждую неделю' : 'раз в две недели';
   if (rhythm.kind === 'monthly') {
     return rhythm.interval === 1 ? 'каждый месяц' : 'раз в два месяца';

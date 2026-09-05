@@ -3,9 +3,10 @@ import { and, eq } from 'drizzle-orm';
 import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
-import { nearestWeekday, resolveDeadline } from '../classifier/dates.js';
+import { isoDateIn, nearestWeekday, resolveDeadline } from '../classifier/dates.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
+import type { RecurrenceSource } from '../recurrence/recurrence.js';
 import { resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
@@ -75,6 +76,17 @@ export interface ApplyParams {
   readonly sourceMessageId?: string | undefined;
   /** По умолчанию `resolver`: сюда приходят автоматические решения. */
   readonly changedBy?: ChangedBy | undefined;
+  /**
+   * Откуда взялось правило повторения, если это известно снаружи.
+   *
+   * По умолчанию источник выводится из сказанного: попросил запомнить —
+   * `asked`, назвал мимоходом — `stated`. Но правило, которое **заметил
+   * сам бот** (задача 3.8в), человек не называл вовсе: он только нажал
+   * «Да, запомни». Без этого поля такое правило ложилось бы в базу как
+   * названное человеком, и способ 3 запроса на изменение №1 стало бы
+   * нечем отличить от способа 1.
+   */
+  readonly recurrenceSource?: RecurrenceSource | undefined;
 }
 
 export interface Applied {
@@ -171,8 +183,21 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
    * назван, иначе нынешний.
    */
   if (params.changes.recurrenceKind !== 'none') {
+    /**
+     * Нынешний срок берётся **в поясе человека** (задача 3.74).
+     *
+     * Схема правила требует этого прямо: «`anchor` — дата первого
+     * повторения в поясе человека». Брался он из `toISOString()`, то
+     * есть по UTC, и у москвича четверг превращался в среду, а у омича
+     * промах шире на все шесть часов его пояса. Правило «каждый четверг»
+     * становилось правилом «каждую среду» — навсегда.
+     */
     const anchor =
-      deadline.length > 0 ? deadline : (item.deadlineAt?.toISOString().slice(0, 10) ?? '');
+      deadline.length > 0
+        ? deadline
+        : item.deadlineAt === null
+          ? ''
+          : isoDateIn(item.deadlineAt, params.timeZone);
 
     const resolved = resolveRecurrence({
       kind: params.changes.recurrenceKind,
@@ -184,7 +209,8 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
     if (resolved.rule !== undefined && resolved.text !== undefined) {
       next.recurrenceRule = resolved.rule;
       next.recurrenceText = resolved.text;
-      next.recurrenceSource = sourceOf(params.spoken ?? '', resolved.source);
+      next.recurrenceSource =
+        params.recurrenceSource ?? sourceOf(params.spoken ?? '', resolved.source);
     }
   }
 
