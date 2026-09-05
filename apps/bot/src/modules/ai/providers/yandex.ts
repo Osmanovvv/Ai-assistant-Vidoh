@@ -1,3 +1,5 @@
+import { ACCESS_DENIED_STATUSES, AccessDeniedError } from '../../../infra/failures.js';
+
 import {
   PermanentLlmError,
   TransientLlmError,
@@ -116,6 +118,17 @@ export class YandexLlmProvider implements LlmProvider {
 
     if (!response.ok) {
       const message = `модель ответила ${String(response.status)}: ${raw.slice(0, 300)}`;
+
+      /**
+       * Отказ в доступе — не про запрос, а про нас (задача 3.72).
+       *
+       * Тот же запрос с живым ключом пройдёт, поэтому хоронить из-за
+       * него слова человека нельзя: выгрузка ждёт возвращения доступа.
+       */
+      if (ACCESS_DENIED_STATUSES.has(response.status)) {
+        throw new AccessDeniedError(message);
+      }
+
       throw TRANSIENT_STATUSES.has(response.status)
         ? new TransientLlmError(message)
         : new PermanentLlmError(message);

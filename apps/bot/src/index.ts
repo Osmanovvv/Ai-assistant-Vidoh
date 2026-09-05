@@ -24,6 +24,7 @@ import { WEBHOOK_PATH, getEnv, productionWarnings } from './config/env.js';
 import { closeDb, getDb, pingDb } from './infra/db.js';
 import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
+import { isAccessFailure } from './infra/errors.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import {
   createQueue,
@@ -267,6 +268,25 @@ async function main(): Promise<void> {
   worker.on('failed', (job, error) => {
     logger.error({ jobId: job?.id, err: error }, 'Задание не выполнено');
     void monitor.recordOutcome(false);
+
+    /**
+     * Отказ в доступе оповещает сразу, минуя долю ошибок (задача 3.72).
+     *
+     * Доля считается по окну не меньше десяти наблюдений — правило верное
+     * для шума, но для отказа в доступе бесполезное: у бота один-два
+     * разбора в час, десять наблюдений не набираются никогда, и о том,
+     * что бот не разбирает вообще ничего, мы узнали бы от заказчика.
+     *
+     * Отказ в доступе шумом не бывает. Одного достаточно; дребезг
+     * гасится общим правилом молчания по ключу.
+     */
+    if (isAccessFailure(error)) {
+      void monitor.alert({
+        key: 'access-denied',
+        title: 'Доступ к моделям закрыт — бот не разбирает выгрузки',
+        details: { причина: error.message.slice(0, 200) },
+      });
+    }
   });
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.

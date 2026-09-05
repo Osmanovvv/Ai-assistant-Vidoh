@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 
 import { batches, type Batch } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { isTransientFailure } from '../../infra/errors.js';
+import { isAccessFailure, isTransientFailure } from '../../infra/errors.js';
 import type { RedisLock } from '../../infra/lock.js';
 import { combineBatch } from '../buffer/buffer.service.js';
 
@@ -101,7 +101,21 @@ export async function processUserBatches(
             .set({ status: 'done', processedAt: new Date(), error: null, attempts: 0 })
             .where(eq(batches.id, batch.id));
         } catch (error) {
-          const attempts = batch.attempts + 1;
+          /**
+           * Отказ в доступе попытку не тратит (задача 3.72).
+           *
+           * Попытки нужны, чтобы не держать человека без ответа при
+           * настоящей поломке. Здесь поломки нет: у нас кончился доступ
+           * к модели, и от повтора это не изменится — но и виноватой
+           * выгрузка не становится. Пять попыток сгорели бы за пять
+           * минут, а доступ вернулся бы через час; слова пропали бы
+           * из-за нашего простоя, что §17 прямо запрещает.
+           *
+           * Выгрузка остаётся в очереди, и досмотр берёт её снова, пока
+           * доступ не вернётся. Один отказ стоит ноль: 403 не тарифится.
+           */
+          const denied = isAccessFailure(error);
+          const attempts = denied ? batch.attempts : batch.attempts + 1;
           const message = error instanceof Error ? error.message : String(error);
 
           // Временный сбой — сеть моргнула, распознаватель был занят —
@@ -112,7 +126,7 @@ export async function processUserBatches(
           // хватало, чтобы человек не получил ответа никогда: сбойные
           // выгрузки намеренно не переподхватываются, а админки, из
           // которой их перезапускают, до четвёртого этапа нет.
-          const retryable = isTransientFailure(error) && attempts < MAX_ATTEMPTS;
+          const retryable = denied || (isTransientFailure(error) && attempts < MAX_ATTEMPTS);
 
           await db
             .update(batches)

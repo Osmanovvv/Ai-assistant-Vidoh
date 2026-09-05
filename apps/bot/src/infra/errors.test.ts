@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { PermanentLlmError, TransientLlmError } from '../modules/ai/providers/types.js';
 import { PermanentSpeechError, TransientSpeechError } from '../modules/speech/providers/types.js';
-import { isTransientFailure } from './errors.js';
+import { AccessDeniedError } from './failures.js';
+import { isAccessFailure, isTransientFailure } from './errors.js';
 
 /**
  * От этого решения зависит судьба выгрузки: повторить или похоронить.
@@ -83,5 +84,55 @@ describe('isTransientFailure', () => {
     });
 
     expect(isTransientFailure(error)).toBe(true);
+  });
+});
+
+/**
+ * Отказ в доступе — отдельное решение (задача 3.72).
+ *
+ * **Найдено на боевом 05.09.2026.** Yandex начал отвечать `403 Permission
+ * to [folder, cloud, organization] denied` на любой запрос. Разбор считал
+ * это постоянным сбоем, выгрузка помечалась `failed` навсегда, а человек
+ * получал «попробуй ещё раз» — совет, который помочь не мог.
+ */
+describe('isAccessFailure', () => {
+  it('узнаёт отказ в доступе', () => {
+    expect(isAccessFailure(new AccessDeniedError('модель ответила 403: denied'))).toBe(true);
+  });
+
+  it('узнаёт отказ внутри чужой ошибки', () => {
+    // Отказ провайдера приходит завёрнутым в ошибку этапа разбора, и
+    // снаружи виден только верхний слой.
+    const wrapped = new Error('разбор не удался', {
+      cause: new AccessDeniedError('SpeechKit ответил 403'),
+    });
+
+    expect(isAccessFailure(wrapped)).toBe(true);
+  });
+
+  it('обычные сбои отказом в доступе не считает', () => {
+    for (const error of [
+      new TransientLlmError('сеть моргнула'),
+      new PermanentLlmError('модель вернула не JSON'),
+      new TransientSpeechError('занято'),
+      new PermanentSpeechError('формат не тот'),
+      new Error('что-то своё'),
+      Object.assign(new Error('обрыв'), { code: 'ECONNRESET' }),
+      undefined,
+      null,
+      'строка',
+    ]) {
+      expect(isAccessFailure(error), String(error)).toBe(false);
+    }
+  });
+
+  it('отказ в доступе временный: выгрузка обязана дождаться', () => {
+    /**
+     * Здесь связь двух решений, и она важнее каждого по отдельности.
+     * Судьбу выгрузки решает `isTransientFailure`; если бы отказ в
+     * доступе оказался для него постоянным, слова человека пропали бы —
+     * сколько бы `isAccessFailure` ни возвращал правды.
+     */
+    expect(isTransientFailure(new AccessDeniedError('403'))).toBe(true);
   });
 });

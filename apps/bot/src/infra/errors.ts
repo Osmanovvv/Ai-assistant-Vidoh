@@ -1,4 +1,4 @@
-import { PermanentError, TransientError } from './failures.js';
+import { AccessDeniedError, PermanentError, TransientError } from './failures.js';
 
 /**
  * Различение временных и постоянных сбоев (задачи 1.11 и 1.18).
@@ -72,4 +72,31 @@ export function isTransientFailure(error: unknown, depth = 0): boolean {
 
   const cause = (error as { cause?: unknown }).cause;
   return cause === undefined ? false : isTransientFailure(cause, depth + 1);
+}
+
+/**
+ * Отказ в доступе ли это (задача 3.72).
+ *
+ * Цепочка причин обходится так же, как в `isTransientFailure`: отказ
+ * провайдера бывает завёрнут в ошибку этапа разбора, и снаружи виден
+ * только верхний слой.
+ *
+ * Отдельно от «временного» именно потому, что решение другое: временный
+ * сбой тратит попытку, отказ в доступе — нет. Ждать тут приходится не
+ * чужую перегрузку, а возвращение нашего же доступа, и попытки на это
+ * тратить нечестно.
+ */
+export function isAccessFailure(error: unknown, depth = 0): boolean {
+  if (depth > MAX_CAUSE_DEPTH || typeof error !== 'object' || error === null) return false;
+
+  if (error instanceof AccessDeniedError) return true;
+
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      if (isAccessFailure(nested, depth + 1)) return true;
+    }
+  }
+
+  const cause = (error as { cause?: unknown }).cause;
+  return cause === undefined ? false : isAccessFailure(cause, depth + 1);
 }
