@@ -289,6 +289,10 @@ export const reserved: TextProfile = {
     buttonTimezoneOther: 'Другой город',
     timezoneChoose:
       'Выбери город, где время такое же, как у тебя. Краснодар, Сочи, Петербург — это Москва.',
+    buttonCityOwn: 'Напишу свой город',
+    cityAsk: 'Напиши свой город.',
+    citySaved: (city, zone) => `${city} — это время ${zone}. Запомнила.`,
+    cityNotFound: 'Такого города я не знаю. Выбери из списка тот, где время совпадает с твоим.',
 
     morning: 'Во сколько удобно напоминание утром?',
     evening: 'А вечером?',

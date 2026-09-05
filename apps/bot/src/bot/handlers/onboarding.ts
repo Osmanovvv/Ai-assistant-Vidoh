@@ -238,6 +238,22 @@ export function registerOnboardingHandlers(
     await show(ctx, timezoneQuestion(active.state.texts));
   });
 
+  /**
+   * «Напишу свой город» (задача 3.70, замечание проджекта).
+   *
+   * Шаг не двигается: человек ещё не ответил, он выбрал способ ответить.
+   * Дальше название приходит сообщением, и пояс считает справочник —
+   * подробности в `cities.ts`.
+   */
+  bot.callbackQuery(ACTION.timezoneOwn, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id, STEP.timezone);
+    if (!active) return;
+
+    await setAwaiting(db, active.userId, AWAITING.city);
+    await ctx.editMessageText(active.state.texts.onboarding.cityAsk);
+  });
+
   bot.callbackQuery(new RegExp(`^${ACTION.timezonePrefix}`, 'u'), async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id, STEP.timezone);

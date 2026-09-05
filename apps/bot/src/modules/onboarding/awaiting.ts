@@ -31,6 +31,8 @@ export const AWAITING = {
   name: 'name',
   morning: 'morning',
   evening: 'evening',
+  /** Город словами — в часовой пояс (задача 3.70). */
+  city: 'city',
   /** `edit:6f1e…` — правка текста записи словами. */
   editPrefix: 'edit:',
 } as const;
@@ -57,9 +59,14 @@ export function parseAwaiting(value: string | null): Awaiting | undefined {
     return itemId === '' ? undefined : { kind: 'edit', itemId };
   }
 
-  return value === AWAITING.name || value === AWAITING.morning || value === AWAITING.evening
-    ? { kind: value }
-    : undefined;
+  const known: readonly string[] = [
+    AWAITING.name,
+    AWAITING.morning,
+    AWAITING.evening,
+    AWAITING.city,
+  ];
+
+  return known.includes(value) ? { kind: value } : undefined;
 }
 
 export async function setAwaiting(

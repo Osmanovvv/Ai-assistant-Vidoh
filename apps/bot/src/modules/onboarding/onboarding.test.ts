@@ -184,8 +184,24 @@ describe('часовые пояса', () => {
   it('города разложены по рядам, а не столбцом в одиннадцать кнопок', () => {
     const question = timezoneQuestion(texts);
 
-    expect(question.rows.length).toBeLessThanOrEqual(4);
-    expect(question.rows.flat()).toHaveLength(TIMEZONES.length);
+    // Четыре ряда города плюс один — «Напишу свой город» (задача 3.70).
+    expect(question.rows.length).toBeLessThanOrEqual(5);
+
+    const labels = question.rows.flat().map((button) => button.label);
+    expect(labels).toHaveLength(TIMEZONES.length + 1);
+    expect(labels).toContain(texts.onboarding.buttonCityOwn);
+  });
+
+  it('«Напишу свой город» стоит последним, а не перед списком', () => {
+    /**
+     * Одиннадцать кнопок закрывают страну целиком, и большинству хватит
+     * их. Название — путь для того, кто не нашёл себя, и первым он стоять
+     * не должен: иначе человек начнёт печатать там, где хватило бы тапа.
+     */
+    const rows = timezoneQuestion(texts).rows;
+    const last = rows[rows.length - 1] ?? [];
+
+    expect(last.map((button) => button.label)).toEqual([texts.onboarding.buttonCityOwn]);
   });
 });
 
@@ -267,12 +283,15 @@ describe('словарь', () => {
     for (const profile of Object.values(profiles)) {
       const values = Object.values(profile.onboarding);
 
-      // Часть реплик принимает строку, часть — список сфер. Проверяется
-      // наличие текста, а не форма аргумента, поэтому пробуем строкой и
-      // повторяем списком, если реплика ждала список.
-      const call = (fn: (input: never) => string): string => {
+      /**
+       * Часть реплик принимает строку, часть — список сфер, а с задачи
+       * 3.70 одна принимает два довода: город и пояс. Проверяется наличие
+       * текста, а не форма довода, — поэтому доводы подставляются щедро,
+       * лишние функция просто не читает.
+       */
+      const call = (fn: (...input: never[]) => string): string => {
         try {
-          return fn('проверка' as never);
+          return fn('проверка' as never, 'проверка' as never);
         } catch {
           return fn(['проверка'] as never);
         }
