@@ -168,5 +168,12 @@ export function titleUnderDayHeader(
   const day = isoDateIn(item.deadlineAt, params.timeZone);
   if (day !== isoDateIn(params.now, params.timeZone)) return item.text;
 
-  return titleWithoutDate(item.text);
+  /**
+   * Заглавная после срезания — обязательна.
+   *
+   * «Завтра надо купить корм» даёт «надо купить корм», и в списке рядом с
+   * «Вынести мусор» строчная буква читается как небрежность. То же
+   * правило регистра, что при сохранении записи (задача 3.25).
+   */
+  return withCapital(titleWithoutDate(item.text));
 }
