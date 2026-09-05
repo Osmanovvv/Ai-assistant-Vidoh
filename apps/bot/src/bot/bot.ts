@@ -2,6 +2,7 @@ import { Bot } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 
 import { retryOnConnectFailure } from './retry.js';
+import { tolerateSameContent } from './same-content.js';
 
 export interface BotOptions {
   /**
@@ -35,6 +36,10 @@ export function createBot(token: string, options: BotOptions = {}): Bot {
   // Отказ соединения с Telegram повторяется один раз (задача 3.60):
   // иначе ответ пропадает молча, а человек видит свою команду и тишину.
   bot.api.config.use(retryOnConnectFailure());
+
+  // Правка тем же содержимым — не ошибка (задача 3.73): кнопка с номером
+  // страницы ведёт на ту же страницу, и Telegram отвергает такую правку.
+  bot.api.config.use(tolerateSameContent());
 
   return bot;
 }
