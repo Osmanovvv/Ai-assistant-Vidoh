@@ -186,6 +186,8 @@ export const reserved: TextProfile = {
     notRemembered: 'Поняла, больше не предложу.',
     questionStale: 'Этот вопрос уже неактуален — я записала как отдельное.',
     answerUnclear: 'Не разобрала ответ, ничего не меняла. Если это была правка — скажи ещё раз.',
+    targetNotFound:
+      'Не поняла, какое дело перенести — их несколько похожих. Скажи точнее, а сказанное я сохранила.',
   },
   backlog: {
     today: 'На сегодня у тебя вот это:',
@@ -276,6 +278,8 @@ export const reserved: TextProfile = {
     buttonNameYes: 'Да',
     buttonNameOwn: 'Напишу своё',
     buttonNameLater: 'Поправлю потом',
+    buttonNameSkip: 'Не важно',
+    nameUnknown: 'Как мне тебя называть?',
     nameAsk: 'Как тебя называть? Напиши одним словом.',
     nameSaved: (name) => `Хорошо, буду звать тебя ${name}.`,
     nameNotUnderstood: 'Это не похоже на имя — оставила как было. Разберу как мысль.',

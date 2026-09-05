@@ -37,7 +37,7 @@ import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { saysNoStrength } from '../output/exhaustion.js';
-import { weaveForExtraction } from './patch-in-place.js';
+import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
@@ -766,6 +766,40 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       if (outcome.kind === 'newThought') {
+        /**
+         * Распоряжение о записи мыслью не становится (задача 3.67).
+         *
+         * **Найдено живым прогоном проджекта 04.09.2026.** Он прислал
+         * отдельным сообщением «Перенеси дело с собакой на вторник».
+         * Резолвер цели не нашёл — у человека три дела про собаку — и
+         * вернул «это новая мысль». Мысль уходит в разбор, и распоряжение
+         * стало **делом** «Перенеси дело с собакой на вторник» со сроком
+         * на вторник. В списке дел человек увидел свою же команду.
+         *
+         * Резолвер тут не виноват: он честно сказал «цели не нашёл».
+         * Виновата развилка — «не правка» у нас означало «значит мысль», а
+         * третьего исхода не было. Теперь он есть: сказанное сохраняется
+         * как есть (§16 — ничего не теряется), и человеку говорится, что
+         * цель не найдена.
+         *
+         * Проверяются только приказы о записи, без существительного
+         * «дело»: «надо доделать дело с налогами» — настоящая мысль.
+         */
+        if (isRecordCommand(segment.text)) {
+          happened.parked = true;
+          happened.said = true;
+
+          await saveDraft(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            text: segment.text,
+            reason: 'распоряжение о записи, но цель не нашлась',
+          });
+
+          await tell(texts.resolver.targetNotFound);
+          return;
+        }
+
         /**
          * На первом проходе это ещё мысль, на втором — уже поздно:
          * извлечение и сохранение прошли, и вставить её в разбор нечем.

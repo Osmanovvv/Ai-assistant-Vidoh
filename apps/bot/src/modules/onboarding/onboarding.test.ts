@@ -96,13 +96,32 @@ describe('вопросы', () => {
     }
   });
 
-  it('без имени шаг подтверждения пропускается', () => {
-    // У части аккаунтов Telegram имени нет вовсе. Вопрос «называть тебя ?»
-    // хуже, чем его отсутствие.
+  it('про имя спрашивают всех, но по-разному', () => {
+    /**
+     * **Раньше шаг пропускался**, если в имени из профиля нет букв: вопрос
+     * «Называть тебя .?» читается как сбой. Довод был верен, пока написать
+     * своё имя было нельзя.
+     *
+     * С задачи 3.61 можно, и правило перевернулось: человек с точкой в
+     * профиле стал единственным, кого не спрашивают никогда. Заказчик
+     * заметил это на своём аккаунте — «вдруг человек хочет, чтобы его
+     * называли „,“». Теперь спрашивают всех: с именем его подтверждают,
+     * без имени спрашивают прямо.
+     */
     expect(firstStep('Аня')).toBe(STEP.name);
-    expect(firstStep('')).toBe(STEP.timezone);
-    expect(firstStep('   ')).toBe(STEP.timezone);
-    expect(questionFor(STEP.name, { texts, name: '' })).toBeUndefined();
+    expect(firstStep('')).toBe(STEP.name);
+    expect(firstStep('   ')).toBe(STEP.name);
+
+    const withName = questionFor(STEP.name, { texts, name: 'Аня' });
+    expect(withName?.text).toContain(texts.onboarding.nameConfirm('Аня'));
+
+    const withoutName = questionFor(STEP.name, { texts, name: '' });
+    expect(withoutName?.text).toBe(texts.onboarding.nameUnknown);
+
+    // Непригодного имени человек не видит, а ответить ему есть чем.
+    const labels = withoutName?.rows.flat().map((button) => button.label) ?? [];
+    expect(labels).toEqual([texts.onboarding.buttonNameOwn, texts.onboarding.buttonNameSkip]);
+    expect(labels).not.toContain(texts.onboarding.buttonNameYes);
   });
 
   it('имя подставляется в вопрос', () => {
@@ -327,14 +346,22 @@ describe('имя без букв (§12.2)', () => {
    * 27.08.2026 имя оказалось одной точкой, и бот спросил «Называть тебя
    * .?» — это выглядит как сбой, а не как знакомство. Проверка на пустую
    * строку такое не ловила.
+   *
+   * **Шаг при этом больше не пропускается** (правка заказчика 04.09.2026):
+   * спрашивают всех, просто непригодное имя в вопрос не подставляют.
    */
 
   const letterless = ['', '   ', '.', '·', '...', '🙂', '—', '42'];
 
   for (const name of letterless) {
-    it(`«${name}» — не имя, вопрос пропускается`, () => {
-      expect(firstStep(name)).toBe(STEP.timezone);
-      expect(questionFor(STEP.name, { texts: defaultTexts, name })).toBeUndefined();
+    it(`«${name}» в вопрос не подставляется, но спросить надо`, () => {
+      expect(firstStep(name)).toBe(STEP.name);
+
+      const question = questionFor(STEP.name, { texts: defaultTexts, name });
+      expect(question?.text).toBe(defaultTexts.onboarding.nameUnknown);
+
+      // Главное: своего непригодного имени человек не видит.
+      if (name.trim() !== '') expect(question?.text).not.toContain(name.trim());
     });
   }
 

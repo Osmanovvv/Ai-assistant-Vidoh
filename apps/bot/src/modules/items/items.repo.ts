@@ -4,7 +4,7 @@ import { items, topics, type Item, type NewItem } from '../../db/schema.js';
 import type { Database, Executor } from '../../infra/db.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
 import { normalizeTopicName } from '../topics/topics.repo.js';
-import { withCapital } from './item-text.js';
+import { withCapital, withoutCardFields } from './item-text.js';
 
 /**
  * Сохранение записей (задача 2.8).
@@ -70,8 +70,13 @@ function toRow(
     userId: params.userId,
     sourceBatchId: params.batchId,
     sourceOrder: order,
-    // Заглавная в начале: см. item-text.ts, задача 3.25.
-    text: withCapital(item.text),
+    /**
+     * Заглавная в начале — задача 3.25; поля карточки долой — задача 3.62.
+     *
+     * Порядок важен: сперва убираем «Срок 07.09» и «Статус ждет», иначе
+     * заглавная встала бы у мусора, а не у дела.
+     */
+    text: withCapital(withoutCardFields(item.text)),
     type: item.type,
     priority: item.priority,
     topic: item.topic,

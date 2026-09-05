@@ -1757,8 +1757,18 @@ describe('ответ пользователю', () => {
 });
 
 describe('онбординг: края', () => {
-  it('без имени в профиле опрос начинается с часового пояса', async () => {
-    // У части аккаунтов Telegram имени нет: подтверждать нечего.
+  it('без имени в профиле опрос спрашивает имя прямо', async () => {
+    /**
+     * **Раньше шаг пропускался и опрос начинался с пояса.** Довод был
+     * верен для своего времени: написать своё имя было нельзя, и
+     * единственным исходом оставался вопрос «Называть тебя .?» — а он
+     * читается как сбой.
+     *
+     * С задачи 3.61 своё имя написать можно, и правило перевернулось:
+     * человек без имени в профиле стал единственным, кого не спрашивают
+     * никогда. Теперь спрашивают всех, только непригодное имя в вопрос
+     * не подставляют.
+     */
     const prompts = await seedPrompts();
     await testDb().update(users).set({ firstName: null }).where(eq(users.id, userId));
 
@@ -1779,13 +1789,13 @@ describe('онбординг: края', () => {
       userId,
     );
 
-    expect(questions.asked).toEqual([defaultTexts.onboarding.timezoneMoscow]);
+    expect(questions.asked).toEqual([defaultTexts.onboarding.nameUnknown]);
 
     const [settings] = await testDb()
       .select()
       .from(userSettings)
       .where(eq(userSettings.userId, userId));
-    expect(settings?.onboardingStep).toBe(STEP.timezone);
+    expect(settings?.onboardingStep).toBe(STEP.name);
   });
 
   it('застрявший опрос дозадаётся, а разбор своего вопроса не задаёт', async () => {

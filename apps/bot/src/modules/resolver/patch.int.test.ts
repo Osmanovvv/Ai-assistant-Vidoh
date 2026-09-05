@@ -721,3 +721,106 @@ describe('просьба запомнить у существующего дел
     expect(applied).toBeUndefined();
   });
 });
+
+/**
+ * День недели в правке пересчитывается кодом (задача 3.65).
+ *
+ * **Найдено сквозным прогоном 05.09.2026, в субботу.** На «перенеси на
+ * пятницу» модель вернула `2026-09-04` — **вчерашнюю** пятницу. Прошлые
+ * сроки проверка отбрасывает намеренно, и правка не применялась вовсе:
+ * человек сказал «перенеси», и не произошло ничего.
+ *
+ * В пятницу тот же случай проходил — модель попадала в сегодня, — поэтому
+ * дефект держался незамеченным. Такие «зависящие от дня недели» промахи
+ * страшнее обычных: они приходят не тогда, когда что-то сломалось.
+ */
+describe('день недели в правке считает код, а не модель', () => {
+  /** Суббота, 5 сентября 2026, полдень по Москве. */
+  const SATURDAY = new Date('2026-09-05T09:00:00.000Z');
+
+  const asDate = (at: Date | null): string =>
+    at === null ? 'нет' : new Intl.DateTimeFormat('sv-SE', { timeZone: MOSCOW }).format(at);
+
+  it('«в пятницу» в субботу — это следующая пятница, а не прошедшая', async () => {
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: {
+        ...NO_CHANGES,
+        // Ровно то, что вернула модель в бою: пятница, но прошедшая.
+        deadline: '2026-09-04',
+        deadlineAccuracy: 'day',
+      },
+      spoken: 'перенеси на пятницу',
+      timeZone: MOSCOW,
+      now: SATURDAY,
+    });
+
+    expect(applied).toBeDefined();
+    expect(asDate((await reread(item.id)).deadlineAt)).toBe('2026-09-11');
+  });
+
+  it('без слов человека дата модели остаётся как есть', async () => {
+    /**
+     * Пересчёт опирается на сказанное. Нет его — нет и признака, по
+     * которому считать: тогда работает прежний путь, и прошлую дату
+     * отбрасывает проверка срока.
+     */
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-09-04', deadlineAccuracy: 'day' },
+      timeZone: MOSCOW,
+      now: SATURDAY,
+    });
+
+    // Прошлый срок не лёг — и это верно: «человек не ставит задачи на вчера».
+    expect(applied).toBeUndefined();
+    expect((await reread(item.id)).deadlineAt).toBeNull();
+  });
+
+  it('названы два дня недели — не гадаем, дата модели остаётся', async () => {
+    // Выбрать за человека нельзя. Дата модели проходит обычную проверку.
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-09-08', deadlineAccuracy: 'day' },
+      spoken: 'перенеси на вторник или четверг',
+      timeZone: MOSCOW,
+      now: SATURDAY,
+    });
+
+    expect(asDate((await reread(item.id)).deadlineAt)).toBe('2026-09-08');
+  });
+
+  it('неточный срок пересчёту не подлежит', async () => {
+    /**
+     * «На следующей неделе» — не день недели, и подменять его конкретной
+     * пятницей значило бы придумать точность, которой человек не давал.
+     */
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-09-11', deadlineAccuracy: 'week' },
+      spoken: 'перенеси на следующую неделю, ближе к пятнице',
+      timeZone: MOSCOW,
+      now: SATURDAY,
+    });
+
+    const after = await reread(item.id);
+    expect(asDate(after.deadlineAt)).toBe('2026-09-11');
+    expect(after.deadlineAccuracy).toBe('week');
+  });
+});

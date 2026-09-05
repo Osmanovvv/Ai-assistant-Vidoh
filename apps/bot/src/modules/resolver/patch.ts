@@ -3,7 +3,8 @@ import { and, eq } from 'drizzle-orm';
 import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
-import { resolveDeadline } from '../classifier/dates.js';
+import { nearestWeekday, resolveDeadline } from '../classifier/dates.js';
+import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
@@ -202,8 +203,39 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
      * ищет цифры в сказанном, а поправка звучит словами: «нет, в
      * пятницу». Для неё эта проверка отвергала бы верные сроки.
      */
+    /**
+     * День недели пересчитывается кодом, как при разборе выгрузки
+     * (задача 3.65).
+     *
+     * **Найдено сквозным прогоном 05.09.2026, в субботу.** На «перенеси на
+     * пятницу» модель вернула `2026-09-04` — **вчерашнюю** пятницу.
+     * Прошлые сроки проверка отбрасывает намеренно, и правка не
+     * применялась вовсе: человек сказал «перенеси», и не произошло
+     * ничего. В пятницу тот же случай проходил — модель попадала в
+     * сегодня, — поэтому дефект держался незамеченным.
+     *
+     * У разбора выгрузки такое правило есть с задачи 2.7: назван день
+     * недели — дата обязана быть этим днём, и считает её код. Здесь оно
+     * не работало, потому что проверка получает срок **без слов
+     * человека**: вместе со словами включилась бы и лицензия «названо ли
+     * это вслух», а она ищет цифры и отвергала бы верные поправки.
+     *
+     * Поэтому пересчёт стоит здесь, до проверки: тем же `nearestWeekday`,
+     * что у классификации, и по тому же условию — назван **ровно один**
+     * день недели и точность дневная.
+     */
+    const named = weekdaysIn(params.spoken ?? '');
+    const only = named.length === 1 ? named[0] : undefined;
+
+    const corrected =
+      only !== undefined && deadlineAccuracy === 'day'
+        ? new Intl.DateTimeFormat('sv-SE', { timeZone: params.timeZone }).format(
+            nearestWeekday(only, { now, timeZone: params.timeZone }),
+          )
+        : deadline;
+
     const outcome = resolveDeadline(
-      { deadline, accuracy: deadlineAccuracy },
+      { deadline: corrected, accuracy: deadlineAccuracy },
       { now, timeZone: params.timeZone },
     );
 

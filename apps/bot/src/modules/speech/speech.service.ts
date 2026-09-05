@@ -1,3 +1,4 @@
+import type { Logger } from 'pino';
 import { join } from 'node:path';
 
 import { eq } from 'drizzle-orm';
@@ -7,6 +8,7 @@ import type { Database } from '../../infra/db.js';
 import { meterCall } from '../metering/ai-calls.repo.js';
 import { SPEECH_BILLING_BLOCK_SEC, type ModelPricing } from '../metering/pricing.js';
 import { attribute } from './attribution.js';
+import { pauseStats } from './pauses.js';
 import { groupVoices } from './grouping.js';
 import {
   DEFAULT_AUDIO_LIMITS,
@@ -41,6 +43,13 @@ export interface TranscribeDeps {
   readonly timeoutMs?: number | undefined;
   readonly language?: string | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Журнал: пока нужен одному замеру паузы (задача 3.59, шаг 1).
+   *
+   * Не задан — расшифровка работает как прежде, просто без замера. Так
+   * удобно и тестам, которым числа паузы ни к чему.
+   */
+  readonly logger?: Logger | undefined;
 }
 
 export interface TranscribeParams {
@@ -250,6 +259,23 @@ async function transcribeGroup(
           })),
         });
       }
+    }
+
+    /**
+     * Замер паузы между словами (задача 3.59, шаг 1).
+     *
+     * Только в журнал и только числа: поведение не меняется ни на что.
+     * Точки в расшифровке ставит литературная нормализация Yandex, и
+     * ставит их не там — а правила срока опираются на предложения.
+     * Прежде чем переставлять границы по паузам, надо увидеть, какие
+     * паузы в живой речи вообще бывают. Порог, выбранный на глаз, — это
+     * догадка, а догадки здесь уже давали выдуманные сроки.
+     */
+    if (deps.logger !== undefined && utterances.length > 0) {
+      deps.logger.info(
+        { batchId: params.batchId, ...pauseStats(utterances) },
+        'Паузы между словами речи — замер для задачи 3.59',
+      );
     }
 
     return {
