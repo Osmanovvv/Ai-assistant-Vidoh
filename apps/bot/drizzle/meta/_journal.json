@@ -211,6 +211,13 @@
       "when": 1788122750652,
       "tag": "0029_trial_and_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788122750653,
+      "tag": "0030_admin_access_log",
+      "breakpoints": true
     }
   ]
 }

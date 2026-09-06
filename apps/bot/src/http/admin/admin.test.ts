@@ -258,7 +258,18 @@ describe('без авторизации панель не отдаёт данн�
     const mount = createAdminRouter({ config: configOf(), staticDir: dist });
 
     // Открытых путей ровно один — страница; входы живут отдельно.
-    expect(mount.openRoutes).toEqual([{ method: 'get', path: '/{*path}' }]);
+    expect(mount.openRoutes.map((route) => `${route.method} ${route.path}`)).toEqual([
+      'get /{*path}',
+    ]);
+
+    /**
+     * И у него записано, **почему** он открыт: в нём нет данных
+     * человека (§16, задача 4.11). Открытый путь без такого решения —
+     * это дыра, объявленная случайно.
+     */
+    const only = mount.openRoutes[0];
+    expect(only?.exposure.personal).toBe(false);
+    expect(only?.exposure.personal === false ? only.exposure.why : '').toContain('оболочка');
 
     const base = await listen(
       createServer({ healthChecks: [], admin: configOf(), adminStaticDir: dist }),
