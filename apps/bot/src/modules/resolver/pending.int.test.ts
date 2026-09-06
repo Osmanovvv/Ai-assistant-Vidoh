@@ -237,6 +237,42 @@ describe('слова сверх ответа не пропадают (§9.1, з�
  * открытого вопроса уже нет: отрезок из ответа пропадал молча, притом
  * что остальная выгрузка разбиралась.
  */
+describe('режим правки доезжает и голосом (задача 3.82)', () => {
+  it('«к прошлой» на вопрос про дополнение дописывает подробность', async () => {
+    /**
+     * §7.3 требует прямо: голосовой ответ обрабатывается так же, как
+     * нажатие кнопки. Без режима оба применялись заменой, и подробность
+     * из вопроса выбрасывалась — человек получал «Добавила к прошлой»,
+     * а в записи не появлялось ничего.
+     */
+    await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'а ещё туда надо взять карту прививок',
+      action: 'update',
+      mode: 'append',
+      changes: {
+        note: 'взять карту прививок',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      now: NOW,
+    });
+
+    const outcome = await settle('к прошлой');
+    expect(outcome.kind).toBe('applied');
+
+    const after = await reread();
+    expect(after.body).toBe('взять карту прививок');
+    expect(after.text).toBe(item.text);
+  });
+});
+
 describe('повтор выгрузки не теряет ответ на вопрос', () => {
   it('второй заход той же выгрузки возвращает отрезок в разбор', async () => {
     await ask();

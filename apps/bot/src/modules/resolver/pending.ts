@@ -182,6 +182,14 @@ export async function settlePendingQuestion(
     userId: params.userId,
     itemId: open.itemId,
     action: open.action === 'complete' || open.action === 'cancel' ? open.action : 'update',
+    /**
+     * Режим правки из вопроса — §7.4 (задача 3.82).
+     *
+     * Голосовой ответ и нажатие кнопки обязаны вести себя одинаково:
+     * §7.3 требует этого прямо. Без режима оба применялись заменой, и
+     * подробность из вопроса про дополнение выбрасывалась.
+     */
+    ...(open.mode === 'append' ? { mode: 'append' as const } : {}),
     changes: open.changes as ResolverAnswer['changes'],
     spoken: open.segment,
     timeZone: params.timeZone,

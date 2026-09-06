@@ -10,6 +10,7 @@ import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
+import { registerProjectHandlers } from './bot/handlers/project.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
@@ -383,6 +384,9 @@ async function main(): Promise<void> {
   registerUndoHandlers(bot, { db, logger, topics: topicGateway });
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
+  // §21 п.6: закрыть шаг проекта. До задачи 3.82 это было нельзя ничем,
+  // и «Сделано» в ответе о проекте оставалось пустым навсегда.
+  registerProjectHandlers(bot, db, logger);
   registerReturningHandlers(bot, db, logger);
   registerQuestionHandlers(bot, {
     db,

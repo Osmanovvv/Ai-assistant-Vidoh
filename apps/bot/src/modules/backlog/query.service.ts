@@ -4,6 +4,7 @@ import type { Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { findSimilarItems } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
+import type { SpendGuard } from '../metering/spend-guard.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import { effectiveEnergy, selectForToday } from '../output/filter.js';
@@ -31,6 +32,14 @@ export interface QueryDeps {
   readonly embedder?: EmbeddingProvider | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Страж расхода (задача 3.82).
+   *
+   * Вопрос по бэклогу считает вектор — это платный вызов. Без стража он
+   * шёл мимо потолка: тот останавливал модель, а векторы продолжали
+   * тратиться до самого отказа провайдера.
+   */
+  readonly spendGuard?: SpendGuard | undefined;
 }
 
 export interface QueryParams {
@@ -201,6 +210,7 @@ export async function answerBacklogQuery(
         provider: deps.embedder,
         ...(deps.logger === undefined ? {} : { logger: deps.logger }),
         ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+        ...(deps.spendGuard === undefined ? {} : { spendGuard: deps.spendGuard }),
       },
       {
         text: params.text,

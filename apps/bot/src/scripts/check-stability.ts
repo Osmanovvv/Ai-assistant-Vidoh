@@ -1,3 +1,7 @@
+import { closeDb, getDb } from '../infra/db.js';
+import { createLogger } from '../infra/logger.js';
+import { meterCall } from '../modules/metering/ai-calls.repo.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
@@ -93,7 +97,33 @@ const TOPICS = [
 ];
 
 const env = modelEnvSchema.parse(process.env);
+
+/** Обвязке нужен журнал; сам скрипт говорит с человеком печатью. */
+const stabilityLogger = createLogger({ level: 'warn' });
+
+/**
+ * Учёт и потолок расхода (задача 3.82).
+ *
+ * **Самый дорогой из инструментов подбора.** По умолчанию девять вызовов
+ * полной модели — около 45 ₽, треть дневного плана, — а в шапке прямо
+ * предложено крутить `RUNS`: десять прогонов это уже почти весь план. И
+ * ни рубля из этого не попадало ни в учёт, ни в отчёт по базам, ни под
+ * потолок: цена печаталась в терминал и жила до закрытия окна.
+ */
+const db = getDb();
+const guard = createRunGuard({ db, env, logger: stabilityLogger, startedAt: new Date() });
+const refusedByCeiling = await guard.checkBefore();
+
+if (refusedByCeiling !== undefined) {
+  process.stderr.write(`Замер не начат: ${refusedByCeiling}${String.fromCharCode(10)}`);
+  await closeDb();
+  process.exit(3);
+}
+
 const provider = createLlmProvider(env, { light: false });
+/** Версия промпта для учёта: имя файла, как при заливке. */
+const promptVersion = basename(promptPath, '.md');
+
 const prompt = (await readFile(promptPath, 'utf8')).trim();
 
 function inputAt(when: Date): string {
@@ -118,15 +148,28 @@ let spentMicros = 0;
 let currency: Cost['currency'] | undefined;
 
 async function once(when: Date, temperature: number): Promise<Answer | undefined> {
-  const completion = await withRetry(
-    () =>
-      provider.complete({
-        prompt,
-        input: inputAt(when),
-        jsonSchema: toJsonSchema(classifierSchema),
-        temperature,
-      }),
-    { attempts: 3 },
+  const completion = await meterCall(
+    db,
+    { stage: 'classifier', model: provider.name, promptVersion },
+    async () => {
+      const result = await withRetry(
+        () =>
+          provider.complete({
+            prompt,
+            input: inputAt(when),
+            jsonSchema: toJsonSchema(classifierSchema),
+            temperature,
+          }),
+        { attempts: 3 },
+      );
+
+      return {
+        value: result,
+        usage: { tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+        ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
+      };
+    },
+    { guard: guard.spendGuard },
   );
 
   const cost = callCost(provider.name, {
@@ -237,3 +280,8 @@ for (const line of summary) process.stdout.write(`  ${line}\n`);
 
 const total = currency === undefined ? null : { micros: spentMicros, currency };
 process.stdout.write(`\nПотрачено: ${formatCost(total)}\n`);
+
+process.stdout.write(
+  String.fromCharCode(10) + (await guard.costReport()) + String.fromCharCode(10),
+);
+await closeDb();

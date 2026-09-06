@@ -113,6 +113,9 @@ async function vectorOf(
         provider: deps.embedder,
         ...(deps.logger === undefined ? {} : { logger: deps.logger }),
         ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+        // Страж расхода: вектор правки — платный вызов, и потолок
+        // обязан его останавливать так же, как вызов модели (3.82).
+        ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
       },
       {
         text: params.text,
@@ -236,6 +239,15 @@ export async function resolvePatchSegment(
       segment: params.text,
       action: decision.action,
       changes: resolved.changes ?? EMPTY_CHANGES,
+      /**
+       * Режим правки едет с вопросом (задача 3.82).
+       *
+       * Без него ответ на вопрос про **дополнение** применялся как
+       * замена: подробность выбрасывалась, менять оказывалось нечего, а
+       * человек получал «Добавила к прошлой». Различие §7.4 резолвер
+       * возвращает — терять его между вопросом и ответом нельзя.
+       */
+      ...(resolved.mode === undefined ? {} : { mode: resolved.mode }),
       now,
     });
 

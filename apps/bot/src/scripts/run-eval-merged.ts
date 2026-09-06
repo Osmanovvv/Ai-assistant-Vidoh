@@ -1,3 +1,5 @@
+import { closeDb, getDb } from '../infra/db.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -59,8 +61,34 @@ const previous = await lastRegularRun(join(directory, 'runs'));
 
 logger.info({ случаев: cases.length, промпт: VERSION }, 'Объединённый прогон');
 
+/**
+ * Потолок расхода и учёт (задача 3.82).
+ *
+ * Прогон целого набора по полной модели стоит десятки рублей и делается
+ * подряд помногу раз — это подбор промпта. До этой правки ни один из
+ * этих рублей не попадал никуда: ни в учёт, ни в отчёт по базам, ни под
+ * потолок. Ровно из таких вызовов и собралось расхождение отчёта со
+ * счётом, стоившее гранта 05.09.2026.
+ */
+const db = getDb();
+const guard = createRunGuard({ db, env, logger, startedAt: new Date() });
+const refused = await guard.checkBefore();
+
+if (refused !== undefined) {
+  process.stderr.write(`Прогон не начат: ${refused}${String.fromCharCode(10)}`);
+  await closeDb();
+  process.exit(3);
+}
+
 const outcomes = await runMergedDataset(
-  { provider: createLlmProvider(env), prompt: await readFile(PROMPT, 'utf8'), logger },
+  {
+    provider: createLlmProvider(env),
+    prompt: await readFile(PROMPT, 'utf8'),
+    logger,
+    db,
+    spendGuard: guard.spendGuard,
+    promptVersion: VERSION,
+  },
   cases,
   VERSION,
 );
@@ -116,3 +144,8 @@ process.stdout.write(
 );
 
 process.exit(verdict.passed ? 0 : 1);
+
+process.stdout.write(
+  String.fromCharCode(10) + (await guard.costReport()) + String.fromCharCode(10),
+);
+await closeDb();

@@ -147,7 +147,33 @@ export async function countAttempt(db: Executor, id: string): Promise<number> {
   return row?.attempts ?? 0;
 }
 
-export async function markSkipped(db: Executor, id: string, reason: string): Promise<void> {
+/**
+ * Почему напоминание не отправлено — закрытым списком (задача 3.82).
+ *
+ * **Легенда в схеме расходилась с кодом.** Комментарий у колонки обещал
+ * 'quiet' и 'rare', а код писал 'blocked' и 'failed'; константа
+ * `QUIET_SKIP_REASON = 'quiet'` не звалась ниоткуда — тихие часы
+ * отсеиваются ещё при планировании, и напоминание в них не создаётся
+ * вовсе. Тот, кто пришёл бы разбирать пропуски по документации, искал
+ * бы значения, которых в базе нет, и не нашёл бы тех, что есть.
+ *
+ * Список здесь, а не в комментарии: комментарий разошёлся молча, а
+ * литерал мимо списка теперь не проходит проверку типов.
+ */
+export const SKIP_REASONS = [
+  /** Записи больше нет или она закрыта. */
+  'gone',
+  /** Человек выключил напоминания. */
+  'off',
+  /** Человек заблокировал бота. */
+  'blocked',
+  /** Отправка сорвалась и попытки кончились. */
+  'failed',
+] as const;
+
+export type SkipReason = (typeof SKIP_REASONS)[number];
+
+export async function markSkipped(db: Executor, id: string, reason: SkipReason): Promise<void> {
   await db.update(reminders).set({ skippedReason: reason }).where(eq(reminders.id, id));
 }
 

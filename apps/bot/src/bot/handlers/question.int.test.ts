@@ -140,6 +140,47 @@ function tomorrowInMoscow(): string {
   return parts;
 }
 
+/**
+ * Прошедшая пятница в поясе Москвы, строкой `ГГГГ-ММ-ДД`.
+ *
+ * **Ровно тот случай, ради которого писан пересчёт 3.65.** Человек
+ * говорит «перенеси на пятницу», а модель отдаёт **ближайшую названную
+ * пятницу от своего представления о сегодня** — и она регулярно
+ * оказывается в прошлом. Прошлые сроки проверка §2.7 отбрасывает: без
+ * пересчёта правка молча не применяется.
+ */
+function pastFridayInMoscow(): string {
+  const now = new Date();
+  const back = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  // Отходим назад до ближайшей пятницы, но не меньше суток от сегодня.
+  while (back.getUTCDay() !== 5) back.setUTCDate(back.getUTCDate() - 1);
+
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(back);
+}
+
+/** Ближайшая пятница впереди, в поясе Москвы, строкой `ГГГГ-ММ-ДД`. */
+function nextFridayInMoscow(): string {
+  const at = new Date();
+
+  // Строго вперёд: «в пятницу», сказанное в пятницу, значит следующую.
+  do {
+    at.setUTCDate(at.getUTCDate() + 1);
+  } while (at.getUTCDay() !== 5);
+
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(at);
+}
+
 async function ask(): Promise<string> {
   const question = await askQuestion(testDb(), {
     userId,
@@ -224,6 +265,18 @@ describe('текст вопроса', () => {
 
 describe('«Добавить к прошлой»', () => {
   it('правит найденную запись и даёт кнопку отмены', async () => {
+    /**
+     * **Ожидание переписано по смыслу 06.09.2026 (задача 3.82).**
+     *
+     * Здесь ждали завтрашнюю дату — ту, что вернула модель. Но человек
+     * сказал «нет, **в пятницу**», а названный день недели правило 3.39
+     * считает главнее даты модели: она видит своё «сегодня» и ошибается
+     * в дне регулярно.
+     *
+     * Прежнее ожидание держалось на дефекте: кнопка не передавала слов
+     * человека, пересчёт не работал, и дата модели проходила как есть.
+     * Теперь правило действует, и ждать надо пятницу.
+     */
     const questionId = await ask();
 
     const { bot, calls } = createTestBot(classifierSaying('неважно'));
@@ -232,8 +285,8 @@ describe('«Добавить к прошлой»', () => {
 
     const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
 
-    // Срок сверяется с той же посчитанной датой, а не с числом в коде.
-    const expected = tomorrowInMoscow();
+    // Срок сверяется с посчитанной датой, а не с числом в коде.
+    const expected = nextFridayInMoscow();
     const actual = after?.deadlineAt;
     expect(actual).toBeDefined();
     expect(
@@ -247,6 +300,116 @@ describe('«Добавить к прошлой»', () => {
     const edit = calls.find((call) => call.method === 'editMessageText');
     expect(String(edit?.payload['text'])).toContain(`${day ?? ''}.${month ?? ''}`);
     expect(edit?.payload['reply_markup']).toBeDefined();
+  });
+
+  it('прошедшая пятница пересчитывается: это и была красная проверка сквозного', async () => {
+    /**
+     * **Задача 3.82.** Кнопка звала применение БЕЗ слов человека — и
+     * пересчёт дня недели (3.65) на этом пути не работал вовсе. Человек
+     * сказал «перенеси на пятницу», модель вернула прошедшую пятницу,
+     * проверка §2.7 её отбросила, и правка не применилась ни к одной
+     * записи. Бот при этом отвечал «Добавила к прошлой».
+     *
+     * Голосом тот же ответ работал — `pending.ts` слова передаёт. Два
+     * пути разошлись молча, и нашлось это только на живом сквозном:
+     * сценарий 2 давал 35 из 36.
+     *
+     * **Тест сюда просился ещё вчера, и я его ослабил.** 05.09 здесь
+     * стояла дата, ставшая прошлой; вместо разбора причины я сдвинул её
+     * в будущее — и случай, ради которого пересчёт написан, перестал
+     * проверяться. Красным он был по делу.
+     */
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'перенеси на пятницу',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        // Прошедшая пятница — то, что модель отдаёт на самом деле.
+        deadline: pastFridayInMoscow(),
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const { bot } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+
+    // Срок применён — и это ближайшая пятница ВПЕРЕДИ, а не позади.
+    expect(after?.deadlineAt).not.toBeNull();
+
+    const applied = after?.deadlineAt;
+    expect(applied === null || applied === undefined ? 0 : applied.getTime()).toBeGreaterThan(
+      Date.now() - 24 * 60 * 60 * 1000,
+    );
+    expect(applied?.getUTCDay() === 5 || applied?.getUTCDay() === 4).toBe(true);
+  });
+
+  it('вопрос про дополнение применяется дополнением, а не заменой', async () => {
+    /**
+     * **Задача 3.82, вторая половина.** Режима правки в таблице вопроса
+     * не было вовсе, и оба ответа — кнопкой и голосом — применялись как
+     * **замена**. Значит подробность из вопроса выбрасывалась: менять
+     * оказывалось нечего, человек получал «Добавила к прошлой», а в
+     * записи не появлялось ничего.
+     *
+     * §9.1 и §7.4 нарушались разом: слова пропадали, и реплика врала.
+     * Случай не редкий — вопрос задаётся именно при двух похожих
+     * записях, то есть в обстановке §21 п.5.
+     */
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'а ещё туда надо взять карту прививок',
+      action: 'update',
+      mode: 'append',
+      changes: {
+        note: 'взять карту прививок',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const { bot } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+
+    // Подробность на месте, а заголовок не тронут — это и есть §7.4.
+    expect(after?.body).toBe('взять карту прививок');
+    expect(after?.text).toBe(item.text);
+  });
+
+  it('вопрос без режима применяется заменой — как было до правки', async () => {
+    /**
+     * Пусто означает «замена»: так вело себя применение раньше, и
+     * вопросы, заданные до этой правки, обязаны дожить как жили.
+     */
+    const questionId = await ask();
+
+    const { bot } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(questionId)}`));
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+
+    // Срок применён заменой, подробности не появилось.
+    expect(after?.deadlineAt).not.toBeNull();
+    expect(after?.body).toBeNull();
   });
 
   it('второе нажатие отвечает «неактуально»', async () => {

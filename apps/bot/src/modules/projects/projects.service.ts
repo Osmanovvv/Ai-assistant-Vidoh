@@ -113,8 +113,14 @@ export type StepOutcome =
   | { readonly kind: 'done'; readonly next: ProjectStep | undefined }
   /** Шага нет или он чужой. */
   | { readonly kind: 'gone' }
-  /** Шаг уже был закрыт: повторное нажатие ничего не меняет. */
-  | { readonly kind: 'already' };
+  /**
+   * Шаг уже был закрыт: повторное нажатие ничего не меняет.
+   *
+   * Ближайший отдаётся и здесь (задача 3.82): повторное нажатие по
+   * кнопке, оставшейся в переписке, обязано ответить то же, что первое,
+   * а не промолчать. Иначе человек решает, что кнопка сломалась.
+   */
+  | { readonly kind: 'already'; readonly next: ProjectStep | undefined };
 
 /**
  * Закрывает шаг.
@@ -133,7 +139,7 @@ export async function completeStep(
     .limit(1);
 
   if (!step) return { kind: 'gone' };
-  if (step.doneAt !== null) return { kind: 'already' };
+  if (step.doneAt !== null) return { kind: 'already', next: await nextStepOf(db, step.itemId) };
 
   await db
     .update(projectSteps)

@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 
 import type { ModelEnv } from '../../../config/env.js';
-import { CassettePlayer, CassetteRecorder, saveCassette, type CassetteFile } from './store.js';
+import {
+  CassettePlayer,
+  CassetteRecorder,
+  parseCassette,
+  saveCassette,
+  type CassetteFile,
+} from './store.js';
 
 /**
  * Сеанс записи — один на процесс (задача 3.80).
@@ -57,18 +63,15 @@ export function cassetteSession(env: ModelEnv): Session {
   let file: CassetteFile;
 
   try {
-    const raw = readFileSync(path, 'utf8');
-    file = JSON.parse(raw) as CassetteFile;
+    // Разбор общий с `loadCassette` (задача 3.82): своя копия здесь
+    // роняла прогон на записи без поля `vectors`.
+    file = parseCassette(readFileSync(path, 'utf8'), path);
   } catch (error) {
     throw new Error(
       `не удалось прочитать запись ответов модели ${path}. ` +
         'Запишите её живым прогоном: CASSETTE_MODE=record',
       { cause: error },
     );
-  }
-
-  if (!Array.isArray(file.entries) || typeof file.recordedAt !== 'string') {
-    throw new Error(`файл ${path} не похож на запись ответов модели`);
   }
 
   session = { path, mode: 'replay', player: new CassettePlayer(file) };
