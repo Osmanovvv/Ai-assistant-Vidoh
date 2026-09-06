@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @vydoh/bot",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tests/visual && tsc -p .",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tests/visual && tsc -p tests/admin && tsc -p .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -29,7 +29,8 @@
     "db:generate": "npm run db:generate --workspace @vydoh/bot",
     "db:migrate": "npm run db:migrate --workspace @vydoh/bot",
     "visual:login": "tsx tests/visual/save-session.ts",
-    "visual": "playwright test"
+    "visual": "playwright test",
+    "admin:e2e": "playwright test --project admin"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -89,6 +89,28 @@ export default tseslint.config(
   },
 
   {
+    /**
+     * Админ-панель — браузерное приложение (§15 ТЗ, задача 4.5).
+     *
+     * Ей нужны браузерные глобальные (`document`, `fetch`, `window`) и
+     * разбор JSX. Остальные правила остаются те же: панель показывает
+     * содержимое чужих выгрузок, и снисхождения к ней быть не должно.
+     *
+     * `globals.node` здесь тоже оставлен: `vite.config.ts` читает
+     * `process.env`, а он в этом же проекте.
+     */
+    files: ['apps/admin/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+        ecmaFeatures: { jsx: true },
+      },
+    },
+  },
+
+  {
     // Конфигурационные файлы на JavaScript вне типизированного проекта.
     files: ['**/*.js'],
     extends: [tseslint.configs.disableTypeChecked],
@@ -96,7 +118,7 @@ export default tseslint.config(
 
   {
     // В тестах допустимы конструкции, неуместные в рабочем коде.
-    files: ['**/*.test.ts'],
+    files: ['**/*.test.ts', '**/*.test.tsx'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

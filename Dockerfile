@@ -13,12 +13,22 @@ WORKDIR /app
 # установкой берётся из кэша, и пересборка занимает секунды.
 COPY package.json package-lock.json ./
 COPY apps/bot/package.json ./apps/bot/package.json
+COPY apps/admin/package.json ./apps/admin/package.json
 RUN npm ci
 
 COPY tsconfig.base.json ./
 COPY apps/bot ./apps/bot
+COPY apps/admin ./apps/admin
 
 RUN npm run build --workspace @vydoh/bot
+
+# Админ-панель собирается здесь же (§15 ТЗ, задача 4.5).
+#
+# Отдаёт её тот же бот: печенье пропуска помечено SameSite=Strict, и
+# панель с другого адреса потребовала бы ослабить эту защиту. Значит и
+# ехать ей одним образом с ботом — иначе выкладка станет двумя, а
+# рассинхрон панели с её API даст «панель не работает» без объяснений.
+RUN npm run build --workspace @vydoh/admin
 
 # ─── Ступень 2: зависимости для боя ───────────────────────────────────────────
 FROM node:24-alpine AS deps
@@ -46,6 +56,9 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/bot/node_modules ./apps/bot/node_modules
 COPY --from=build /app/apps/bot/dist ./apps/bot/dist
+# Собранная панель — только файлы, без исходников и без зависимостей
+# сборки: в бою она статика.
+COPY --from=build /app/apps/admin/dist ./apps/admin/dist
 # Миграции лежат рядом с кодом: контейнер должен уметь накатить схему сам,
 # без доступа к репозиторию.
 COPY --from=build /app/apps/bot/drizzle ./apps/bot/drizzle
