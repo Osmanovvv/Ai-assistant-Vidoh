@@ -104,6 +104,9 @@ export class YandexLlmProvider implements LlmProvider {
           'content-type': 'application/json',
         },
         body: JSON.stringify(body),
+        // Таймаут обязан отменять генерацию, а не только ожидание:
+        // иначе за брошенный запрос платят до конца (задача 3.81).
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
     } catch (error) {
       throw new TransientLlmError('не удалось достучаться до языковой модели', error);

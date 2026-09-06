@@ -141,3 +141,102 @@ describe('withTimeout', () => {
     );
   });
 });
+
+/**
+ * Отмена запроса по таймауту (задача 3.81).
+ *
+ * **Раньше здесь стояла одна гонка:** мы переставали ждать, а запрос к
+ * модели жил дальше — соединение открыто, генерация идёт, счётчик тикает.
+ * При трёх попытках повтора один вызов мог оплатиться трижды, а в учёт
+ * попадала одна строка: у сорвавшегося вызова расход пустой.
+ *
+ * После 05.09.2026, когда у облака кончились деньги, такие траты уже не
+ * «мелочь округления».
+ */
+describe('withTimeout отменяет брошенный запрос', () => {
+  it('по таймауту сигнал отменяется', async () => {
+    let seen: AbortSignal | undefined;
+
+    const hanging = (signal: AbortSignal): Promise<never> => {
+      seen = signal;
+      return new Promise<never>(() => {
+        // Никогда не отвечает: ровно то, ради чего таймаут и нужен.
+      });
+    };
+
+    await expect(withTimeout(hanging, 20, 'запрос к модели')).rejects.toThrow(/таймаут/u);
+
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('успевший ответ отменой не портится', async () => {
+    // Отмена после успеха безвредна, но проверить это надо: иначе
+    // «починка» лишила бы бота всех ответов разом.
+    let seen: AbortSignal | undefined;
+
+    const quick = (signal: AbortSignal): Promise<string> => {
+      seen = signal;
+      return Promise.resolve('ответ');
+    };
+
+    await expect(withTimeout(quick, 1_000)).resolves.toBe('ответ');
+    // Сигнал отменяется по выходу — но ответ уже получен и отдан.
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('отказ отменённого запроса не становится необработанным', async () => {
+    /**
+     * Проигравшая сторона гонки отклоняется **позже** победившей, и без
+     * своего обработчика её отказ становится необработанным. Такое уже
+     * роняло этот процесс однажды — на express пятой версии.
+     */
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const late = (signal: AbortSignal): Promise<never> =>
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            setTimeout(() => {
+              reject(new Error('запрос отменён'));
+            }, 5);
+          });
+        });
+
+      await expect(withTimeout(late, 20)).rejects.toThrow(/таймаут/u);
+
+      // Даём отменённому запросу время отклониться после гонки.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('каждая попытка повтора получает свой сигнал', async () => {
+    // Иначе вторая попытка стартовала бы с уже отменённым сигналом и
+    // падала бы сразу — то есть повторов не стало бы вовсе.
+    const signals: AbortSignal[] = [];
+    let attempt = 0;
+
+    await withRetry(
+      () =>
+        withTimeout((signal) => {
+          signals.push(signal);
+          attempt++;
+
+          return attempt === 1 ? Promise.reject(new Error('сеть')) : Promise.resolve('ответ');
+        }, 1_000),
+      { attempts: 2, sleep: () => Promise.resolve() },
+    );
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals[1]?.aborted).toBe(true);
+  });
+});

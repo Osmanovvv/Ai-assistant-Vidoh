@@ -96,6 +96,8 @@ export class YandexEmbeddingProvider implements EmbeddingProvider {
           modelUri: `emb://${this.options.folderId}/${model}/latest`,
           text: request.text,
         }),
+        // Таймаут отменяет запрос, а не только ожидание (задача 3.81).
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
     } catch (error) {
       throw new TransientEmbeddingError('не удалось достучаться до модели представлений', error);

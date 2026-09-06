@@ -271,3 +271,51 @@ describe('конструктор', () => {
     expect(() => new YandexLlmProvider({ apiKey: 'k', folderId: '  ' })).toThrow(/каталог/u);
   });
 });
+
+/**
+ * Отмена запроса по таймауту (задача 3.81).
+ *
+ * Проверка связки: мало отменить сигнал в `withTimeout` — он должен
+ * дойти до самого `fetch`, иначе генерация продолжается и платится до
+ * конца. Ровно этого доведения и не было.
+ */
+describe('отмена запроса', () => {
+  it('сигнал доходит до fetch', async () => {
+    let seen: AbortSignal | undefined;
+
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: ((_url: string, init: RequestInit) => {
+        seen = init.signal ?? undefined;
+        return Promise.resolve(
+          new Response(JSON.stringify(answering('{"units":[]}')), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    const controller = new AbortController();
+    await provider.complete({ ...request(), signal: controller.signal });
+
+    expect(seen).toBe(controller.signal);
+  });
+
+  it('без сигнала запрос уходит как раньше', async () => {
+    // Обратная сторона: провайдеры-заглушки и прямые вызовы сигнала не
+    // дают, и поведение для них меняться не должно.
+    let had = true;
+
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: ((_url: string, init: RequestInit) => {
+        had = init.signal !== undefined && init.signal !== null;
+        return Promise.resolve(
+          new Response(JSON.stringify(answering('{"units":[]}')), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    await provider.complete(request());
+
+    expect(had).toBe(false);
+  });
+});
