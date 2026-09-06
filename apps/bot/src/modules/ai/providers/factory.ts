@@ -1,4 +1,6 @@
 import type { ModelEnv } from '../../../config/env.js';
+import { RecordingLlmProvider, ReplayLlmProvider } from '../cassette/provider.js';
+import { cassetteSession } from '../cassette/session.js';
 import { MockLlmProvider } from './mock.js';
 import type { LlmProvider } from './types.js';
 import { YandexLlmProvider } from './yandex.js';
@@ -48,5 +50,47 @@ export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): L
 
     case 'mock':
       return new MockLlmProvider();
+
+    /**
+     * Запись ответов (задача 3.80): либо спрашиваем живую модель и
+     * складываем, либо отвечаем из файла и в сеть не ходим.
+     *
+     * В бою запрещено схемой окружения: запись отвечает правдоподобно —
+     * ответы настоящие, просто чужие и вчерашние, — и человек не
+     * заподозрил бы подмены.
+     */
+    case 'cassette': {
+      const session = cassetteSession(env);
+
+      if (session.mode === 'replay') {
+        if (session.player === undefined) throw new Error('запись открыта без читалки');
+        return new ReplayLlmProvider(session.player);
+      }
+
+      if (session.recorder === undefined) throw new Error('запись открыта без копилки');
+
+      return new RecordingLlmProvider({
+        live: liveYandex(env, choice),
+        recorder: session.recorder,
+        recordedAt: new Date(),
+      });
+    }
   }
+}
+
+/**
+ * Живой Yandex — отдельной функцией, чтобы запись спрашивала ровно того
+ * же провайдера, что и бой. Иначе записанное однажды разошлось бы с тем,
+ * что бот получает на самом деле.
+ */
+function liveYandex(env: ModelEnv, choice: ProviderChoice): LlmProvider {
+  if (env.YANDEX_API_KEY === undefined || env.YANDEX_FOLDER_ID === undefined) {
+    throw new Error('для записи нужны YANDEX_API_KEY и YANDEX_FOLDER_ID');
+  }
+
+  return new YandexLlmProvider({
+    apiKey: env.YANDEX_API_KEY,
+    folderId: env.YANDEX_FOLDER_ID,
+    model: choice.light === true ? env.YANDEX_LLM_MODEL_LIGHT : env.YANDEX_LLM_MODEL,
+  });
 }

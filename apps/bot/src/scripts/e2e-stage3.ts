@@ -86,6 +86,34 @@ function runs(scenario: string): boolean {
   return ONLY.size === 0 || ONLY.has(scenario);
 }
 
+/**
+ * Запись ответов модели: `E2E_CASSETTE=record` или `replay` (задача 3.80).
+ *
+ * **Зачем.** Прогон стоит около 200 ₽ и делается по многу раз в день —
+ * именно он и сжёг бо́льшую часть гранта 05.09.2026. При этом его дело —
+ * проверять **обвязку**: свой процесс бота, вебхук, очередь, воркер,
+ * кнопки, конвейер. Качество модели мерит контрольный набор.
+ *
+ * Значит ответы достаточно записать один раз:
+ *
+ *   E2E_CASSETTE=record npx tsx src/scripts/e2e-stage3.ts   — платно, один раз
+ *   E2E_CASSETTE=replay npx tsx src/scripts/e2e-stage3.ts   — бесплатно, сколько угодно
+ *
+ * Без переменной всё как раньше: живая модель, живые деньги.
+ *
+ * **Промах записи роняет прогон, и это правильно.** Ответ не на тот
+ * запрос сделал бы прогон зелёным по неверной причине. Поправили промпт
+ * или сценарий — перезапишите: сообщение об этом придёт дословно.
+ */
+const CASSETTE_MODE = process.env['E2E_CASSETTE'];
+const CASSETTE_PATH = process.env['E2E_CASSETTE_PATH'] ?? 'src/e2e/cassettes/stage3.json';
+
+if (CASSETTE_MODE !== undefined && CASSETTE_MODE !== 'record' && CASSETTE_MODE !== 'replay') {
+  process.stderr.write(`E2E_CASSETTE может быть record или replay, а не «${CASSETTE_MODE}»
+`);
+  process.exit(2);
+}
+
 let passed = 0;
 let failed = 0;
 
@@ -234,7 +262,13 @@ function startBot(stub: TelegramStub, extra: Record<string, string> = {}): Child
       PRIVACY_POLICY_URL: 'https://e2e.invalid/privacy',
       TELEGRAM_API_ROOT: stub.url,
       SPEECH_PROVIDER: 'mock',
-      AI_PROVIDER: 'yandex',
+      ...(CASSETTE_MODE === undefined
+        ? { AI_PROVIDER: 'yandex' }
+        : {
+            AI_PROVIDER: 'cassette',
+            CASSETTE_MODE,
+            CASSETTE_PATH,
+          }),
       // Напоминания и обход истории проверяются сценариями 5 и 7.
       REMINDERS: 'on',
       RECURRENCE_SUGGESTIONS: 'on',
@@ -947,7 +981,22 @@ try {
    */
   try {
     const cost = await runCost(db, { startedAt, now: new Date() });
-    process.stdout.write(['', costLine(cost, ceilings), ''].join('\n'));
+
+    /**
+     * Режим называется рядом с ценой (задача 3.80).
+     *
+     * Иначе бесплатный прогон не отличить от платного, а «этот прогон
+     * 0.00 ₽» читалось бы как поломка учёта. Строка работает и обратно:
+     * она не даст принять воспроизведение за проверку живой модели.
+     */
+    const mode =
+      CASSETTE_MODE === undefined
+        ? 'Живая модель.'
+        : CASSETTE_MODE === 'record'
+          ? `Живая модель, ответы записаны в ${CASSETTE_PATH}.`
+          : `Ответы воспроизведены из ${CASSETTE_PATH} — модель не спрашивалась.`;
+
+    process.stdout.write(['', mode, costLine(cost, ceilings), ''].join('\n'));
   } catch {
     // Цена — не итог прогона: её потеря не должна менять код выхода.
   }

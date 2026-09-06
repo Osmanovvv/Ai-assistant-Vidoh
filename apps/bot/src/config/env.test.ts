@@ -276,3 +276,56 @@ describe('провайдер расшифровки', () => {
     }
   });
 });
+
+/**
+ * Запись ответов модели (задача 3.80).
+ *
+ * Половина проверок — про запрет: запись в бою коварнее заглушки. Она
+ * отвечает **правдоподобно** — ответы настоящие, просто чужие и
+ * вчерашние, — и человек получил бы разбор чужой выгрузки, ничего не
+ * заподозрив.
+ */
+describe('запись ответов модели', () => {
+  it('без файла записи не настраивается', () => {
+    // Воспроизводить нечего, а тихо работать в этом состоянии нельзя.
+    expect(() => parseWith({ AI_PROVIDER: 'cassette' })).toThrow(/CASSETTE_PATH/u);
+  });
+
+  it('воспроизведение живого ключа не требует', () => {
+    // Весь смысл: прогон без сети и без чужого счёта.
+    const env = parseWith({
+      AI_PROVIDER: 'cassette',
+      CASSETTE_PATH: 'src/e2e/cassettes/stage3.json',
+    });
+
+    expect(env.AI_PROVIDER).toBe('cassette');
+    expect(env.CASSETTE_MODE).toBe('replay');
+  });
+
+  it('для записи ключ обязателен: она спрашивает живую модель', () => {
+    expect(() =>
+      parseWith({
+        AI_PROVIDER: 'cassette',
+        CASSETTE_PATH: 'src/e2e/cassettes/stage3.json',
+        CASSETTE_MODE: 'record',
+      }),
+    ).toThrow(/YANDEX_API_KEY/u);
+  });
+
+  it('в боевом окружении запрещена', () => {
+    /**
+     * Ровно та же защита, что у заглушки модели, и по той же причине:
+     * бот отвечал бы на выдуманный — точнее, на чужой — разбор.
+     */
+    expect(() =>
+      parseWith({
+        NODE_ENV: 'production',
+        AI_PROVIDER: 'cassette',
+        CASSETTE_PATH: 'src/e2e/cassettes/stage3.json',
+        SPEECH_PROVIDER: 'yandex',
+        YANDEX_API_KEY: 'ключ',
+        YANDEX_FOLDER_ID: 'каталог',
+      }),
+    ).toThrow(/запись ответов модели недопустима в боевом окружении/u);
+  });
+});

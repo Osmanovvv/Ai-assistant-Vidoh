@@ -4,6 +4,7 @@ import type { Worker } from 'bullmq';
 import type { Api } from 'grammy';
 
 import { createBot } from './bot/bot.js';
+import { flushCassette } from './modules/ai/cassette/session.js';
 import { publishCommands } from './bot/commands.js';
 import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
@@ -476,6 +477,25 @@ function installShutdownHandlers(
         // Воркер закрывается первым и дорабатывает текущее задание:
         // выгрузка не должна остаться в статусе processing.
         await worker.close().catch(() => undefined);
+
+        /**
+         * Запись ответов модели сохраняется на выходе (задача 3.80).
+         *
+         * В конце, а не на каждый ответ: иначе двести записей файла за
+         * прогон. Сохранять после закрытия воркера — чтобы в запись
+         * попали и ответы последней выгрузки.
+         *
+         * В бою этой ветки нет: запись запрещена схемой окружения.
+         */
+        if (env.AI_PROVIDER === 'cassette') {
+          const summary = await flushCassette().catch((error: unknown) => {
+            logger.error({ err: error }, 'Запись ответов модели не сохранилась');
+            return undefined;
+          });
+
+          if (summary !== undefined) logger.info({ ...summary }, 'Запись ответов модели');
+        }
+
         await Promise.allSettled([closeDb(), closeRedis()]);
         clearTimeout(forceExit);
         process.exit(0);

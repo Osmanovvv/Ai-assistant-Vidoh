@@ -243,7 +243,18 @@ const modelFields = z.object({
    * разработку и тесты нельзя ставить в зависимость от чужого счёта.
    * В бою заглушка запрещена: бот отвечал бы на выдуманный разбор.
    */
-  AI_PROVIDER: z.enum(['yandex', 'mock']).default('mock'),
+  AI_PROVIDER: z.enum(['yandex', 'mock', 'cassette']).default('mock'),
+
+  /**
+   * Запись ответов модели: путь к файлу (задача 3.80).
+   *
+   * `AI_PROVIDER=cassette` без этого пути бессмысленен, поэтому проверка
+   * ниже требует его прямо. Режим задаётся отдельно: `record` спрашивает
+   * живую модель и складывает ответы, `replay` отвечает из файла и в
+   * сеть не ходит вовсе.
+   */
+  CASSETTE_PATH: z.string().min(1).optional(),
+  CASSETTE_MODE: z.enum(['record', 'replay']).default('replay'),
   YANDEX_LLM_MODEL: z.string().min(1).default('yandexgpt/latest'),
 
   /**
@@ -277,6 +288,28 @@ function checkModelKeys(env: ModelEnv, ctx: z.RefinementCtx): void {
         code: 'custom',
         path: [required],
         message: `обязателен при SPEECH_PROVIDER=${env.SPEECH_PROVIDER}`,
+      });
+    }
+  }
+
+  /**
+   * У записи свои требования: путь обязателен, а для записи живого —
+   * ещё и ключи Yandex (спрашивать-то будем настоящую модель).
+   */
+  if (env.AI_PROVIDER === 'cassette') {
+    if (env.CASSETTE_PATH === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CASSETTE_PATH'],
+        message: 'обязателен при AI_PROVIDER=cassette: без файла записи воспроизводить нечего',
+      });
+    }
+
+    if (env.CASSETTE_MODE === 'record' && env.YANDEX_API_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['YANDEX_API_KEY'],
+        message: 'обязателен при CASSETTE_MODE=record: запись спрашивает живую модель',
       });
     }
   }
@@ -325,6 +358,21 @@ const envWithChecks = envSchemaWithModels.superRefine((env, ctx) => {
       code: 'custom',
       path: ['AI_PROVIDER'],
       message: 'заглушка языковой модели недопустима в боевом окружении',
+    });
+  }
+
+  /**
+   * Запись в бою — то же, что заглушка, только коварнее (задача 3.80).
+   *
+   * Она отвечает **правдоподобно**: ответы-то настоящие, просто чужие и
+   * вчерашние. Человек получил бы разбор чужой выгрузки и ничего бы не
+   * заподозрил, а на промахе — «что-то пошло не так» без объяснения.
+   */
+  if (env.AI_PROVIDER === 'cassette') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['AI_PROVIDER'],
+      message: 'запись ответов модели недопустима в боевом окружении',
     });
   }
 
