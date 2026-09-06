@@ -1099,6 +1099,82 @@ describe('дополнение против замены сквозь конве
     expect(saved.filter((one) => !one.isDraft)).toHaveLength(1);
   });
 
+  it('замена, понятая дополнением: реплика не врёт и даёт поправить заголовок', async () => {
+    /**
+     * **Вторая половина задачи 3.28.** Человек сказал «нет, няня пусть
+     * приходит в 9 30». Модель разобрала это дополнением и нового
+     * заголовка не дала — заменять нечем, правка остаётся дополнением, и
+     * это не беда: слова человека сохранены.
+     *
+     * Беда была в реплике. «Добавила подробность» молчала о том, что в
+     * заголовке осталось прежнее время, и человек уходил с ощущением,
+     * что его поняли, — при том что запись противоречит сказанному.
+     *
+     * Здесь проверяется путь целиком: от слов человека до реплики и
+     * кнопок под ней. Тот самый разрыв «служба работает, а в боте не
+     * вызывается» этот проект ловил трижды.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all, buttons } = recordingSender();
+
+    await testDb().insert(items).values({
+      userId,
+      text: 'Договориться с няней, чтобы приходила не в 11, а в 9',
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'семья',
+    });
+
+    await queuedBatchOf([{ kind: 'text', text: 'нет, няня пусть приходит в 9 30', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'нет, няня пусть приходит в 9 30' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'append',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: 'приходит в 9 30',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'уточнение времени',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const nanny = saved.find((one) => one.text.includes('няней'));
+
+    // Слова человека сохранены — это и раньше работало.
+    expect(nanny?.body).toBe('приходит в 9 30');
+
+    // А теперь реплика не молчит о том, что заголовок остался прежним.
+    const told = all.join(' | ');
+    expect(told).toContain('Сам заголовок не меняла');
+    expect(told).toContain('а в 9');
+
+    // И рядом кнопка, которой это поправить одним нажатием.
+    expect(buttons).toContain(defaultTexts.resolver.buttonEditTitle);
+    expect(buttons).toContain(defaultTexts.resolver.buttonUndo);
+  });
+
   it('«а ещё» без отсылки назад остаётся новой мыслью', async () => {
     // Перечисление — самый частый случай этой связки, и ломать его нельзя.
     const prompts = await seedPrompts();

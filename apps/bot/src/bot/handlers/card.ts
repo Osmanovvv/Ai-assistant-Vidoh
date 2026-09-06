@@ -1,3 +1,4 @@
+import { CARD_ACTION } from '../../modules/items/card-actions.js';
 import { and, eq } from 'drizzle-orm';
 import type { InlineKeyboard, Bot } from 'grammy';
 import type { Logger } from 'pino';
@@ -37,13 +38,6 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
  */
 
 export const CARD_PREFIX = 'i:';
-
-const CARD_ACTION = {
-  done: 'i:done:',
-  snooze: 'i:snz:',
-  edit: 'i:edt:',
-  remove: 'i:rm:',
-} as const;
 
 /** Сколько ждать отложенное дело. §11 подробностей не задаёт. */
 const SNOOZE_DAYS = 3;

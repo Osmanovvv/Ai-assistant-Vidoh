@@ -16,7 +16,12 @@ import { describeProject } from '../projects/project-text.js';
 import { contextOf, nextStepOf } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
-import { describeChange, questionButtons, undoButtons } from '../resolver/change-text.js';
+import {
+  changeButtons,
+  describeChange,
+  questionButtons,
+  undoButtons,
+} from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
@@ -735,9 +740,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         rememberTopics(touchedTopics, outcome.applied);
         mentioned.add(outcome.applied.after.id);
         if (outcome.applied.action === 'complete') happened.closed = true;
+        /**
+         * Сказанное человеком идёт в реплику (задача 3.28).
+         *
+         * По нему видно, говорил ли он о **замене**. Если говорил, а
+         * модель разобрала дополнением и нового заголовка не дала, —
+         * реплика скажет, что заголовок остался прежним, и даст кнопку
+         * его поправить. Молчать об этом значило бы отпустить человека
+         * с ощущением, что его поняли, при том что запись противоречит
+         * сказанному.
+         */
         await tell(
-          describeChange(outcome.applied, texts, context.timeZone),
-          undoButtons(outcome.applied.revisionId, texts),
+          describeChange(outcome.applied, texts, context.timeZone, segment.text),
+          changeButtons(outcome.applied, texts, segment.text),
         );
         return;
       }
