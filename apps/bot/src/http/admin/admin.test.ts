@@ -6,6 +6,7 @@ import { join, sep } from 'node:path';
 import type { Express } from 'express';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import type { Executor } from '../../infra/db.js';
 import { createServer } from '../server.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
@@ -72,6 +73,20 @@ afterEach(async () => {
     ),
   );
 });
+
+/**
+ * База, к которой обращения не будет.
+ *
+ * Проверка стучится в закрытые пути **без пропуска**: страж отказывает
+ * до обработчика, и до базы дело не доходит ни разу. Настоящая база
+ * здесь означала бы, что проверка требует Postgres ради того, чего не
+ * происходит, — и переехала бы в интеграционные вместе с двадцатью
+ * проверками входа, которым база тоже ни к чему.
+ *
+ * Если однажды дело до неё дойдёт, обращение к этому объекту упадёт
+ * громко, а не тихо соврёт: у него просто нет ни одного метода.
+ */
+const NEVER_TOUCHED = {} as Executor;
 
 function configOf(overrides: Partial<AdminAuthConfig> = {}): AdminAuthConfig {
   return {
@@ -149,11 +164,24 @@ describe('без авторизации панель не отдаёт данн�
      * Список путей — от самой регистрации. Проверка «путей больше нуля»
      * обязательна: без неё пустой список сделал бы эту проверку вечно
      * зелёной и бессмысленной, а заметить это было бы неоткуда.
+     *
+     * **Роутер собирается со всеми необязательными зависимостями**, и
+     * это не перестраховка. Раздел расходов объявляется только при
+     * заданной базе; собранный без неё роутер этого пути не знает — и
+     * проверка молча его пропускала. Поймано на задаче 4.7, на своём же
+     * страже, через час после того, как он был написан.
      */
-    const { routes } = createAdminRouter({ config: configOf() });
+    const { routes } = createAdminRouter({
+      config: configOf(),
+      db: NEVER_TOUCHED,
+      staticDir: join(import.meta.dirname, '../../../../admin/dist'),
+    });
+
     expect(routes.length).toBeGreaterThan(0);
 
-    const base = await serve(configOf());
+    const base = await listen(
+      createServer({ healthChecks: [], admin: configOf(), adminDb: NEVER_TOUCHED }),
+    );
 
     for (const route of routes) {
       const response = await fetch(`${base}/admin${route.path}`, {

@@ -6,6 +6,8 @@ import express, {
   type Response,
 } from 'express';
 
+import type { Executor } from '../../infra/db.js';
+import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
 
 export {
@@ -64,6 +66,8 @@ export interface AdminMount {
 
 export interface AdminDeps {
   readonly config: AdminAuthConfig;
+  /** База: разделы панели читают из неё. Без неё есть только вход. */
+  readonly db?: Executor | undefined;
   /**
    * Откуда отдавать собранную панель. Без него отдаётся только API.
    *
@@ -78,6 +82,29 @@ export interface AdminDeps {
    * Необязателен: до сборки панели её просто нет, а API уже есть.
    */
   readonly staticDir?: string | undefined;
+  /** Куда сообщать о сбое внутри раздела. Без него отказ уйдёт в никуда. */
+  readonly onError?: ((error: unknown) => void) | undefined;
+}
+
+/**
+ * Число из строки запроса — с потолком и полом.
+ *
+ * Значения приходят снаружи: «за сколько дней» может оказаться словом,
+ * отрицательным числом или десятью тысячами. Ни одно из трёх не должно
+ * ни ронять панель, ни доходить до базы: запрос «за десять лет» на
+ * боевой базе — это не отчёт, а остановка бота.
+ */
+function boundedNumber(
+  raw: unknown,
+  bounds: { readonly fallback: number; readonly min: number; readonly max: number },
+): number {
+  if (typeof raw !== 'string') return bounds.fallback;
+
+  const digits = /^[0-9]+$/u;
+  const parsed = digits.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
+  if (!Number.isInteger(parsed)) return bounds.fallback;
+
+  return Math.min(bounds.max, Math.max(bounds.min, parsed));
 }
 
 /**
@@ -139,6 +166,38 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
   closed('get', '/api/me', (req: Request, res: Response) => {
     res.json({ login: req.admin?.login });
   });
+
+  /**
+   * Расходы (§15, §21 п.14; задача 4.7).
+   *
+   * Раздел появляется только при заданной базе. Условный путь — ровно
+   * тот случай, который однажды проскочил мимо проверки: она собирала
+   * роутер без базы и этого пути не видела. Теперь собирает со всеми
+   * зависимостями, и это записано в самой проверке.
+   */
+  if (deps.db !== undefined) {
+    const db = deps.db;
+
+    closed('get', '/api/costs', (req: Request, res: Response) => {
+      const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
+      const limit = boundedNumber(req.query['limit'], { fallback: 50, min: 1, max: 200 });
+      const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 100_000 });
+
+      const since = new Date(Date.now() - days * 24 * 3_600_000);
+
+      void costBreakdown(db, { since, userLimit: limit, userOffset: offset }).then(
+        (report) => {
+          res.json({ ...report, days });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          // Панель обязана сказать, что не смогла, а не показать нули:
+          // ноль расхода читается как «денег не тратили».
+          res.status(500).json({ error: 'не удалось посчитать расход' });
+        },
+      );
+    });
+  }
 
   /**
    * Сама панель — файлами, и **после** API.

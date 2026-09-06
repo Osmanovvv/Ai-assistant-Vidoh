@@ -66,6 +66,18 @@ export default defineConfig({
    */
   webServer: {
     command: 'npm run build --workspace @vydoh/admin && npm run admin:e2e --workspace @vydoh/bot',
+    /**
+     * Своя база для стенда, и только своя.
+     *
+     * Стенд чистит таблицу учёта перед посевом: адрес задаётся отдельной
+     * переменной нарочно, чтобы никакая общая настройка не привела его к
+     * боевой базе.
+     */
+    env: {
+      ADMIN_E2E_DATABASE_URL:
+        process.env['ADMIN_E2E_DATABASE_URL'] ??
+        'postgres://vydoh:vydoh@localhost:5434/vydoh_admin_e2e',
+    },
     url: 'http://127.0.0.1:3100/admin/',
     reuseExistingServer: !process.env['CI'],
     timeout: 180_000,
