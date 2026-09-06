@@ -8,6 +8,12 @@ import express, {
 
 import type { Executor } from '../../infra/db.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
+import {
+  putSetting,
+  SETTINGS,
+  type SettingName,
+  type SettingsRegistry,
+} from '../../modules/settings/settings.repo.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
@@ -74,6 +80,14 @@ export interface AdminDeps {
   readonly config: AdminAuthConfig;
   /** База: разделы панели читают из неё. Без неё есть только вход. */
   readonly db?: Executor | undefined;
+  /**
+   * Реестр значений (§15, задача 4.9).
+   *
+   * Тот же, что читает бот: панель правит его и **забывает накопленное**,
+   * иначе правка ждала бы истечения кэша, и «без перезапуска» стало бы
+   * «через минуту, если повезёт».
+   */
+  readonly settings?: SettingsRegistry | undefined;
   /**
    * Откуда отдавать собранную панель. Без него отдаётся только API.
    *
@@ -224,6 +238,19 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
 
   // ── Дальше — только с пропуском сессии ────────────────────────────────
   router.use('/api', requireAdmin(deps.config));
+
+  /**
+   * Разбор тела — после стража и только для API.
+   *
+   * После, потому что разбирать тело у того, кого мы всё равно не
+   * пустим, незачем: это лишняя работа по запросу снаружи. Только для
+   * API, потому что странице панели тело не нужно.
+   *
+   * Поймано браузерной проверкой: сохранение настройки падало пятисотым,
+   * потому что разборщик стоял лишь на путях входа, и `req.body` у
+   * остальных был не задан вовсе.
+   */
+  router.use('/api', express.json({ limit: '16kb' }));
 
   /**
    * Кто вошёл. Первый закрытый путь, и он же нужен самой панели: по нему
@@ -379,6 +406,83 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           (error: unknown) => {
             deps.onError?.(error);
             res.status(500).json({ error: 'не удалось собрать карточку' });
+          },
+        );
+      },
+    );
+  }
+
+  if (deps.settings !== undefined && deps.db !== undefined) {
+    const settings = deps.settings;
+    const db = deps.db;
+
+    /**
+     * Настройки (§15, задача 4.9): что можно поменять без выкладки.
+     *
+     * Не персональные данные: числа продукта, одни для всех.
+     */
+    closed(
+      'get',
+      '/api/settings',
+      { personal: false, why: 'числа продукта, одни для всех, без имён и слов человека' },
+      (_req: Request, res: Response) => {
+        void settings.all().then(
+          (rows) => {
+            res.json({
+              rows,
+              /**
+               * Чего в §15 просят, а здесь нет — и почему.
+               *
+               * Настройка, которую никто не читает, хуже отсутствующей:
+               * человек меняет число, видит «сохранено» и ждёт, что
+               * что-то изменится. Цены появятся вместе с подпиской.
+               */
+              missing: [
+                'Цены тарифов появятся вместе с подпиской (задача 4.2): пока их некому читать, а настройка, которую никто не читает, обманывает.',
+              ],
+            });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать настройки' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Правка значения.
+     *
+     * После записи реестр забывает накопленное — иначе правка ждала бы
+     * истечения кэша, и «применяется без перезапуска» превращалось бы в
+     * «применяется через минуту, если повезёт».
+     */
+    closed(
+      'post',
+      '/api/settings',
+      { personal: false, why: 'правка чисел продукта, данных человека здесь нет' },
+      (req: Request, res: Response) => {
+        // Через `??`, а не прямым разбором: тело может не разобраться
+        // вовсе, и падать на этом панель не должна.
+        const body = (req.body ?? {}) as { name?: unknown; value?: unknown };
+        const name = typeof body.name === 'string' ? body.name : '';
+        const value = typeof body.value === 'string' ? body.value : '';
+
+        if (!(name in SETTINGS)) {
+          // Неизвестное имя — не «сохранили и забыли»: молчаливое
+          // согласие тут означало бы настройку, которой нет.
+          res.status(400).json({ error: 'нет такой настройки' });
+          return;
+        }
+
+        void putSetting(db, { name: name as SettingName, value, by: req.admin?.login }).then(
+          () => {
+            settings.forget();
+            res.json({ ok: true });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось сохранить' });
           },
         );
       },

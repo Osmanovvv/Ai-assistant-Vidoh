@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import { appSettings } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import type { BufferLimits } from '../buffer/buffer.service.js';
 
 /**
  * Системные значения продукта, меняемые без выкладки (§14 и §15 ТЗ,
@@ -35,6 +36,13 @@ const DEFAULT_TTL_MS = 60_000;
  * Перечнем, а не свободными строками: опечатка в имени ключа иначе
  * читалась бы как «настройки нет» и молча возвращала умолчание — самая
  * неприятная ошибка настроек, потому что выглядит как работающая.
+ *
+ * **`measured` означает «значение получено замером».** Такое нельзя
+ * править вслепую: вред от правки видно только на контрольном наборе, а
+ * он платный. Панель обязана предупредить об этом до того, как даст
+ * поле для ввода, — иначе «настройка без выкладки» превращается в
+ * способ молча уронить качество. Тот же принцип, что у задачи 4.8 с
+ * непрогнанным набором.
  */
 export const SETTINGS = {
   /**
@@ -44,7 +52,39 @@ export const SETTINGS = {
    * таблице значений разбора ТЗ и ждёт подтверждения. Код работает на
    * любом числе, включая ноль: ноль означает «пробного периода нет».
    */
-  trialDumps: { key: 'trial.dumps', fallback: 10 },
+  trialDumps: { key: 'trial.dumps', fallback: 10, measured: false },
+
+  /**
+   * Окно ожидания тишины, миллисекунды (§9.1, §15).
+   *
+   * Условие готовности задачи 4.9 названо именно про него: изменение из
+   * админки применяется **без перезапуска**. Поэтому значение читается
+   * в момент, когда нужно, а не запоминается при старте.
+   */
+  silenceWindowMs: { key: 'limits.silence_window_ms', fallback: 30_000, measured: true },
+
+  /** Потолок выгрузок в сутки на человека (§10.5). */
+  dumpsPerDay: { key: 'limits.dumps_per_day', fallback: 30, measured: false },
+
+  /** Сколько тем бот заводит человеку (§8, §15). */
+  maxTopics: { key: 'topics.max', fallback: 8, measured: false },
+
+  /**
+   * Пороги уверенности резолвера — в сотых долях (§7, §15).
+   *
+   * Целыми числами, а не дробями: настройки хранятся строкой и правятся
+   * человеком, а «0.8» в поле ввода однажды окажется «0,8» и станет
+   * непонятным значением. Восемьдесят — это 0,80.
+   *
+   * **Все три помечены измеренными**, и это важнее самой возможности их
+   * менять: 0,35 у близости выполненного получен замером на десяти
+   * живых парах 30.08.2026, и от него зависит §21 п.8. Правка вслепую
+   * ломает то, что проверено, — панель обязана сказать это, прежде чем
+   * даст поле для ввода.
+   */
+  resolverApply: { key: 'resolver.apply_pct', fallback: 80, measured: true },
+  resolverCreate: { key: 'resolver.create_pct', fallback: 45, measured: true },
+  resolverSimilarity: { key: 'resolver.similarity_pct', fallback: 50, measured: true },
 } as const;
 
 export type SettingName = keyof typeof SETTINGS;
@@ -137,6 +177,93 @@ export class SettingsRegistry {
   forget(): void {
     this.cache.clear();
   }
+
+  /**
+   * Все известные значения разом — для страницы настроек.
+   *
+   * Отдаёт и текущее, и умолчание из кода, и признак «получено
+   * замером»: панель обязана показать всё три, иначе человек правит
+   * число, не зная ни откуда оно взялось, ни чем грозит правка.
+   */
+  async all(): Promise<
+    readonly {
+      readonly name: SettingName;
+      readonly key: string;
+      readonly value: number;
+      readonly fallback: number;
+      readonly measured: boolean;
+      /** Задано ли значение в базе или работает умолчание из кода. */
+      readonly set: boolean;
+    }[]
+  > {
+    const names = Object.keys(SETTINGS) as SettingName[];
+    const out: {
+      name: SettingName;
+      key: string;
+      value: number;
+      fallback: number;
+      measured: boolean;
+      set: boolean;
+    }[] = [];
+
+    for (const name of names) {
+      const setting = SETTINGS[name];
+
+      out.push({
+        name,
+        key: setting.key,
+        value: await this.number(name),
+        fallback: setting.fallback,
+        measured: setting.measured,
+        set: (await this.raw(setting.key)) !== undefined,
+      });
+    }
+
+    return out;
+  }
+}
+
+/**
+ * Действующие ограничения буфера: из настроек, с умолчаниями из кода.
+ *
+ * **Читается в момент, когда нужно, а не запоминается при старте.**
+ * Условие готовности задачи 4.9 названо именно про это: изменение окна
+ * тишины из админки применяется без перезапуска сервиса. Значение,
+ * прочитанное один раз при подъёме процесса, требовало бы перезапуска —
+ * то есть выкладки, — а §15 просит обойтись без неё.
+ *
+ * Кэш реестра делает это дешёвым: на горячем пути один поход в память.
+ */
+export async function effectiveLimits(
+  settings: SettingsRegistry | undefined,
+  base: BufferLimits,
+): Promise<BufferLimits> {
+  if (settings === undefined) return base;
+
+  return {
+    ...base,
+    silenceWindowMs: await settings.number('silenceWindowMs'),
+    maxDumpsPerDay: await settings.number('dumpsPerDay'),
+  };
+}
+
+/**
+ * Пороги резолвера из настроек — в долях, как их ждёт решатель.
+ *
+ * Хранятся сотыми долями целым числом (см. `SETTINGS`), здесь делятся.
+ * Возвращается частичный набор: остальные пороги остаются теми, что в
+ * коде, и настраивать их §15 не просит.
+ */
+export async function effectiveThresholds(
+  settings: SettingsRegistry | undefined,
+): Promise<{ apply: number; create: number; similarity: number } | undefined> {
+  if (settings === undefined) return undefined;
+
+  return {
+    apply: (await settings.number('resolverApply')) / 100,
+    create: (await settings.number('resolverCreate')) / 100,
+    similarity: (await settings.number('resolverSimilarity')) / 100,
+  };
 }
 
 /**

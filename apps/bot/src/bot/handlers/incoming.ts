@@ -12,7 +12,7 @@ import {
 } from '../../modules/buffer/buffer.service.js';
 import { accessOf } from '../../modules/billing/subscription.service.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
-import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
+import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
@@ -98,9 +98,21 @@ function isServiceMessage(ctx: Context): boolean {
 }
 
 export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
-  const limits = deps.limits ?? DEFAULT_LIMITS;
+  const base = deps.limits ?? DEFAULT_LIMITS;
 
   return async (ctx, next) => {
+    /**
+     * Ограничения читаются на каждом сообщении, а не при подъёме
+     * процесса (§15, задача 4.9).
+     *
+     * Условие готовности 4.9 названо про окно тишины: изменение из
+     * админки применяется **без перезапуска**. Значение, прочитанное
+     * один раз при старте, требовало бы выкладки — то есть ровно того,
+     * от чего §15 избавляет. Кэш реестра делает это дешёвым: на горячем
+     * пути один поход в память.
+     */
+    const limits = await effectiveLimits(deps.settings, base);
+
     const outcome = await acceptUpdate(deps.db, ctx.update);
 
     if (outcome.status === 'duplicate') {
