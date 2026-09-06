@@ -174,3 +174,108 @@ input {
   color: var(--текст-тихий);
   font-size: 14px;
 }
+
+/* ── Расходы ─────────────────────────────────────────────────────────── */
+
+.период {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.период__кнопка {
+  padding: 5px 12px;
+  border: 1px solid var(--фон-второй);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.период__кнопка--выбран {
+  border-color: var(--акцент);
+  background: var(--акцент);
+  color: #fff;
+}
+
+.итоги {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.итог {
+  padding: 14px 16px;
+  border-radius: var(--радиус);
+  background: #fff;
+  box-shadow: var(--тень);
+}
+
+.итог__имя {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.итог__число {
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.разрез {
+  margin-bottom: 28px;
+}
+
+.разрез__имя {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.разрез__пусто {
+  color: var(--текст-тихий);
+  font-size: 14px;
+}
+
+.таблица {
+  width: 100%;
+  border-collapse: collapse;
+  border-radius: var(--радиус);
+  background: #fff;
+  box-shadow: var(--тень);
+  overflow: hidden;
+}
+
+.таблица th,
+.таблица td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--фон);
+  text-align: left;
+}
+
+.таблица th {
+  color: var(--текст-тихий);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.таблица tr:last-child td {
+  border-bottom: none;
+}
+
+.таблица__число {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.оговорка {
+  margin: 0 0 20px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--акцент);
+  border-radius: 0 8px 8px 0;
+  background: var(--фон-второй);
+  font-size: 14px;
+}

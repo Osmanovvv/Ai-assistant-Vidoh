@@ -450,7 +450,7 @@ async function main(): Promise<void> {
     env.ADMIN_DIST ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../admin/dist');
 
   const app = createServer({
-    ...(admin === undefined ? {} : { admin, adminStaticDir: adminDist }),
+    ...(admin === undefined ? {} : { admin, adminStaticDir: adminDist, adminDb: db }),
     healthChecks: [
       { name: 'postgres', check: () => pingDb(db) },
       { name: 'redis', check: () => pingRedis(getRedis()) },

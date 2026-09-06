@@ -59,6 +59,45 @@ export function signOut(): Promise<{ ok: boolean }> {
   return post<{ ok: boolean }>('/auth/logout', {});
 }
 
+/** Деньги: микро-единицы валюты. Складывать разные валюты нельзя. */
+export interface Money {
+  readonly currency: 'rub' | 'usd';
+  readonly micros: number;
+}
+
+export interface CostRow {
+  readonly key: string;
+  readonly calls: number;
+  readonly failed: number;
+  readonly money: readonly Money[];
+  readonly unknownPrices: number;
+}
+
+export interface UserCostRow extends CostRow {
+  readonly title: string;
+  readonly tgId: number | null;
+}
+
+export interface Costs {
+  readonly days: number;
+  readonly byStage: readonly CostRow[];
+  readonly byModel: readonly CostRow[];
+  readonly byUser: readonly UserCostRow[];
+  readonly userCount: number;
+  readonly unattributed: readonly Money[];
+  readonly perDump: readonly Money[];
+  readonly perUser: readonly Money[];
+  readonly dumps: number;
+  readonly calls: number;
+  /** Ложь означает, что суммы — нижняя граница: часть цен неизвестна. */
+  readonly complete: boolean;
+}
+
+/** Расход в разрезах за последние `days` дней (§21 п.14). */
+export function costs(days: number): Promise<Costs> {
+  return call<Costs>(`/costs?days=${String(days)}`);
+}
+
 /** Кто вошёл. Отказ означает, что пропуска нет. */
 export function whoAmI(): Promise<{ login: string }> {
   return call<{ login: string }>('/me');

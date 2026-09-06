@@ -1,3 +1,4 @@
+import type { Executor } from '../infra/db.js';
 import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
 import express, {
   type ErrorRequestHandler,
@@ -33,6 +34,8 @@ export interface ServerDeps {
   readonly admin?: AdminAuthConfig | undefined;
   /** Откуда отдавать собранную панель. Без него — только её API. */
   readonly adminStaticDir?: string | undefined;
+  /** База для разделов панели. Без неё у панели есть только вход. */
+  readonly adminDb?: Executor | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
   readonly webhookPath?: string;
   readonly webhookHandler?: RequestHandler;
@@ -142,6 +145,8 @@ export function createServer(deps: ServerDeps): Express {
       createAdminRouter({
         config: deps.admin,
         ...(deps.adminStaticDir === undefined ? {} : { staticDir: deps.adminStaticDir }),
+        ...(deps.adminDb === undefined ? {} : { db: deps.adminDb }),
+        ...(deps.onError === undefined ? {} : { onError: deps.onError }),
       }).router,
     );
   }
