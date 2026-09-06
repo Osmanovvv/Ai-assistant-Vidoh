@@ -2,15 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { signOut, whoAmI } from './api.js';
 import { Costs } from './Costs.js';
+import { OverviewPanel, PeoplePanel } from './People.js';
 import { SignIn } from './SignIn.js';
 
 /**
- * Панель (§15 ТЗ, задача 4.5).
+ * Панель (§15 ТЗ, задачи 4.5, 4.6, 4.7).
  *
- * Пока здесь вход и расходы: остальные разделы §15 приезжают задачами
- * 4.6 и 4.8–4.10. Показывается ровно то, что уже правда, — и ни строчки
- * обещаний вроде пустых вкладок «Скоро»: пустая вкладка учит, что
- * панели верить нельзя.
+ * Пока здесь вход, обзор, люди и расходы: остальные разделы §15
+ * приезжают задачами 4.8–4.10. Показывается ровно то, что уже правда, —
+ * и ни строчки обещаний вроде пустых вкладок «Скоро»: пустая вкладка
+ * учит, что панели верить нельзя.
  *
  * **Кто вошёл, спрашивается у бота, а не хранится у панели.** Пропуск
  * живёт в печенье, недоступном скриптам (`HttpOnly`), и панель о нём
@@ -23,8 +24,24 @@ type State =
   | { readonly kind: 'out' }
   | { readonly kind: 'in'; readonly login: string };
 
+/**
+ * Разделы панели — только те, что уже работают.
+ *
+ * §15 просит восемь; остальные приезжают задачами 4.8–4.10. Пустой
+ * вкладки «Скоро» здесь нет и не будет: она учит, что панели верить
+ * нельзя.
+ */
+const TABS = [
+  { key: 'overview', title: 'Обзор' },
+  { key: 'people', title: 'Пользователи' },
+  { key: 'costs', title: 'Расходы' },
+] as const;
+
+type Tab = (typeof TABS)[number]['key'];
+
 export function App(): React.ReactElement {
   const [state, setState] = useState<State>({ kind: 'checking' });
+  const [tab, setTab] = useState<Tab>('overview');
 
   const check = useCallback(() => {
     void whoAmI()
@@ -63,7 +80,24 @@ export function App(): React.ReactElement {
         </span>
       </header>
 
-      <Costs />
+      <nav className="вкладки">
+        {TABS.map((one) => (
+          <button
+            key={one.key}
+            type="button"
+            className={one.key === tab ? 'вкладка вкладка--выбрана' : 'вкладка'}
+            onClick={() => {
+              setTab(one.key);
+            }}
+          >
+            {one.title}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'overview' && <OverviewPanel />}
+      {tab === 'people' && <PeoplePanel />}
+      {tab === 'costs' && <Costs />}
     </div>
   );
 }

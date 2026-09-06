@@ -7,6 +7,7 @@ import express, {
 } from 'express';
 
 import type { Executor } from '../../infra/db.js';
+import { overview, people, personCard } from '../../modules/admin/people.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
@@ -280,6 +281,104 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
             // Панель обязана сказать, что не смогла, а не показать нули:
             // ноль расхода читается как «денег не тратили».
             res.status(500).json({ error: 'не удалось посчитать расход' });
+          },
+        );
+      },
+    );
+  }
+
+  if (deps.db !== undefined) {
+    const db = deps.db;
+
+    /**
+     * Обзор (§15). Числа за период — людей, выгрузок, расхода.
+     *
+     * Не персональные данные: здесь только счёт, ни одного имени. Причина
+     * записана, потому что соблазн назвать сводкой **любую** страницу с
+     * числами велик, а разрез по людям в расходах именно так и выглядел.
+     */
+    closed(
+      'get',
+      '/api/overview',
+      { personal: false, why: 'только счётчики за период, без имён и без слов человека' },
+      (req: Request, res: Response) => {
+        const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
+
+        void overview(db, days).then(
+          (report) => {
+            res.json(report);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось собрать обзор' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Список людей (§15): страницами и с поиском по имени.
+     *
+     * Персональные данные многих сразу: имена, телеграмные имена,
+     * источник перехода. Каждое открытие списка — запись в журнал (§16).
+     */
+    closed(
+      'get',
+      '/api/people',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const limit = boundedNumber(req.query['limit'], { fallback: 20, min: 1, max: 100 });
+        const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 1_000_000 });
+        const query = req.query['q'];
+
+        void people(db, {
+          limit,
+          offset,
+          ...(typeof query === 'string' ? { query } : {}),
+        }).then(
+          (page) => {
+            res.json(page);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось собрать список' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Карточка человека (§15) — то, ради чего задача 4.6 существует.
+     *
+     * Показывает **слова человека**: расшифровки голосовых, результаты
+     * разбора, правки и вопросы. Самое личное, что есть в продукте, —
+     * поэтому персональные данные **одного** человека, и в журнал
+     * попадает не только факт обращения, но и то, на кого смотрели.
+     */
+    closed(
+      'get',
+      '/api/people/:userId',
+      { personal: true, subjects: 'one', param: 'userId' },
+      (req: Request, res: Response) => {
+        const userId = req.params['userId'];
+
+        if (typeof userId !== 'string') {
+          res.status(404).json({ error: 'не найдено' });
+          return;
+        }
+
+        void personCard(db, { userId }).then(
+          (card) => {
+            if (card === undefined) {
+              res.status(404).json({ error: 'не найдено' });
+              return;
+            }
+
+            res.json(card);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось собрать карточку' });
           },
         );
       },

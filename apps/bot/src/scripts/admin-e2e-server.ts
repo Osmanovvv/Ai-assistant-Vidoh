@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { aiCalls, batches, users } from '../db/schema.js';
+import { aiCalls, batches, items, users } from '../db/schema.js';
 import { hashPassword } from '../http/admin/password.js';
 import { createServer } from '../http/server.js';
 import type { Database } from '../infra/db.js';
@@ -76,6 +76,25 @@ if (seedUrl !== undefined) {
 
   if (batch === undefined) throw new Error('стенд: выгрузка не создалась');
 
+  /**
+   * Разбор с текстом и результатом — для карточки (задача 4.6).
+   *
+   * Сеется настоящая жалоба: человек сказал про врача в четверг, а в
+   * записи оказалось другое. Ровно тот случай, ради которого карточка
+   * существует, — и проверка читает её так же, как читал бы человек,
+   * разбирающий жалобу.
+   */
+  await seeded.update(batches).set({ combinedText: 'надо записать сына к врачу в четверг' });
+
+  await seeded.insert(items).values({
+    userId: person.id,
+    sourceBatchId: batch.id,
+    text: 'Записать сына к врачу',
+    type: 'TASK',
+    priority: 'SOON',
+    topic: 'семья',
+  });
+
   /** Числа круглые нарочно: проверка читает их глазами, как человек. */
   await seeded.insert(aiCalls).values([
     {
@@ -93,6 +112,9 @@ if (seedUrl !== undefined) {
       batchId: batch.id,
       stage: 'classifier',
       model: 'yandex:yandexgpt/latest',
+      // Версия промпта — то, без чего жалобу не разобрать: промпт
+      // меняется без выкладки (§15), и к моменту жалобы он уже другой.
+      promptVersion: 'classifier@9',
       costMicros: 8_000_000,
       costCurrency: 'rub',
       latencyMs: 200,
