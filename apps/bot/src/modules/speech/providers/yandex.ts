@@ -4,6 +4,7 @@ import {
   ACCESS_DENIED_GRPC_CODES,
   ACCESS_DENIED_STATUSES,
   AccessDeniedError,
+  markAlreadyPaid,
 } from '../../../infra/failures.js';
 
 import {
@@ -329,16 +330,40 @@ export class YandexSpeechProvider implements SpeechProvider {
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
     const audio = await readFile(request.filePath);
 
+    /**
+     * **Платит отправка, а не результат** (задача 3.82).
+     *
+     * Как только SpeechKit принял звук и выдал `operationId`, секунды
+     * оплачены. Всё, что дальше — опрос готовности и забор текста, —
+     * бесплатно и относится к **той же** операции. Поэтому любой
+     * временный сбой после этой черты повторяется по тому же
+     * `operationId`, а не отправкой звука заново.
+     *
+     * До этой правки сорвавшийся опрос выбрасывал временный отказ
+     * наружу, и внешний `withRetry` отправлял ту же минуту записи
+     * второй и третий раз. В учёт попадала одна строка: у сорвавшегося
+     * вызова расход пустой — значит в отчёте этих денег не было видно
+     * вовсе, а на счёте они были.
+     *
+     * Если не вышло и после повторов, отказ помечается оплаченным:
+     * наверху он остаётся временным («попробую позже»), но отправкой
+     * больше не повторяется.
+     */
     const operationId = await this.startRecognition(audio, request.language);
-    await this.awaitOperation(operationId);
-    const recognition = await this.fetchRecognition(operationId);
 
-    return {
-      text: recognition.text,
-      model: this.model,
-      audioSeconds: Math.round(request.durationSec),
-      utterances: recognition.utterances,
-    };
+    try {
+      await this.awaitOperation(operationId);
+      const recognition = await this.fetchRecognition(operationId);
+
+      return {
+        text: recognition.text,
+        model: this.model,
+        audioSeconds: Math.round(request.durationSec),
+        utterances: recognition.utterances,
+      };
+    } catch (error) {
+      throw markAlreadyPaid(error);
+    }
   }
 
   private async startRecognition(audio: Buffer, language: string | undefined): Promise<string> {
@@ -391,7 +416,27 @@ export class YandexSpeechProvider implements SpeechProvider {
 
     for (let attempt = 0; ; attempt++) {
       const url = `${this.operationsUrl}/operations/${encodeURIComponent(operationId)}`;
-      const payload = asRecord(await this.requestJson(url));
+
+      /**
+       * Временный сбой самого опроса наружу не выносится (задача 3.82).
+       *
+       * Опрос бесплатный, а его отказ наверху приводил к повторной
+       * отправке звука — то есть к повторной оплате тех же секунд.
+       * Пока не вышел свой потолок ожидания, пробуем ту же операцию
+       * снова: это ровно то, для чего цикл здесь и стоит.
+       */
+      let payload: Record<string, unknown> | undefined;
+
+      try {
+        payload = asRecord(await this.requestJson(url));
+      } catch (error) {
+        if (error instanceof PermanentSpeechError || error instanceof AccessDeniedError)
+          throw error;
+        if (Date.now() >= deadline) throw error;
+
+        await this.pause(Math.min(this.pollIntervalMs * 2 ** attempt, MAX_POLL_INTERVAL_MS));
+        continue;
+      }
 
       const failure = asRecord(payload?.['error']);
       if (failure) throw operationFailure(failure);

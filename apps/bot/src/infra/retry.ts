@@ -1,4 +1,4 @@
-import { PermanentError } from './failures.js';
+import { isAlreadyPaid, PermanentError } from './failures.js';
 
 /**
  * Повтор с растущей паузой и таймаут (задачи 1.15, 2.3).
@@ -55,6 +55,19 @@ export async function withRetry<T>(
       lastError = error;
 
       if (error instanceof PermanentError) {
+        throw error;
+      }
+
+      /**
+       * За этот вызов уже заплачено — повторять его нельзя (3.82).
+       *
+       * Распознавание речи платит отправка, а не результат: сорвавшийся
+       * опрос готовности отправлял те же секунды звука заново, и минута
+       * записи стоила три. Отказ при этом остаётся временным — наверху
+       * он читается как «попробую позже», — но тесный повтор вокруг
+       * платной отправки прекращается здесь.
+       */
+      if (isAlreadyPaid(error)) {
         throw error;
       }
       if (attempt === attempts) {

@@ -38,6 +38,12 @@ export interface AskParams {
   readonly segment: string;
   readonly action: string;
   readonly changes: ResolverAnswer['changes'];
+  /**
+   * Дополнять или заменять — §7.4 (задача 3.82).
+   *
+   * Не задан — заменять: так вело себя применение до этой правки.
+   */
+  readonly mode?: 'append' | 'replace' | undefined;
   readonly now?: Date | undefined;
   readonly ttlHours?: number | undefined;
 }
@@ -65,6 +71,7 @@ export async function askQuestion(db: Executor, params: AskParams): Promise<Pend
       segment: params.segment,
       action: params.action,
       changes: params.changes,
+      ...(params.mode === undefined ? {} : { mode: params.mode }),
       expiresAt: new Date(now.getTime() + ttl * 60 * 60_000),
     })
     .returning();

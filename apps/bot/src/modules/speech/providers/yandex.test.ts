@@ -1,4 +1,6 @@
-import { AccessDeniedError } from '../../../infra/failures.js';
+import { AccessDeniedError, isAlreadyPaid, PermanentError } from '../../../infra/failures.js';
+import { isTransientFailure } from '../../../infra/errors.js';
+import { withRetry } from '../../../infra/retry.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -468,5 +470,174 @@ describe('toYandexLanguage', () => {
 
   it('незнакомый код не выдумывает', () => {
     expect(toYandexLanguage('xx')).toBeUndefined();
+  });
+});
+
+describe('за один звук платим один раз (задача 3.82)', () => {
+  /**
+   * **Платит отправка, а не результат.** SpeechKit тарифицирует секунды
+   * звука в момент приёма: как только вернулся `operationId`, минута
+   * записи оплачена. Опрос готовности и забор текста бесплатны и
+   * относятся к той же операции.
+   *
+   * До этой задачи сорвавшийся опрос выбрасывал временный отказ наружу,
+   * и внешний `withRetry` отправлял ту же минуту второй и третий раз —
+   * а вместе с повтором всей выгрузки до пятнадцати. В учёт при этом
+   * попадала одна строка: у сорвавшегося вызова расход пустой, поэтому
+   * в отчёте эти деньги не было видно вовсе.
+   *
+   * Проверяется не текст ошибки, а число отправок звука.
+   */
+
+  /** Сколько раз звук уехал в SpeechKit: столько раз мы и заплатили. */
+  const submissions = (calls: readonly Call[]): number =>
+    calls.filter((call) => call.url.includes('recognizeFileAsync')).length;
+
+  /** Заглушка, у которой опрос операции срывается сетью. */
+  function flakyPolls(failures: number): { fetchImpl: typeof fetch; calls: Call[] } {
+    const calls: Call[] = [];
+    let polls = 0;
+
+    const fetchImpl = ((url: string, init: RequestInit) => {
+      calls.push({ url, init });
+
+      if (url.includes('recognizeFileAsync')) {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'op-1' }), { status: 200 }));
+      }
+
+      if (url.includes('/operations/')) {
+        polls++;
+        // Обрыв соединения: именно он раньше уводил на переотправку.
+        if (polls <= failures) return Promise.reject(new Error('соединение сброшено'));
+
+        return Promise.resolve(new Response(JSON.stringify({ id: 'op-1', done: true })));
+      }
+
+      return Promise.resolve(new Response(refinementLine(0, 'готово'), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    return { fetchImpl, calls };
+  }
+
+  const withFlakyPolls = (failures: number, maxPollMs?: number) => {
+    const { fetchImpl, calls } = flakyPolls(failures);
+
+    return {
+      instance: new YandexSpeechProvider({
+        apiKey: 'секретный-ключ',
+        fetchImpl,
+        sleep: () => Promise.resolve(),
+        // Ноль означает «своих попыток не осталось»: пауза здесь
+        // мгновенная, и без потолка цикл крутился бы четыре минуты
+        // настоящего времени.
+        ...(maxPollMs === undefined ? {} : { maxPollMs }),
+      }),
+      calls,
+    };
+  };
+
+  it('обрыв опроса переспрашивает ту же операцию, а не отправляет звук заново', async () => {
+    const { instance, calls } = withFlakyPolls(2);
+
+    const result = await instance.transcribe({ filePath, durationSec: 60 });
+
+    expect(result.text).toBe('готово');
+    expect(submissions(calls)).toBe(1);
+  });
+
+  it('отказ после удавшейся отправки помечен оплаченным — повтора не будет', async () => {
+    /**
+     * Ключевая проверка: `withRetry` вокруг расшифровки видит пометку и
+     * не крутит платную отправку. Раньше он делал ещё две.
+     */
+    const { fetchImpl, calls } = (() => {
+      const seen: Call[] = [];
+
+      const impl = ((url: string, init: RequestInit) => {
+        seen.push({ url, init });
+
+        if (url.includes('recognizeFileAsync')) {
+          return Promise.resolve(new Response(JSON.stringify({ id: 'op-1' }), { status: 200 }));
+        }
+
+        // Опрос падает всегда: своих попыток не хватит.
+        return Promise.reject(new Error('соединение сброшено'));
+      }) as unknown as typeof fetch;
+
+      return { fetchImpl: impl, calls: seen };
+    })();
+
+    const instance = new YandexSpeechProvider({
+      apiKey: 'секретный-ключ',
+      fetchImpl,
+      sleep: () => Promise.resolve(),
+      maxPollMs: 0,
+    });
+
+    await expect(
+      withRetry(() => instance.transcribe({ filePath, durationSec: 60 }), {
+        attempts: 3,
+        sleep: () => Promise.resolve(),
+      }),
+    ).rejects.toThrow();
+
+    // Одна отправка на три разрешённые попытки: пометка сработала.
+    expect(submissions(calls)).toBe(1);
+  });
+
+  it('отказ остаётся временным: слова человека ждут, а не умирают', async () => {
+    const { instance } = withFlakyPolls(Number.MAX_SAFE_INTEGER, 0);
+
+    /**
+     * Пометка «оплачено» не должна превращать отказ в постоянный: для
+     * человека это «попробую позже», и выгрузка обязана дождаться.
+     * Постоянный отказ похоронил бы сказанное из-за сетевого обрыва.
+     */
+    const error = await instance
+      .transcribe({ filePath, durationSec: 60 })
+      .then(() => undefined)
+      .catch((one: unknown) => one);
+
+    expect(isAlreadyPaid(error)).toBe(true);
+    expect(isTransientFailure(error)).toBe(true);
+    expect(error instanceof PermanentError).toBe(false);
+  });
+
+  it('отправка, которая не удалась, повтор не запрещает', async () => {
+    /**
+     * Обратная сторона: пока звук не принят, деньги не потрачены, и
+     * повтор — единственный способ пережить сетевой обрыв. Пометка не
+     * должна перекрыть его.
+     */
+    let starts = 0;
+
+    const fetchImpl = ((url: string) => {
+      if (url.includes('recognizeFileAsync')) {
+        starts++;
+        if (starts === 1) return Promise.reject(new Error('соединение сброшено'));
+
+        return Promise.resolve(new Response(JSON.stringify({ id: 'op-1' }), { status: 200 }));
+      }
+
+      if (url.includes('/operations/')) {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'op-1', done: true })));
+      }
+
+      return Promise.resolve(new Response(refinementLine(0, 'со второго раза'), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const instance = new YandexSpeechProvider({
+      apiKey: 'секретный-ключ',
+      fetchImpl,
+      sleep: () => Promise.resolve(),
+    });
+
+    const result = await withRetry(() => instance.transcribe({ filePath, durationSec: 60 }), {
+      attempts: 3,
+      sleep: () => Promise.resolve(),
+    });
+
+    expect(result.text).toBe('со второго раза');
+    expect(starts).toBe(2);
   });
 });

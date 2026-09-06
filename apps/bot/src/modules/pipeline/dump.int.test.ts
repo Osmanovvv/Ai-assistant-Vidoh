@@ -13,6 +13,7 @@ import {
   items,
   messagesRaw,
   pendingQuestions,
+  projectSteps,
   promptVersions,
   topics,
   users,
@@ -646,6 +647,101 @@ describe('разбор', () => {
     expect(saved).toHaveLength(1);
     expect(saved[0]?.isDraft).toBe(true);
     expect(saved[0]?.text).toBe('надо продукты и врача');
+    expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
+  });
+
+  /**
+   * Отложенная правка не должна пропадать на раннем выходе (задача 3.82).
+   *
+   * **Как теряется.** Правка, сказанная после мысли этой же выгрузки,
+   * ждёт второго прохода — он идёт после сохранения записей (задача
+   * 3.24). Между откладыванием и вторым проходом стоят четыре выхода:
+   * разбирать нечего, извлечение не удалось, единиц ноль, классификация
+   * не удалась. На любом из них список отложенных исчезал вместе с
+   * областью видимости — ни записи, ни черновика, ни слова человеку.
+   *
+   * Модель здесь не нужна: правка попадает в отложенные **по порядку
+   * сегментов**, ещё до всякого разбора.
+   */
+  it('единиц ноль — отложенная правка уходит в черновик, а не в никуда', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'надо продукты. нет, лучше в пятницу', offsetMs: 0 },
+    ]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'надо продукты' },
+          // Правка после мысли: уходит в отложенные до сохранения.
+          { intent: 'PATCH', text: 'нет, лучше в пятницу' },
+        ],
+      }),
+      // Единиц ноль — ранний выход прямо перед вторым проходом.
+      extractor: JSON.stringify({ units: [] }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items);
+
+    expect(saved.map((one) => one.text)).toContain('нет, лучше в пятницу');
+    expect(saved.find((one) => one.text === 'нет, лучше в пятницу')?.isDraft).toBe(true);
+    expect(saved.find((one) => one.text === 'нет, лучше в пятницу')?.draftReason).toContain(
+      'единиц',
+    );
+
+    /**
+     * И реплика — про сохранённое. «Расскажешь, что в голове?» человеку,
+     * который только что сказал своё, читается как «я тебя не услышала».
+     */
+    expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
+    expect(all).not.toContain(defaultTexts.answer.nothingToParse);
+  });
+
+  it('сбой извлечения — отложенная правка получает свой черновик', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'надо продукты. нет, лучше в пятницу', offsetMs: 0 },
+    ]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'надо продукты' },
+          { intent: 'PATCH', text: 'нет, лучше в пятницу' },
+        ],
+      }),
+      extractor: 'это не JSON',
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const drafts = await testDb().select().from(items);
+
+    // Две потери — два черновика: сама выгрузка и отложенная правка.
+    expect(drafts.every((one) => one.isDraft)).toBe(true);
+    expect(drafts.map((one) => one.text).sort()).toEqual(
+      ['надо продукты', 'нет, лучше в пятницу'].sort(),
+    );
     expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
   });
 
@@ -3095,6 +3191,83 @@ describe('вопрос по бэклогу ничего не создаёт (§1
 
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts).toEqual([]);
+  });
+
+  it('ответ о проекте несёт кнопку «Шаг сделан»', async () => {
+    /**
+     * §21 п.6 обещает показать, что уже решено, — а закрыть шаг до
+     * задачи 3.82 было нечем ни кнопкой, ни голосом: `completeStep` не
+     * звал никто, `doneAt` оставался пустым, и раздел «Сделано» не мог
+     * наполниться никогда.
+     *
+     * Проверка здесь, а не только у обработчика: сам обработчик был
+     * написан и покрыт тестами, но кнопки, которая его позовёт, в ответе
+     * не было. Ровно тот разрыв «модуль есть, а наверх не отдаёт».
+     */
+    const prompts = await seedPrompts();
+
+    const ASKED = 'что там с днём рождения';
+
+    /**
+     * Вектор — тот же, что посчитает заглушка на вопрос: ответ про
+     * проект выбирается по смысловой близости, и без вектора запись
+     * просто не нашлась бы. Заглушка детерминирована, поэтому близость
+     * выходит ровно единица.
+     */
+    const asked = await new MockEmbeddingProvider().embed({ text: ASKED, purpose: 'query' });
+
+    const [project] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'День рождения дочки',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        isProject: true,
+        embedding: [...asked.vector],
+      })
+      .returning();
+
+    if (!project) throw new Error('проект не создался');
+
+    // Шаги уже есть — значит разложение не позовётся и модель не нужна.
+    await testDb()
+      .insert(projectSteps)
+      .values([
+        { itemId: project.id, userId, text: 'Позвонить в кафе', position: 0 },
+        { itemId: project.id, userId, text: 'Позвать гостей', position: 1 },
+      ]);
+
+    await queuedBatchOf([{ kind: 'text', text: ASKED, offsetMs: 0 }]);
+    const { sender, all, buttons } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: ASKED }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          // Ответ про проект выбирается по вектору: без заглушки
+          // векторов вопрос не находит ничего.
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('Позвонить в кафе'))).toBe(true);
+    expect(buttons).toContain(defaultTexts.project.buttonStepDone);
   });
 });
 

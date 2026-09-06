@@ -1,3 +1,8 @@
+import type { Executor } from '../infra/db.js';
+import { meterCall } from '../modules/metering/ai-calls.repo.js';
+import type { ModelPricing } from '../modules/metering/pricing.js';
+import type { SpendGuard } from '../modules/metering/spend-guard.js';
+import type { CompletionResult } from '../modules/ai/providers/types.js';
 import type { Logger } from 'pino';
 
 import { classifierSchema, toJsonSchema } from '../modules/ai/schemas/index.js';
@@ -25,11 +30,21 @@ import { temperatureFor } from '../modules/ai/temperature.js';
  * иначе сравнение было бы нечестным: один путь с правилами §6.2 и §6.3,
  * другой без.
  *
- * **Расход в учёт не пишется, и это намеренно.** Учёт разложен по этапам
- * из справочника `ai_stage`, а объединённого этапа там нет и не появится
- * до того, как эксперимент примут: значение перечисления в Postgres
- * добавляется навсегда, удалить его нельзя. Токены берутся прямо из
- * ответа провайдера — для сравнения этого достаточно.
+ * **Расход пишется под этап классификации (задача 3.82).** Своего этапа
+ * у объединённого пути нет и не появится до того, как эксперимент
+ * примут: значение перечисления в Postgres добавляется навсегда, удалить
+ * его нельзя. Но и не писать расход было нельзя — сперва так и сделали, и
+ * это оказалось частью корневой причины 05.09.2026: отчёт по всем базам
+ * показывал 856 ₽ при потраченных ≈5 900 ₽, потому что такие вызовы не
+ * попадали никуда.
+ *
+ * Поэтому этап берётся классификаторский — форма ответа у объединённого
+ * пути ровно его, — а различает их версия промпта (`merged@…`). Деньги
+ * видны, справочник не тронут.
+ *
+ * **База необязательна.** Без неё модуль работает как раньше и
+ * проверяется без Postgres: иначе его перестали бы проверять вовсе — тот
+ * же довод, что у промпта текстом, а не путём к файлу.
  *
  * **Маршрутизатор остаётся отдельным вызовом.** §10.1 говорит про
  * извлечение и классификацию; кризисный контур и разделение по намерениям
@@ -45,6 +60,18 @@ export interface MergedDeps {
    * нет, и проверять его перестали бы вовсе.
    */
   readonly prompt: string;
+  /**
+   * Куда писать учёт расхода. Не задана — расход не пишется, как раньше.
+   *
+   * Нужна прогону: он тратит настоящие деньги, и они обязаны быть видны
+   * и стражу расхода, и отчёту по базам.
+   */
+  readonly db?: Executor | undefined;
+  /** Потолок расхода (3.79): прогон целого набора стоит десятки рублей. */
+  readonly spendGuard?: SpendGuard | undefined;
+  readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /** Версия промпта для учёта: этап один, а путей два. */
+  readonly promptVersion?: string | undefined;
   readonly logger?: Logger | undefined;
 }
 
@@ -133,13 +160,46 @@ export async function runMergedCase(
   let usage: MergedUsage = { tokensIn: 0, tokensOut: 0 };
 
   try {
-    const completion = await deps.provider.complete({
-      prompt: deps.prompt,
-      input: buildInput(item, now),
-      jsonSchema: toJsonSchema(classifierSchema),
-      // Та же температура, что в бою: иначе набор мерит не то, что работает.
-      temperature: temperatureFor('classifier'),
-    });
+    const ask = (): Promise<CompletionResult> =>
+      deps.provider.complete({
+        prompt: deps.prompt,
+        input: buildInput(item, now),
+        jsonSchema: toJsonSchema(classifierSchema),
+        // Та же температура, что в бою: иначе набор мерит не то, что работает.
+        temperature: temperatureFor('classifier'),
+      });
+
+    /**
+     * Учёт — когда есть куда писать (задача 3.82).
+     *
+     * Этап классификаторский, версия промпта своя: так расход виден и
+     * стражу, и отчёту, а справочник `ai_stage` не пополняется навсегда
+     * ради эксперимента.
+     */
+    const completion =
+      deps.db === undefined
+        ? await ask()
+        : await meterCall(
+            deps.db,
+            {
+              stage: 'classifier',
+              model: deps.provider.name,
+              promptVersion: deps.promptVersion ?? version,
+            },
+            async () => {
+              const result = await ask();
+
+              return {
+                value: result,
+                usage: { tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+                ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
+              };
+            },
+            {
+              ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+              ...(deps.spendGuard === undefined ? {} : { guard: deps.spendGuard }),
+            },
+          );
 
     usage = { tokensIn: completion.tokensIn, tokensOut: completion.tokensOut };
 

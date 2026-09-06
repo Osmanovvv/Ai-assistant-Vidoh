@@ -1,3 +1,9 @@
+import type { AiStage } from '../db/schema.js';
+import { closeDb, getDb } from '../infra/db.js';
+import { createLogger } from '../infra/logger.js';
+import type { CompletionResult } from '../modules/ai/providers/types.js';
+import { meterCall } from '../modules/metering/ai-calls.repo.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
@@ -30,8 +36,10 @@ import { describeToday } from '../modules/classifier/dates.js';
  * Промпт читается из файла, а не берётся из кода: тексты промптов лежат
  * в `docs/`, вне публичного репозитория.
  *
- * База данных здесь не нужна: регистр версий и учёт расхода покрыты
- * интеграционными тестами, а живьём надо проверить именно модель.
+ * **База нужна — для учёта расхода** (задача 3.82). Раньше здесь стояло
+ * «база не нужна: учёт покрыт тестами», и это оказалось частью корневой
+ * причины 05.09.2026: вызовы этого скрипта не попадали ни в учёт, ни в
+ * отчёт по базам, ни под потолок. Цена в терминале жила до закрытия окна.
  *
  * Запуск:
  *   AI_PROVIDER=yandex YANDEX_API_KEY=… YANDEX_FOLDER_ID=… \
@@ -83,6 +91,28 @@ const stage = STAGES[stageName as keyof typeof STAGES];
 const env = modelEnvSchema.parse(process.env);
 const provider = createLlmProvider(env, { light: stage.light });
 
+/** Обвязке нужен журнал; сам скрипт говорит с человеком печатью. */
+const parseLogger = createLogger({ level: 'warn' });
+
+/**
+ * Учёт и потолок расхода (задача 3.82).
+ *
+ * **Инструмент подбора — тоже деньги.** Этот скрипт гоняют подряд,
+ * разбирая живые записи, и до этой правки ни один его вызов не попадал
+ * ни в учёт, ни в отчёт по базам, ни под потолок. Из таких вызовов и
+ * собралось расхождение отчёта со счётом, стоившее гранта 05.09.2026:
+ * отчёт показывал 856 ₽ при потраченных ≈5 900 ₽.
+ */
+const db = getDb();
+const guard = createRunGuard({ db, env, logger: parseLogger, startedAt: new Date() });
+const refusedByCeiling = await guard.checkBefore();
+
+if (refusedByCeiling !== undefined) {
+  process.stderr.write(`Замер не начат: ${refusedByCeiling}${String.fromCharCode(10)}`);
+  await closeDb();
+  process.exit(3);
+}
+
 const prompt = (await readFile(promptPath, 'utf8')).trim();
 const rawInput = (await readFile(inputPath, 'utf8')).trim();
 
@@ -118,17 +148,36 @@ const startedAt = Date.now();
 // Через повтор, а не напрямую: сеть до Яндекса с машины разработчика
 // периодически отваливается по таймауту соединения, и разовый обрыв не
 // должен выглядеть как отказ модели.
-const completion = await withRetry(
-  (attempt) => {
-    if (attempt > 1) process.stdout.write(`  (попытка ${String(attempt)})\n`);
-    return provider.complete({
-      prompt,
-      input,
-      jsonSchema: toJsonSchema(stage.schema),
-    });
+const completion = await meterCall(
+  db,
+  { stage: stageName as AiStage, model: provider.name, promptVersion: basename(promptPath, '.md') },
+  async () => {
+    const result = await askModel();
+
+    return {
+      value: result,
+      usage: { tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+      ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
+    };
   },
-  { attempts: 3 },
+  { guard: guard.spendGuard },
 );
+
+/** Сам вопрос модели — через повтор, как было. */
+function askModel(): Promise<CompletionResult> {
+  return withRetry(
+    (attempt) => {
+      if (attempt > 1) process.stdout.write(`  (попытка ${String(attempt)})\n`);
+
+      return provider.complete({
+        prompt,
+        input,
+        jsonSchema: toJsonSchema(stage.schema),
+      });
+    },
+    { attempts: 3 },
+  );
+}
 
 const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
 
@@ -212,3 +261,8 @@ process.stdout.write(
     `${String(completion.tokensOut)} на выход.\n` +
     `Стоимость: ${formatCost(cost)}\n`,
 );
+
+process.stdout.write(
+  String.fromCharCode(10) + (await guard.costReport()) + String.fromCharCode(10),
+);
+await closeDb();

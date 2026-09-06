@@ -13,6 +13,7 @@ import { extractUnits } from '../extractor/extractor.service.js';
 import { answerBacklogQuery } from '../backlog/query.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
+import { stepButtons } from '../projects/project-actions.js';
 import { contextOf, nextStepOf } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
@@ -856,6 +857,44 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     };
 
     /**
+     * Слить отложенные правки в черновики (задача 3.82).
+     *
+     * **Зачем.** Правка к сказанному в этой же выгрузке ждёт второго
+     * прохода — тех двух циклов в самом низу. Но между откладыванием и
+     * вторым проходом есть четыре выхода: разбирать нечего, извлечение
+     * не удалось, единиц ноль, классификация не удалась. На любом из них
+     * список отложенных просто перестаёт существовать вместе с областью
+     * видимости: ни записи, ни черновика, ни слова человеку. А человек в
+     * двух из четырёх случаев читает «ничего не потерялось».
+     *
+     * Поэтому у каждого выхода — слив: слова уходят в черновик, и
+     * обещание становится правдой. Возвращает число слитых, чтобы выход,
+     * который иначе ответил бы «расскажешь, что в голове?», не спрашивал
+     * этого у человека, только что сказавшего своё.
+     */
+    const parkPending = async (reason: string): Promise<number> => {
+      const pending = [...searchOwnBatch, ...searchEverywhere];
+      if (pending.length === 0) return 0;
+
+      // Очистка до записи: повторный вызов ниже не должен положить то же
+      // дважды, а выходы стоят на четырёх разных путях.
+      searchOwnBatch.length = 0;
+      searchEverywhere.length = 0;
+
+      for (const segment of pending) {
+        happened.parked = true;
+        await saveDraft(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: segment.text,
+          reason,
+        });
+      }
+
+      return pending.length;
+    };
+
+    /**
      * Разбор одной правки.
      *
      * `ownBatchOnly` ставит второй проход: он ищет цель только среди
@@ -910,6 +949,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
           ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
           ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+          // Вектор вопроса — платный вызов: под потолок его тоже (3.82).
+          ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
         },
         { userId: batch.userId, text: question, batchId: batch.id, now },
       );
@@ -928,7 +969,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { item: answer.item, userId: batch.userId, batchId: batch.id },
         );
 
-        await tell(describeProject(answer.item, await contextOf(db, answer.item.id), texts));
+        const context = await contextOf(db, answer.item.id);
+
+        /**
+         * И кнопка ближайшему шагу (задача 3.82). Без неё §21 п.6 обещал
+         * показать «что уже решено», а закрыть шаг было нечем: раздел
+         * «Сделано» не мог наполниться никогда.
+         */
+        await tell(describeProject(answer.item, context, texts), stepButtons(context.next, texts));
 
         continue;
       }
@@ -959,6 +1007,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (parsed.length === 0) {
+      // Отложенные правки второго прохода не дождутся: ниже этой ветки
+      // обработка не идёт. Их слова — в черновики.
+      const parkedHere = await parkPending(
+        'правка ждала разбора выгрузки, а разбирать было нечего',
+      );
+
       // Правки без новых мыслей тоже меняют ветки — обновить надо здесь,
       // потому что ниже этой ветки обработка уже не идёт.
       await refreshTouched(
@@ -997,6 +1051,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
           { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
         ]);
+      } else if (parkedHere > 0) {
+        /**
+         * Слова сохранены — так и говорим. «Расскажешь, что в голове?»
+         * человеку, который только что сказал своё, читается как «я
+         * тебя не услышала».
+         */
+        await answer(texts.answer.savedUnparsed);
       } else if (deferred.length === 0 && !happened.said) {
         /**
          * «Я здесь. Расскажешь, что в голове?» — только когда сказать
@@ -1028,6 +1089,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     });
 
     if (!extracted.ok) {
+      await parkPending('правка ждала разбора выгрузки, а извлечение не удалось');
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
@@ -1039,7 +1101,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     if (extracted.units.length === 0) {
-      await answer(texts.answer.nothingToParse);
+      const parkedHere = await parkPending(
+        'правка ждала разбора выгрузки, а единиц в ней не нашлось',
+      );
+
+      // Сказанное сохранено — обещание правдиво; иначе прежняя реплика.
+      await answer(parkedHere > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse);
       return;
     }
 
@@ -1089,6 +1156,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     });
 
     if (!classified.ok) {
+      await parkPending('правка ждала разбора выгрузки, а классификация не удалась');
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,

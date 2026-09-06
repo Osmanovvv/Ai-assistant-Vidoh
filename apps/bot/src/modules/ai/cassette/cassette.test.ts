@@ -9,7 +9,7 @@ import {
   ReplayLlmProvider,
   CASSETTE_LLM_MODEL,
 } from './provider.js';
-import { CassettePlayer, CassetteRecorder, keyOf, vectorKeyOf } from './store.js';
+import { CassettePlayer, CassetteRecorder, keyOf, vectorKeyOf, parseCassette } from './store.js';
 import type { CompletionRequest, CompletionResult, LlmProvider } from '../providers/types.js';
 import type { EmbedResult, EmbeddingProvider } from '../../embedder/providers/types.js';
 
@@ -344,5 +344,45 @@ describe('ключ запроса', () => {
     });
 
     expect(shifted).toBe(today);
+  });
+});
+
+describe('разбор записи', () => {
+  /**
+   * Один разбор на всех читателей (задача 3.82).
+   *
+   * До неё проверенная `loadCassette` стояла без вызовов, а сеанс
+   * воспроизведения разбирал файл своей копией — без страховок. Записи
+   * без поля `vectors` он ронял, а пустую модель уносил в отчёт
+   * пустотой. Здесь проверяется ровно то, на чём копии расходились.
+   */
+  const minimal = JSON.stringify({
+    recordedAt: '2026-09-06T10:00:00.000Z',
+    entries: [{ key: 'a', stage: 'router', model: 'x', answer: '{}' }],
+  });
+
+  it('запись без векторов читается, а не роняет прогон', () => {
+    const file = parseCassette(minimal, 'к.json');
+
+    expect(file.vectors).toEqual([]);
+    expect(file.entries).toHaveLength(1);
+  });
+
+  it('мусор вместо векторов не становится векторами', () => {
+    const file = parseCassette(
+      JSON.stringify({ recordedAt: '2026-09-06T10:00:00.000Z', entries: [], vectors: 'нет' }),
+      'к.json',
+    );
+
+    expect(file.vectors).toEqual([]);
+  });
+
+  it('модель без имени называется словом, а не пустотой', () => {
+    expect(parseCassette(minimal, 'к.json').model).toBe('неизвестно');
+  });
+
+  it('чужой файл отвергается с именем файла в отказе', () => {
+    expect(() => parseCassette('{"что-то": 1}', 'чужое.json')).toThrow('чужое.json');
+    expect(() => parseCassette('не json', 'битое.json')).toThrow('битое.json');
   });
 });
