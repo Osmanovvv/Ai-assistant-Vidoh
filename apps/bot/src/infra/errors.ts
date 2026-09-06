@@ -1,4 +1,9 @@
-import { AccessDeniedError, PermanentError, TransientError } from './failures.js';
+import {
+  AccessDeniedError,
+  PermanentError,
+  SpendCeilingError,
+  TransientError,
+} from './failures.js';
 
 /**
  * Различение временных и постоянных сбоев (задачи 1.11 и 1.18).
@@ -87,16 +92,49 @@ export function isTransientFailure(error: unknown, depth = 0): boolean {
  * тратить нечестно.
  */
 export function isAccessFailure(error: unknown, depth = 0): boolean {
+  return matches(error, (one) => one instanceof AccessDeniedError, depth);
+}
+
+/**
+ * Наш простой: отказ в доступе или перейдённый потолок расхода
+ * (задачи 3.72 и 3.79).
+ *
+ * **Одно понятие, потому что решение одно.** Для человека разницы нет:
+ * в обоих случаях модель недоступна не по его вине, слова обязаны
+ * дождаться, попытки на это тратить нечестно, а нам надо узнать сразу.
+ * Разводить это на две ветки в конвейере значило бы, что вторая однажды
+ * отстанет от первой.
+ *
+ * Различает их только текст: он идёт в оповещение и в журнал.
+ */
+export function isOwnOutage(error: unknown, depth = 0): boolean {
+  return matches(
+    error,
+    (one) => one instanceof AccessDeniedError || one instanceof SpendCeilingError,
+    depth,
+  );
+}
+
+/**
+ * Обход цепочки причин одним правилом.
+ *
+ * Вынесен потому, что таких предикатов стало три, и списанные друг с
+ * друга обходы однажды разойдутся: `undici` прячет причину на два-три
+ * уровня вглубь, а `AggregateError` от перебора адресов раскрывается
+ * отдельно. Забыть это в одном из трёх — значит получить предикат,
+ * который врёт только иногда.
+ */
+function matches(error: unknown, predicate: (one: object) => boolean, depth: number): boolean {
   if (depth > MAX_CAUSE_DEPTH || typeof error !== 'object' || error === null) return false;
 
-  if (error instanceof AccessDeniedError) return true;
+  if (predicate(error)) return true;
 
   if (error instanceof AggregateError) {
     for (const nested of error.errors) {
-      if (isAccessFailure(nested, depth + 1)) return true;
+      if (matches(nested, predicate, depth + 1)) return true;
     }
   }
 
   const cause = (error as { cause?: unknown }).cause;
-  return cause === undefined ? false : isAccessFailure(cause, depth + 1);
+  return cause === undefined ? false : matches(cause, predicate, depth + 1);
 }

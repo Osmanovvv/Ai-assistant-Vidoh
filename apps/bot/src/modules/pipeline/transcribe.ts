@@ -5,6 +5,7 @@ import { messagesRaw, type Batch } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { combineBatch } from '../buffer/buffer.service.js';
 import type { ModelPricing } from '../metering/pricing.js';
+import type { SpendGuard } from '../metering/spend-guard.js';
 import type { StatusTarget } from '../presenter/status.service.js';
 import type { AudioLimits } from '../speech/audio.service.js';
 import type { SpeechProvider } from '../speech/providers/types.js';
@@ -35,6 +36,14 @@ export interface TranscribeDeps {
   readonly download: (fileId: string, destPath: string) => Promise<void>;
   readonly language?: string | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Потолок расхода (задача 3.79). Не задан — ничего не меняется.
+   *
+   * Речь стоит денег того же счёта, и при перейдённом потолке платить за
+   * расшифровку, чтобы потом отказать на разборе, — худшее из решений:
+   * деньги ушли, ответа нет.
+   */
+  readonly spendGuard?: SpendGuard | undefined;
   readonly limits?: AudioLimits | undefined;
   readonly logger?: Logger | undefined;
 }
@@ -161,6 +170,7 @@ export async function transcribeBatch(
     download: deps.download,
     language: deps.language,
     pricing: deps.pricing,
+    spendGuard: deps.spendGuard,
     limits: deps.limits,
     // Нужен одному замеру паузы (задача 3.59, шаг 1): поведение не
     // меняется, числа идут только в журнал.

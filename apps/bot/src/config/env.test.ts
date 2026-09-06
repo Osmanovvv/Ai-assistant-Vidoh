@@ -166,29 +166,65 @@ describe('адрес политики конфиденциальности', () 
 });
 
 describe('productionWarnings', () => {
-  it('молчит на настоящих адресах', () => {
-    expect(productionWarnings(parseEnv(valid))).toEqual([]);
+  /**
+   * **Три случая ниже переписаны 06.09.2026 (задача 3.79).**
+   *
+   * Они сверяли **точный состав** предупреждений, и добавление нового
+   * их уронило — правильно уронило: список этот и должен требовать
+   * объяснения на каждую новую строку.
+   *
+   * Появилось предупреждение про незаданный потолок расхода. Коренная
+   * причина аварии 05.09.2026 — «никто не заметил», а потолок выключен
+   * по умолчанию; значит о его отсутствии надо говорить при каждом
+   * старте, иначе защита существует только в чьей-то памяти.
+   *
+   * Поэтому в настройке «всё хорошо» теперь задан и потолок.
+   */
+  const withCeiling = { ACCOUNT_SPEND_DAILY_RUB: '300' };
+
+  it('молчит на настоящих адресах и при заданном потолке', () => {
+    expect(productionWarnings(parseWith(withCeiling))).toEqual([]);
   });
 
   it('ловит заглушку из .env.example в публичном адресе', () => {
-    const env = parseWith({ PUBLIC_URL: 'https://example.invalid' });
+    const env = parseWith({ ...withCeiling, PUBLIC_URL: 'https://example.invalid' });
 
     expect(productionWarnings(env)).toContain('PUBLIC_URL указывает на заглушку из .env.example');
   });
 
   it('ловит заглушку в адресе политики', () => {
-    const env = parseWith({ PRIVACY_POLICY_URL: 'https://example.invalid/privacy' });
+    const env = parseWith({
+      ...withCeiling,
+      PRIVACY_POLICY_URL: 'https://example.invalid/privacy',
+    });
 
     expect(productionWarnings(env)).toHaveLength(1);
   });
 
   it('сообщает про обе заглушки сразу', () => {
     const env = parseWith({
+      ...withCeiling,
       PUBLIC_URL: 'https://example.invalid',
       PRIVACY_POLICY_URL: 'https://example.invalid/privacy',
     });
 
     expect(productionWarnings(env)).toHaveLength(2);
+  });
+
+  it('говорит, что потолка расхода нет вовсе', () => {
+    /**
+     * Ради этого предупреждение и добавлено: «выключен по умолчанию» —
+     * правильная гарантия неухудшения, но если о выключенном страже
+     * никто не скажет, повторение 05.09.2026 пройдёт ровно так же.
+     */
+    const warnings = productionWarnings(parseEnv(valid));
+
+    expect(warnings.some((one) => one.includes('потолок расхода не задан'))).toBe(true);
+  });
+
+  it('одного из двух потолков достаточно, чтобы не ругаться', () => {
+    // Суточный и общий — независимые: задан любой, присмотр есть.
+    expect(productionWarnings(parseWith({ ACCOUNT_SPEND_CEILING_RUB: '3000' }))).toEqual([]);
   });
 });
 

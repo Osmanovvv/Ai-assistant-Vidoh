@@ -7,6 +7,7 @@ import { messagesRaw } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { meterCall } from '../metering/ai-calls.repo.js';
 import { SPEECH_BILLING_BLOCK_SEC, type ModelPricing } from '../metering/pricing.js';
+import type { SpendGuard } from '../metering/spend-guard.js';
 import { attribute } from './attribution.js';
 import { pauseStats } from './pauses.js';
 import { groupVoices } from './grouping.js';
@@ -43,6 +44,18 @@ export interface TranscribeDeps {
   readonly timeoutMs?: number | undefined;
   readonly language?: string | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Потолок расхода (задача 3.79). Не задан — ничего не меняется.
+   *
+   * **Добавлен по встречной проверке 06.09.2026.** Сперва страж стоял
+   * только на пути модели, и получалось хуже, чем кажется: при
+   * перейдённом потолке новое голосовое сперва **оплачивалось**, а
+   * потом падало на разборе — деньги ушли, ответа нет. А если бы
+   * голосовые тестовой группы съели потолок сами, страж выключил бы
+   * модель, то есть единственное, что даёт человеку пользу, и оставил
+   * включённой речь, то есть один расход.
+   */
+  readonly spendGuard?: SpendGuard | undefined;
   /**
    * Журнал: пока нужен одному замеру паузы (задача 3.59, шаг 1).
    *
@@ -122,7 +135,7 @@ export async function transcribeMessage(
             usage: { audioSeconds: result.audioSeconds },
           };
         },
-        { pricing: deps.pricing },
+        { pricing: deps.pricing, guard: deps.spendGuard },
       );
 
       texts.push(text.trim());
@@ -242,7 +255,7 @@ async function transcribeGroup(
 
           return { value: result, usage: { audioSeconds: result.audioSeconds } };
         },
-        { pricing: deps.pricing },
+        { pricing: deps.pricing, guard: deps.spendGuard },
       );
 
       // Времена приходят от начала части, а границы сообщений считаны от

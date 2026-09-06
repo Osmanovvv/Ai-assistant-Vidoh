@@ -10,7 +10,7 @@ import { createRedis } from '../../infra/redis.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
-import { AccessDeniedError } from '../../infra/failures.js';
+import { AccessDeniedError, SpendCeilingError } from '../../infra/failures.js';
 import { TransientSpeechError } from '../speech/providers/types.js';
 import { processUserBatches } from './pipeline.service.js';
 
@@ -361,6 +361,33 @@ describe('доступ к моделям закрыт', () => {
     // ложь — «попробуй ещё раз». Второе здесь было бы обманом.
     expect(reports).toEqual([{ retryable: true }]);
     expect((await batchById(batchId))?.status).toBe('queued');
+  });
+
+  it('перейдённый потолок расхода ведёт себя так же', async () => {
+    /**
+     * **Задача 3.79.** Для человека разницы нет: модель недоступна не по
+     * его вине. Значит и решение то же — выгрузка ждёт, попытку не
+     * тратит. Разведи это на две ветки, и вторая однажды отстанет от
+     * первой; поэтому в конвейере одно понятие «наш простой».
+     */
+    const batchId = await queuedBatch('надо записаться к врачу', 0);
+
+    for (let attempt = 0; attempt < 7; attempt++) {
+      await expect(
+        processUserBatches(
+          {
+            db: testDb(),
+            lock,
+            handleBatch: failWith(new SpendCeilingError('потолок расхода за сутки перейдён')),
+          },
+          userId,
+        ),
+      ).rejects.toThrow(/потолок расхода/u);
+    }
+
+    const batch = await batchById(batchId);
+    expect(batch?.status).toBe('queued');
+    expect(batch?.attempts).toBe(0);
   });
 
   it('вернувшийся доступ разбирает те же слова', async () => {

@@ -281,7 +281,13 @@ async function withEmbeddings(
   for (const item of classified) {
     try {
       const embedding = await embedText(
-        { db, provider: embedder, logger: deps.logger, pricing: deps.ai.pricing },
+        {
+          db,
+          provider: embedder,
+          logger: deps.logger,
+          pricing: deps.ai.pricing,
+          spendGuard: deps.ai.spendGuard,
+        },
         { text: item.text, purpose: 'document', userId: batch.userId, batchId: batch.id },
       );
       result.push({ ...item, embedding });

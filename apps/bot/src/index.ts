@@ -24,7 +24,7 @@ import { WEBHOOK_PATH, getEnv, productionWarnings } from './config/env.js';
 import { closeDb, getDb, pingDb } from './infra/db.js';
 import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
-import { isAccessFailure } from './infra/errors.js';
+import { isOwnOutage } from './infra/errors.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import {
   createQueue,
@@ -43,7 +43,9 @@ import { recoverStuckBatches } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
 import { createDumpHandler } from './modules/pipeline/dump.handler.js';
 import { createFailureReporter } from './modules/pipeline/failure-notice.js';
+import { ceilingFromEnv, rublesOf } from './modules/metering/account-spend.js';
 import { limitFromEnv } from './modules/metering/limits.js';
+import { createSpendGuard } from './modules/metering/spend-guard.js';
 import { downloadTelegramFile } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
 import { PromptRegistry } from './modules/ai/prompts/registry.js';
@@ -134,6 +136,65 @@ async function main(): Promise<void> {
   const llm = createLlmProvider(env);
   const llmLight = createLlmProvider(env, { light: true });
   const embedder = createEmbeddingProvider(env);
+
+  /**
+   * Страж расхода — один на процесс (задача 3.79).
+   *
+   * Один, потому что у него свой счёт между чтениями базы и своя память
+   * о том, о чём уже предупредил: два стража предупредили бы дважды и
+   * считали бы каждый своё.
+   *
+   * Потолки не заданы — страж пустой и на горячем пути не делает ничего.
+   */
+  const spendGuard = createSpendGuard({
+    db,
+    ceilings: {
+      ...(ceilingFromEnv(env.ACCOUNT_SPEND_CEILING_RUB) === undefined
+        ? {}
+        : { total: ceilingFromEnv(env.ACCOUNT_SPEND_CEILING_RUB) }),
+      ...(ceilingFromEnv(env.ACCOUNT_SPEND_DAILY_RUB) === undefined
+        ? {}
+        : { daily: ceilingFromEnv(env.ACCOUNT_SPEND_DAILY_RUB) }),
+    },
+    warnShare: env.ACCOUNT_SPEND_WARN_SHARE,
+    logger,
+    /**
+     * Оповещение сразу, а не по доле ошибок.
+     *
+     * Доля считается по окну не меньше десяти наблюдений, а разборов у
+     * бота один-два в час: о том, что деньги кончаются, мониторинг
+     * молчал бы сутками (тот же довод, что в 3.72).
+     */
+    /**
+     * Сломавшийся страж тоже слышен (находка встречной проверки).
+     *
+     * Мёртвый страж и страж под потолком снаружи выглядят одинаково:
+     * тихо. Ровно так и потеряли деньги 05.09.2026.
+     */
+    onBroken: (window, error) => {
+      void monitor.alert({
+        key: `spend-broken-${window}`,
+        title: 'Страж расхода не может прочитать расход — счёт без присмотра',
+        details: {
+          окно: window === 'day' ? 'сутки' : 'всё время',
+          причина: error instanceof Error ? error.message.slice(0, 200) : String(error),
+        },
+      });
+    },
+    onWarn: (notice) => {
+      void monitor.alert({
+        key: `spend-${notice.window}-${notice.exceeded ? 'over' : 'warn'}`,
+        title: notice.exceeded
+          ? 'Потолок расхода перейдён — обращения к модели остановлены'
+          : 'Расход подходит к потолку',
+        details: {
+          окно: notice.window === 'day' ? 'сутки' : 'всё время',
+          потрачено: `${rublesOf(notice.verdict.spentMicros)} ₽`,
+          потолок: `${rublesOf(notice.verdict.ceilingMicros)} ₽`,
+        },
+      });
+    },
+  });
   logger.info(
     { llm: llm.name, light: llmLight.name, embedder: embedder.name },
     'Провайдеры разбора выбраны',
@@ -179,11 +240,12 @@ async function main(): Promise<void> {
       download: (fileId, destPath) => downloadTelegramFile(bot.api, fileId, destPath),
       language: env.SPEECH_LANGUAGE,
       logger,
+      spendGuard,
     },
     // Один реестр промптов на процесс: он кэширует активные версии, и
     // отдельный на каждую выгрузку сводил бы кэш к нулю.
-    ai: { provider: llm, prompts, logger },
-    aiLight: { provider: llmLight, prompts, logger },
+    ai: { provider: llm, prompts, logger, spendGuard },
+    aiLight: { provider: llmLight, prompts, logger, spendGuard },
     // §10.5: мягкий лимит расхода. Не задан — ограничение выключено.
     spendLimit: limitFromEnv(env.SPEND_LIMIT_RUB),
     // §3.8в: выключено, пока порог «это одно и то же дело» не измерен на
@@ -280,10 +342,10 @@ async function main(): Promise<void> {
      * Отказ в доступе шумом не бывает. Одного достаточно; дребезг
      * гасится общим правилом молчания по ключу.
      */
-    if (isAccessFailure(error)) {
+    if (isOwnOutage(error)) {
       void monitor.alert({
         key: 'access-denied',
-        title: 'Доступ к моделям закрыт — бот не разбирает выгрузки',
+        title: 'Модель недоступна — бот не разбирает выгрузки',
         details: { причина: error.message.slice(0, 200) },
       });
     }
@@ -321,7 +383,11 @@ async function main(): Promise<void> {
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
   registerReturningHandlers(bot, db, logger);
-  registerQuestionHandlers(bot, { db, ai: { db, provider: llm, prompts, logger }, logger });
+  registerQuestionHandlers(bot, {
+    db,
+    ai: { db, provider: llm, prompts, logger, spendGuard },
+    logger,
+  });
 
   bot.catch(({ error }) => {
     logger.error({ err: error }, 'Ошибка в обработчике апдейта');
