@@ -1,4 +1,5 @@
 import type { Executor } from '../infra/db.js';
+import type { SettingsRegistry } from '../modules/settings/settings.repo.js';
 import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
 import express, {
   type ErrorRequestHandler,
@@ -36,6 +37,8 @@ export interface ServerDeps {
   readonly adminStaticDir?: string | undefined;
   /** База для разделов панели. Без неё у панели есть только вход. */
   readonly adminDb?: Executor | undefined;
+  /** Реестр значений: раздел настроек правит его и сбрасывает кэш (4.9). */
+  readonly adminSettings?: SettingsRegistry | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
   readonly webhookPath?: string;
   readonly webhookHandler?: RequestHandler;
@@ -146,6 +149,7 @@ export function createServer(deps: ServerDeps): Express {
         config: deps.admin,
         ...(deps.adminStaticDir === undefined ? {} : { staticDir: deps.adminStaticDir }),
         ...(deps.adminDb === undefined ? {} : { db: deps.adminDb }),
+        ...(deps.adminSettings === undefined ? {} : { settings: deps.adminSettings }),
         ...(deps.onError === undefined ? {} : { onError: deps.onError }),
       }).router,
     );

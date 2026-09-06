@@ -188,6 +188,33 @@ export function personCard(userId: string): Promise<PersonCard> {
   return call<PersonCard>(`/people/${encodeURIComponent(userId)}`);
 }
 
+// ── Настройки (§15, задача 4.9) ──────────────────────────────────────
+
+export interface SettingRow {
+  readonly name: string;
+  readonly key: string;
+  readonly value: number;
+  readonly fallback: number;
+  /** Значение получено замером: правка вслепую ломает проверенное. */
+  readonly measured: boolean;
+  /** Задано в базе или работает умолчание из кода. */
+  readonly set: boolean;
+}
+
+export interface SettingsPage {
+  readonly rows: readonly SettingRow[];
+  /** Чего §15 просит, а здесь пока нет — словами. */
+  readonly missing: readonly string[];
+}
+
+export function settings(): Promise<SettingsPage> {
+  return call<SettingsPage>('/settings');
+}
+
+export function putSetting(name: string, value: string): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>('/settings', { name, value });
+}
+
 /** Кто вошёл. Отказ означает, что пропуска нет. */
 export function whoAmI(): Promise<{ login: string }> {
   return call<{ login: string }>('/me');

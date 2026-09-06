@@ -569,3 +569,82 @@ describe('пробный период и деградация (§14, задач�
     expect(calls.map((call) => call.payload['text'])).not.toContain(defaultTexts.limits.trialOver);
   });
 });
+
+describe('настройка применяется на лету — условие готовности 4.9', () => {
+  /**
+   * §15: числа продукта меняются «без выкладки новой версии». Условие
+   * готовности задачи 4.9 названо про окно тишины именно потому, что
+   * оно читается на **горячем пути**: если бы его запомнили при подъёме
+   * процесса, правка требовала бы перезапуска — то есть выкладки.
+   *
+   * Проверяется наблюдаемое последствие: задание на закрытие выгрузки
+   * ставится с новой задержкой, и **без перезапуска чего бы то ни было**.
+   */
+
+  /** Задержки, с которыми ставились задания на закрытие выгрузки. */
+  function recordingQueue(): { queue: Queue<PipelineJob>; delays: number[] } {
+    const delays: number[] = [];
+
+    return {
+      delays,
+      queue: {
+        getJob: () => Promise.resolve(undefined),
+        add: (_name: string, _data: unknown, options?: { delay?: number }) => {
+          if (options?.delay !== undefined) delays.push(options.delay);
+          return Promise.resolve({});
+        },
+      } as unknown as Queue<PipelineJob>,
+    };
+  }
+
+  it('окно тишины из настроек доходит до задания, а не берётся из кода', async () => {
+    const settings = new SettingsRegistry({ db: testDb(), ttlMs: 60_000 });
+    const { queue, delays } = recordingQueue();
+
+    const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', {
+      botInfo: {
+        id: 1,
+        is_bot: true,
+        first_name: 'ВЫДОХ',
+        username: 'vydoh_test_bot',
+      } as unknown as UserFromGetMe,
+    });
+
+    bot.api.config.use(() =>
+      Promise.resolve({
+        ok: true,
+        result: { message_id: 1, date: 0, chat: { id: TG_ID, type: 'private' } },
+      } as never),
+    );
+
+    bot.use(incomingMiddleware({ db: testDb(), queue, settings }));
+
+    // Умолчание из кода: тридцать секунд.
+    await bot.handleUpdate(textUpdate('первая мысль'));
+    expect(delays.at(-1)).toBe(30_000);
+
+    /**
+     * Правка — и **никакого перезапуска**: ни процесса, ни мидлвара, ни
+     * бота. Сброс кэша делает панель после записи; здесь он вызван
+     * напрямую, потому что панель тут не участвует.
+     */
+    await putSetting(testDb(), { name: 'silenceWindowMs', value: '5000' });
+    settings.forget();
+
+    await bot.handleUpdate(textUpdate('вторая мысль'));
+
+    expect(delays.at(-1)).toBe(5_000);
+  });
+
+  it('суточный потолок из настроек тоже действует сразу', async () => {
+    await putSetting(testDb(), { name: 'dumpsPerDay', value: '1' });
+
+    const settings = new SettingsRegistry({ db: testDb(), ttlMs: 0 });
+    await seedDumps(1);
+
+    const { bot, calls } = createTestBot({ settings });
+    await bot.handleUpdate(textUpdate('купить продукты'));
+
+    expect(calls.map((call) => call.payload['text'])).toContain(defaultTexts.limits.tooManyDumps);
+  });
+});

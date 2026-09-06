@@ -1,10 +1,11 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { aiCalls, batches, items, users } from '../db/schema.js';
+import { aiCalls, appSettings, batches, items, users } from '../db/schema.js';
 import { hashPassword } from '../http/admin/password.js';
 import { createServer } from '../http/server.js';
 import type { Database } from '../infra/db.js';
+import { SettingsRegistry } from '../modules/settings/settings.repo.js';
 import { setupTestDatabase } from '../test/db.js';
 
 /**
@@ -59,6 +60,7 @@ if (seedUrl !== undefined) {
   process.env['TEST_DATABASE_URL'] = seedUrl;
   seeded = await setupTestDatabase();
 
+  await seeded.delete(appSettings);
   await seeded.delete(aiCalls);
   await seeded.delete(users);
 
@@ -126,7 +128,20 @@ if (seedUrl !== undefined) {
 const app = createServer({
   healthChecks: [],
   adminStaticDir: dist,
-  ...(seeded === undefined ? {} : { adminDb: seeded }),
+  ...(seeded === undefined
+    ? {}
+    : {
+        adminDb: seeded,
+        /**
+         * Реестр значений без кэша (задача 4.9).
+         *
+         * Ноль, а не минута: проверка сохраняет значение и сразу читает
+         * его обратно. С кэшем она ждала бы истечения и врала бы про
+         * «применяется сразу» — панель на боевом сбрасывает кэш сама
+         * после записи, и это проверено интеграционным тестом.
+         */
+        adminSettings: new SettingsRegistry({ db: seeded, ttlMs: 0 }),
+      }),
   admin: {
     login: LOGIN,
     passwordHash: await hashPassword(PASSWORD),
