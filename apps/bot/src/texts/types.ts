@@ -201,6 +201,16 @@ export interface TextProfile {
     readonly movedDeadline: (title: string, date: string) => string;
     /** §7.4: подробность дописана, само дело не тронуто. */
     readonly noted: (title: string) => string;
+    /**
+     * Дополнение там, где человек говорил о замене (задача 3.28).
+     *
+     * Он сказал «нет, няня пусть приходит в 9 30», модель разобрала это
+     * дополнением и нового заголовка не дала. Сказать «добавила
+     * подробность» и промолчать про заголовок — значит соврать: в
+     * заголовке осталось прежнее время. Реплика называет и то, что
+     * записано, и то, что осталось как было.
+     */
+    readonly notedTitleKept: (title: string) => string;
     readonly rewrote: (title: string) => string;
     readonly completed: (title: string) => string;
     /**
@@ -218,6 +228,8 @@ export interface TextProfile {
     readonly cancelled: (title: string) => string;
 
     readonly buttonUndo: string;
+    /** Поправить сам заголовок — там же, где отмена (задача 3.28). */
+    readonly buttonEditTitle: string;
     /**
      * Сценарий 8 §2: закрыв запись, бот спрашивает, продолжаем или на
      * сегодня достаточно. Один раз на выгрузку, а не на каждое закрытое

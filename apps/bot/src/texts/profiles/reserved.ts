@@ -157,6 +157,8 @@ export const reserved: TextProfile = {
   resolver: {
     movedDeadline: (title, date) => `Перенесла «${title}» на ${date}.`,
     noted: (title) => `Добавила подробность к «${title}».`,
+    notedTitleKept: (title) =>
+      `Записала это как подробность. Сам заголовок не меняла — там по-прежнему «${title}».`,
     rewrote: (title) => `Поправила: теперь это «${title}».`,
     completed: (title) => `Отметила сделанным: «${title}».`,
     completedRecurring: (title, date) => `Готово. «${title}» — снова ${date}.`,
@@ -165,6 +167,7 @@ export const reserved: TextProfile = {
     cancelled: (title) => `Убрала «${title}». Если что — верну.`,
 
     buttonUndo: 'Отменить',
+    buttonEditTitle: 'Поправить заголовок',
 
     goOn: 'Продолжаем или на сегодня хватит?',
     buttonGoOn: 'Продолжаем',

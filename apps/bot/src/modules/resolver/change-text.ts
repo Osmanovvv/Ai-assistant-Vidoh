@@ -1,3 +1,5 @@
+import { CARD_ACTION } from '../items/card-actions.js';
+import { startsWithReplacement } from '../router/append.js';
 import { localDateParts } from '../classifier/dates.js';
 import type { Applied } from './patch.js';
 import type { StatusButton } from '../presenter/status.service.js';
@@ -24,7 +26,40 @@ function shortDate(at: Date, timeZone: string): string {
   return `${String(parts.day).padStart(2, '0')}.${String(parts.month).padStart(2, '0')}`;
 }
 
-export function describeChange(applied: Applied, texts: TextProfile, timeZone: string): string {
+/**
+ * Заголовок остался прежним, а человек говорил о замене (задача 3.28).
+ *
+ * **Половина этой задачи была закрыта, половина — нет, и вот вторая.**
+ * «нет, няня пусть приходит в 9 30» модель разбирает дополнением: время
+ * уходит в подробности, а в заголовке остаётся прежнее «в 9». Правило
+ * §7.1 («нет», «перенеси», «вместо», «лучше» — закрытый список) уже
+ * заставляет считать такую реплику заменой, но **только если модель дала
+ * новый текст**. Не дала — заменять нечем, и правка остаётся
+ * дополнением.
+ *
+ * Дополнение само по себе не беда: слова человека сохранены и видны. Беда
+ * в реплике «Добавила подробность» — она молчит о том, что заголовок
+ * теперь противоречит сказанному. Человек уходит с ощущением, что его
+ * поняли, а запись врёт.
+ *
+ * **Здесь не догадка, а наблюдение о факте:** признак замены назван
+ * закрытым списком ТЗ, а «заголовок не менялся» видно по списку
+ * изменённых полей. Ни одного решения за человека не принимается —
+ * меняется только то, что ему сказано, и рядом даётся кнопка поправить.
+ */
+export function keptTitleAfterReplacement(applied: Applied, spoken: string | undefined): boolean {
+  if (spoken === undefined || !startsWithReplacement(spoken)) return false;
+
+  return applied.fields.includes('body') && !applied.fields.includes('text');
+}
+
+export function describeChange(
+  applied: Applied,
+  texts: TextProfile,
+  timeZone: string,
+  /** Сказанное человеком: по нему видно, говорил ли он о замене. */
+  spoken?: string,
+): string {
   const { after, fields } = applied;
   const resolver = texts.resolver;
 
@@ -51,7 +86,11 @@ export function describeChange(applied: Applied, texts: TextProfile, timeZone: s
 
   // §7.4 идёт первым: дополнение не трогает ни заголовок, ни срок, и
   // сказать о нём надо именно как о дополнении.
-  if (fields.includes('body')) return resolver.noted(after.text);
+  if (fields.includes('body')) {
+    return keptTitleAfterReplacement(applied, spoken)
+      ? resolver.notedTitleKept(after.text)
+      : resolver.noted(after.text);
+  }
 
   if (fields.includes('status')) {
     return after.status === 'done'
@@ -88,6 +127,38 @@ export const UNDO_PREFIX = 'u:';
 
 export function undoButtons(revisionId: string, texts: TextProfile): readonly StatusButton[] {
   return [{ label: texts.resolver.buttonUndo, action: `${UNDO_PREFIX}${toShortId(revisionId)}` }];
+}
+
+/**
+ * Кнопки к правке: отмена всегда, а поправить заголовок — когда он
+ * остался противоречить сказанному (задача 3.28).
+ *
+ * Кнопка ведёт в тот же обработчик, что и «Изменить» на карточке: бот
+ * попросит написать новый заголовок словами (задача 3.61). Своего
+ * обработчика ей не нужно — нужен только тот же префикс, поэтому он и
+ * вынесен в `modules/items/card-actions.ts`.
+ *
+ * **Вопроса здесь нет намеренно.** Спросить «заменить или оставить
+ * подробностью» значило бы задать вопрос там, где ответ уже сказан, — а
+ * §13.9 просит не переспрашивать. Бот делает то, что понял, честно
+ * говорит, чего не сделал, и даёт это исправить одним нажатием.
+ */
+export function changeButtons(
+  applied: Applied,
+  texts: TextProfile,
+  spoken?: string,
+): readonly StatusButton[] {
+  const undo = undoButtons(applied.revisionId, texts);
+
+  if (!keptTitleAfterReplacement(applied, spoken)) return undo;
+
+  return [
+    ...undo,
+    {
+      label: texts.resolver.buttonEditTitle,
+      action: `${CARD_ACTION.edit}${toShortId(applied.after.id)}`,
+    },
+  ];
 }
 
 /**
