@@ -3121,6 +3121,163 @@ describe('быстрое добавление (§13.3, задача 3.9)', () =>
   });
 });
 
+describe('пробный период тратит только разобранная выгрузка (§14, задача 4.3)', () => {
+  /**
+   * §14 считает пробный период выгрузками, а план 4.3 уточняет:
+   * «быстрые добавления не считаются — только выгрузки с разбором».
+   *
+   * Проверяется отметка в базе, а не поведение гейта: гейт проверен у
+   * приёма сообщений, а здесь важно, что́ он потом посчитает. Ошибка в
+   * этом месте тихая — человек просто теряет право раньше срока.
+   */
+
+  /** Отметки траты по всем выгрузкам этого человека. */
+  async function trialMarks(): Promise<(Date | null)[]> {
+    const rows = await testDb()
+      .select({ mark: batches.trialCountedAt })
+      .from(batches)
+      .where(eq(batches.userId, userId))
+      .orderBy(asc(batches.openedAt));
+
+    return rows.map((row) => row.mark);
+  }
+
+  it('разобранная выгрузка тратит', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты и врача', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts }),
+      },
+      userId,
+    );
+
+    const marks = await trialMarks();
+
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).not.toBeNull();
+  });
+
+  it('быстрое добавление не тратит — план 4.3 требует прямо', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'добавь ещё купить витамины', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    // Сперва убедимся, что режим действительно включился: иначе
+    // проверка прошла бы на обычной выгрузке и ничего не значила.
+    expect(all.at(-1)).toBe(defaultTexts.answer.added);
+    expect((await trialMarks())[0]).toBeNull();
+  });
+
+  it('«привет» не тратит: разбирать было нечего', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    expect((await trialMarks())[0]).toBeNull();
+  });
+
+  it('сбой извлечения не тратит: человек не платит за нашу поломку', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты', offsetMs: 0 }]);
+
+    const llm = echoingLlm({ extractor: 'это не JSON' });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+      },
+      userId,
+    );
+
+    expect((await trialMarks())[0]).toBeNull();
+  });
+
+  it('повторная обработка не тратит дважды', async () => {
+    /**
+     * Конвейер возвращает выгрузку в очередь при временном сбое — то
+     * есть повтор здесь не теоретический. Отметка идемпотентна: она
+     * ставится только на пустое поле.
+     */
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты и врача', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts }),
+      },
+      userId,
+    );
+
+    expect((await trialMarks())[0]).not.toBeNull();
+
+    /**
+     * Отметке ставится заведомо другое время, и только потом идёт второй
+     * разбор.
+     *
+     * Первая версия проверки сравнивала время до и после — и прошла под
+     * диверсией, снявшей условие `isNull`: часы разбора в тесте
+     * фиксированные, поэтому перезапись давала ровно то же значение.
+     * Проверка, которая не может покраснеть, годится только на то,
+     * чтобы её отключили.
+     */
+    const stamped = new Date('2026-01-01T00:00:00.000Z');
+
+    await testDb()
+      .update(batches)
+      .set({ status: 'queued', trialCountedAt: stamped })
+      .where(eq(batches.userId, userId));
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts }),
+      },
+      userId,
+    );
+
+    const marks = await trialMarks();
+
+    // Выгрузка одна, отметка одна, и время у неё прежнее: второй разбор
+    // права человека не потратил и отметку не тронул.
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.getTime()).toBe(stamped.getTime());
+  });
+});
+
 describe('вопрос по бэклогу ничего не создаёт (§13.4, задача 3.10)', () => {
   /**
    * План просит интеграционный тест со счётчиком созданных записей —
