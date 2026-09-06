@@ -6,6 +6,9 @@ import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/r
 import { runDataset } from '../eval/runner.js';
 import { modelEnvSchema } from '../config/env.js';
 import { closeDb, getDb } from '../infra/db.js';
+import { ceilingFromEnv } from '../modules/metering/account-spend.js';
+import { costLine, runCost } from '../modules/metering/run-cost.js';
+import { createSpendGuard } from '../modules/metering/spend-guard.js';
 import { createLogger } from '../infra/logger.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
@@ -58,9 +61,53 @@ async function previousRun(runs: string): Promise<EvalReport | undefined> {
   }
 }
 
+/**
+ * Отметка начала прогона — до первого обращения к модели (задача 3.79).
+ *
+ * По ней в конце считается цена **этого** прогона. Ставится здесь, а не
+ * внутри: всё, что записалось в учёт после неё, прогоном и потрачено.
+ */
+const startedAt = new Date();
+
 try {
   const cases = await loadDataset(directory);
   logger.info({ случаев: cases.length }, 'Набор загружен');
+
+  /**
+   * Потолок расхода проверяется **до** прогона (задача 3.79).
+   *
+   * Прогон набора стоит 42–350 ₽ и делается по многу раз в день. Узнать
+   * о перейдённом потолке после того, как деньги ушли, — то же, что не
+   * узнать: именно так 05.09.2026 и кончился грант.
+   */
+  const ceilings = {
+    ...(ceilingFromEnv(env.ACCOUNT_SPEND_CEILING_RUB) === undefined
+      ? {}
+      : { total: ceilingFromEnv(env.ACCOUNT_SPEND_CEILING_RUB) }),
+    ...(ceilingFromEnv(env.ACCOUNT_SPEND_DAILY_RUB) === undefined
+      ? {}
+      : { daily: ceilingFromEnv(env.ACCOUNT_SPEND_DAILY_RUB) }),
+  };
+
+  const spendGuard = createSpendGuard({
+    db,
+    ceilings,
+    warnShare: env.ACCOUNT_SPEND_WARN_SHARE,
+    logger,
+  });
+
+  try {
+    await spendGuard.beforeCall();
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      ['', `Прогон не начат: ${why}`, 'Поднимите потолок или подождите новых суток.', '', ''].join(
+        '\n',
+      ),
+    );
+    await closeDb();
+    process.exit(3);
+  }
 
   const prompts = new PromptRegistry(db);
   const full = createLlmProvider(env);
@@ -80,8 +127,8 @@ try {
 
   const outcomes = await runDataset(
     {
-      ai: { db, provider: full, prompts, logger },
-      aiLight: { db, provider: light, prompts, logger },
+      ai: { db, provider: full, prompts, logger, spendGuard },
+      aiLight: { db, provider: light, prompts, logger, spendGuard },
       logger,
       owner: owner.id,
     },
@@ -251,7 +298,35 @@ try {
    */
   const nothingMeasured = report.failed === report.cases && report.cases > 0;
 
-  if (nothingMeasured) {
+  /**
+   * Прогон, остановленный потолком, точкой сравнения не становится
+   * (задача 3.79, находка встречной проверки).
+   *
+   * Кончись деньги посреди прогона — страж бросает на каждом следующем
+   * случае, разбор считает их потерянными, и в `runs/` ложится отчёт с
+   * провальной точностью. Следующий прогон сравнится с ним и покажет
+   * «фантастическое улучшение». У этого проекта уже пять случаев, когда
+   * набор мерил не то; шестой будет про деньги, если не остановиться.
+   */
+  const overCeiling = (await spendGuard.report()).some((notice) => notice.exceeded);
+
+  /**
+   * Уточнение по встречной проверке: перейдённый потолок сам по себе
+   * замер не портит.
+   *
+   * Прогон, где все случаи прошли, а последний вызов перевёл расход через
+   * потолок, — годное наблюдение, и выкидывать его значило бы терять
+   * измерение из-за денег. Портит замер другое: случаи, которые не
+   * разобрались. Поэтому признак — оба условия вместе.
+   */
+  const stoppedByCeiling = overCeiling && report.failed > 0;
+
+  if (stoppedByCeiling) {
+    logger.warn(
+      { провалено: report.failed, случаев: report.cases },
+      'Прогон упёрся в потолок расхода — отчёт не сохранён: он мерил бы деньги, а не качество',
+    );
+  } else if (nothingMeasured) {
     logger.warn(
       { случаев: report.cases },
       'Ни один случай не разобрался — прогон не сохранён, чтобы не стать точкой сравнения',
@@ -261,6 +336,21 @@ try {
     const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
     await writeFile(join(runs, `${stamp}.json`), JSON.stringify(report, null, 2), 'utf8');
     logger.info({ файл: `${stamp}.json` }, 'Прогон сохранён');
+  }
+
+  /**
+   * Цена прогона — последней строкой, рядом с итогом.
+   *
+   * В своём try/catch: это три запроса к базе уже после того, как отчёт
+   * сохранён и порог сошёлся. Отвались соединение — и код выхода соврал
+   * бы про **качество** из-за строчки про деньги. Тот же довод, что в
+   * сквозном; здесь обёртку сперва забыли, нашла встречная проверка.
+   */
+  try {
+    const cost = await runCost(db, { startedAt, now: new Date() });
+    process.stdout.write(['', costLine(cost, ceilings), '', ''].join('\n'));
+  } catch (error) {
+    logger.warn({ err: error }, 'Цену прогона посчитать не удалось');
   }
 
   await closeDb();

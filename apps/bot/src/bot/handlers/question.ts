@@ -149,14 +149,31 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
         return;
       }
 
-      await createFromSegment(deps, {
+      const made = await createFromSegment(deps, {
         userId: active.userId,
         batchId: outcome.question.batchId,
         segment: outcome.question.segment,
         timeZone: active.timeZone,
       });
 
-      await ctx.editMessageText(active.texts.resolver.separated);
+      /**
+       * Реплика говорит то, что вышло на самом деле (задача 3.79).
+       *
+       * **Найдено встречной проверкой 06.09.2026.** Разбор здесь может
+       * не просто «не получиться», а **броситься**: модель недоступна,
+       * потолок расхода перейдён, сеть моргнула. Тогда исключение уходило
+       * в общий перехватчик бота, и человек не получал ничего: сообщение
+       * не менялось, записи не появлялось, черновика тоже. А вопрос к
+       * этому моменту уже помечен отвеченным — второе нажатие даёт
+       * «вопрос устарел». Нажал кнопку, увидел молчание, мысль выпала из
+       * работы бота.
+       *
+       * Теперь сорвавшийся разбор кладёт отрезок в черновик (§9.1 —
+       * никогда в никуда) и честно говорит, что не получилось.
+       */
+      await ctx.editMessageText(
+        made ? active.texts.resolver.separated : active.texts.errors.generic,
+      );
     },
   );
 }
@@ -170,6 +187,9 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
  * упрощённая версия однажды разошлась бы с основной.
  *
  * Не разобралось — сегмент уходит в черновик, а не пропадает (§9.1).
+ * Это верно и когда разбор **сорвался**: модель недоступна, потолок
+ * расхода перейдён, сеть моргнула. Возвращает `false`, если записи не
+ * вышло: реплика человеку зависит от того, что получилось.
  */
 async function createFromSegment(
   deps: QuestionDeps,
@@ -179,25 +199,50 @@ async function createFromSegment(
     readonly segment: string;
     readonly timeZone: string;
   },
-): Promise<void> {
+): Promise<boolean> {
   const topics = await topicsFor(deps.db, params.userId);
 
-  const classified = await classifyUnits(deps.ai, {
-    units: [{ text: params.segment, isProject: false, isEmotion: false }],
-    topics: topics.names,
-    defaultTopic: topics.defaultName,
-    timeZone: params.timeZone,
-    userId: params.userId,
-  });
-
-  if (!classified.ok || classified.items.length === 0) {
+  /** Отрезок в черновик — общий путь для «не разобралось» и «сорвалось». */
+  const keep = async (reason: string): Promise<false> => {
     await saveDraft(deps.db, {
       userId: params.userId,
       batchId: params.batchId,
       text: params.segment,
-      reason: 'ответ «это новое», разобрать не удалось',
+      reason,
     });
-    return;
+
+    return false;
+  };
+
+  let classified;
+
+  try {
+    classified = await classifyUnits(deps.ai, {
+      units: [{ text: params.segment, isProject: false, isEmotion: false }],
+      topics: topics.names,
+      defaultTopic: topics.defaultName,
+      timeZone: params.timeZone,
+      userId: params.userId,
+    });
+  } catch (error) {
+    /**
+     * Срыв разбора не должен стоить человеку отрезка.
+     *
+     * Вопрос уже помечен отвеченным, второй раз нажать нельзя — значит
+     * это единственный шанс сохранить сказанное. Ошибка идёт в журнал:
+     * молча проглоченный срыв прячет и недоступность модели, и наш
+     * потолок расхода.
+     */
+    deps.logger.error(
+      { err: error, userId: params.userId },
+      'Разбор отрезка сорвался — отрезок сохранён черновиком',
+    );
+
+    return await keep('ответ «это новое», разбор сорвался');
+  }
+
+  if (!classified.ok || classified.items.length === 0) {
+    return await keep('ответ «это новое», разобрать не удалось');
   }
 
   await saveItems(deps.db, {
@@ -205,4 +250,6 @@ async function createFromSegment(
     batchId: params.batchId,
     items: classified.items,
   });
+
+  return true;
 }

@@ -2,7 +2,7 @@ import { asc } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { aiCalls, promptVersions } from '../../db/schema.js';
-import { TransientError } from '../../infra/failures.js';
+import { SpendCeilingError, TransientError } from '../../infra/failures.js';
 import { createLogger } from '../../infra/logger.js';
 import { testDb } from '../../test/db.js';
 import { requestStructured } from './client.js';
@@ -282,5 +282,123 @@ describe('без активной версии промпта', () => {
     // Денег не потратили.
     expect(provider.callCount).toBe(0);
     expect(await testDb().select().from(aiCalls)).toHaveLength(0);
+  });
+});
+
+/**
+ * Потолок расхода на пути модели (задача 3.79).
+ *
+ * **Здесь проверяется самое опасное место связки.** Обращение к модели
+ * обёрнуто циклом повторов по схеме: не разобрался ответ — заходим
+ * второй раз. Проглоти этот цикл отказ потолка — и превышение
+ * превратилось бы в «модель не ответила», то есть в обычный сбой:
+ * выгрузка потратила бы попытки и умерла, а слова человека пропали бы
+ * из-за нашего бюджета.
+ *
+ * Свойство слишком дорогое, чтобы держаться на чтении кода.
+ */
+describe('потолок расхода', () => {
+  const overCeiling = {
+    beforeCall: () => Promise.reject(new SpendCeilingError('потолок расхода за сутки перейдён')),
+    noteSpent: () => undefined,
+    report: () => Promise.resolve([]),
+  };
+
+  it('отказ потолка проходит наружу, а не становится «моделью не по схеме»', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [VALID] });
+
+    await expect(
+      requestStructured<ExtractedUnits>(
+        { ...deps(provider, prompts), spendGuard: overCeiling },
+        { stage: 'extractor', input: INPUT },
+      ),
+    ).rejects.toBeInstanceOf(SpendCeilingError);
+  });
+
+  it('модель при этом не спрашивается и денег не тратит', async () => {
+    // Если бы проверка стояла после вызова, потолок узнавал бы о
+    // превышении, уже за него заплатив.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [VALID] });
+
+    await expect(
+      requestStructured<ExtractedUnits>(
+        { ...deps(provider, prompts), spendGuard: overCeiling },
+        { stage: 'extractor', input: INPUT },
+      ),
+    ).rejects.toThrow();
+
+    expect(provider.callCount).toBe(0);
+    expect(await testDb().select().from(aiCalls)).toHaveLength(0);
+  });
+
+  it('без стража всё как было', async () => {
+    // Главное обещание правки: не задан потолок — поведение прежнее.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [VALID] });
+
+    const outcome = await requestStructured<ExtractedUnits>(deps(provider, prompts), {
+      stage: 'extractor',
+      input: INPUT,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(await testDb().select().from(aiCalls)).toHaveLength(1);
+  });
+
+  it('страж узнаёт цену удавшегося вызова', async () => {
+    /**
+     * Между чтениями базы счёт ведёт страж, и цену ему брать неоткуда,
+     * кроме как из учёта: без этого кэш на пятнадцать секунд пропускал бы
+     * всё, что потрачено внутри окна.
+     *
+     * Модель названа настоящей нарочно: у выдуманной цены в прайсе нет,
+     * `recordAiCall` вернул бы `null`, и проверка прошла бы вхолостую —
+     * первый заход так и получилось.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [VALID],
+      model: 'yandex:yandexgpt/latest',
+    });
+    const noted: number[] = [];
+
+    await requestStructured<ExtractedUnits>(
+      {
+        ...deps(provider, prompts),
+        spendGuard: {
+          beforeCall: () => Promise.resolve(),
+          noteSpent: (micros) => noted.push(micros),
+          report: () => Promise.resolve([]),
+        },
+      },
+      { stage: 'extractor', input: INPUT },
+    );
+
+    expect(noted).toHaveLength(1);
+    expect(noted[0]).toBeGreaterThan(0);
+  });
+
+  it('цену неизвестной модели страж в счёт не берёт', async () => {
+    // Иначе выдуманное число легло бы в счёт как факт: лучше знать, что
+    // счёт неполон, чем считать по догадке.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [VALID], model: 'модель-без-цены' });
+    const noted: number[] = [];
+
+    await requestStructured<ExtractedUnits>(
+      {
+        ...deps(provider, prompts),
+        spendGuard: {
+          beforeCall: () => Promise.resolve(),
+          noteSpent: (micros) => noted.push(micros),
+          report: () => Promise.resolve([]),
+        },
+      },
+      { stage: 'extractor', input: INPUT },
+    );
+
+    expect(noted).toEqual([]);
   });
 });

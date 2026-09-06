@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { modelEnvSchema } from '../config/env.js';
 import { closeDb, getDb } from '../infra/db.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { createLogger } from '../infra/logger.js';
 import { requestStructured } from '../modules/ai/client.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
@@ -64,7 +65,26 @@ const collecting = {
 } as unknown as typeof logger;
 
 try {
-  const deps = { db, provider: createLlmProvider(env), prompts: new PromptRegistry(db), logger };
+  /**
+   * Потолок расхода (задача 3.79): замер идёт через полную модель, и
+   * деньги те же. Найдено встречной проверкой.
+   */
+  const guard = createRunGuard({ db, env, logger, startedAt: new Date() });
+  const refused = await guard.checkBefore();
+
+  if (refused !== undefined) {
+    process.stderr.write(`Замер не начат: ${refused}${String.fromCharCode(10)}`);
+    await closeDb();
+    process.exit(3);
+  }
+
+  const deps = {
+    db,
+    provider: createLlmProvider(env),
+    prompts: new PromptRegistry(db),
+    logger,
+    spendGuard: guard.spendGuard,
+  };
 
   const extracted = await extractUnits(deps, { input: item.text });
   if (!extracted.ok) throw new Error(`извлечение не удалось: ${extracted.problem}`);

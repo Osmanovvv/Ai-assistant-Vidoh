@@ -10,6 +10,9 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 
 import * as schema from '../db/schema.js';
+import { ceilingFromEnv, rublesOf } from '../modules/metering/account-spend.js';
+import { costLine, runCost } from '../modules/metering/run-cost.js';
+import { createSpendGuard } from '../modules/metering/spend-guard.js';
 import {
   batches,
   items,
@@ -201,6 +204,20 @@ async function cleanup(userId: string): Promise<void> {
   await db.delete(telegramUpdates);
 }
 
+/**
+ * Число из окружения, если оно там есть и это число.
+ *
+ * У сквозного своей схемы окружения нет — он читает `process.env`
+ * напрямую, как и остальные его настройки.
+ */
+function numberFromEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 function startBot(stub: TelegramStub, extra: Record<string, string> = {}): ChildProcess {
   return spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     env: {
@@ -365,8 +382,65 @@ const stub = await startTelegramStub();
 let bot: ChildProcess | undefined;
 let userId = '';
 
+/**
+ * Отметка начала прогона — до первого обращения к модели (задача 3.79).
+ *
+ * По ней в конце печатается цена этого прогона. Полный сквозной стоит
+ * около 200 ₽ и делается по многу раз в день; 05.09.2026 именно это и
+ * сожгло грант, и нигде не было видно ни цены, ни итога.
+ */
+const startedAt = new Date();
+
+/** Потолки расхода из окружения: те же, что читает бот. */
+const ceilings = {
+  ...(ceilingFromEnv(numberFromEnv('ACCOUNT_SPEND_CEILING_RUB')) === undefined
+    ? {}
+    : { total: ceilingFromEnv(numberFromEnv('ACCOUNT_SPEND_CEILING_RUB')) }),
+  ...(ceilingFromEnv(numberFromEnv('ACCOUNT_SPEND_DAILY_RUB')) === undefined
+    ? {}
+    : { daily: ceilingFromEnv(numberFromEnv('ACCOUNT_SPEND_DAILY_RUB')) }),
+};
+
 try {
   await ensureDatabase();
+
+  /**
+   * Потолок проверяется до прогона, а не после.
+   *
+   * Узнать о перейдённом потолке, уже заплатив, — то же, что не узнать.
+   */
+  try {
+    /**
+     * Со своим голосом: без него предупреждение «подходим к потолку»
+     * вычислялось и выбрасывалось (находка встречной проверки 3.79).
+     * Половина смысла стража — успеть сказать до остановки.
+     */
+    await createSpendGuard({
+      db,
+      ceilings,
+      ...(numberFromEnv('ACCOUNT_SPEND_WARN_SHARE') === undefined
+        ? {}
+        : { warnShare: numberFromEnv('ACCOUNT_SPEND_WARN_SHARE') }),
+      onWarn: (notice) => {
+        process.stdout.write(
+          `
+[33mРасход: ${rublesOf(notice.verdict.spentMicros)} ₽ из ` +
+            `${rublesOf(notice.verdict.ceilingMicros)} ₽ ` +
+            `(${notice.window === 'day' ? 'сутки' : 'всё время'})[0m
+`,
+        );
+      },
+    }).beforeCall();
+  } catch (error) {
+    process.stdout.write(
+      `\n[31mПрогон не начат:[0m ${error instanceof Error ? error.message : String(error)}\n` +
+        'Поднимите потолок или подождите новых суток.\n\n',
+    );
+    await stub.close();
+    await pool.end();
+    process.exit(3);
+  }
+
   await seedPrompts();
   userId = await seedUser();
   await cleanup(userId);
@@ -866,6 +940,18 @@ try {
   if (userId !== '') await cleanup(userId).catch(() => undefined);
   bot?.kill('SIGTERM');
   await stub.close();
+
+  /**
+   * Цена прогона печатается и при провале, и при срыве — до закрытия
+   * соединения. Сорвавшийся прогон стоит столько же, сколько удавшийся.
+   */
+  try {
+    const cost = await runCost(db, { startedAt, now: new Date() });
+    process.stdout.write(['', costLine(cost, ceilings), ''].join('\n'));
+  } catch {
+    // Цена — не итог прогона: её потеря не должна менять код выхода.
+  }
+
   await pool.end();
 }
 

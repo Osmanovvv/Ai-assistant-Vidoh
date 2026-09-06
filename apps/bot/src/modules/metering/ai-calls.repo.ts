@@ -3,6 +3,7 @@ import { and, eq, gte, sql } from 'drizzle-orm';
 import { aiCalls, type AiStage } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { callCost, type Currency, type ModelPricing, type UsageAmount } from './pricing.js';
+import type { SpendGuard } from './spend-guard.js';
 
 /**
  * Учёт обращений к моделям (задача 1.16).
@@ -33,6 +34,14 @@ export interface MeteredResult<T> {
   readonly modelVersion?: string | undefined;
 }
 
+/**
+ * Пишет вызов в учёт и возвращает его цену в микроединицах.
+ *
+ * Цена возвращается для стража расхода (задача 3.79): между чтениями
+ * базы он ведёт счёт сам, и цену ему взять больше негде — считает её
+ * здесь. Вызывающие, которым цена не нужна, возвращаемое просто не
+ * смотрят; поведение записи не изменилось.
+ */
 export async function recordAiCall(
   db: Executor,
   input: {
@@ -44,7 +53,7 @@ export async function recordAiCall(
     readonly error?: string | undefined;
     readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   },
-): Promise<void> {
+): Promise<number | null> {
   const cost = callCost(input.context.model, input.usage, input.pricing);
 
   await db.insert(aiCalls).values({
@@ -63,6 +72,8 @@ export async function recordAiCall(
     ok: input.ok,
     error: input.error ?? null,
   });
+
+  return cost?.micros ?? null;
 }
 
 /**
@@ -77,13 +88,25 @@ export async function meterCall<T>(
   db: Executor,
   context: AiCallContext,
   fn: () => Promise<MeteredResult<T>>,
-  options: { readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined } = {},
+  options: {
+    readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+    /**
+     * Страж расхода (задача 3.79). Не задан — ничего не меняется.
+     *
+     * Здесь, а не у вызывающих, потому что через учёт идут **все**
+     * платные пути: модель, распознавание речи, вектора. Проверка до
+     * вызова, цена — после записи: страж ведёт счёт между чтениями базы.
+     */
+    readonly guard?: SpendGuard | undefined;
+  } = {},
 ): Promise<T> {
+  await options.guard?.beforeCall();
+
   const startedAt = Date.now();
 
   try {
     const outcome = await fn();
-    await recordAiCall(db, {
+    const micros = await recordAiCall(db, {
       context,
       usage: outcome.usage,
       ...(outcome.modelVersion === undefined ? {} : { modelVersion: outcome.modelVersion }),
@@ -91,6 +114,9 @@ export async function meterCall<T>(
       ok: true,
       pricing: options.pricing,
     });
+
+    if (micros !== null) options.guard?.noteSpent(micros);
+
     return outcome.value;
   } catch (error) {
     await recordAiCall(db, {

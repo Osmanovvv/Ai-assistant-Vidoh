@@ -1,3 +1,4 @@
+import { SpendCeilingError } from '../../infra/failures.js';
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -190,6 +191,39 @@ describe('учёт расхода', () => {
     expect(call?.ok).toBe(true);
     expect(call?.audioSeconds).toBeGreaterThan(0);
     expect(call?.costMicros).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('перейдённый потолок расхода останавливает расшифровку до провайдера', async () => {
+    /**
+     * **Задача 3.79, находка встречной проверки 06.09.2026.** Сперва
+     * страж стоял только на пути модели, и выходило хуже, чем кажется:
+     * при перейдённом потолке голосовое сперва **оплачивалось**, а потом
+     * падало на разборе — деньги ушли, ответа нет. А съешь голосовые
+     * потолок сами — страж выключил бы модель, то есть единственное, что
+     * даёт человеку пользу, и оставил включённой речь, то есть расход.
+     */
+    const provider = new MockSpeechProvider({ responses: ['текст'] });
+
+    await expect(
+      transcribeMessage(
+        {
+          db: testDb(),
+          provider,
+          download: downloadFrom(shortAudio),
+          pricing,
+          spendGuard: {
+            beforeCall: () => Promise.reject(new SpendCeilingError('потолок за сутки перейдён')),
+            noteSpent: () => undefined,
+            report: () => Promise.resolve([]),
+          },
+        },
+        { messageId, fileId: 'voice-file-1', userId },
+      ),
+    ).rejects.toBeInstanceOf(SpendCeilingError);
+
+    // Ни одного платного обращения и ни одной строки учёта.
+    expect(provider.callCount).toBe(0);
+    expect(await testDb().select().from(aiCalls)).toHaveLength(0);
   }, 60_000);
 
   it('записывает по одному вызову на часть', async () => {

@@ -1,4 +1,4 @@
-import { and, eq, isNull, lte } from 'drizzle-orm';
+import { and, desc, eq, isNull, lte } from 'drizzle-orm';
 
 import { pendingQuestions, type PendingQuestion, type QuestionOutcome } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -176,4 +176,42 @@ export async function expireQuestions(db: Executor, now = new Date()): Promise<n
     .returning({ id: pendingQuestions.id });
 
   return rows.length;
+}
+
+/**
+ * Ответ «это новое», который не доехал до разбора (задача 3.79).
+ *
+ * **Найдено встречной проверкой 06.09.2026, и это потеря слов человека.**
+ * Разбор выгрузки сперва помечает вопрос отвеченным, а потом возвращает
+ * сказанное в разбор через `carryOver`. Сорвись разбор после этого —
+ * модель недоступна, потолок расхода перейдён, сеть моргнула, — выгрузка
+ * вернётся в очередь и разберётся снова. Но открытого вопроса на втором
+ * заходе уже нет, `carryOver` не возвращается, и отрезок из ответа
+ * пропадает: остальная выгрузка разбирается, а ответ на вопрос — нет.
+ *
+ * Здесь он находится снова. Условие узкое и потому безопасное: вопрос
+ * помечен «это новое», помечен **этой же** выгрузкой, а выгрузка
+ * разбирается **опять** — значит прошлый заход не дошёл до конца.
+ * Дошёл бы — выгрузка была бы `done` и второго захода не случилось бы.
+ *
+ * Возвращает только отрезок: сам вопрос уже закрыт и закрытым остаётся.
+ */
+export async function unfinishedSeparateOf(
+  db: Executor,
+  params: { readonly userId: string; readonly batchId: string },
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({ segment: pendingQuestions.segment })
+    .from(pendingQuestions)
+    .where(
+      and(
+        eq(pendingQuestions.userId, params.userId),
+        eq(pendingQuestions.batchId, params.batchId),
+        eq(pendingQuestions.outcome, 'separate'),
+      ),
+    )
+    .orderBy(desc(pendingQuestions.resolvedAt))
+    .limit(1);
+
+  return row?.segment;
 }

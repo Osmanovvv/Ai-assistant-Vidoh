@@ -9,6 +9,7 @@ import {
 } from '../eval/resolver-report.js';
 import { runResolverDataset } from '../eval/resolver-runner.js';
 import { closeDb, getDb } from '../infra/db.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { createLogger } from '../infra/logger.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { modelEnvSchema } from '../config/env.js';
@@ -42,6 +43,12 @@ const dataset: string = datasetArg;
 const runs = outArg ?? join(dataset, 'runs');
 
 const env = modelEnvSchema.parse(process.env);
+
+/** Перевод строки константой: в исходнике его легко потерять правкой. */
+const NEWLINE = String.fromCharCode(10);
+
+/** Отметка начала прогона — по ней считается его цена (задача 3.79). */
+const startedAt = new Date();
 const logger = createLogger({ level: 'warn' });
 const db = getDb();
 
@@ -58,6 +65,30 @@ try {
 
   process.stdout.write(`Прогон ${String(cases.length)} случаев на ${active.version}\n\n`);
 
+  /**
+   * Потолок расхода до прогона, цена после (задача 3.79).
+   *
+   * Прогон целого набора по полной модели стоит столько же, сколько
+   * набор выгрузок. Первый заход задачи закрыл только два прогона из
+   * пяти — этот нашла встречная проверка.
+   */
+  const guard = createRunGuard({ db, env, logger, startedAt });
+  const refused = await guard.checkBefore();
+
+  if (refused !== undefined) {
+    process.stderr.write(
+      [
+        '',
+        `Прогон не начат: ${refused}`,
+        'Поднимите потолок или подождите новых суток.',
+        '',
+        '',
+      ].join(NEWLINE),
+    );
+    await closeDb();
+    process.exit(3);
+  }
+
   const outcomes = await runResolverDataset(
     {
       db,
@@ -65,6 +96,7 @@ try {
       prompts,
       pricing: PRICING,
       logger,
+      spendGuard: guard.spendGuard,
     },
     cases,
     (outcome) => {
@@ -102,6 +134,8 @@ try {
   await mkdir(runs, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
   await writeFile(join(runs, `${stamp}.json`), `${JSON.stringify(report, null, 2)}\n`);
+
+  process.stdout.write(`${NEWLINE}${await guard.costReport()}${NEWLINE}${NEWLINE}`);
 
   process.exit(verdict.passed ? 0 : 1);
 } finally {

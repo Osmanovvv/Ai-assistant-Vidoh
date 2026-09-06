@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { batches, items, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import type { AiClientDeps } from '../../modules/ai/client.js';
+import { SpendCeilingError } from '../../infra/failures.js';
 import { MockLlmProvider } from '../../modules/ai/providers/mock.js';
 import { PromptRegistry } from '../../modules/ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../../modules/ai/prompts/seed.js';
@@ -305,5 +306,43 @@ describe('«Это новое»', () => {
 
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts.map((row) => row.text)).toContain('нет, в пятницу');
+  });
+
+  it('сегмент не теряется, даже если разбор СОРВАЛСЯ', async () => {
+    /**
+     * **Найдено встречной проверкой 06.09.2026 (задача 3.79).** Разбор
+     * может не просто «не получиться», а броситься: модель недоступна,
+     * потолок расхода перейдён, сеть моргнула. Тогда исключение уходило
+     * в общий перехватчик бота, и человек не получал ничего: сообщение
+     * не менялось, записи не появлялось, черновика тоже.
+     *
+     * А вопрос к этому моменту уже помечен отвеченным — второе нажатие
+     * даёт «вопрос устарел». То есть отрезок выпадал из работы бота
+     * навсегда, и это единственный путь, где остановка по потолку стоила
+     * бы человеку сказанного.
+     */
+    const questionId = await ask();
+
+    const falling: AiClientDeps = {
+      db: testDb(),
+      provider: new MockLlmProvider({
+        respond: () => {
+          throw new SpendCeilingError('потолок расхода за сутки перейдён');
+        },
+      }),
+      prompts: new PromptRegistry(testDb()),
+      retry: { attempts: 1, sleep: () => Promise.resolve() },
+    };
+
+    const { bot, calls } = createTestBot(falling);
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.separate}${toShortId(questionId)}`));
+
+    // Слова целы.
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts.map((row) => row.text)).toContain('нет, в пятницу');
+
+    // И человеку сказано, что не вышло, а не «завела отдельно».
+    expect(edits(calls)).toEqual([defaultTexts.errors.generic]);
   });
 });

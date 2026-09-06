@@ -5,7 +5,12 @@ import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { saveDraft } from '../items/items.repo.js';
 import { answerRemainder, readAnswer } from './answer.js';
 import { applyDecision, type Applied } from './patch.js';
-import { answerQuestion, closeOpenQuestion, openQuestionOf } from './questions.repo.js';
+import {
+  answerQuestion,
+  closeOpenQuestion,
+  openQuestionOf,
+  unfinishedSeparateOf,
+} from './questions.repo.js';
 
 /**
  * Судьба открытого вопроса при новой выгрузке (§7.3 ТЗ, задача 3.6).
@@ -78,7 +83,30 @@ export async function settlePendingQuestion(
   const now = params.now ?? new Date();
   const open = await openQuestionOf(db, params.userId, now);
 
-  if (!open) return { kind: 'none' };
+  if (!open) {
+    /**
+     * Открытого вопроса нет — но, может быть, прошлый заход этой же
+     * выгрузки не довёз ответ до разбора (задача 3.79).
+     *
+     * Так бывает при нашем простое: вопрос помечен «это новое», а разбор
+     * сорвался — модель недоступна или перейдён потолок расхода. Выгрузка
+     * вернулась в очередь, и на втором заходе отрезок из ответа пропал бы
+     * молча: остальное разобралось, а он нет.
+     */
+    const unfinished = await unfinishedSeparateOf(db, {
+      userId: params.userId,
+      batchId: params.batchId,
+    });
+
+    if (unfinished === undefined) return { kind: 'none' };
+
+    params.logger?.info(
+      { userId: params.userId, batchId: params.batchId },
+      'Ответ «это новое» с прошлого захода возвращён в разбор',
+    );
+
+    return { kind: 'separate', carryOver: unfinished };
+  }
 
   /** Сказанное не пропадает ни в одном исходе (§9.1). */
   const park = async (reason: string): Promise<void> => {

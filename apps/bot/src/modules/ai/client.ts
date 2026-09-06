@@ -6,6 +6,7 @@ import type { Database } from '../../infra/db.js';
 import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
 import { meterCall } from '../metering/ai-calls.repo.js';
 import type { ModelPricing } from '../metering/pricing.js';
+import type { SpendGuard } from '../metering/spend-guard.js';
 import type { PromptRegistry } from './prompts/registry.js';
 import type { LlmProvider } from './providers/types.js';
 import { temperatureFor } from './temperature.js';
@@ -39,6 +40,16 @@ export interface AiClientDeps {
   readonly retry?: RetryOptions | undefined;
   readonly timeoutMs?: number | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Потолок расхода (задача 3.79). Не задан — ничего не меняется.
+   *
+   * Ставится на путь модели потому, что здесь и тратятся деньги: за
+   * двенадцать дней на модель ушло около 5 900 ₽, на вектора — 0,00 ₽,
+   * на распознавание — рубли. Считает страж при этом **весь** учёт,
+   * включая речь и вектора: останавливать надо там, где тратится, а
+   * знать — обо всём.
+   */
+  readonly spendGuard?: SpendGuard | undefined;
   readonly logger?: Logger | undefined;
 }
 
@@ -183,7 +194,7 @@ export async function requestStructured<T>(
           ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
         };
       },
-      { pricing: deps.pricing },
+      { pricing: deps.pricing, guard: deps.spendGuard },
     );
 
     raw = completion.text;

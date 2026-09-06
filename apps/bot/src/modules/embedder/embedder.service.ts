@@ -6,6 +6,7 @@ import type { Executor } from '../../infra/db.js';
 import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
 import { meterCall } from '../metering/ai-calls.repo.js';
 import type { ModelPricing } from '../metering/pricing.js';
+import type { SpendGuard } from '../metering/spend-guard.js';
 import type { EmbeddingProvider, EmbeddingPurpose } from './providers/types.js';
 
 /**
@@ -26,6 +27,18 @@ export interface EmbedDeps {
   readonly retry?: RetryOptions | undefined;
   readonly timeoutMs?: number | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Потолок расхода (задача 3.79). Не задан — ничего не меняется.
+   *
+   * **Добавлен по встречной проверке 06.09.2026.** Сперва страж стоял
+   * только на пути модели, и получалось хуже, чем кажется: при
+   * перейдённом потолке новое голосовое сперва **оплачивалось**, а
+   * потом падало на разборе — деньги ушли, ответа нет. А если бы
+   * голосовые тестовой группы съели потолок сами, страж выключил бы
+   * модель, то есть единственное, что даёт человеку пользу, и оставил
+   * включённой речь, то есть один расход.
+   */
+  readonly spendGuard?: SpendGuard | undefined;
   readonly logger?: Logger | undefined;
 }
 
@@ -62,7 +75,7 @@ export async function embedText(deps: EmbedDeps, params: EmbedParams): Promise<r
 
       return { value: result.vector, usage: { tokensIn: result.tokens } };
     },
-    { pricing: deps.pricing },
+    { pricing: deps.pricing, guard: deps.spendGuard },
   );
 }
 

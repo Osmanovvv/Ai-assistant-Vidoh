@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 
 import { batches, type Batch } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { isAccessFailure, isTransientFailure } from '../../infra/errors.js';
+import { isOwnOutage, isTransientFailure } from '../../infra/errors.js';
 import type { RedisLock } from '../../infra/lock.js';
 import { combineBatch } from '../buffer/buffer.service.js';
 
@@ -102,19 +102,22 @@ export async function processUserBatches(
             .where(eq(batches.id, batch.id));
         } catch (error) {
           /**
-           * Отказ в доступе попытку не тратит (задача 3.72).
+           * Наш простой попытку не тратит (задачи 3.72 и 3.79).
            *
            * Попытки нужны, чтобы не держать человека без ответа при
-           * настоящей поломке. Здесь поломки нет: у нас кончился доступ
-           * к модели, и от повтора это не изменится — но и виноватой
-           * выгрузка не становится. Пять попыток сгорели бы за пять
-           * минут, а доступ вернулся бы через час; слова пропали бы
-           * из-за нашего простоя, что §17 прямо запрещает.
+           * настоящей поломке. Здесь поломки нет: у нас кончился либо
+           * доступ к модели, либо деньги на неё, и от повтора это не
+           * изменится — но и виноватой выгрузка не становится. Пять
+           * попыток сгорели бы за пять минут, а доступ вернулся бы через
+           * час; слова пропали бы из-за нашего простоя, что §17 прямо
+           * запрещает.
            *
            * Выгрузка остаётся в очереди, и досмотр берёт её снова, пока
-           * доступ не вернётся. Один отказ стоит ноль: 403 не тарифится.
+           * простой не кончится. Повтор при этом бесплатен: 403 не
+           * тарифится, а страж расхода останавливает **до** обращения к
+           * модели.
            */
-          const denied = isAccessFailure(error);
+          const denied = isOwnOutage(error);
           const attempts = denied ? batch.attempts : batch.attempts + 1;
           const message = error instanceof Error ? error.message : String(error);
 

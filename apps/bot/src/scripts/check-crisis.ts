@@ -1,5 +1,6 @@
 import { modelEnvSchema } from '../config/env.js';
 import { closeDb, getDb } from '../infra/db.js';
+import { createRunGuard } from '../modules/metering/run-guard.js';
 import { createLogger } from '../infra/logger.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
@@ -135,12 +136,28 @@ const light = createLlmProvider(env, { light: true });
  */
 const owner = await upsertUser(db, { tgId: 999_000_778, firstName: 'замер кризиса' });
 
+/**
+ * Потолок расхода (задача 3.79).
+ *
+ * Замер прогоняет десятки текстов через маршрутизатор — деньги того же
+ * счёта. Найдено встречной проверкой: первый заход задачи закрыл только
+ * два платных прогона из пяти.
+ */
+const guard = createRunGuard({ db, env, logger, startedAt: new Date() });
+const refusedByCeiling = await guard.checkBefore();
+
+if (refusedByCeiling !== undefined) {
+  process.stderr.write(`Замер не начат: ${refusedByCeiling}${String.fromCharCode(10)}`);
+  await closeDb();
+  process.exit(3);
+}
+
 let falsePositives = 0;
 let missed = 0;
 
 async function check(text: string, expectCrisis: boolean): Promise<void> {
   const routed = await routeIntents(
-    { db, provider: light, prompts, logger },
+    { db, provider: light, prompts, logger, spendGuard: guard.spendGuard },
     { input: text, userId: owner.id },
   );
 
@@ -176,6 +193,10 @@ process.stdout.write(
   `\nложных срабатываний: ${String(falsePositives)} из ${String(HYPERBOLE.length)}\n`,
 );
 process.stdout.write(`пропущено настоящих: ${String(missed)} из ${String(REAL.length)}\n`);
+
+process.stdout.write(
+  String.fromCharCode(10) + (await guard.costReport()) + String.fromCharCode(10),
+);
 
 await closeDb();
 
