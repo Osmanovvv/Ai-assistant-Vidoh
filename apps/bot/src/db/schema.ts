@@ -1247,6 +1247,52 @@ export const appSettings = pgTable('app_settings', {
   updatedBy: text('updated_by'),
 });
 
+/**
+ * Журнал доступа к персональным данным (§16 ТЗ, задача 4.11).
+ *
+ * §16 дословно: «доступ к персональным данным в админ-панели
+ * журналируется». Человек, доверивший боту сведения о здоровье детей и
+ * о деньгах, вправе знать, что каждый взгляд на них оставляет след.
+ *
+ * **Данных человека здесь нет** — есть след того, что к ним обращались:
+ * логин смотревшего, путь раздела, время и ссылка на того, чьи данные
+ * смотрели. Поэтому удаление данных человека журнал не стирает: иначе
+ * удалением можно было бы прятать доступ. Ссылка обнуляется, запись
+ * остаётся.
+ */
+export const adminAccessLog = pgTable(
+  'admin_access_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    /**
+     * Кто смотрел. Логин из панели, а не ссылка на таблицу:
+     * администратор живёт в переменных окружения.
+     */
+    login: text('login').notNull(),
+
+    /** Куда обращались: путь раздела панели. */
+    route: text('route').notNull(),
+
+    /**
+     * На чьи данные смотрели. Пусто — «на многих сразу», и сколько
+     * именно, сказано в `subjects`.
+     */
+    subjectUserId: uuid('subject_user_id').references(() => users.id, { onDelete: 'set null' }),
+
+    /** Сколько человек попало в ответ: у карточки один, у списка больше. */
+    subjects: integer('subjects').notNull().default(1),
+
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Два вопроса, на которые журнал обязан отвечать быстро: что
+    // смотрели за последнее время и кто смотрел на этого человека.
+    index('admin_access_at_idx').on(table.at),
+    index('admin_access_subject_idx').on(table.subjectUserId),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1283,4 +1329,5 @@ export type NewReminder = typeof reminders.$inferInsert;
 export type ReminderKindValue = (typeof reminderKind.enumValues)[number];
 export type Topic = typeof topics.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
+export type AdminAccess = typeof adminAccessLog.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;

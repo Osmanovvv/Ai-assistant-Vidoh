@@ -8,6 +8,7 @@ import express, {
 
 import type { Executor } from '../../infra/db.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
+import { recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
 
 export {
@@ -19,6 +20,8 @@ export {
   SESSION_COOKIE,
 } from './auth.js';
 export type { AdminAuthConfig, AdminIdentity } from './auth.js';
+export { accessTo, recentAccess, recordAccess } from './audit.js';
+export type { Exposure } from './audit.js';
 
 /**
  * Раздел админ-панели (§15 ТЗ, задача 4.5).
@@ -46,6 +49,8 @@ export interface AdminRoute {
   readonly method: 'get' | 'post';
   /** Путь целиком, от корня панели: `/api/me`. */
   readonly path: string;
+  /** Что путь показывает: персональные данные или числа (§16, 4.11). */
+  readonly exposure: Exposure;
 }
 
 export interface AdminMount {
@@ -126,16 +131,71 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
   const openRoutes: AdminRoute[] = [];
 
   /**
-   * Объявить закрытый путь.
+   * Объявить закрытый путь — и сказать, что он показывает.
    *
-   * Единственный способ добавить в панель путь: он же и записывает его в
-   * список, по которому проверка убеждается, что путь закрыт. Мимо этой
-   * функции пути не регистрируются — за этим следит проверка по
-   * исходникам.
+   * Единственный способ добавить в панель путь: она же записывает его в
+   * список, по которому проверка убеждается, что путь закрыт. Мимо неё
+   * пути не регистрируются — за этим следит проверка по исходникам.
+   *
+   * **Решение о персональных данных обязательно** (§16, задача 4.11).
+   * Тип не даёт объявить путь, не сказав, персональные там данные или
+   * числа. Забыть здесь значит либо оставить доступ без следа, либо
+   * засорить журнал сводками — а §16 требует журналировать именно
+   * доступ к персональным данным.
+   *
+   * **Запись в журнал идёт до ответа.** Не удалась — данные не
+   * отдаются: незапротоколированный доступ есть нарушение §16, а не
+   * мелкая неприятность. Цена названа: сбой базы делает раздел
+   * недоступным. Но раздел без журнала хуже недоступного, потому что
+   * выглядит работающим.
    */
-  const closed = (method: 'get' | 'post', path: string, handler: RequestHandler): void => {
-    routes.push({ method, path });
-    router[method](path, handler);
+  const closed = (
+    method: 'get' | 'post',
+    path: string,
+    exposure: Exposure,
+    handler: RequestHandler,
+  ): void => {
+    routes.push({ method, path, exposure });
+
+    if (!exposure.personal || deps.db === undefined) {
+      router[method](path, handler);
+      return;
+    }
+
+    const db = deps.db;
+
+    router[method](path, (req: Request, res: Response, next: NextFunction) => {
+      const login = req.admin?.login;
+
+      // Без пропуска сюда не попасть: страж стоит выше. Но если однажды
+      // попадём, писать в журнал «неизвестно кто» бессмысленнее отказа.
+      if (login === undefined) {
+        res.status(401).json({ ok: false });
+        return;
+      }
+
+      /**
+       * Код человека из пути. Только строка: express отдаёт массив,
+       * если параметр в пути повторён, а «на кого смотрели» — это один
+       * человек, и записывать в журнал массив нечем.
+       */
+      const raw = exposure.subjects === 'one' ? req.params[exposure.param] : undefined;
+      const subject = typeof raw === 'string' ? raw : undefined;
+
+      void recordAccess(db, {
+        login,
+        route: path,
+        ...(subject === undefined ? {} : { subjectUserId: subject }),
+      }).then(
+        () => {
+          handler(req, res, next);
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(503).json({ error: 'доступ не записан в журнал, данные не отданы' });
+        },
+      );
+    });
   };
 
   /**
@@ -146,7 +206,13 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
    * намеренно. Прямой `router.get` не видит никто.
    */
   const open = (method: 'get' | 'post', path: string, handler: RequestHandler): void => {
-    openRoutes.push({ method, path });
+    openRoutes.push({
+      method,
+      path,
+      // Открытым путь может быть только при одном условии — в нём нет
+      // данных человека. Здесь это условие записано, а не подразумевается.
+      exposure: { personal: false, why: 'пустая оболочка страницы, данные приходят отдельно' },
+    });
     router[method](path, handler);
   };
 
@@ -163,9 +229,17 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
    * она узнаёт, жив ли пропуск, и не показывает окно входа тому, кто уже
    * вошёл.
    */
-  closed('get', '/api/me', (req: Request, res: Response) => {
-    res.json({ login: req.admin?.login });
-  });
+  closed(
+    'get',
+    '/api/me',
+    // Логин самого администратора — не данные пользователя. Писать в
+    // журнал доступа к чужим данным собственный вход незачем: журнал
+    // перестал бы отвечать на вопрос, ради которого ведётся.
+    { personal: false, why: 'логин самого администратора, а не человека' },
+    (req: Request, res: Response) => {
+      res.json({ login: req.admin?.login });
+    },
+  );
 
   /**
    * Расходы (§15, §21 п.14; задача 4.7).
@@ -178,25 +252,38 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
   if (deps.db !== undefined) {
     const db = deps.db;
 
-    closed('get', '/api/costs', (req: Request, res: Response) => {
-      const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
-      const limit = boundedNumber(req.query['limit'], { fallback: 50, min: 1, max: 200 });
-      const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 100_000 });
+    closed(
+      'get',
+      '/api/costs',
+      /**
+       * Персональные данные, хотя раздел про деньги.
+       *
+       * Разрез по людям показывает имена и телеграмные номера — по ним
+       * человек узнаётся, значит §16 действует. Соблазн назвать это
+       * «сводкой» велик именно потому, что страница выглядит как
+       * бухгалтерия; на этом соблазне журнал доступа и обходят.
+       */
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
+        const limit = boundedNumber(req.query['limit'], { fallback: 50, min: 1, max: 200 });
+        const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 100_000 });
 
-      const since = new Date(Date.now() - days * 24 * 3_600_000);
+        const since = new Date(Date.now() - days * 24 * 3_600_000);
 
-      void costBreakdown(db, { since, userLimit: limit, userOffset: offset }).then(
-        (report) => {
-          res.json({ ...report, days });
-        },
-        (error: unknown) => {
-          deps.onError?.(error);
-          // Панель обязана сказать, что не смогла, а не показать нули:
-          // ноль расхода читается как «денег не тратили».
-          res.status(500).json({ error: 'не удалось посчитать расход' });
-        },
-      );
-    });
+        void costBreakdown(db, { since, userLimit: limit, userOffset: offset }).then(
+          (report) => {
+            res.json({ ...report, days });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            // Панель обязана сказать, что не смогла, а не показать нули:
+            // ноль расхода читается как «денег не тратили».
+            res.status(500).json({ error: 'не удалось посчитать расход' });
+          },
+        );
+      },
+    );
   }
 
   /**
