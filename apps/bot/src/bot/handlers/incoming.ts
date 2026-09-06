@@ -10,7 +10,9 @@ import {
   isOverDumpLimit,
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
+import { accessOf } from '../../modules/billing/subscription.service.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
@@ -28,6 +30,15 @@ export interface IncomingDeps {
   readonly db: Database;
   readonly queue: Queue<PipelineJob>;
   readonly limits?: BufferLimits;
+  /**
+   * Системные значения: отсюда берётся размер пробного периода (4.3).
+   *
+   * Необязательна нарочно. Без неё гейт пробного периода не работает —
+   * ровно так бот и жил до задачи 4.3, и так же он работает в тех
+   * тестах, которые про пробный период ничего не проверяют. Молча
+   * запирать человека при забытой зависимости было бы хуже всего.
+   */
+  readonly settings?: SettingsRegistry | undefined;
   /**
    * Отправитель статусного сообщения (задача 1.17). Без него бот молча
    * копит выгрузку и ничего не отвечает — так и было, пока модуль
@@ -59,6 +70,33 @@ function isCommand(ctx: Context): boolean {
   return entities?.some((entity) => entity.type === 'bot_command' && entity.offset === 0) ?? false;
 }
 
+/**
+ * Служебное сообщение Telegram — не слова человека (задача 4.1).
+ *
+ * **Тихий дефект, который сработал бы в первый же день оплаты.** После
+ * успешного платежа Telegram присылает обычный `message` — но без
+ * текста и без подписи, только с полем `successful_payment`. Разбор
+ * приёма относит такое к `kind: 'other'` (см. message-mapper.ts), а
+ * дальше оно прицепляется к выгрузке как всякое сообщение. В выгрузке
+ * говорить нечего, и человек, только что заплативший, получает от бота
+ * «Я тебя не слышу» вместо доступа.
+ *
+ * Перечислением, а не правилом «нет текста — значит служебное».
+ * Наклейка, фотография и кружок текста тоже не имеют, но их **сказал
+ * человек**, и молчаливо менять на них поведение бота эта задача права
+ * не имеет. Список растёт по мере надобности.
+ *
+ * Сообщение при этом уже сохранено: инвариант §9.1 «сначала сохраняем»
+ * не нарушен — оно просто не становится выгрузкой. Дальше по цепочке
+ * оно идёт: обработчик оплаты ждёт именно его.
+ */
+function isServiceMessage(ctx: Context): boolean {
+  const message = ctx.message;
+  if (message === undefined) return false;
+
+  return message.successful_payment !== undefined || message.refunded_payment !== undefined;
+}
+
 export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
   const limits = deps.limits ?? DEFAULT_LIMITS;
 
@@ -88,6 +126,13 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       return;
     }
 
+    // Служебное сообщение Telegram — тоже не выгрузка: см. выше, иначе
+    // человек сразу после оплаты слышит «я тебя не слышу».
+    if (isServiceMessage(ctx)) {
+      await next();
+      return;
+    }
+
     // §16 ТЗ: согласие — это первое сообщение после экрана с ссылкой
     // на политику.
     await recordConsentIfAbsent(deps.db, outcome.userId);
@@ -104,6 +149,49 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
      * сохраняем» не нарушен, оно просто не привязывается к выгрузке.
      */
     if (deps.consume && (await deps.consume(ctx, outcome.userId))) return;
+
+    /**
+     * §14 ТЗ: пробный период кончился — новые выгрузки не заводим
+     * (задача 4.3).
+     *
+     * **Здесь и только здесь.** §14 требует деградации «бэклог на
+     * чтение, новые выгрузки блокируются»: значит запрет живёт в одной
+     * точке — там, где сообщение превращается в выгрузку. Меню,
+     * карточки, откаты и ответы на вопросы идут мимо: нажатие кнопки
+     * через приём сообщений не проходит вовсе (`acceptUpdate` отдаёт
+     * «апдейт без сообщения»), команды отсекаются выше, а ответ словами
+     * забирает `consume` — тоже выше.
+     *
+     * **Раньше ограничения частоты**, потому что реплика точнее:
+     * человеку, у которого кончился пробный период, «приходи завтра»
+     * говорит неправду — завтра ничего не изменится.
+     *
+     * Сообщение при этом уже сохранено: §9.1 «сначала сохраняем» не
+     * нарушен, и слова человека не потеряны — просто разбор по ним не
+     * заводится. §14 прямо требует «данные не удаляются».
+     *
+     * **Вопрос словами тоже глушится, и это осознанная цена.** «Что там
+     * на сегодня» отличается от новой мысли только намерением, а
+     * намерение определяет маршрутизатор — то есть модель, то есть
+     * деньги. Спрашивать модель у человека без доступа значит платить за
+     * того, кто не платит. Ровно та же цена уже принята у потолка §10.5
+     * (см. `limits.tooManyDumps`), и решается она тем же способом:
+     * реплика называет путь к записям — `/menu`, — а команды и нажатия
+     * кнопок гейт пропускает.
+     */
+    if (deps.settings !== undefined) {
+      const access = await accessOf(deps.db, {
+        userId: outcome.userId,
+        settings: deps.settings,
+      });
+
+      if (!access.allowed) {
+        const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
+        await ctx.reply(texts.limits.trialOver);
+
+        return;
+      }
+    }
 
     // §10.5 ТЗ: ограничение частоты. Сообщение уже сохранено — мы просто
     // не заводим по нему разбор, а не выбрасываем текст.

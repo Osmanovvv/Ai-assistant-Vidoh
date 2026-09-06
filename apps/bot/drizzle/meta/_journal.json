@@ -204,6 +204,13 @@
       "when": 1788122750651,
       "tag": "0028_pending_question_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788122750652,
+      "tag": "0029_trial_and_settings",
+      "breakpoints": true
     }
   ]
 }

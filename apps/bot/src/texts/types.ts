@@ -533,6 +533,8 @@ export interface TextProfile {
 
   readonly limits: {
     readonly tooManyDumps: string;
+    /** Пробный период кончился (§14, задача 4.3). */
+    readonly trialOver: string;
   };
 
   readonly privacy: {

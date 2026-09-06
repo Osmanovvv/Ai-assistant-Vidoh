@@ -5,6 +5,7 @@ import { items, type Batch, type EnergyLevelValue } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
+import { markTrialSpent } from '../billing/subscription.service.js';
 import { decideDegradation, type SpendLimit } from '../metering/limits.js';
 import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.service.js';
 import { embedText } from '../embedder/embedder.service.js';
@@ -1363,6 +1364,27 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       emotions: composition.emotions,
       spoken: dumpText,
     });
+
+    /**
+     * Пробный период тратит только разобранная выгрузка (§14, задача 4.3).
+     *
+     * **Здесь, а не в конвейере при статусе «done».** До этой строки
+     * стоят четыре выхода: разбирать нечего, извлечение не удалось,
+     * единиц ноль, классификация не удалась. Ни один из них права
+     * человека тратить не должен — он не виноват ни в нашей поломке, ни
+     * в том, что сказал «привет». Статус «done» их не различает.
+     *
+     * **И не быстрое добавление.** План 4.3 требует прямо: «быстрые
+     * добавления не считаются — только выгрузки с разбором». Признак
+     * `quickAdd` посчитан строкой выше и до этой задачи выбрасывался.
+     *
+     * Отметка идемпотентна: повторная обработка той же выгрузки — а она
+     * бывает, конвейер возвращает выгрузку в очередь при временном
+     * сбое — период дважды не тратит.
+     */
+    if (!quickAdd) {
+      await markTrialSpent(db, { batchId: batch.id, now });
+    }
 
     /**
      * §13.2: большая цель урезается до посильного первого шага.

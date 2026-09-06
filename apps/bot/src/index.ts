@@ -10,6 +10,7 @@ import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
+import { SettingsRegistry } from './modules/settings/settings.repo.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
@@ -206,6 +207,15 @@ async function main(): Promise<void> {
   // отдельный на каждую выгрузку сводил бы кэш к нулю.
   const prompts = new PromptRegistry(db);
 
+  /**
+   * Системные значения продукта (§14, §15; задача 4.3).
+   *
+   * Один реестр на процесс по той же причине, что и у промптов: размер
+   * пробного периода спрашивается на каждом входящем сообщении, и
+   * отдельный реестр свёл бы кэш к нулю.
+   */
+  const settings = new SettingsRegistry({ db, logger });
+
   // §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
   // цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
   // при старте, а не из отчёта через месяц.
@@ -362,6 +372,8 @@ async function main(): Promise<void> {
       // Ответ словами на вопрос опроса и правка записи из карточки
       // (задача 3.61). Ждёт бот чего-то или нет — решает база.
       consume: consumeAwaited({ db, logger }),
+      // §14: размер пробного периода задаётся без выкладки (4.3).
+      settings,
     }),
   );
   registerStartHandlers(bot, {

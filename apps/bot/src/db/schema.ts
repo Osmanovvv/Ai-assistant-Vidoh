@@ -308,6 +308,21 @@ export const batches = pgTable(
     closedAt: timestamp('closed_at', { withTimezone: true }),
     processedAt: timestamp('processed_at', { withTimezone: true }),
 
+    /**
+     * Потратила ли эта выгрузка пробный период (§14 ТЗ, задача 4.3).
+     *
+     * Пусто — не потратила. Ставится в конце **удавшегося** разбора и
+     * только у настоящей выгрузки: быстрое добавление «добавь ещё
+     * купить витамины» пробный период не тратит (план 4.3), как не
+     * тратят его сбои, пустые выгрузки и ответы на вопросы бота.
+     *
+     * Признаком на строке, а не счётчиком на человеке: счётчик, разойдясь
+     * с правдой, не сверяется ни с чем, а карточке человека в админке
+     * (4.6) нужно показать, какие именно выгрузки период съели. Заодно
+     * повторная обработка одной выгрузки не тратит период дважды.
+     */
+    trialCountedAt: timestamp('trial_counted_at', { withTimezone: true }),
+
     error: text('error'),
   },
   (table) => [
@@ -323,6 +338,12 @@ export const batches = pgTable(
     // Выборка выгрузок, ждущих обработки, и поиск зависших при перезапуске.
     index('batches_status_opened_idx').on(table.status, table.openedAt),
     index('batches_user_opened_idx').on(table.userId, table.openedAt),
+
+    // Гейт пробного периода спрашивает «сколько потрачено» на каждом
+    // входящем сообщении: без этого индекса это чтение всей истории.
+    index('batches_trial_idx')
+      .on(table.userId)
+      .where(sql`${table.trialCountedAt} is not null`),
   ],
 );
 
@@ -1185,6 +1206,47 @@ export const reminders = pgTable(
   ],
 );
 
+/**
+ * Системные значения продукта (§14 и §15 ТЗ, задача 4.3).
+ *
+ * **Зачем таблица, если есть переменные окружения.** §14 требует, чтобы
+ * размер пробного периода «настраивался в админ-панели без выкладки
+ * новой версии», а §15 просит того же для цен, лимитов, окна ожидания
+ * тишины, порогов резолвера, числа тем и частоты напоминаний.
+ * Переменная окружения меняется только выкладкой, а константа в коде —
+ * тем более.
+ *
+ * **Ключ-значение, а не колонка на каждое число.** Список настраиваемого
+ * по §15 будет расти, и каждая новая настройка не должна стоить
+ * миграции. Значение строкой: там будут не только числа, а разбирать по
+ * типу всё равно читателю — он один знает, чего ждёт.
+ *
+ * **Чего здесь нет и почему.** Значения, уже настроенные и замеренные —
+ * пороги резолвера, окно тишины, — в эту таблицу не переезжают вместе с
+ * задачей 4.3. Вред от их правки нечем измерить, пока не прогнан
+ * контрольный набор, а он платный. Механизм их примет, когда придёт
+ * задача 4.9; чего он не должен делать — так это молча менять
+ * поведение, которое сегодня проверено.
+ *
+ * Данных человека здесь нет ни в одной колонке: это настройки продукта.
+ */
+export const appSettings = pgTable('app_settings', {
+  /** Имя значения: `trial.dumps`, `price.monthly` и далее по §15. */
+  key: text('key').primaryKey(),
+
+  /** Значение строкой. Разбор — на стороне читателя. */
+  value: text('value').notNull(),
+
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+
+  /**
+   * Кто поменял. Заполнится в задаче 4.11, когда у админки появится
+   * вход: §16 требует журналировать доступ к данным, а правку значения
+   * продукта — тем более то, о чём потом спросят «кто это сделал».
+   */
+  updatedBy: text('updated_by'),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1220,4 +1282,5 @@ export type Reminder = typeof reminders.$inferSelect;
 export type NewReminder = typeof reminders.$inferInsert;
 export type ReminderKindValue = (typeof reminderKind.enumValues)[number];
 export type Topic = typeof topics.$inferSelect;
+export type AppSetting = typeof appSettings.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;
