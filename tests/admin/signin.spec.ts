@@ -52,6 +52,33 @@ function currentCode(): string {
   return String(slice % 1_000_000).padStart(6, '0');
 }
 
+/**
+ * Вход целиком и переход в нужный раздел.
+ *
+ * Одним помощником на весь файл: раньше их было два, и когда панель
+ * стала открываться на «Обзоре», один из них перестал работать, а
+ * второй нет. Одна дорога — одно место, где её править.
+ */
+async function signIn(
+  page: import('@playwright/test').Page,
+  tab?: 'Обзор' | 'Пользователи' | 'Расходы',
+): Promise<void> {
+  await page.goto('/admin/');
+  await page.locator('input[name="login"]').fill(LOGIN);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Дальше' }).click();
+  await page.locator('input[name="code"]').fill(currentCode());
+  await page.getByRole('button', { name: 'Войти' }).click();
+
+  // Панель открывается на «Обзоре»: дождаться его — значит дождаться
+  // входа, а не гадать по таймауту.
+  await expect(page.getByTestId('overview')).toBeVisible();
+
+  if (tab !== undefined && tab !== 'Обзор') {
+    await page.getByRole('button', { name: tab }).click();
+  }
+}
+
 test.describe('окно входа', () => {
   test('открывается и просит логин с паролем, а не код сразу', async ({ page }) => {
     await page.goto('/admin/');
@@ -202,19 +229,8 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
    * нарочно — проверка читает их так же, как человек.
    */
 
-  /** Вход целиком: без него раздел не увидеть, и это тоже проверено. */
-  async function signIn(page: import('@playwright/test').Page): Promise<void> {
-    await page.goto('/admin/');
-    await page.locator('input[name="login"]').fill(LOGIN);
-    await page.locator('input[name="password"]').fill(PASSWORD);
-    await page.getByRole('button', { name: 'Дальше' }).click();
-    await page.locator('input[name="code"]').fill(currentCode());
-    await page.getByRole('button', { name: 'Войти' }).click();
-    await expect(page.getByTestId('costs')).toBeVisible();
-  }
-
   test('видно расход по этапам', async ({ page }) => {
-    await signIn(page);
+    await signIn(page, 'Расходы');
 
     const stages = page.locator('.разрез', { hasText: 'По этапам' });
 
@@ -223,7 +239,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
   });
 
   test('видно расход по каждому человеку — с именем, а не кодом', async ({ page }) => {
-    await signIn(page);
+    await signIn(page, 'Расходы');
 
     const people = page.locator('.разрез', { hasText: 'По людям' });
 
@@ -231,7 +247,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
   });
 
   test('видно расход по моделям', async ({ page }) => {
-    await signIn(page);
+    await signIn(page, 'Расходы');
 
     const models = page.locator('.разрез', { hasText: 'По моделям' });
 
@@ -241,7 +257,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
 
   test('видны средние: на выгрузку и на человека', async ({ page }) => {
     // Одна выгрузка и один человек на 10 ₽ — значит по 10 ₽ и там и там.
-    await signIn(page);
+    await signIn(page, 'Расходы');
 
     const totals = page.locator('.итоги');
 
@@ -251,7 +267,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
   });
 
   test('период переключается и запрос уходит с новым числом дней', async ({ page }) => {
-    await signIn(page);
+    await signIn(page, 'Расходы');
 
     const asked: string[] = [];
     page.on('request', (request) => {
@@ -268,5 +284,89 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
     const response = await request.get('/admin/api/costs', { failOnStatusCode: false });
 
     expect(response.status()).toBe(401);
+  });
+});
+
+test.describe('обзор, люди и карточка (§15; задача 4.6)', () => {
+  /**
+   * Условие готовности задачи — не «экран есть», а «по жалобе „бот
+   * неправильно понял“ можно за минуту найти выгрузку, версию промпта и
+   * результат». Проверка проходит этот путь целиком, как человек:
+   * открыть панель, найти человека, открыть карточку, прочитать.
+   */
+
+  test('обзор показывает числа и честно говорит, чего в нём нет', async ({ page }) => {
+    await signIn(page);
+
+    const totals = page.locator('.итоги');
+
+    await expect(totals.locator('.итог', { hasText: 'Всего людей' })).toContainText('1');
+    await expect(totals.locator('.итог', { hasText: 'Выгрузок разобрано' })).toContainText('1');
+    await expect(totals.locator('.итог', { hasText: 'Расход на модели' })).toContainText('10.00 ₽');
+
+    // §15 просит переход в оплату и выручку; их нет до задачи 4.2, и
+    // панель говорит это словами, а не пустой колонкой.
+    await expect(page.getByText('4.2', { exact: false })).toBeVisible();
+  });
+
+  test('список людей показывает выгрузки и расход', async ({ page }) => {
+    await signIn(page, 'Пользователи');
+
+    const row = page.getByRole('row', { name: /Аня/u });
+
+    await expect(row).toContainText('10.00 ₽');
+    await expect(row).toContainText('1');
+  });
+
+  test('поиск находит человека по имени', async ({ page }) => {
+    // Жалоба приходит от человека, и искать его по коду неудобно.
+    await signIn(page, 'Пользователи');
+
+    await page.locator('input[name="q"]').fill('Ан');
+    await expect(page.getByRole('row', { name: /Аня/u })).toBeVisible();
+
+    await page.locator('input[name="q"]').fill('никого такого нет');
+    await expect(page.getByText('Никого не нашлось.')).toBeVisible();
+  });
+
+  test('карточка отвечает на жалобу: слова, разбор и версия промпта', async ({ page }) => {
+    /**
+     * **Условие готовности 4.6 целиком.** Из карточки видно, что человек
+     * сказал, что из этого вышло и каким промптом это сделано — всё на
+     * одном экране, без ssh и без SQL.
+     */
+    await signIn(page, 'Пользователи');
+    await page.getByRole('button', { name: 'Аня' }).click();
+
+    await expect(page.getByTestId('card')).toBeVisible();
+
+    // Слова человека.
+    await expect(page.locator('.выгрузка__слова')).toContainText(
+      'надо записать сына к врачу в четверг',
+    );
+
+    // Что из них вышло.
+    await expect(page.locator('.выгрузка__итог')).toContainText('Записать сына к врачу');
+
+    // И чем это разобрано — без версии промпта жалобу не разобрать.
+    await expect(page.locator('.выгрузка__шапка')).toContainText('classifier@9');
+  });
+
+  test('из карточки можно вернуться к списку', async ({ page }) => {
+    // Тупик без выхода — то же, что сломанная кнопка.
+    await signIn(page, 'Пользователи');
+    await page.getByRole('button', { name: 'Аня' }).click();
+
+    await expect(page.getByTestId('card')).toBeVisible();
+    await page.getByRole('button', { name: 'Назад к списку' }).click();
+
+    await expect(page.getByTestId('people')).toBeVisible();
+  });
+
+  test('разделы людей закрыты без входа', async ({ request }) => {
+    for (const path of ['/admin/api/overview', '/admin/api/people']) {
+      const response = await request.get(path, { failOnStatusCode: false });
+      expect(response.status(), path).toBe(401);
+    }
   });
 });

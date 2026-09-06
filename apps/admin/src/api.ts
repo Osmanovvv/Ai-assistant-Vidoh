@@ -98,6 +98,96 @@ export function costs(days: number): Promise<Costs> {
   return call<Costs>(`/costs?days=${String(days)}`);
 }
 
+// ── Обзор, люди, карточка (§15, задача 4.6) ──────────────────────────
+
+export interface Overview {
+  readonly days: number;
+  readonly activeUsers: number;
+  readonly totalUsers: number;
+  readonly newUsers: number;
+  readonly dumps: number;
+  readonly spend: readonly Money[];
+  /** Чего в обзоре ещё нет и почему — словами, а не пустыми колонками. */
+  readonly missing: readonly string[];
+}
+
+export interface PersonRow {
+  readonly id: string;
+  readonly tgId: number;
+  readonly title: string;
+  readonly username: string | null;
+  readonly source: string | null;
+  readonly registeredAt: string;
+  readonly lastActiveAt: string | null;
+  readonly dumps: number;
+  readonly trialSpent: number;
+  readonly spend: readonly Money[];
+  readonly blocked: boolean;
+}
+
+export interface PeoplePage {
+  readonly rows: readonly PersonRow[];
+  readonly total: number;
+}
+
+export interface CardDump {
+  readonly id: string;
+  readonly openedAt: string;
+  readonly status: string;
+  readonly said: string | null;
+  readonly trialCounted: boolean;
+  readonly error: string | null;
+  readonly results: readonly {
+    readonly id: string;
+    readonly text: string;
+    readonly type: string;
+    readonly topic: string | null;
+    readonly isDraft: boolean;
+    readonly draftReason: string | null;
+  }[];
+  readonly prompts: readonly { readonly stage: string; readonly version: string | null }[];
+}
+
+export interface PersonCard {
+  readonly person: PersonRow;
+  readonly dumps: readonly CardDump[];
+  readonly changes: readonly {
+    readonly id: string;
+    readonly at: string;
+    readonly changedBy: string;
+    readonly reason: string | null;
+    readonly reverted: boolean;
+    readonly itemText: string | null;
+  }[];
+  readonly questions: readonly {
+    readonly id: string;
+    readonly at: string;
+    readonly segment: string;
+    readonly outcome: string | null;
+    readonly resolvedAt: string | null;
+  }[];
+}
+
+export function overview(days: number): Promise<Overview> {
+  return call<Overview>(`/overview?days=${String(days)}`);
+}
+
+export function peoplePage(params: {
+  readonly limit: number;
+  readonly offset: number;
+  readonly query?: string;
+}): Promise<PeoplePage> {
+  const search = params.query === undefined ? '' : `&q=${encodeURIComponent(params.query)}`;
+
+  return call<PeoplePage>(
+    `/people?limit=${String(params.limit)}&offset=${String(params.offset)}${search}`,
+  );
+}
+
+export function personCard(userId: string): Promise<PersonCard> {
+  return call<PersonCard>(`/people/${encodeURIComponent(userId)}`);
+}
+
 /** Кто вошёл. Отказ означает, что пропуска нет. */
 export function whoAmI(): Promise<{ login: string }> {
   return call<{ login: string }>('/me');

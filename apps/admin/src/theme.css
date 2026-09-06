@@ -279,3 +279,64 @@ input {
   background: var(--фон-второй);
   font-size: 14px;
 }
+
+/* ── Разделы панели ──────────────────────────────────────────────────── */
+
+.вкладки {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--фон-второй);
+}
+
+.вкладка {
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--текст-тихий);
+  font-size: 14px;
+}
+
+.вкладка--выбрана {
+  border-bottom-color: var(--акцент-основной);
+  color: var(--текст);
+  font-weight: 500;
+}
+
+/* ── Карточка человека ───────────────────────────────────────────────── */
+
+.выгрузка {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: var(--радиус);
+  background: #fff;
+  box-shadow: var(--тень);
+}
+
+.выгрузка__шапка {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+/* Слова человека — крупнее разбора: с них начинается любой разбор жалобы. */
+.выгрузка__слова {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--акцент);
+  background: var(--фон);
+  white-space: pre-wrap;
+}
+
+.выгрузка__итог {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.выгрузка__итог li {
+  margin-bottom: 3px;
+}
