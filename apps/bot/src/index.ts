@@ -1,3 +1,6 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { Server } from 'node:http';
 
 import type { Worker } from 'bullmq';
@@ -9,6 +12,7 @@ import { publishCommands } from './bot/commands.js';
 import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
+import { adminConfigFrom } from './http/admin/index.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
 import { SettingsRegistry } from './modules/settings/settings.repo.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
@@ -421,7 +425,32 @@ async function main(): Promise<void> {
 
   const rawWebhook = createWebhookHandler(bot, env.BOT_WEBHOOK_SECRET);
 
+  /**
+   * Админ-панель (§15, задача 4.5). Нет настроек — нет панели.
+   *
+   * Не «панель без пароля»: она показывает содержимое чужих выгрузок, и
+   * забытая строка в `.env` не должна открывать их всему интернету.
+   */
+  const admin = adminConfigFrom(env);
+
+  if (admin === undefined) {
+    logger.info('Админ-панель выключена: не заданы ADMIN_* — это нормально до её настройки');
+  }
+
+  /**
+   * Где лежит собранная панель.
+   *
+   * Путь от собранного кода бота: `apps/bot/dist/index.js` →
+   * `apps/admin/dist`. Так он совпадает и в образе, и при запуске из
+   * дерева после сборки. Нет папки — панель отдаст только API, и это
+   * честнее, чем отдавать «не найдено» на её страницу: API как раз то,
+   * что уже работает.
+   */
+  const adminDist =
+    env.ADMIN_DIST ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../admin/dist');
+
   const app = createServer({
+    ...(admin === undefined ? {} : { admin, adminStaticDir: adminDist }),
     healthChecks: [
       { name: 'postgres', check: () => pingDb(db) },
       { name: 'redis', check: () => pingRedis(getRedis()) },

@@ -1,0 +1,176 @@
+/*
+ * Палитра продукта (§12.4 ТЗ).
+ *
+ * Значения взяты из брендбука дословно и живут ровно здесь: «палитра
+ * применяется в админ-панели, на лендинге и в графических материалах»,
+ * то есть она общая, и разъехаться её копии не должны. Цвет, набранный
+ * по месту, — первый шаг к панели, которая выглядит чужой продукту.
+ */
+:root {
+  --фон: #f7f3ef;
+  --фон-второй: #e8e2da;
+  --акцент: #cbaa9f;
+  --акцент-основной: #6b4e4e;
+  --текст: #2e2e34;
+
+  --текст-тихий: #6f6f78;
+  --радиус: 10px;
+  --тень: 0 1px 2px rgb(46 46 52 / 8%), 0 8px 24px rgb(46 46 52 / 6%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--фон);
+  color: var(--текст);
+  font-family:
+    Inter,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+}
+
+/* ── Вход ────────────────────────────────────────────────────────────── */
+
+.вход {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+.вход__карточка {
+  width: 100%;
+  max-width: 360px;
+  padding: 32px;
+  border-radius: var(--радиус);
+  background: #fff;
+  box-shadow: var(--тень);
+}
+
+.вход__имя {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.вход__подпись {
+  margin: 0 0 24px;
+  color: var(--текст-тихий);
+  font-size: 14px;
+}
+
+.поле {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.поле__имя {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.поле__ввод {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--фон-второй);
+  border-radius: 8px;
+  background: var(--фон);
+  color: var(--текст);
+}
+
+.поле__ввод:focus {
+  border-color: var(--акцент);
+  outline: 2px solid rgb(203 170 159 / 35%);
+  outline-offset: 1px;
+}
+
+.поле__ввод--код {
+  font-size: 22px;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+
+.кнопка {
+  width: 100%;
+  padding: 11px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--акцент-основной);
+  color: #fff;
+  font-weight: 500;
+}
+
+.кнопка:hover:not(:disabled) {
+  background: #5b4242;
+}
+
+.кнопка:disabled {
+  background: var(--акцент);
+  cursor: default;
+}
+
+.кнопка--тихая {
+  margin-top: 12px;
+  background: none;
+  color: var(--текст-тихий);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.кнопка--тихая:hover:not(:disabled) {
+  background: none;
+  color: var(--акцент-основной);
+}
+
+.отказ {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--фон-второй);
+  color: var(--текст);
+  font-size: 14px;
+}
+
+/* ── Панель ──────────────────────────────────────────────────────────── */
+
+.панель {
+  padding: 32px;
+}
+
+.панель__шапка {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.панель__имя {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.панель__кто {
+  color: var(--текст-тихий);
+  font-size: 14px;
+}

@@ -15,7 +15,9 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "test:int": "vitest run --project integration",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "admin:secrets": "tsx src/scripts/admin-secrets.ts",
+    "admin:e2e": "tsx src/scripts/admin-e2e-server.ts"
   },
   "dependencies": {
     "bullmq": "^6.2.0",

@@ -1,3 +1,4 @@
+import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -22,6 +23,16 @@ export interface HealthCheck {
 export interface ServerDeps {
   /** Проверки, от которых зависит готовность принимать нагрузку. */
   readonly healthChecks: readonly HealthCheck[];
+  /**
+   * Админ-панель (§15, задача 4.5). Без настроек её нет вовсе.
+   *
+   * Отсутствие настройки означает «панели нет», а не «панель без
+   * пароля»: недонастроенная панель обязана быть закрытой, иначе
+   * забытая строка в `.env` открывает содержимое чужих выгрузок.
+   */
+  readonly admin?: AdminAuthConfig | undefined;
+  /** Откуда отдавать собранную панель. Без него — только её API. */
+  readonly adminStaticDir?: string | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
   readonly webhookPath?: string;
   readonly webhookHandler?: RequestHandler;
@@ -111,6 +122,29 @@ export function createServer(deps: ServerDeps): Express {
       },
     );
   });
+
+  /**
+   * §15: панель закрыта от индексации.
+   *
+   * Файл в корне, потому что поисковые роботы читают его только там —
+   * путь `/admin/robots.txt` не значил бы ничего. Заголовок `X-Robots-Tag`
+   * приезжает вдобавок с каждым ответом самой панели.
+   */
+  app.get('/robots.txt', (_req: Request, res: Response) => {
+    res
+      .type('text/plain')
+      .send(['User-agent: *', 'Disallow: /admin', ''].join(String.fromCharCode(10)));
+  });
+
+  if (deps.admin !== undefined) {
+    app.use(
+      '/admin',
+      createAdminRouter({
+        config: deps.admin,
+        ...(deps.adminStaticDir === undefined ? {} : { staticDir: deps.adminStaticDir }),
+      }).router,
+    );
+  }
 
   if (deps.webhookPath && deps.webhookHandler) {
     // Тело апдейта разбирается только на пути вебхука: остальным ручкам
