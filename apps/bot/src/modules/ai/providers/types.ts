@@ -22,6 +22,15 @@ export interface CompletionRequest {
    */
   readonly temperature?: number | undefined;
   readonly maxTokens?: number | undefined;
+
+  /**
+   * Отмена запроса по таймауту (задача 3.81).
+   *
+   * Без него мы переставали ждать, а генерация продолжалась и
+   * оплачивалась: при трёх попытках повтора один вызов мог стоить трёх
+   * ответов. Необязателен, потому что провайдеры-заглушки его не ждут.
+   */
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface CompletionResult {

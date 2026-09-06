@@ -66,7 +66,7 @@ export async function embedText(deps: EmbedDeps, params: EmbedParams): Promise<r
       const result = await withRetry(
         () =>
           withTimeout(
-            () => deps.provider.embed({ text: params.text, purpose: params.purpose }),
+            (signal) => deps.provider.embed({ text: params.text, purpose: params.purpose, signal }),
             timeoutMs,
             'смысловое представление',
           ),

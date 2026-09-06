@@ -70,17 +70,40 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-/** Ограничение по времени: зависший вызов не должен держать очередь. */
+/**
+ * Ограничение по времени: зависший вызов не должен держать очередь.
+ *
+ * **И не должен продолжать тратить деньги** (задача 3.81). Раньше здесь
+ * стояла одна гонка: мы переставали ждать, а запрос к модели жил дальше
+ * — соединение открыто, генерация идёт, счётчик тикает. При трёх
+ * попытках повтора один вызов мог оплатиться трижды, а в учёт попадала
+ * одна строка: у сорвавшегося вызова расход пустой.
+ *
+ * Поэтому обработчику отдаётся `AbortSignal`, и по выходу отсюда он
+ * отменяется **в любом случае** — и по таймауту, и когда ответ пришёл
+ * вовремя (там отмена безвредна: всё уже сделано).
+ *
+ * **Отказ отменённого запроса гасится отдельно, и это не мелочь.**
+ * Проигравшая сторона гонки отклоняется позже победившей, и без своего
+ * обработчика её отказ становится необработанным. Такое уже роняло этот
+ * процесс однажды — на express пятой версии, см. `index.ts`.
+ */
 export async function withTimeout<T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   label = 'операция',
 ): Promise<T> {
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
+
+  const running = fn(controller.signal);
+
+  // Гасим отказ проигравшей стороны: сам результат гонка отдаст ниже.
+  running.catch(() => undefined);
 
   try {
     return await Promise.race([
-      fn(),
+      running,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           reject(new Error(`${label}: превышен таймаут ${String(timeoutMs)} мс`));
@@ -89,5 +112,6 @@ export async function withTimeout<T>(
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    controller.abort();
   }
 }

@@ -18,6 +18,8 @@ export type EmbeddingPurpose = 'document' | 'query';
 export interface EmbedRequest {
   readonly text: string;
   readonly purpose: EmbeddingPurpose;
+  /** Отмена по таймауту: брошенный запрос иначе оплачивается (3.81). */
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface EmbedResult {

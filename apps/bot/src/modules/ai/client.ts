@@ -174,13 +174,17 @@ export async function requestStructured<T>(
         const result = await withRetry(
           () =>
             withTimeout(
-              () =>
+              (signal) =>
                 deps.provider.complete({
                   prompt,
                   input: request.input,
                   jsonSchema: active.jsonSchema,
                   temperature: request.temperature ?? temperatureFor(request.stage),
                   maxTokens: request.maxTokens,
+                  // Таймаут отменяет генерацию, а не только ожидание
+                  // (задача 3.81): брошенный запрос иначе оплачивается
+                  // до конца, и повтор стоит второй раз.
+                  signal,
                 }),
               timeoutMs,
               'запрос к модели',
