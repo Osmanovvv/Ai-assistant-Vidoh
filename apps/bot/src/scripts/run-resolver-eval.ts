@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { loadResolverCases } from '../eval/resolver-dataset.js';
+import { parsePins } from '../eval/pins.js';
 import {
   checkResolverThreshold,
   collectResolver,
@@ -32,10 +33,17 @@ import { PRICING } from '../modules/metering/pricing.js';
  * промпта ищет его там же.
  */
 
-const [, , datasetArg, outArg] = process.argv;
+/**
+ * Аргументы: набор, необязательная папка отчётов и прикрепления версий.
+ *
+ * `--use resolver=resolver@8` меряет версию до её включения — без
+ * этого §15 и §10.3 запирают друг друга (см. `eval/pins.ts`).
+ */
+const { pinned, rest } = parsePins(process.argv.slice(2));
+const [datasetArg, outArg] = rest;
 
 if (datasetArg === undefined) {
-  process.stderr.write('Использование: run-resolver-eval <папка-набора> [папка-отчётов]\n');
+  process.stderr.write('Использование: run-resolver-eval <набор> [отчёты] [--use resolver=версия]\n');
   process.exit(2);
 }
 
@@ -60,7 +68,7 @@ try {
     process.exit(2);
   }
 
-  const prompts = new PromptRegistry(db);
+  const prompts = new PromptRegistry(db, 0, pinned);
   const active = await prompts.get('resolver');
 
   process.stdout.write(`Прогон ${String(cases.length)} случаев на ${active.version}\n\n`);

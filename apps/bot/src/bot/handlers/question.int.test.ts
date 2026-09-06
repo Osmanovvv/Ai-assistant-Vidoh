@@ -166,19 +166,31 @@ function pastFridayInMoscow(): string {
 
 /** Ближайшая пятница впереди, в поясе Москвы, строкой `ГГГГ-ММ-ДД`. */
 function nextFridayInMoscow(): string {
-  const at = new Date();
+  /**
+   * Считается **в московских сутках**, а не в UTC.
+   *
+   * Раньше шаг был по UTC, а сверка — по Москве, и с 21:00 UTC до
+   * полуночи проверка ждала пятницу на неделю вперёд: московские сутки
+   * там уже следующие. Найдено 07.09.2026 в два часа ночи — то есть
+   * ровно в это окно; на CI это выпадало бы раз в сутки на три часа.
+   */
+  const moscow = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  // Полдень UTC: до края суток далеко в любую сторону, и шаг днями не
+  // перескакивает дату из-за перевода часов.
+  const at = new Date(`${moscow.format(new Date())}T12:00:00Z`);
 
   // Строго вперёд: «в пятницу», сказанное в пятницу, значит следующую.
   do {
     at.setUTCDate(at.getUTCDate() + 1);
   } while (at.getUTCDay() !== 5);
 
-  return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: 'Europe/Moscow',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(at);
+  return moscow.format(at);
 }
 
 async function ask(): Promise<string> {

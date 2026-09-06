@@ -372,3 +372,48 @@ input {
 .выгрузка__итог li {
   margin-bottom: 3px;
 }
+
+/*
+ * Промпты (задача 4.8).
+ *
+ * Текст промпта — единственное место в панели, где переводы строк и
+ * отступы значат ровно то, что видно: это инструкция модели, и «съеденная»
+ * пустая строка меняет её смысл. Отсюда `pre` с переносом длинных строк:
+ * горизонтальная прокрутка на длинном промпте делает его нечитаемым.
+ */
+.хвост {
+  margin: 8px 0;
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: var(--радиус);
+  background: #f6f6f4;
+  color: var(--текст);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Пометка «включена» рядом с версией. */
+.метка {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--успех-фон, #e6f4ea);
+  color: var(--успех, #1e6b34);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Поле правки промпта: однострочный ввод здесь не годится. */
+textarea.поле__ввод {
+  width: 100%;
+  min-height: 220px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+}

@@ -101,6 +101,36 @@ sshx "rm -rf $REMOTE_DIR/prompts && mkdir -p $REMOTE_DIR/prompts"
 tar -czf - -C docs prompts | ssh $SSH_OPTS "$HOST" "tar -xzf - -C $REMOTE_DIR" \
   || fail "не удалось отправить промпты"
 
+# Отчёты прогонов — вместе с промптами, и вот почему именно здесь.
+#
+# Панель умеет менять промпт без выкладки (§15), но включать версию,
+# на которой набор не прогнан, ей нельзя (§10.3). Судит она по
+# отчётам, а отчёты живут в docs/eval — вне репозитория. Момент
+# заливки промптов и есть момент, когда отчёты меняют смысл: версии
+# поехали, значит и измеренное про них поехало.
+#
+# Едут **только отчёты** — одни числа. Сам набор остаётся здесь: в нём
+# живые расшифровки людей, и на боевом сервере им делать нечего.
+if [ -d docs/eval/runs ]; then
+  runs=$(find docs/eval/runs -maxdepth 1 -name "*.json" | wc -l | tr -d " ")
+  say "Отправляю отчёты прогонов ($runs шт.)"
+
+  # Через if, а не через «&&»: при set -e неудачная проверка в конце
+  # списка уронила бы скрипт, хотя набора резолвера может и не быть.
+  RESOLVER_RUNS=""
+  if [ -d docs/eval/resolver/runs ]; then
+    RESOLVER_RUNS="resolver/runs"
+  fi
+
+  sshx "rm -rf $REMOTE_DIR/eval && mkdir -p $REMOTE_DIR/eval/runs"
+
+  # shellcheck disable=SC2086
+  tar -czf - -C docs/eval runs $RESOLVER_RUNS | ssh $SSH_OPTS "$HOST" "tar -xzf - -C $REMOTE_DIR/eval" \
+    || fail "не удалось отправить отчёты прогонов"
+else
+  printf "\\n!! Отчётов прогонов нет: раздела промптов в панели не будет.\\n"
+fi
+
 say "Заливаю в базу${ACTIVATE:+ и делаю активными}"
 sshx "cd $REMOTE_DIR && $COMPOSE run --rm -T \
   -v $REMOTE_DIR/prompts:/prompts:ro \

@@ -219,3 +219,111 @@ export function putSetting(name: string, value: string): Promise<{ ok: boolean }
 export function whoAmI(): Promise<{ login: string }> {
   return call<{ login: string }>('/me');
 }
+
+// ── Промпты (§15, задача 4.8) ────────────────────────────────────────
+
+export interface PromptRow {
+  readonly stage: string;
+  readonly version: string;
+  readonly isActive: boolean;
+  readonly note: string | null;
+  readonly schemaName: string;
+  /** Длина текста: список показывает размер, но не сам промпт. */
+  readonly length: number;
+  readonly createdAt: string;
+}
+
+export type Freshness =
+  | { readonly ok: true; readonly runs: readonly string[]; readonly unmeasured: readonly string[] }
+  | { readonly ok: false; readonly reasons: readonly string[]; readonly runs: readonly string[] };
+
+export type EvalRun =
+  | { readonly kind: 'idle' }
+  | {
+      readonly kind: 'running';
+      readonly startedAt: string;
+      readonly measuring?: { readonly stage: string; readonly version: string } | undefined;
+    }
+  | {
+      readonly kind: 'finished';
+      readonly startedAt: string;
+      readonly finishedAt: string;
+      readonly ok: boolean;
+      readonly tail: string;
+      readonly measuring?: { readonly stage: string; readonly version: string } | undefined;
+    };
+
+export interface PromptsPage {
+  readonly versions: readonly PromptRow[];
+  /** Прогнан ли набор на том, что включено сейчас. */
+  readonly freshness: Freshness;
+  readonly run: EvalRun;
+}
+
+export function prompts(): Promise<PromptsPage> {
+  return call<PromptsPage>('/prompts');
+}
+
+/** Текст версии — отдельным запросом: он самое ценное, что есть. */
+export function promptText(
+  stage: string,
+  version: string,
+): Promise<{ readonly prompt: string; readonly schemaName: string }> {
+  return call(
+    `/prompts/text?stage=${encodeURIComponent(stage)}&version=${encodeURIComponent(version)}`,
+  );
+}
+
+export function createHotfix(params: {
+  readonly stage: string;
+  readonly basedOn: string;
+  readonly prompt: string;
+}): Promise<{ readonly ok: boolean; readonly version: string }> {
+  return post('/prompts/hotfix', params);
+}
+
+/**
+ * Отказ включить непрогнанную версию (§10.3).
+ *
+ * Отдельным типом, а не строкой: у отказа есть причины, и показать их
+ * человеку — половина смысла заслона. «Не получилось» без объяснения
+ * заставляет искать обход, а не прогонять набор.
+ */
+export class NotMeasured extends Error {
+  constructor(readonly reasons: readonly string[]) {
+    super('Набор на этой версии не прогнан');
+    this.name = 'NotMeasured';
+  }
+}
+
+export async function activatePrompt(params: {
+  readonly stage: string;
+  readonly version: string;
+  readonly acknowledged?: boolean;
+}): Promise<{ readonly ok: boolean }> {
+  const response = await fetch(`${ROOT}/prompts/activate`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+
+  if (response.status === 401) throw new NotSignedIn();
+
+  if (response.status === 409) {
+    const body = (await response.json()) as { readonly reasons?: readonly string[] };
+    throw new NotMeasured(body.reasons ?? []);
+  }
+
+  if (!response.ok) throw new Error(`Панель ответила ${String(response.status)}`);
+
+  return (await response.json()) as { readonly ok: boolean };
+}
+
+/** Прогнать набор на конкретной версии. Стоит денег — отсюда и вопрос. */
+export function runEval(params: {
+  readonly stage: string;
+  readonly version: string;
+}): Promise<{ readonly started: boolean; readonly run: EvalRun }> {
+  return post('/prompts/run-eval', params);
+}
