@@ -1,7 +1,12 @@
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { aiCalls, appSettings, batches, items, users } from '../db/schema.js';
+import { aiCalls, appSettings, batches, items, promptVersions, users } from '../db/schema.js';
+import { createEvalRunner } from '../modules/admin/eval-run.js';
+import { CLASSIFIER_SCHEMA_NAME } from '../modules/ai/schemas/index.js';
+import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
 import { hashPassword } from '../http/admin/password.js';
 import { createServer } from '../http/server.js';
 import type { Database } from '../infra/db.js';
@@ -125,6 +130,67 @@ if (seedUrl !== undefined) {
   ]);
 }
 
+/**
+ * Контрольный набор для раздела промптов (задача 4.8).
+ *
+ * Настоящий прогон ходит к живой модели по всему набору и стоит денег;
+ * запускать его на каждой браузерной проверке нельзя. Поэтому здесь
+ * подставляется заглушка, которая делает ровно то, что проверяется в
+ * панели: пишет отчёт на **той версии, которую попросили измерить**.
+ *
+ * Так проверка проходит весь путь целиком — правка, прогон, включение,
+ * откат, — и заслон §10.3 в ней настоящий: без отчёта включение
+ * отказывает, с отчётом проходит.
+ */
+const evalDir = process.env['ADMIN_E2E_EVAL_DIR'] ?? join(tmpdir(), 'vydoh-admin-e2e-eval');
+
+let evalRunner;
+
+if (seeded !== undefined) {
+  await rm(evalDir, { recursive: true, force: true });
+  await mkdir(join(evalDir, 'runs'), { recursive: true });
+
+  await seeded.delete(promptVersions);
+
+  await seedPrompt(seeded, {
+    stage: 'classifier',
+    version: 'classifier@1',
+    prompt: 'Разбери сказанное на отдельные мысли.',
+    schemaName: CLASSIFIER_SCHEMA_NAME,
+  });
+
+  await seedPrompt(seeded, {
+    stage: 'classifier',
+    version: 'classifier@2',
+    prompt: 'Разбери сказанное на отдельные мысли, аккуратнее со сроками.',
+    schemaName: CLASSIFIER_SCHEMA_NAME,
+  });
+
+  await activatePrompt(seeded, 'classifier', 'classifier@1');
+
+  /** Отчёт на том, что включено: страница должна открыться спокойной. */
+  await writeFile(
+    join(evalDir, 'runs', '2026-09-01T00-00-00-000Z.json'),
+    JSON.stringify(passingReport({ classifier: `classifier@1` })),
+    'utf8',
+  );
+
+  /**
+   * Заглушка прогона вместо настоящего: он стоит денег.
+   *
+   * Отдельным файлом рядом с проверками, а не строкой в `-e`: строку
+   * пришлось бы экранировать, а прогон запускается **без** оболочки —
+   * нарочно, см. пояснение в `eval-run.ts`.
+   */
+  const stub =
+    process.env['ADMIN_E2E_EVAL_STUB'] ?? join(here, '../../../../tests/admin/eval-stub.mjs');
+
+  evalRunner = createEvalRunner({
+    evalDir,
+    command: [process.execPath, stub, evalDir],
+  });
+}
+
 const app = createServer({
   healthChecks: [],
   adminStaticDir: dist,
@@ -141,6 +207,8 @@ const app = createServer({
          * после записи, и это проверено интеграционным тестом.
          */
         adminSettings: new SettingsRegistry({ db: seeded, ttlMs: 0 }),
+        adminEvalDir: evalDir,
+        ...(evalRunner === undefined ? {} : { adminEvalRunner: evalRunner }),
       }),
   admin: {
     login: LOGIN,
@@ -159,3 +227,32 @@ app.listen(PORT, '127.0.0.1', () => {
     `Стенд панели: http://127.0.0.1:${String(PORT)}/admin/${String.fromCharCode(10)}`,
   );
 });
+
+/** Отчёт прогона, проходящий порог, на заданных версиях. */
+function passingReport(versions: Record<string, string>): Record<string, unknown> {
+  return {
+    expected: 40,
+    found: 40,
+    missed: 0,
+    extra: 0,
+    typeCorrect: 40,
+    priorityCorrect: 40,
+    topicCorrect: 40,
+    recurrenceCorrect: 40,
+    projectCorrect: 40,
+    projectChecked: 40,
+    deadlineCorrect: 40,
+    falseDeadlines: 0,
+    falseTasksFromDesires: 0,
+    falseTasksFromEmotions: 0,
+    retractedKept: 0,
+    crisisExpected: 0,
+    crisisDetected: 0,
+    crisisFalse: 0,
+    crisisMissed: 0,
+    failed: 0,
+    ambiguous: 0,
+    cases: 10,
+    promptVersions: versions,
+  };
+}

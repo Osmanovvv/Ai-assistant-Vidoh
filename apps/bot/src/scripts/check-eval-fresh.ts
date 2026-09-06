@@ -1,8 +1,14 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { basename } from 'node:path';
 
-import { checkThreshold, shares, type EvalReport } from '../eval/report.js';
-import { checkResolverThreshold, type ResolverReport } from '../eval/resolver-report.js';
+import {
+  evalFreshness,
+  MEASURED_STAGES,
+  newestResolverRun,
+  newestRun,
+  RESOLVER_STAGE,
+} from '../eval/freshness.js';
+import { shares } from '../eval/report.js';
 
 /**
  * Заслон перед заливкой промптов (§10.3 ТЗ).
@@ -40,9 +46,6 @@ if (promptsArg === undefined || evalArg === undefined) {
 const promptsDir: string = promptsArg;
 const evalDir: string = evalArg;
 
-/** Стадии, которые прогоняет контрольный набор. */
-const STAGES = ['router', 'extractor', 'classifier'] as const;
-
 function fail(lines: readonly string[]): never {
   process.stderr.write(`\n${lines.join('\n')}\n\n`);
   process.exit(1);
@@ -62,139 +65,58 @@ async function versionsToActivate(): Promise<Map<string, string>> {
   return versions;
 }
 
-/** Самый свежий отчёт прогона. Имена файлов — время в ISO, поэтому сортировка честная. */
-async function newestRun(): Promise<{ name: string; report: EvalReport } | undefined> {
-  const runs = join(evalDir, 'runs');
-
-  let files: string[];
-  try {
-    files = (await readdir(runs)).filter((name) => name.endsWith('.json')).sort();
-  } catch {
-    return undefined;
-  }
-
-  const newest = files.at(-1);
-  if (newest === undefined) return undefined;
-
-  return {
-    name: newest,
-    report: JSON.parse(await readFile(join(runs, newest), 'utf8')) as EvalReport,
-  };
-}
-
 const activating = await versionsToActivate();
-const run = await newestRun();
 
-if (run === undefined) {
+/**
+ * Сверка вынесена в `eval/freshness.ts` (задача 4.8).
+ *
+ * Читателей у правила стало два: этот скрипт и админ-панель, где §15
+ * разрешает менять промпт без выкладки. Две копии одного правила
+ * разошлись бы — и разошлись бы в сторону «разрешить».
+ */
+const verdict = await evalFreshness({ evalDir, activating });
+
+if (!verdict.ok) {
   fail([
-    'Прогона контрольного набора нет ни одного.',
-    '',
-    '§10.3 ТЗ: выкладка промптов только при отсутствии ухудшения. Сначала',
-    'прогон:',
-    '    npx tsx src/scripts/run-eval.ts ../../docs/eval',
-  ]);
-}
-
-const measured = run.report.promptVersions;
-const mismatch: string[] = [];
-
-for (const stage of STAGES) {
-  const now = activating.get(stage);
-  const then = measured[stage];
-
-  if (now === undefined) continue;
-  if (now !== then) mismatch.push(`  ${stage}: заливается ${now}, а мерили ${then ?? 'ничего'}`);
-}
-
-if (mismatch.length > 0) {
-  fail([
-    `Свежий прогон (${run.name}) сделан на других промптах:`,
-    ...mismatch,
+    ...verdict.reasons,
     '',
     '§10.3 ТЗ: любое изменение промпта прогоняется по набору. Прогнать:',
     '    npx tsx src/scripts/run-eval.ts ../../docs/eval',
   ]);
 }
 
-const verdict = checkThreshold(run.report);
-
-if (!verdict.passed) {
-  fail([
-    `Свежий прогон (${run.name}) не прошёл порог:`,
-    ...verdict.failures.map((line) => `  ${line}`),
-    '',
-    '§10.3 ТЗ: выкладка только при отсутствии ухудшения.',
-  ]);
-}
-
-await checkResolver();
-
-const found = shares(run.report);
-
-process.stdout.write(
-  `Прогон ${run.name}: найдено ${(found.recall * 100).toFixed(1)}%, ` +
-    `точность типа ${(found.type * 100).toFixed(1)}% — порог пройден.\n`,
-);
-
 /**
- * Отдельная проверка для резолвера.
+ * Печать итога.
  *
- * Вынесена вниз и в функцию, потому что у неё свой набор, свой отчёт и
- * свой порог. Общий код у двух проверок только один — правило §10.3, и
- * оно как раз не код, а требование.
+ * Сверку делает `evalFreshness`, здесь только числа для человека: какой
+ * отчёт зачли и что в нём получилось. Проверять что-либо ещё раз тут
+ * нельзя — две проверки одного правила разойдутся.
  */
-async function checkResolver(): Promise<void> {
-  const activating = await versionsToActivate();
-  const version = activating.get('resolver');
 
-  // Промпта резолвера в заливке нет — и проверять нечего.
-  if (version === undefined) return;
+const run = await newestRun(evalDir);
 
-  const runs = join(evalDir, 'resolver', 'runs');
-
-  let files: string[];
-  try {
-    files = (await readdir(runs)).filter((name) => name.endsWith('.json')).sort();
-  } catch {
-    files = [];
-  }
-
-  const newest = files.at(-1);
-
-  if (newest === undefined) {
-    fail([
-      'Прогона контрольного набора резолвера нет ни одного.',
-      '',
-      '§10.3 ТЗ: выкладка промптов только при отсутствии ухудшения. Сначала',
-      'прогон:',
-      '    npx tsx src/scripts/run-resolver-eval.ts ../../docs/eval/resolver',
-    ]);
-  }
-
-  const report = JSON.parse(await readFile(join(runs, newest), 'utf8')) as ResolverReport;
-
-  if (report.promptVersion !== version) {
-    fail([
-      `Свежий прогон резолвера (${newest}) сделан на другом промпте:`,
-      `  заливается ${version}, а мерили ${report.promptVersion}`,
-      '',
-      '§10.3 ТЗ: любое изменение промпта прогоняется по набору.',
-    ]);
-  }
-
-  const verdict = checkResolverThreshold(report);
-
-  if (!verdict.passed) {
-    fail([
-      `Свежий прогон резолвера (${newest}) не прошёл порог:`,
-      ...verdict.failures.map((line) => `  ${line}`),
-      '',
-      '§10.3 ТЗ: выкладка только при отсутствии ухудшения.',
-    ]);
-  }
+if (run !== undefined && MEASURED_STAGES.some((stage) => activating.has(stage))) {
+  const found = shares(run.report);
 
   process.stdout.write(
-    `Резолвер ${version}: ${String(report.decisionCorrect)} из ${String(report.cases)} решений верны, ложных применений нет.
-`,
+    `Прогон ${run.name}: найдено ${(found.recall * 100).toFixed(1)}%, ` +
+      `точность типа ${(found.type * 100).toFixed(1)}% — порог пройден.\n`,
+  );
+}
+
+const resolverVersion = activating.get(RESOLVER_STAGE);
+const resolverRun = resolverVersion === undefined ? undefined : await newestResolverRun(evalDir);
+
+if (resolverVersion !== undefined && resolverRun !== undefined) {
+  process.stdout.write(
+    `Резолвер ${resolverVersion}: ${String(resolverRun.report.decisionCorrect)} из ` +
+      `${String(resolverRun.report.cases)} решений верны, ложных применений нет.\n`,
+  );
+}
+
+if (verdict.unmeasured.length > 0) {
+  // Молчание тут прочлось бы как «проверено». Не проверено — нечем.
+  process.stdout.write(
+    `Набор не мерит: ${verdict.unmeasured.join(', ')} — включается без измерения.\n`,
   );
 }

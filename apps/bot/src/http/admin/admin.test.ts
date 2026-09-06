@@ -7,6 +7,7 @@ import type { Express } from 'express';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Executor } from '../../infra/db.js';
+import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { createServer } from '../server.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
@@ -87,6 +88,19 @@ afterEach(async () => {
  * громко, а не тихо соврёт: у него просто нет ни одного метода.
  */
 const NEVER_TOUCHED = {} as Executor;
+
+/**
+ * Прогон, который не запустится: страж отказывает раньше обработчика.
+ *
+ * Настоящий стоил бы денег, а тут до него не доходит ни разу — как и до
+ * базы выше. Врёт он громко: `start` бросает вместо тихого «не вышло».
+ */
+const NEVER_RUN: EvalRunner = {
+  state: () => ({ kind: 'idle' }),
+  start: () => {
+    throw new Error('прогон набора не должен запускаться из проверки стража');
+  },
+};
 
 function configOf(overrides: Partial<AdminAuthConfig> = {}): AdminAuthConfig {
   return {
@@ -169,18 +183,32 @@ describe('без авторизации панель не отдаёт данн�
      * это не перестраховка. Раздел расходов объявляется только при
      * заданной базе; собранный без неё роутер этого пути не знает — и
      * проверка молча его пропускала. Поймано на задаче 4.7, на своём же
-     * страже, через час после того, как он был написан.
+     * страже, через час после того, как он был написан. И повторилось на
+     * задаче 4.8: пути промптов появляются только при заданной папке
+     * набора, а кнопка прогона — только при запускающем. Новую
+     * необязательную зависимость надо добавлять **сюда тоже**, иначе
+     * страж честно проверит всё, кроме нового.
      */
-    const { routes } = createAdminRouter({
+    const withEverything = {
       config: configOf(),
       db: NEVER_TOUCHED,
       staticDir: join(import.meta.dirname, '../../../../admin/dist'),
-    });
+      evalDir: join(import.meta.dirname, 'нет-такой-папки'),
+      evalRunner: NEVER_RUN,
+    } as const;
+
+    const { routes } = createAdminRouter(withEverything);
 
     expect(routes.length).toBeGreaterThan(0);
 
     const base = await listen(
-      createServer({ healthChecks: [], admin: configOf(), adminDb: NEVER_TOUCHED }),
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: NEVER_TOUCHED,
+        adminEvalDir: withEverything.evalDir,
+        adminEvalRunner: NEVER_RUN,
+      }),
     );
 
     for (const route of routes) {

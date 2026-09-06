@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { loadDataset } from '../eval/dataset.js';
+import { parsePins } from '../eval/pins.js';
 import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
 import { runDataset } from '../eval/runner.js';
 import { modelEnvSchema } from '../config/env.js';
@@ -30,11 +31,21 @@ import { upsertUser } from '../modules/users/users.repo.js';
  * иначе прогоны исказят себестоимость выгрузки.
  */
 
-const [, , directory] = process.argv;
+/**
+ * Аргументы: путь к набору и необязательные прикрепления версий.
+ *
+ *   npx tsx src/scripts/run-eval.ts ../../docs/eval
+ *   npx tsx src/scripts/run-eval.ts ../../docs/eval --use classifier=classifier@6
+ *
+ * Второй вид нужен, чтобы измерить версию **до** включения: этого
+ * требует связка §15 и §10.3 (см. `eval/pins.ts`).
+ */
+const { pinned, rest } = parsePins(process.argv.slice(2));
+const [directory] = rest;
 
 if (directory === undefined) {
   process.stderr.write(
-    'Использование: run-eval <папка-с-набором>\n' +
+    'Использование: run-eval <папка-с-набором> [--use стадия=версия]\n' +
       '  Настоящий набор лежит в docs/eval — вне репозитория.\n' +
       '  Синтетический, для проверки самого стенда: src/eval/synthetic\n',
   );
@@ -109,7 +120,16 @@ try {
     process.exit(3);
   }
 
-  const prompts = new PromptRegistry(db);
+  // Кэш ни к чему: прогон читает промпт по разу на стадию.
+  const prompts = new PromptRegistry(db, 0, pinned);
+
+  if (pinned.size > 0) {
+    logger.info(
+      { версии: Object.fromEntries(pinned) },
+      'Прогон на прикреплённых версиях, а не на активных',
+    );
+  }
+
   const full = createLlmProvider(env);
   const light = createLlmProvider(env, { light: true });
 

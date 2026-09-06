@@ -1,6 +1,8 @@
 import type { Executor } from '../infra/db.js';
 import type { SettingsRegistry } from '../modules/settings/settings.repo.js';
 import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
+import type { AiStage } from '../db/schema.js';
+import type { EvalRunner } from '../modules/admin/eval-run.js';
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -39,6 +41,17 @@ export interface ServerDeps {
   readonly adminDb?: Executor | undefined;
   /** Реестр значений: раздел настроек правит его и сбрасывает кэш (4.9). */
   readonly adminSettings?: SettingsRegistry | undefined;
+  /**
+   * Папка контрольного набора (§10.3, задача 4.8).
+   *
+   * Без неё раздела промптов в панели нет: включать версию, не умея
+   * проверить, прогнан ли на ней набор, — ровно то, что §10.3 запрещает.
+   */
+  readonly adminEvalDir?: string | undefined;
+  /** Кто запускает прогон набора по кнопке (4.8). */
+  readonly adminEvalRunner?: EvalRunner | undefined;
+  /** Кэш промптов бота: включение версии сбрасывает его (§15). */
+  readonly adminPromptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
   readonly webhookPath?: string;
   readonly webhookHandler?: RequestHandler;
@@ -150,6 +163,11 @@ export function createServer(deps: ServerDeps): Express {
         ...(deps.adminStaticDir === undefined ? {} : { staticDir: deps.adminStaticDir }),
         ...(deps.adminDb === undefined ? {} : { db: deps.adminDb }),
         ...(deps.adminSettings === undefined ? {} : { settings: deps.adminSettings }),
+        ...(deps.adminEvalDir === undefined ? {} : { evalDir: deps.adminEvalDir }),
+        ...(deps.adminEvalRunner === undefined ? {} : { evalRunner: deps.adminEvalRunner }),
+        ...(deps.adminPromptRegistry === undefined
+          ? {}
+          : { promptRegistry: deps.adminPromptRegistry }),
         ...(deps.onError === undefined ? {} : { onError: deps.onError }),
       }).router,
     );

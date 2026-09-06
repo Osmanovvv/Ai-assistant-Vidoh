@@ -1,3 +1,4 @@
+import { readdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +14,8 @@ import { consumeAwaited } from './bot/handlers/awaiting.js';
 import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { adminConfigFrom } from './http/admin/index.js';
+import { createEvalRunner } from './modules/admin/eval-run.js';
+import { newestRun } from './eval/freshness.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
 import { SettingsRegistry } from './modules/settings/settings.repo.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
@@ -449,10 +452,64 @@ async function main(): Promise<void> {
   const adminDist =
     env.ADMIN_DIST ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../admin/dist');
 
+  /**
+   * Контрольный набор для раздела промптов (§10.3, задача 4.8).
+   *
+   * Набор живёт в `docs/` — вне публичного репозитория. В образ он не
+   * попадает, а отчёты прогонов туда кладёт `./ops/seed-prompts.sh`:
+   * это одни числа, ничего личного и ничего секретного.
+   *
+   * **Нет отчётов — нет и раздела.** Раздел, который умеет только
+   * отказывать, приучил бы жать «включить без прогона» каждый раз, и
+   * заслон §10.3 остался бы на бумаге. Лучше честное отсутствие.
+   */
+  const evalDir =
+    env.ADMIN_EVAL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../docs/eval');
+
+  const evalReady = (await newestRun(evalDir)) !== undefined;
+
+  /**
+   * Кнопка прогона появляется только там, где есть **сам набор**.
+   *
+   * Отчёты — это числа, они на сервере есть. Набора там нет и быть не
+   * должно: в нём живые расшифровки людей (§16). Кнопка, которая на
+   * боевом всегда падала бы «набора нет», хуже отсутствующей — она
+   * учит не верить панели.
+   */
+  const evalCases = evalReady
+    ? (await readdir(evalDir).catch(() => [])).filter((name) => name.endsWith('.json')).length
+    : 0;
+
+  if (admin !== undefined) {
+    logger.info(
+      { папка: evalDir, отчёты: evalReady, случаев: evalCases },
+      evalReady
+        ? 'Раздел промптов в панели включён'
+        : 'Раздела промптов в панели нет: отчётов прогона по этому пути не найдено',
+    );
+  }
+
   const app = createServer({
     ...(admin === undefined
       ? {}
-      : { admin, adminStaticDir: adminDist, adminDb: db, adminSettings: settings }),
+      : {
+          admin,
+          adminStaticDir: adminDist,
+          adminDb: db,
+          adminSettings: settings,
+          adminPromptRegistry: prompts,
+          ...(evalReady ? { adminEvalDir: evalDir } : {}),
+          ...(evalCases > 0
+            ? {
+                adminEvalRunner: createEvalRunner({
+                  evalDir,
+                  onError: (error: unknown) => {
+                    logger.error({ err: error }, 'Прогон набора из панели не запустился');
+                  },
+                }),
+              }
+            : {}),
+        }),
     healthChecks: [
       { name: 'postgres', check: () => pingDb(db) },
       { name: 'redis', check: () => pingRedis(getRedis()) },

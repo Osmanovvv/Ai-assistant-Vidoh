@@ -29,8 +29,12 @@ export interface ActivePrompt {
 }
 
 export class PromptNotFoundError extends Error {
-  constructor(stage: AiStage) {
-    super(`Нет активной версии промпта для этапа «${stage}». Залейте промпты (seed).`);
+  constructor(stage: AiStage, version?: string) {
+    super(
+      version === undefined
+        ? `Нет активной версии промпта для этапа «${stage}». Залейте промпты (seed).`
+        : `Версии ${version} этапа «${stage}» нет в базе.`,
+    );
     this.name = 'PromptNotFoundError';
   }
 }
@@ -53,13 +57,44 @@ export class SchemaMismatchError extends Error {
 }
 
 export async function loadActivePrompt(db: Executor, stage: AiStage): Promise<ActivePrompt> {
+  return await loadPrompt(db, stage, undefined);
+}
+
+/**
+ * Конкретная версия — не обязательно активная.
+ *
+ * Нужна прогону набора (задача 4.8). Без неё §15 и §10.3 запирают друг
+ * друга: горячую правку нельзя включить, пока набор на ней не прогнан, а
+ * прогнать набор нельзя, пока правка не включена — прогон брал активную
+ * версию. Мерить надо ту, которую собираются включить, и до включения.
+ */
+export async function loadPromptVersion(
+  db: Executor,
+  stage: AiStage,
+  version: string,
+): Promise<ActivePrompt> {
+  return await loadPrompt(db, stage, version);
+}
+
+async function loadPrompt(
+  db: Executor,
+  stage: AiStage,
+  version: string | undefined,
+): Promise<ActivePrompt> {
   const [row] = await db
     .select()
     .from(promptVersions)
-    .where(and(eq(promptVersions.stage, stage), eq(promptVersions.isActive, true)))
+    .where(
+      and(
+        eq(promptVersions.stage, stage),
+        version === undefined
+          ? eq(promptVersions.isActive, true)
+          : eq(promptVersions.version, version),
+      ),
+    )
     .limit(1);
 
-  if (!row) throw new PromptNotFoundError(stage);
+  if (!row) throw new PromptNotFoundError(stage, version);
 
   // Валидатор в базе не сохранить, поэтому он ищется в коде по имени.
   // Незнакомое имя — это выкладка, которая не знает про свою же версию
@@ -94,6 +129,13 @@ export class PromptRegistry {
   constructor(
     private readonly db: Executor,
     private readonly ttlMs = 60_000,
+    /**
+     * Прикреплённые версии: стадия → версия вместо активной.
+     *
+     * Нужны прогону набора (задача 4.8), чтобы измерить горячую правку
+     * **до** включения. В бою пусто: там всегда действует активная.
+     */
+    private readonly pinned: ReadonlyMap<AiStage, string> = new Map(),
   ) {}
 
   private readonly loadedAt = new Map<AiStage, number>();
@@ -104,7 +146,11 @@ export class PromptRegistry {
 
     if (cached && now - loaded < this.ttlMs) return cached;
 
-    const fresh = await loadActivePrompt(this.db, stage);
+    const pin = this.pinned.get(stage);
+    const fresh =
+      pin === undefined
+        ? await loadActivePrompt(this.db, stage)
+        : await loadPromptVersion(this.db, stage, pin);
     this.cache.set(stage, fresh);
     this.loadedAt.set(stage, now);
     return fresh;

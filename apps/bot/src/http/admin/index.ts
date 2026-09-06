@@ -7,7 +7,15 @@ import express, {
 } from 'express';
 
 import type { Executor } from '../../infra/db.js';
+import { aiStage, type AiStage } from '../../db/schema.js';
+import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
+import {
+  activateVersion,
+  createHotfix,
+  promptText,
+  promptsView,
+} from '../../modules/admin/prompts.js';
 import {
   putSetting,
   SETTINGS,
@@ -15,6 +23,7 @@ import {
   type SettingsRegistry,
 } from '../../modules/settings/settings.repo.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
+import { MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
 import { recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
 
@@ -104,6 +113,24 @@ export interface AdminDeps {
   readonly staticDir?: string | undefined;
   /** Куда сообщать о сбое внутри раздела. Без него отказ уйдёт в никуда. */
   readonly onError?: ((error: unknown) => void) | undefined;
+  /**
+   * Папка контрольного набора (§10.3, задача 4.8).
+   *
+   * Без неё раздела промптов нет: включать версию, не умея проверить,
+   * прогнан ли на ней набор, — ровно то, что §10.3 запрещает.
+   */
+  readonly evalDir?: string | undefined;
+  /** Кто запускает прогон набора по кнопке. Без него кнопки нет. */
+  readonly evalRunner?: EvalRunner | undefined;
+  /**
+   * Кэш активных промптов бота.
+   *
+   * §15 требует правки промпта **без выкладки**. Кэш держит активную
+   * версию минуту, и без сброса «без выкладки» превращалось бы в
+   * «через минуту» — а на разборе, начатом в эту минуту, ещё и в
+   * «непонятно когда». Сброс делает включение мгновенным.
+   */
+  readonly promptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
 }
 
 /**
@@ -487,6 +514,221 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
         );
       },
     );
+  }
+
+  if (deps.db !== undefined && deps.evalDir !== undefined) {
+    const db = deps.db;
+    const evalDir = deps.evalDir;
+    const runner = deps.evalRunner;
+
+    /**
+     * Промпты (§15, задача 4.8): версии, включение, откат.
+     *
+     * **Не персональные данные, но самое ценное, что есть в продукте.**
+     * Промпты нарочно не лежат в публичном репозитории (решение 2.1);
+     * здесь они за тем же стражем, что и всё остальное. В журнал доступа
+     * не пишем: §16 про данные человека, а это наше ноу-хау.
+     */
+    /**
+     * Стадия из запроса — только та, что есть в перечислении базы.
+     *
+     * Иначе строка уедет в сравнение с колонкой-перечислением и
+     * Postgres ответит ошибкой типа: отказ будет, но невнятный, и в
+     * журнал уйдёт сбой там, где на деле просто опечатка в запросе.
+     */
+    const asStage = (value: unknown): AiStage | undefined =>
+      typeof value === 'string' && (aiStage.enumValues as readonly string[]).includes(value)
+        ? (value as AiStage)
+        : undefined;
+
+    /** Стадии, для которых набор вообще существует (общий и резолвера). */
+    const MEASURABLE: readonly AiStage[] = [...MEASURED_STAGES, RESOLVER_STAGE];
+
+    const NOT_PERSONAL = {
+      personal: false,
+      why: 'промпты — ноу-хау продукта, но не данные человека (§16 про них)',
+    } as const;
+
+    closed('get', '/api/prompts', NOT_PERSONAL, (_req: Request, res: Response) => {
+      void promptsView(db, evalDir).then(
+        (view) => {
+          res.json({ ...view, run: runner?.state() ?? { kind: 'idle' } });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(500).json({ error: 'не удалось прочитать промпты' });
+        },
+      );
+    });
+
+    /** Текст одной версии — отдельным запросом, см. `prompts.ts`. */
+    closed('get', '/api/prompts/text', NOT_PERSONAL, (req: Request, res: Response) => {
+      const stage = asStage(req.query['stage']);
+      const version = req.query['version'];
+
+      if (stage === undefined || typeof version !== 'string') {
+        res.status(400).json({ error: 'нужны stage и version' });
+        return;
+      }
+
+      void promptText(db, { stage, version }).then(
+        (found) => {
+          if (found === undefined) {
+            res.status(404).json({ error: 'нет такой версии' });
+            return;
+          }
+
+          res.json(found);
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(500).json({ error: 'не удалось прочитать версию' });
+        },
+      );
+    });
+
+    /** Горячая правка: новая версия, а не подмена старой (2.1). */
+    closed('post', '/api/prompts/hotfix', NOT_PERSONAL, (req: Request, res: Response) => {
+      const body = (req.body ?? {}) as { stage?: unknown; basedOn?: unknown; prompt?: unknown };
+
+      const stage = asStage(body.stage);
+
+      if (
+        stage === undefined ||
+        typeof body.basedOn !== 'string' ||
+        typeof body.prompt !== 'string'
+      ) {
+        res.status(400).json({ error: 'нужны stage, basedOn и prompt' });
+        return;
+      }
+
+      void createHotfix(db, {
+        stage,
+        basedOn: body.basedOn,
+        prompt: body.prompt,
+        by: req.admin?.login ?? 'неизвестно',
+      }).then(
+        (made) => {
+          res.json({ ok: true, version: made.version });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(400).json({ error: error instanceof Error ? error.message : 'не вышло' });
+        },
+      );
+    });
+
+    /**
+     * Включение версии — с заслоном §10.3.
+     *
+     * Непрогнанная версия **не включается**: ответ 409 и причина. Обойти
+     * можно только явным признанием (`acknowledged`), и оно запишется в
+     * версию навсегда.
+     */
+    closed('post', '/api/prompts/activate', NOT_PERSONAL, (req: Request, res: Response) => {
+      const body = (req.body ?? {}) as {
+        stage?: unknown;
+        version?: unknown;
+        acknowledged?: unknown;
+      };
+
+      const stage = asStage(body.stage);
+
+      if (stage === undefined || typeof body.version !== 'string') {
+        res.status(400).json({ error: 'нужны stage и version' });
+        return;
+      }
+
+      void activateVersion(db, {
+        stage,
+        version: body.version,
+        evalDir,
+        by: req.admin?.login ?? 'неизвестно',
+        acknowledged: body.acknowledged === true,
+      }).then(
+        (outcome) => {
+          if (!outcome.ok) {
+            // 409, а не 400: запрос понят и правилен, но состояние
+            // продукта не позволяет его исполнить.
+            res.status(409).json({ error: 'набор не прогнан', reasons: outcome.refused.reasons });
+            return;
+          }
+
+          // §15: правка без выкладки. Кэш держит активную версию минуту,
+          // и без сброса включение доехало бы до людей не сразу.
+          deps.promptRegistry?.forget(stage);
+
+          res.json({ ok: true, freshness: outcome.freshness });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(400).json({ error: error instanceof Error ? error.message : 'не вышло' });
+        },
+      );
+    });
+
+    /**
+     * Кнопка прогона набора: один прогон за раз — он стоит денег.
+     *
+     * Прогон идёт **на указанной версии**, а не на активной. Иначе
+     * кнопка была бы бесполезна ровно там, где нужна: горячую правку
+     * не включить без прогона, а прогон активной версии про неё
+     * ничего не говорит.
+     */
+    if (runner !== undefined) {
+      closed('post', '/api/prompts/run-eval', NOT_PERSONAL, (req: Request, res: Response) => {
+        const body = (req.body ?? {}) as { stage?: unknown; version?: unknown };
+        const stage = asStage(body.stage);
+
+        if (body.stage !== undefined && stage === undefined) {
+          res.status(400).json({ error: 'неизвестная стадия' });
+          return;
+        }
+
+        if (stage !== undefined && !MEASURABLE.includes(stage)) {
+          // Набора для этой стадии нет вовсе. Запустить прогон значило
+          // бы потратить деньги и не сдвинуть заслон ни на шаг.
+          res.status(409).json({ error: `набор не мерит стадию «${stage}»` });
+          return;
+        }
+
+        const target =
+          stage === undefined || typeof body.version !== 'string'
+            ? undefined
+            : { stage, version: body.version };
+
+        /**
+         * Версия должна существовать — иначе прогон впустую сожжёт
+         * деньги: он дойдёт до модели и упадёт только на первой
+         * стадии, уже потратив на речь и разбор.
+         */
+        const known =
+          target === undefined
+            ? Promise.resolve(true)
+            : promptText(db, target).then((found) => found !== undefined);
+
+        void known.then(
+          (exists) => {
+            if (!exists) {
+              res.status(404).json({ error: 'нет такой версии' });
+              return;
+            }
+
+            const started = runner.start(target);
+
+            res.status(started ? 200 : 409).json({
+              started,
+              ...(started ? {} : { error: 'прогон уже идёт' }),
+              run: runner.state(),
+            });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось начать прогон' });
+          },
+        );
+      });
+    }
   }
 
   /**
