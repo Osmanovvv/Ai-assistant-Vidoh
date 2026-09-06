@@ -168,44 +168,46 @@ export function PeoplePanel(): React.ReactElement {
       ) : page.rows.length === 0 ? (
         <p className="разрез__пусто">Никого не нашлось.</p>
       ) : (
-        <table className="таблица">
-          <thead>
-            <tr>
-              <th>Кто</th>
-              <th>Источник</th>
-              <th>Зарегистрирован</th>
-              <th>Был</th>
-              <th className="таблица__число">Выгрузок</th>
-              <th className="таблица__число">Пробных</th>
-              <th className="таблица__число">Расход</th>
-            </tr>
-          </thead>
-          <tbody>
-            {page.rows.map((row) => (
-              <tr key={row.id}>
-                <td>
-                  <button
-                    type="button"
-                    className="кнопка кнопка--тихая"
-                    style={{ width: 'auto', padding: 0, textAlign: 'left' }}
-                    onClick={() => {
-                      setOpenId(row.id);
-                    }}
-                  >
-                    {row.title}
-                  </button>
-                  {row.blocked && <span className="панель__кто"> заблокировал бота</span>}
-                </td>
-                <td>{row.source ?? '—'}</td>
-                <td>{when(row.registeredAt)}</td>
-                <td>{when(row.lastActiveAt)}</td>
-                <td className="таблица__число">{row.dumps}</td>
-                <td className="таблица__число">{row.trialSpent}</td>
-                <td className="таблица__число">{money(row.spend)}</td>
+        <div className="таблица-обёртка">
+          <table className="таблица">
+            <thead>
+              <tr>
+                <th>Кто</th>
+                <th>Источник</th>
+                <th>Зарегистрирован</th>
+                <th>Был</th>
+                <th className="таблица__число">Выгрузок</th>
+                <th className="таблица__число">Пробных</th>
+                <th className="таблица__число">Расход</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {page.rows.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <button
+                      type="button"
+                      className="кнопка кнопка--тихая"
+                      style={{ width: 'auto', padding: 0, textAlign: 'left' }}
+                      onClick={() => {
+                        setOpenId(row.id);
+                      }}
+                    >
+                      {row.title}
+                    </button>
+                    {row.blocked && <span className="панель__кто"> заблокировал бота</span>}
+                  </td>
+                  <td>{row.source ?? '—'}</td>
+                  <td>{when(row.registeredAt)}</td>
+                  <td>{when(row.lastActiveAt)}</td>
+                  <td className="таблица__число">{row.dumps}</td>
+                  <td className="таблица__число">{row.trialSpent}</td>
+                  <td className="таблица__число">{money(row.spend)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {page !== undefined && page.total > PAGE && (
@@ -335,29 +337,31 @@ function Card({
         {card.changes.length === 0 ? (
           <p className="разрез__пусто">Изменений не было.</p>
         ) : (
-          <table className="таблица">
-            <thead>
-              <tr>
-                <th>Когда</th>
-                <th>Запись</th>
-                <th>Кто</th>
-                <th>Почему</th>
-              </tr>
-            </thead>
-            <tbody>
-              {card.changes.map((change) => (
-                <tr key={change.id}>
-                  <td>{when(change.at)}</td>
-                  <td>{change.itemText ?? '(запись удалена)'}</td>
-                  <td>{change.changedBy}</td>
-                  <td>
-                    {change.reason ?? '—'}
-                    {change.reverted ? ' (откачено)' : ''}
-                  </td>
+          <div className="таблица-обёртка">
+            <table className="таблица">
+              <thead>
+                <tr>
+                  <th>Когда</th>
+                  <th>Запись</th>
+                  <th>Кто</th>
+                  <th>Почему</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {card.changes.map((change) => (
+                  <tr key={change.id}>
+                    <td>{when(change.at)}</td>
+                    <td>{change.itemText ?? '(запись удалена)'}</td>
+                    <td>{change.changedBy}</td>
+                    <td>
+                      {change.reason ?? '—'}
+                      {change.reverted ? ' (откачено)' : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
@@ -367,24 +371,26 @@ function Card({
         {card.questions.length === 0 ? (
           <p className="разрез__пусто">Вопросов не задавалось.</p>
         ) : (
-          <table className="таблица">
-            <thead>
-              <tr>
-                <th>Когда</th>
-                <th>О чём спросили</th>
-                <th>Чем кончилось</th>
-              </tr>
-            </thead>
-            <tbody>
-              {card.questions.map((question) => (
-                <tr key={question.id}>
-                  <td>{when(question.at)}</td>
-                  <td>{question.segment}</td>
-                  <td>{question.outcome ?? 'открыт'}</td>
+          <div className="таблица-обёртка">
+            <table className="таблица">
+              <thead>
+                <tr>
+                  <th>Когда</th>
+                  <th>О чём спросили</th>
+                  <th>Чем кончилось</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {card.questions.map((question) => (
+                  <tr key={question.id}>
+                    <td>{when(question.at)}</td>
+                    <td>{question.segment}</td>
+                    <td>{question.outcome ?? 'открыт'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

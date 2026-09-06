@@ -100,65 +100,70 @@ export function SettingsPanel(): React.ReactElement {
     <div data-testid="settings">
       <p className="оговорка">Значения применяются сразу, без выкладки и без перезапуска бота.</p>
 
-      <table className="таблица">
-        <thead>
-          <tr>
-            <th>Что</th>
-            <th className="таблица__число">Сейчас</th>
-            <th className="таблица__число">По умолчанию</th>
-            <th>Новое значение</th>
-          </tr>
-        </thead>
-        <tbody>
-          {page.rows.map((row) => {
-            const known = TITLES[row.name];
-            const draft = drafts[row.name] ?? String(row.value);
+      <div className="таблица-обёртка">
+        <table className="таблица">
+          <thead>
+            <tr>
+              <th>Что</th>
+              <th className="таблица__число">Сейчас</th>
+              <th className="таблица__число">По умолчанию</th>
+              <th>Новое значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            {page.rows.map((row) => {
+              const known = TITLES[row.name];
+              const draft = drafts[row.name] ?? String(row.value);
 
-            return (
-              <tr key={row.name}>
-                <td>
-                  <div>{known?.title ?? row.name}</div>
-                  <div className="панель__кто">{known?.hint ?? row.key}</div>
-                  {row.measured && (
-                    <div className="оговорка" style={{ margin: '6px 0 0' }} role="note">
-                      Значение получено замером. Вред от правки виден только на контрольном наборе —
-                      прогоните его после изменения.
-                    </div>
-                  )}
-                </td>
-                <td className="таблица__число" data-testid={`now-${row.name}`}>
-                  {row.value}
-                  {row.set ? '' : ' (из кода)'}
-                </td>
-                <td className="таблица__число">{row.fallback}</td>
-                <td>
-                  <input
-                    className="поле__ввод"
-                    style={{ maxWidth: 120 }}
-                    name={row.name}
-                    inputMode="numeric"
-                    value={draft}
-                    onChange={(event) => {
-                      setDrafts({ ...drafts, [row.name]: event.target.value.replace(/\D/gu, '') });
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="период__кнопка"
-                    style={{ marginLeft: 8 }}
-                    disabled={draft === String(row.value) || draft === ''}
-                    onClick={() => {
-                      save(row.name, draft);
-                    }}
-                  >
-                    {saved === row.name ? 'Сохранено' : 'Сохранить'}
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+              return (
+                <tr key={row.name}>
+                  <td>
+                    <div>{known?.title ?? row.name}</div>
+                    <div className="панель__кто">{known?.hint ?? row.key}</div>
+                    {row.measured && (
+                      <div className="оговорка" style={{ margin: '6px 0 0' }} role="note">
+                        Значение получено замером. Вред от правки виден только на контрольном наборе
+                        — прогоните его после изменения.
+                      </div>
+                    )}
+                  </td>
+                  <td className="таблица__число" data-testid={`now-${row.name}`}>
+                    {row.value}
+                    {row.set ? '' : ' (из кода)'}
+                  </td>
+                  <td className="таблица__число">{row.fallback}</td>
+                  <td>
+                    <input
+                      className="поле__ввод"
+                      style={{ maxWidth: 120 }}
+                      name={row.name}
+                      inputMode="numeric"
+                      value={draft}
+                      onChange={(event) => {
+                        setDrafts({
+                          ...drafts,
+                          [row.name]: event.target.value.replace(/\D/gu, ''),
+                        });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="период__кнопка"
+                      style={{ marginLeft: 8 }}
+                      disabled={draft === String(row.value) || draft === ''}
+                      onClick={() => {
+                        save(row.name, draft);
+                      }}
+                    >
+                      {saved === row.name ? 'Сохранено' : 'Сохранить'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {page.missing.map((note) => (
         <p className="оговорка" key={note} style={{ marginTop: 20 }}>

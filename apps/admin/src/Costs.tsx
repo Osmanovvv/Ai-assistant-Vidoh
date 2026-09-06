@@ -50,30 +50,32 @@ function Table({
       {rows.length === 0 ? (
         <p className="разрез__пусто">За период ничего не потрачено.</p>
       ) : (
-        <table className="таблица">
-          <thead>
-            <tr>
-              <th>{head}</th>
-              <th className="таблица__число">Вызовов</th>
-              <th className="таблица__число">Сбоев</th>
-              <th className="таблица__число">Без цены</th>
-              <th className="таблица__число">Расход</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.key}>
-                <td>{row.label ?? row.key}</td>
-                <td className="таблица__число">{row.calls}</td>
-                <td className="таблица__число">{row.failed > 0 ? row.failed : '—'}</td>
-                <td className="таблица__число">
-                  {row.unknownPrices > 0 ? row.unknownPrices : '—'}
-                </td>
-                <td className="таблица__число">{money(row.money)}</td>
+        <div className="таблица-обёртка">
+          <table className="таблица">
+            <thead>
+              <tr>
+                <th>{head}</th>
+                <th className="таблица__число">Вызовов</th>
+                <th className="таблица__число">Сбоев</th>
+                <th className="таблица__число">Без цены</th>
+                <th className="таблица__число">Расход</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.key}>
+                  <td>{row.label ?? row.key}</td>
+                  <td className="таблица__число">{row.calls}</td>
+                  <td className="таблица__число">{row.failed > 0 ? row.failed : '—'}</td>
+                  <td className="таблица__число">
+                    {row.unknownPrices > 0 ? row.unknownPrices : '—'}
+                  </td>
+                  <td className="таблица__число">{money(row.money)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
