@@ -297,20 +297,30 @@ export function PromptsPanel(): React.ReactElement {
           </ul>
 
           <p style={{ margin: '8px 0' }}>
-            Правильный путь — прогнать набор на этой версии. Прогон идёт минутами и стоит денег.
+            {page.canRun
+              ? 'Правильный путь — прогнать набор на этой версии. Прогон идёт минутами и стоит денег.'
+              : 'Правильный путь — прогнать набор на этой версии.'}
           </p>
 
-          <button
-            type="button"
-            className="период__кнопка"
-            data-testid="measure"
-            disabled={running}
-            onClick={() => {
-              measure(refusal.row);
-            }}
-          >
-            {running ? 'Прогон уже идёт' : 'Прогнать набор на этой версии'}
-          </button>
+          {page.canRun ? (
+            <button
+              type="button"
+              className="период__кнопка"
+              data-testid="measure"
+              disabled={running}
+              onClick={() => {
+                measure(refusal.row);
+              }}
+            >
+              {running ? 'Прогон уже идёт' : 'Прогнать набор на этой версии'}
+            </button>
+          ) : (
+            <p style={{ margin: 0 }} data-testid="no-runner">
+              Прогнать набор отсюда нельзя: сам набор живёт на машине разработчика — в нём живые
+              расшифровки людей, и на сервере им делать нечего. Прогон и включение версии делаются
+              оттуда.
+            </p>
+          )}
 
           <p style={{ margin: '16px 0 4px' }}>
             Если версию всё же нужно включить сейчас — напишите «{WORD}». Это запишется в версию

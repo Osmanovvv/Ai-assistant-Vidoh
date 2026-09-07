@@ -10,6 +10,7 @@ import {
   requestStop,
   retryFailed,
   startBroadcast,
+  TELEGRAM_MESSAGE_LIMIT,
 } from './broadcast.repo.js';
 import { sendChunk, type BroadcastClock, type BroadcastSender } from './broadcast.service.js';
 
@@ -600,5 +601,40 @@ describe('два воркера на одной рассылке', () => {
 
     expect(counts.sent).toBe(20);
     expect(counts.pending).toBe(0);
+  });
+});
+
+describe('пределы, о которых лучше узнать до отправки', () => {
+  it('текст длиннее предела Telegram не принимается', async () => {
+    /**
+     * Иначе рассылка на тысячу человек дала бы тысячу неудачных
+     * отправок с одной и той же причиной, потратив тысячу запросов из
+     * общего лимита. Сказать об этом до отправки стоит одну строку.
+     */
+    await people(1);
+
+    await expect(
+      createBroadcast(testDb(), {
+        text: 'а'.repeat(TELEGRAM_MESSAGE_LIMIT + 1),
+        segment: 'all',
+        by: 'аня',
+        trialLimit: 10,
+      }),
+    ).rejects.toThrow('Слишком длинно');
+  });
+
+  it('ровно по пределу — принимается', async () => {
+    // Граница включительно: отказывать на разрешённом Telegram размере
+    // значило бы придумать своё ограничение и не сказать о нём.
+    await people(1);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'а'.repeat(TELEGRAM_MESSAGE_LIMIT),
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    expect(made.recipients).toBe(1);
   });
 });

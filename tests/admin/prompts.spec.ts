@@ -166,7 +166,9 @@ test.describe('промпты (§15; задача 4.8)', () => {
 
     await page.getByTestId(`activate-${made}`).click();
 
-    await expect(page.getByTestId(`version-${made}`).getByTestId('active-classifier')).toBeVisible();
+    await expect(
+      page.getByTestId(`version-${made}`).getByTestId('active-classifier'),
+    ).toBeVisible();
     await expect(page.getByTestId('refusal')).toHaveCount(0);
 
     // Откат.
@@ -201,7 +203,9 @@ test.describe('промпты (§15; задача 4.8)', () => {
     await page.getByTestId('ack-word').fill('включаю без прогона');
     await page.getByTestId('force').click();
 
-    await expect(page.getByTestId(`version-${made}`).getByTestId('active-classifier')).toBeVisible();
+    await expect(
+      page.getByTestId(`version-${made}`).getByTestId('active-classifier'),
+    ).toBeVisible();
 
     // И это записано в версию — видно прямо в таблице.
     await expect(page.getByTestId(`version-${made}`)).toContainText('без прогона набора');

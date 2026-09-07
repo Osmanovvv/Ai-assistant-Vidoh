@@ -23,6 +23,14 @@ import type { Executor } from '../../infra/db.js';
  * не рассылает заново, а берёт то, что осталось `pending`.
  */
 
+/**
+ * Предел Telegram на одно сообщение. Больше он не примет.
+ *
+ * Число из документации Bot API и оно не наше: увеличивать его нельзя,
+ * а проверять до отправки — обязательно.
+ */
+export const TELEGRAM_MESSAGE_LIMIT = 4_096;
+
 export type BroadcastStatus = 'draft' | 'running' | 'stopped' | 'done' | 'failed';
 
 /**
@@ -143,6 +151,20 @@ export async function createBroadcast(
 ): Promise<{ readonly id: string; readonly recipients: number }> {
   const text = params.text.trim();
   if (text === '') throw new Error('Пустой текст рассылки');
+
+  /**
+   * Предел Telegram на сообщение — 4096 знаков.
+   *
+   * Проверяется **здесь**, а не выясняется при отправке: иначе рассылка
+   * на тысячу человек дала бы тысячу неудачных отправок с одной и той же
+   * причиной, потратив тысячу запросов из общего лимита. Сказать об этом
+   * до отправки стоит одну строку.
+   */
+  if (text.length > TELEGRAM_MESSAGE_LIMIT) {
+    throw new Error(
+      `Слишком длинно: ${String(text.length)} знаков, Telegram принимает ${String(TELEGRAM_MESSAGE_LIMIT)}`,
+    );
+  }
 
   const [made] = await db
     .insert(broadcasts)
@@ -447,4 +469,26 @@ export async function runningBroadcasts(db: Executor): Promise<readonly string[]
     .orderBy(broadcasts.createdAt);
 
   return rows.map((row) => row.id);
+}
+
+/**
+ * Продолжить остановленную рассылку.
+ *
+ * **Без этого остановка была ловушкой.** Остановил, передумал — и
+ * продолжить нечем: пришлось бы составлять новую, а она ушла бы **всем**,
+ * включая тех, кто письмо уже прочёл. Кнопка «Остановить» тем самым
+ * оказывалась кнопкой «или доотправить сейчас, или прислать половине
+ * людей второе письмо».
+ *
+ * Продолжается только остановленная: у законченной продолжать нечего, а у
+ * идущей продолжение означало бы второе задание в очереди.
+ */
+export async function resumeBroadcast(db: Executor, id: string): Promise<boolean> {
+  const back = await db
+    .update(broadcasts)
+    .set({ status: 'running', stopRequestedAt: null, finishedAt: null })
+    .where(and(eq(broadcasts.id, id), eq(broadcasts.status, 'stopped')))
+    .returning({ id: broadcasts.id });
+
+  return back.length > 0;
 }

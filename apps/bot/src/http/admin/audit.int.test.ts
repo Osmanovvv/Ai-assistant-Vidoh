@@ -1,4 +1,5 @@
 import type { Server } from 'node:http';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 
 import { eq } from 'drizzle-orm';
@@ -10,6 +11,7 @@ import type { Executor } from '../../infra/db.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { createServer } from '../server.js';
+import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { accessTo, recentAccess, recordAccess } from './audit.js';
 import { createAdminRouter, SESSION_COOKIE, type AdminAuthConfig } from './index.js';
 import { hashPassword } from './password.js';
@@ -263,6 +265,34 @@ describe('не записали — не отдали', () => {
   });
 });
 
+/**
+ * Роутер со **всеми** необязательными зависимостями.
+ *
+ * Раздел объявляется под условием: расходы — при базе, промпты — при
+ * папке набора, рассылка — при очереди. Собранный без них роутер про
+ * эти пути не знает, и решения об их персональных данных здесь никто
+ * не прочтёт. Это уже случалось трижды, поэтому полнота сборки
+ * стережётся отдельно — в `admin.test.ts` числом путей.
+ */
+function everything(): ReturnType<typeof createAdminRouter> {
+  return createAdminRouter({
+    config: configOf(),
+    db: testDb(),
+    settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+    evalDir: join(import.meta.dirname, 'нет-такой-папки'),
+    evalRunner: {
+      state: () => ({ kind: 'idle' }),
+      start: () => false,
+    },
+    enqueueBroadcast: async () => {
+      await Promise.resolve();
+    },
+    enqueueUser: async () => {
+      await Promise.resolve();
+    },
+  });
+}
+
 describe('решение о персональных данных принято у каждого пути', () => {
   it('ни один путь не оставлен без решения', () => {
     /**
@@ -271,7 +301,7 @@ describe('решение о персональных данных принято
      * Эта проверка их и печатает: пустая причина означает, что решение
      * приняли, не подумав.
      */
-    const mount = createAdminRouter({ config: configOf(), db: testDb() });
+    const mount = everything();
 
     for (const route of [...mount.routes, ...mount.openRoutes]) {
       if (route.exposure.personal) continue;
@@ -283,9 +313,57 @@ describe('решение о персональных данных принято
   it('раздел расходов признан персональным — по именам людей', () => {
     // Соблазн назвать его сводкой велик: страница выглядит как
     // бухгалтерия. На этом соблазне журнал доступа и обходят.
-    const mount = createAdminRouter({ config: configOf(), db: testDb() });
+    const mount = everything();
     const costs = mount.routes.find((route) => route.path === '/api/costs');
 
     expect(costs?.exposure.personal).toBe(true);
+  });
+});
+
+describe('панель не рисует кнопок, за которыми ничего нет', () => {
+  it('без запускающего прогон раздел промптов говорит об этом, а не молчит', async () => {
+    /**
+     * **Дефект, видимый только на боевом.** Набора там нет и быть не
+     * должно: в нём живые расшифровки людей (§16). Панель рисовала кнопку
+     * прогона всегда — а такого пути на сервере нет, и нажатие давало
+     * невнятный отказ. Кнопка, которая всегда отказывает, учит не верить
+     * панели.
+     *
+     * Признак `canRun` отвечает на это одним словом, и раздел показывает
+     * либо кнопку, либо объяснение.
+     */
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminEvalDir: join(import.meta.dirname, 'нет-такой-папки'),
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/prompts`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { readonly canRun: boolean }).canRun).toBe(false);
+  });
+
+  it('с запускающим — кнопка есть', async () => {
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminEvalDir: join(import.meta.dirname, 'нет-такой-папки'),
+        adminEvalRunner: { state: () => ({ kind: 'idle' }), start: () => false },
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/prompts`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(((await response.json()) as { readonly canRun: boolean }).canRun).toBe(true);
   });
 });

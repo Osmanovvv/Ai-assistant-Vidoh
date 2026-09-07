@@ -4,6 +4,7 @@ import {
   broadcastPreview,
   broadcasts,
   createBroadcast,
+  resumeBroadcast,
   retryBroadcast,
   startBroadcast,
   stopBroadcast,
@@ -141,6 +142,14 @@ export function BroadcastPanel(): React.ReactElement {
       });
   };
 
+  const resume = (id: string): void => {
+    void resumeBroadcast(id)
+      .then(load)
+      .catch(() => {
+        setProblem('Не удалось продолжить');
+      });
+  };
+
   const again = (id: string): void => {
     void retryBroadcast(id)
       .then(load)
@@ -274,6 +283,7 @@ export function BroadcastPanel(): React.ReactElement {
                     row={row}
                     segments={page.segments}
                     onStop={stop}
+                    onResume={resume}
                     onRetry={again}
                   />
                 ))}
@@ -290,11 +300,13 @@ function Row({
   row,
   segments,
   onStop,
+  onResume,
   onRetry,
 }: {
   readonly row: BroadcastRow;
   readonly segments: Readonly<Record<string, string>>;
   readonly onStop: (id: string) => void;
+  readonly onResume: (id: string) => void;
   readonly onRetry: (id: string) => void;
 }): React.ReactElement {
   const stopping = row.status === 'running' && row.stopRequestedAt !== null;
@@ -323,6 +335,18 @@ function Row({
             }}
           >
             {stopping ? 'Останавливаю…' : 'Остановить'}
+          </button>
+        )}{' '}
+        {row.status === 'stopped' && row.counts.pending > 0 && (
+          <button
+            type="button"
+            className="период__кнопка"
+            data-testid={`broadcast-resume-${row.id}`}
+            onClick={() => {
+              onResume(row.id);
+            }}
+          >
+            Продолжить
           </button>
         )}{' '}
         {row.counts.failed > 0 && (

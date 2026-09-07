@@ -17,6 +17,7 @@ import {
   listBroadcasts,
   recipientsOf,
   requestStop,
+  resumeBroadcast,
   retryFailed,
   SEGMENTS,
   startBroadcast,
@@ -304,8 +305,15 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
    * Поймано браузерной проверкой: сохранение настройки падало пятисотым,
    * потому что разборщик стоял лишь на путях входа, и `req.body` у
    * остальных был не задан вовсе.
+   *
+   * **Предел 128 КБ, и он был 16 — этого не хватало.** Самый большой
+   * промпт продукта весит 15,3 КБ; с экранированием JSON правка
+   * `classifier@6` из панели упиралась в отказ, а панель говорила «не
+   * удалось сохранить» и не объясняла, почему. Промпты только растут.
+   * 128 КБ — с запасом на несколько лет и всё ещё немного: путь за
+   * стражем, и слать сюда мегабайты некому.
    */
-  router.use('/api', express.json({ limit: '16kb' }));
+  router.use('/api', express.json({ limit: '128kb' }));
 
   /**
    * Кто вошёл. Первый закрытый путь, и он же нужен самой панели: по нему
@@ -629,13 +637,14 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
 
         void settings
           .number('trialDumps')
-          .then(async (trialLimit) =>
-            await createBroadcast(db, {
-              text,
-              segment,
-              by: req.admin?.login ?? 'неизвестно',
-              trialLimit,
-            }),
+          .then(
+            async (trialLimit) =>
+              await createBroadcast(db, {
+                text,
+                segment,
+                by: req.admin?.login ?? 'неизвестно',
+                trialLimit,
+              }),
           )
           .then(
             (made) => {
@@ -687,6 +696,44 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
               (error: unknown) => {
                 deps.onError?.(error);
                 res.status(500).json({ error: 'не удалось запустить' });
+              },
+            );
+        },
+      );
+
+      /**
+       * Продолжить остановленную — иначе остановка была ловушкой.
+       *
+       * Остановил, передумал — и продолжить нечем: пришлось бы
+       * составлять новую, а она ушла бы **всем**, включая тех, кто
+       * письмо уже прочёл.
+       */
+      closed(
+        'post',
+        '/api/broadcast/:id/resume',
+        { personal: true, subjects: 'many' },
+        (req: Request, res: Response) => {
+          const id = req.params['id'];
+
+          if (typeof id !== 'string') {
+            res.status(404).json({ error: 'не найдено' });
+            return;
+          }
+
+          void resumeBroadcast(db, id)
+            .then(async (resumed) => {
+              if (resumed) await enqueue(id);
+              return resumed;
+            })
+            .then(
+              (resumed) => {
+                res
+                  .status(resumed ? 200 : 409)
+                  .json(resumed ? { ok: true } : { error: 'рассылка не остановлена' });
+              },
+              (error: unknown) => {
+                deps.onError?.(error);
+                res.status(500).json({ error: 'не удалось продолжить' });
               },
             );
         },
@@ -867,7 +914,20 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     closed('get', '/api/prompts', NOT_PERSONAL, (_req: Request, res: Response) => {
       void promptsView(db, evalDir).then(
         (view) => {
-          res.json({ ...view, run: runner?.state() ?? { kind: 'idle' } });
+          /**
+           * `canRun` — есть ли кому прогнать набор.
+           *
+           * На боевом набора нет и быть не должно: в нём живые
+           * расшифровки (§16). Без этого признака панель рисовала бы
+           * кнопку прогона всегда, а на сервере такого пути нет — и
+           * нажатие давало бы невнятный отказ вместо честного «прогон
+           * идёт с машины разработчика».
+           */
+          res.json({
+            ...view,
+            run: runner?.state() ?? { kind: 'idle' },
+            canRun: runner !== undefined,
+          });
         },
         (error: unknown) => {
           deps.onError?.(error);
