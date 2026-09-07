@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { signOut, whoAmI } from './api.js';
+import { BroadcastPanel } from './Broadcast.js';
+import { ErrorsPanel } from './Errors.js';
 import { Costs } from './Costs.js';
 import { OverviewPanel, PeoplePanel } from './People.js';
 import { PromptsPanel } from './Prompts.js';
@@ -8,12 +10,12 @@ import { SettingsPanel } from './Settings.js';
 import { SignIn } from './SignIn.js';
 
 /**
- * Панель (§15 ТЗ, задачи 4.5, 4.6, 4.7, 4.8, 4.9).
+ * Панель (§15 ТЗ, задачи 4.5–4.10).
  *
- * Пока здесь вход, обзор, люди, расходы, промпты и настройки: рассылка
- * приезжает задачей 4.10. Показывается ровно то, что уже правда, — и ни
- * строчки обещаний вроде пустых вкладок «Скоро»: пустая вкладка учит,
- * что панели верить нельзя.
+ * Все восемь разделов §15 на месте: обзор, люди, карточка, расходы,
+ * промпты, настройки, рассылка, ошибки. Показывается ровно то, что уже
+ * правда, — и ни строчки обещаний вроде пустых вкладок «Скоро»: пустая
+ * вкладка учит, что панели верить нельзя.
  *
  * **Кто вошёл, спрашивается у бота, а не хранится у панели.** Пропуск
  * живёт в печенье, недоступном скриптам (`HttpOnly`), и панель о нём
@@ -27,16 +29,19 @@ type State =
   | { readonly kind: 'in'; readonly login: string };
 
 /**
- * Разделы панели — только те, что уже работают.
+ * Разделы панели.
  *
- * §15 просит восемь; рассылка приезжает задачей 4.10. Пустой вкладки
- * «Скоро» здесь нет и не будет: она учит, что панели верить нельзя.
+ * §15 просит восемь, и восемь есть — карточка человека живёт внутри
+ * «Пользователей», куда её и открывают. Пустых вкладок «Скоро» здесь
+ * нет и не было: пустая вкладка учит, что панели верить нельзя.
  */
 const TABS = [
   { key: 'overview', title: 'Обзор' },
   { key: 'people', title: 'Пользователи' },
   { key: 'costs', title: 'Расходы' },
   { key: 'prompts', title: 'Промпты' },
+  { key: 'broadcast', title: 'Рассылка' },
+  { key: 'errors', title: 'Ошибки' },
   { key: 'settings', title: 'Настройки' },
 ] as const;
 
@@ -102,6 +107,8 @@ export function App(): React.ReactElement {
       {tab === 'people' && <PeoplePanel />}
       {tab === 'costs' && <Costs />}
       {tab === 'prompts' && <PromptsPanel />}
+      {tab === 'broadcast' && <BroadcastPanel />}
+      {tab === 'errors' && <ErrorsPanel />}
       {tab === 'settings' && <SettingsPanel />}
     </div>
   );

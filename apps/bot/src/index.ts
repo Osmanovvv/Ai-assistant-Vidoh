@@ -15,6 +15,8 @@ import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { adminConfigFrom } from './http/admin/index.js';
 import { createEvalRunner } from './modules/admin/eval-run.js';
+import { runningBroadcasts } from './modules/broadcast/broadcast.repo.js';
+import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
 import { newestRun } from './eval/freshness.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
 import { SettingsRegistry } from './modules/settings/settings.repo.js';
@@ -37,9 +39,13 @@ import { createLogger, withRequestId } from './infra/logger.js';
 import { isOwnOutage } from './infra/errors.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import {
+  createBroadcastQueue,
+  createBroadcastWorker,
   createQueue,
   createWorker,
+  enqueueBroadcast,
   enqueueUserProcessing,
+  type BroadcastJob,
   type PipelineJob,
 } from './infra/queue.js';
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
@@ -332,6 +338,58 @@ async function main(): Promise<void> {
     }
   });
 
+  /**
+   * Рассылка (§15, задача 4.10) — **отдельная очередь и отдельный
+   * воркер**, как требует план.
+   *
+   * Рассылка идёт минутами и занимает воркер целиком. В общей очереди
+   * она съела бы места у разбора: человек сказал мысль и ждал бы,
+   * пока кончится рассылка на тысячу адресов.
+   *
+   * Заход отправляет порцию и ставит себя снова, если осталось.
+   * Задержка между заходами нулевая: темп выдерживается внутри, а
+   * пауза здесь только удлиняла бы рассылку без причины.
+   */
+  const broadcastQueue = createBroadcastQueue(queueConnection);
+
+  const broadcastSender: BroadcastSender = {
+    send: async ({ tgId, text }) => {
+      await bot.api.sendMessage(tgId, text);
+    },
+  };
+
+  const broadcastWorker = createBroadcastWorker(workerConnection, async (job) => {
+    const step = await sendChunk(
+      {
+        db,
+        sender: broadcastSender,
+        logger,
+        perSecond: await settings.number('broadcastPerSecond'),
+      },
+      job.data.broadcastId,
+    );
+
+    logger.info({ broadcastId: job.data.broadcastId, ...step }, 'Порция рассылки отправлена');
+
+    if (step.more) await enqueueBroadcast(broadcastQueue, job.data.broadcastId);
+  });
+
+  broadcastWorker.on('failed', (job, error) => {
+    logger.error({ jobId: job?.id, err: error }, 'Заход рассылки не удался');
+  });
+
+  /**
+   * Рассылка, застрявшая на перезапуске, продолжается сама.
+   *
+   * Выкладка посреди рассылки убивает воркер, а задание из BullMQ
+   * уходит вместе с ним. Без этого рассылка вставала бы навсегда в
+   * состоянии «идёт», и половина людей не получила бы письма — молча.
+   */
+  for (const running of await runningBroadcasts(db)) {
+    logger.warn({ broadcastId: running }, 'Продолжаю рассылку, прерванную перезапуском');
+    await enqueueBroadcast(broadcastQueue, running);
+  }
+
   // Последний рубеж на случай, если задание в очереди потерялось.
   // Перезапуск Redis на боевом сервере показал, что воркер BullMQ после
   // него отложенные задания больше не разбирает: выгрузка остаётся
@@ -498,6 +556,12 @@ async function main(): Promise<void> {
           adminDb: db,
           adminSettings: settings,
           adminPromptRegistry: prompts,
+          adminEnqueueBroadcast: async (broadcastId: string) => {
+            await enqueueBroadcast(broadcastQueue, broadcastId);
+          },
+          adminEnqueueUser: async (userId: string) => {
+            await enqueueUserProcessing(queue, userId);
+          },
           ...(evalReady ? { adminEvalDir: evalDir } : {}),
           ...(evalCases > 0
             ? {
@@ -551,7 +615,7 @@ async function main(): Promise<void> {
 
   if (!env.REMINDERS) logger.warn('Напоминания выключены переменной REMINDERS');
 
-  installShutdownHandlers(server, worker, () => {
+  installShutdownHandlers(server, worker, broadcastWorker, () => {
     stopSweep();
     stopScheduler();
   });
@@ -560,6 +624,7 @@ async function main(): Promise<void> {
 function installShutdownHandlers(
   server: Server,
   worker: Worker<PipelineJob>,
+  broadcastWorker: Worker<BroadcastJob>,
   stopSweep: () => void,
 ): void {
   let shuttingDown = false;
@@ -581,6 +646,9 @@ function installShutdownHandlers(
         // Воркер закрывается первым и дорабатывает текущее задание:
         // выгрузка не должна остаться в статусе processing.
         await worker.close().catch(() => undefined);
+        // Рассылка встаёт вместе со всеми: отправленное помечено, и
+        // следующий запуск продолжит с того же места.
+        await broadcastWorker.close().catch(() => undefined);
 
         /**
          * Запись ответов модели сохраняется на выходе (задача 3.80).

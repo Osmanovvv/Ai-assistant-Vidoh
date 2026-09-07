@@ -327,3 +327,122 @@ export function runEval(params: {
 }): Promise<{ readonly started: boolean; readonly run: EvalRun }> {
   return post('/prompts/run-eval', params);
 }
+
+// ── Рассылка (§15, задача 4.10) ──────────────────────────────────────
+
+export interface BroadcastCounts {
+  readonly pending: number;
+  readonly sent: number;
+  readonly skipped: number;
+  readonly failed: number;
+  readonly total: number;
+}
+
+export interface BroadcastRow {
+  readonly id: string;
+  readonly text: string;
+  readonly segment: string;
+  readonly status: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly stopRequestedAt: string | null;
+  readonly counts: BroadcastCounts;
+}
+
+export interface BroadcastsPage {
+  readonly rows: readonly BroadcastRow[];
+  /** Сегменты: ключ → человеческое название. */
+  readonly segments: Readonly<Record<string, string>>;
+}
+
+export function broadcasts(): Promise<BroadcastsPage> {
+  return call<BroadcastsPage>('/broadcast');
+}
+
+/** Сколько получателей в сегменте. Ничего не создаёт. */
+export function broadcastPreview(segment: string): Promise<{
+  readonly segment: string;
+  readonly recipients: number;
+  readonly title: string;
+}> {
+  return call(`/broadcast/preview?segment=${encodeURIComponent(segment)}`);
+}
+
+export function createBroadcast(params: {
+  readonly text: string;
+  readonly segment: string;
+}): Promise<{ readonly ok: boolean; readonly id: string; readonly recipients: number }> {
+  return post('/broadcast', params);
+}
+
+export function startBroadcast(id: string): Promise<{ readonly ok: boolean }> {
+  return post(`/broadcast/${encodeURIComponent(id)}/start`, {});
+}
+
+export function stopBroadcast(
+  id: string,
+): Promise<{ readonly ok: boolean; readonly asked: boolean; readonly note: string }> {
+  return post(`/broadcast/${encodeURIComponent(id)}/stop`, {});
+}
+
+export function retryBroadcast(
+  id: string,
+): Promise<{ readonly ok: boolean; readonly back: number }> {
+  return post(`/broadcast/${encodeURIComponent(id)}/retry`, {});
+}
+
+// ── Журнал сбоев (§15, задача 4.10) ──────────────────────────────────
+
+export interface FailedBatch {
+  readonly id: string;
+  readonly userId: string | null;
+  readonly who: string;
+  readonly tgId: number | null;
+  readonly status: string;
+  readonly attempts: number;
+  readonly error: string | null;
+  readonly openedAt: string;
+  readonly length: number;
+}
+
+export interface FailedCall {
+  readonly id: string;
+  readonly stage: string;
+  readonly model: string;
+  readonly promptVersion: string | null;
+  readonly error: string | null;
+  readonly latencyMs: number;
+  readonly at: string;
+  readonly batchId: string | null;
+  /** Заплатили ли за этот неудачный вызов. */
+  readonly paid: boolean;
+}
+
+export interface FailedSend {
+  readonly id: string;
+  readonly broadcastId: string;
+  readonly tgId: number;
+  readonly error: string | null;
+  readonly at: string | null;
+}
+
+export interface ErrorsPage {
+  readonly days: number;
+  readonly batches: readonly FailedBatch[];
+  readonly calls: readonly FailedCall[];
+  readonly sends: readonly FailedSend[];
+  readonly batchesTotal: number;
+  readonly callsTotal: number;
+  readonly missing: readonly string[];
+}
+
+export function errors(days: number): Promise<ErrorsPage> {
+  return call<ErrorsPage>(`/errors?days=${String(days)}`);
+}
+
+/** Вернуть сорвавшийся разбор в очередь (§17). */
+export function restartBatch(id: string): Promise<{ readonly ok: boolean }> {
+  return post(`/errors/batch/${encodeURIComponent(id)}/restart`, {});
+}

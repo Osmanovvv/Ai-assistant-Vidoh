@@ -218,6 +218,13 @@
       "when": 1788122750653,
       "tag": "0030_admin_access_log",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788737269414,
+      "tag": "0031_broadcasts",
+      "breakpoints": true
     }
   ]
 }

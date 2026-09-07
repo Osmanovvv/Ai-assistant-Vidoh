@@ -3,8 +3,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { aiCalls, appSettings, batches, items, promptVersions, users } from '../db/schema.js';
+import {
+  aiCalls,
+  appSettings,
+  batches,
+  broadcastDeliveries,
+  broadcasts,
+  items,
+  promptVersions,
+  users,
+} from '../db/schema.js';
 import { createEvalRunner } from '../modules/admin/eval-run.js';
+import { sendChunk, type BroadcastSender } from '../modules/broadcast/broadcast.service.js';
 import { CLASSIFIER_SCHEMA_NAME } from '../modules/ai/schemas/index.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
 import { hashPassword } from '../http/admin/password.js';
@@ -66,6 +76,8 @@ if (seedUrl !== undefined) {
   seeded = await setupTestDatabase();
 
   await seeded.delete(appSettings);
+  await seeded.delete(broadcastDeliveries);
+  await seeded.delete(broadcasts);
   await seeded.delete(aiCalls);
   await seeded.delete(users);
 
@@ -100,6 +112,69 @@ if (seedUrl !== undefined) {
     type: 'TASK',
     priority: 'SOON',
     topic: 'семья',
+  });
+
+  /**
+   * Ещё девять человек — для рассылки (задача 4.10).
+   *
+   * Десяти хватает, чтобы рассылка успела побыть «идущей»: при темпе
+   * пять в секунду это две секунды, и кнопку «Остановить» можно
+   * нажать не спеша.
+   */
+  await seeded.insert(users).values(
+    Array.from({ length: 9 }, (_, index) => ({
+      tgId: 90_100 + index,
+      firstName: `человек-${String(index + 1)}`,
+    })),
+  );
+
+  /**
+   * Сорвавшийся разбор — для журнала ошибок (задача 4.10).
+   *
+   * Ровно то, что журнал существует показывать: человек сказал мысль
+   * и не получил ответа. Кнопка «Перезапустить» возвращает её в
+   * очередь — исполнение обещания из §17.
+   *
+   * **У отдельного человека, а не у Ани.** Её карточка проверяется
+   * по одной выгрузке (задача 4.6), и вторая сбила бы ту проверку:
+   * посев стенда — общий, и добавленное для одного раздела не должно
+   * ломать другой.
+   */
+  const [unlucky] = await seeded
+    .insert(users)
+    .values({ tgId: 90_002, firstName: 'Оля' })
+    .returning({ id: users.id });
+
+  if (unlucky === undefined) throw new Error('стенд: второй человек не создался');
+
+  await seeded.insert(batches).values({
+    userId: unlucky.id,
+    status: 'failed',
+    attempts: 3,
+    error: 'TransientSpeechError: распознавание не ответило',
+    combinedText: 'надо купить корм коту',
+  });
+
+  /**
+   * Неуспешный вызов модели — вторая половина журнала.
+   *
+   * **Цена ноль, а не пусто, и человек тот же, что у расходов.** 429
+   * не тарифится — ноль здесь правда. Но не только: пустая цена
+   * сделала бы отчёт о расходах неполным («суммы — нижняя граница»), а
+   * новый человек в учёте поделил бы средний расход надвое. Посев
+   * стенда общий, и добавленное для одного раздела не должно менять
+   * числа в другом.
+   */
+  await seeded.insert(aiCalls).values({
+    userId: person.id,
+    stage: 'classifier',
+    model: 'yandex:yandexgpt/latest',
+    promptVersion: 'classifier@9',
+    costMicros: 0,
+    costCurrency: 'rub',
+    latencyMs: 4_000,
+    ok: false,
+    error: '429 Too Many Requests',
   });
 
   /** Числа круглые нарочно: проверка читает их глазами, как человек. */
@@ -191,6 +266,61 @@ if (seeded !== undefined) {
   });
 }
 
+/**
+ * Рассылка на стенде: без очереди и без Telegram (задача 4.10).
+ *
+ * Настоящая рассылка ходит в Telegram и живёт в очереди BullMQ.
+ * Браузерной проверке не нужно ни то, ни другое: ей нужно, чтобы
+ * предпросмотр показал число, подтверждение запустило отправку, а
+ * кнопка «Остановить» её остановила. Всё это — настоящий код рассылки;
+ * подменены только отправка и очередь.
+ *
+ * **Отправка нарочно медленная.** Рассылка на стенде должна успеть
+ * побыть «идущей», иначе кнопку «Остановить» не нажать: она исчезает
+ * вместе с завершением. Двести миллисекунд на письмо — темп пять в
+ * секунду, и десяток адресатов даёт две секунды на нажатие.
+ */
+const broadcastPace = Number(process.env['ADMIN_E2E_BROADCAST_PER_SECOND'] ?? '5');
+
+let broadcasting: Promise<void> = Promise.resolve();
+
+function runBroadcast(broadcastId: string): Promise<void> {
+  if (seeded === undefined) return Promise.resolve();
+  const db = seeded;
+
+  /**
+   * Заходы идут один за другим — как воркер с одновременностью 1.
+   *
+   * Иначе две нажатые кнопки дали бы два потока отправки, и стенд
+   * перестал бы походить на бой именно там, где это важно.
+   */
+  broadcasting = broadcasting.then(async () => {
+    let step = await sendChunk(
+      { db, sender: standSender, perSecond: broadcastPace, chunk: 5 },
+      broadcastId,
+    );
+
+    while (step.more && !step.stopped) {
+      step = await sendChunk(
+        { db, sender: standSender, perSecond: broadcastPace, chunk: 5 },
+        broadcastId,
+      );
+    }
+  });
+
+  return Promise.resolve();
+}
+
+/** Куда «уходят» письма стенда. Проверка их не читает — важен факт. */
+const sent: number[] = [];
+
+const standSender: BroadcastSender = {
+  send: async ({ tgId }) => {
+    sent.push(tgId);
+    await Promise.resolve();
+  },
+};
+
 const app = createServer({
   healthChecks: [],
   adminStaticDir: dist,
@@ -209,6 +339,17 @@ const app = createServer({
         adminSettings: new SettingsRegistry({ db: seeded, ttlMs: 0 }),
         adminEvalDir: evalDir,
         ...(evalRunner === undefined ? {} : { adminEvalRunner: evalRunner }),
+        adminEnqueueBroadcast: runBroadcast,
+        /**
+         * Перезапуск разбора на стенде ничего не разбирает.
+         *
+         * Разбор ходит к модели за деньги. Проверяется здесь другое:
+         * что кнопка вернула выгрузку в очередь и панель это
+         * показала, — а это делает сам `restartBatch`.
+         */
+        adminEnqueueUser: async () => {
+          await Promise.resolve();
+        },
       }),
   admin: {
     login: LOGIN,

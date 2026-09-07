@@ -1293,6 +1293,83 @@ export const adminAccessLog = pgTable(
   ],
 );
 
+/**
+ * Рассылка из панели (§15 ТЗ, задача 4.10).
+ *
+ * **Две таблицы, а не счётчики в одной.** Счётчиков хватало бы, пока
+ * всё идёт хорошо. Но рассылка на тысячу человек идёт минуту с лишним,
+ * и за эту минуту бот может быть перезапущен выкладкой, потерять связь
+ * или упереться в 429. Со счётчиком «отправлено 412» нельзя ответить на
+ * единственный тогда важный вопрос: кому именно уже ушло. Повторный
+ * заход прислал бы людям одно и то же дважды.
+ */
+export const broadcasts = pgTable(
+  'broadcasts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    /** Текст неизменен после старта: иначе половина получит другое. */
+    text: text('text').notNull(),
+
+    /** Кому: `all` или имя сегмента. Строкой — сегменты будут расти. */
+    segment: text('segment').notNull().default('all'),
+
+    /** draft | running | stopped | done | failed. */
+    status: text('status').notNull().default('draft'),
+
+    /** Логин из панели: администратор живёт в переменных окружения. */
+    createdBy: text('created_by').notNull(),
+
+    /**
+     * Просьба остановиться — отдельным полем, а не статусом.
+     *
+     * Воркер может быть в середине порции; статус он поставит сам,
+     * когда встанет. Иначе «остановлено» показывалось бы раньше, чем
+     * отправка действительно прекратилась.
+     */
+    stopRequestedAt: timestamp('stop_requested_at', { withTimezone: true }),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (table) => [index('broadcasts_created_idx').on(table.createdAt)],
+);
+
+/**
+ * Кому и чем кончилось.
+ *
+ * Каскад по человеку, в отличие от журнала доступа: там след надо
+ * сохранить вопреки удалению, здесь наоборот — попросивший удалить
+ * данные не должен оставаться строкой в списке рассылки (§16).
+ */
+export const broadcastDeliveries = pgTable(
+  'broadcast_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    broadcastId: uuid('broadcast_id')
+      .notNull()
+      .references(() => broadcasts.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** Копией, а не только ссылкой: разбираться придётся с тем, куда ушло. */
+    tgId: bigint('tg_id', { mode: 'number' }).notNull(),
+
+    /** pending | sent | skipped | failed. */
+    status: text('status').notNull().default('pending'),
+    error: text('error'),
+    at: timestamp('at', { withTimezone: true }),
+  },
+  (table) => [
+    // Один человек в одной рассылке ровно один раз. Не удобство, а
+    // защита: повтор после перезапуска не пришлёт второе сообщение.
+    uniqueIndex('broadcast_once_idx').on(table.broadcastId, table.userId),
+    index('broadcast_pending_idx').on(table.broadcastId, table.status),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1331,3 +1408,6 @@ export type Topic = typeof topics.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type AdminAccess = typeof adminAccessLog.$inferSelect;
 export type NewTopic = typeof topics.$inferInsert;
+export type Broadcast = typeof broadcasts.$inferSelect;
+export type NewBroadcast = typeof broadcasts.$inferInsert;
+export type BroadcastDelivery = typeof broadcastDeliveries.$inferSelect;

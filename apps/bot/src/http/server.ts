@@ -50,6 +50,10 @@ export interface ServerDeps {
   readonly adminEvalDir?: string | undefined;
   /** Кто запускает прогон набора по кнопке (4.8). */
   readonly adminEvalRunner?: EvalRunner | undefined;
+  /** Кто ставит рассылку в очередь (§15, задача 4.10). */
+  readonly adminEnqueueBroadcast?: ((broadcastId: string) => Promise<void>) | undefined;
+  /** Кто ставит перезапуск сорвавшегося разбора (§17, задача 4.10). */
+  readonly adminEnqueueUser?: ((userId: string) => Promise<void>) | undefined;
   /** Кэш промптов бота: включение версии сбрасывает его (§15). */
   readonly adminPromptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
@@ -164,6 +168,10 @@ export function createServer(deps: ServerDeps): Express {
         ...(deps.adminDb === undefined ? {} : { db: deps.adminDb }),
         ...(deps.adminSettings === undefined ? {} : { settings: deps.adminSettings }),
         ...(deps.adminEvalDir === undefined ? {} : { evalDir: deps.adminEvalDir }),
+        ...(deps.adminEnqueueBroadcast === undefined
+          ? {}
+          : { enqueueBroadcast: deps.adminEnqueueBroadcast }),
+        ...(deps.adminEnqueueUser === undefined ? {} : { enqueueUser: deps.adminEnqueueUser }),
         ...(deps.adminEvalRunner === undefined ? {} : { evalRunner: deps.adminEvalRunner }),
         ...(deps.adminPromptRegistry === undefined
           ? {}
