@@ -1,7 +1,6 @@
 import { and, count, desc, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 
 import {
-  batches,
   broadcastDeliveries,
   broadcasts,
   users,
@@ -9,6 +8,7 @@ import {
   type BroadcastDelivery,
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { trialOverSql } from '../billing/subscription.service.js';
 
 /**
  * Рассылка: кому, что и чем кончилось (§15 ТЗ, задача 4.10).
@@ -115,27 +115,25 @@ export async function recipientsOf(
 /**
  * Условие сегмента.
  *
- * Пробный период считается **выгрузками, а не днями** (§14) — тем же
- * подсчётом, что `trialSpent`. Своё определение здесь разошлось бы с
- * тем, по которому человека действительно пускают или не пускают, и
- * рассылка «пробный кончился» ушла бы не тем людям.
+ * Пробный период считается **выгрузками, а не днями** (§14), и условие
+ * берётся у `trialOverSql` — того же, по которому человека пускают или
+ * не пускают. Своё определение здесь разошлось бы с гейтом, и рассылка
+ * «пробный кончился» ушла бы не тем людям.
+ *
+ * До задачи 4.4 это правило было написано в проекте **тремя** способами:
+ * здесь, в гейте и в обзоре панели. Теперь одним.
  */
 function segmentWhere(params: {
   readonly segment: Segment;
   readonly trialLimit: number;
 }): ReturnType<typeof sql> | undefined {
-  const spent = sql`(
-    select count(*) from ${batches}
-    where ${batches.userId} = ${users.id} and ${batches.trialCountedAt} is not null
-  )`;
-
   switch (params.segment) {
     case 'all':
       return undefined;
     case 'trialLeft':
-      return sql`${spent} < ${params.trialLimit}`;
+      return sql`not ${trialOverSql(users.id, params.trialLimit)}`;
     case 'trialSpent':
-      return sql`${spent} >= ${params.trialLimit}`;
+      return trialOverSql(users.id, params.trialLimit);
   }
 }
 

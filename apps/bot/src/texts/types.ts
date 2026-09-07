@@ -595,6 +595,22 @@ export interface TextProfile {
     readonly terms: string;
     /** Продление не прошло: денег не хватило, доступ ещё есть. */
     readonly renewalFailed: (until: string) => string;
+
+    // ── Промокоды (§14, задача 4.4) ───────────────────────────────────
+    /** Кнопка «у меня есть промокод». */
+    readonly buttonPromo: string;
+    /** Просьба прислать код словами. */
+    readonly promoAsk: string;
+    /** Код подошёл: цена по нему и обычная. */
+    readonly promoApplied: (plan: string, price: string, full: string) => string;
+    /** Кнопка оплаты по коду. */
+    readonly promoButton: (plan: string, price: string) => string;
+    /** Код не подошёл — по причинам, которые человек может исправить. */
+    readonly promoUnknown: string;
+    readonly promoExpired: string;
+    readonly promoSpent: string;
+    /** Уже платил: скидка на первый период. */
+    readonly promoNotFirst: string;
   };
 
   readonly privacy: {

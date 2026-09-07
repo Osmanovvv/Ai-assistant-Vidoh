@@ -6,6 +6,7 @@ import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { markTrialSpent } from '../billing/subscription.service.js';
+import type { SettingsRegistry } from '../settings/settings.repo.js';
 import { decideDegradation, type SpendLimit } from '../metering/limits.js';
 import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.service.js';
 import { embedText } from '../embedder/embedder.service.js';
@@ -185,6 +186,21 @@ export interface DumpHandlerDeps {
    * это и есть плоский режим §8.2. Данные от этого не страдают.
    */
   readonly topics?: TopicGateway | undefined;
+  /**
+   * Реестр значений — ради размера пробного периода (§15, задача 4.4).
+   *
+   * Нужен ровно для одного: записать вместе с моментом «пробный период
+   * кончился» тот **предел**, при котором он кончился. Предел правится из
+   * панели без выкладки, истории у настроек нет, и без снимка третий шаг
+   * воронки сдвигался бы у всех задним числом при каждой правке.
+   *
+   * Читается тем же реестром, что и гейт доступа: второй читатель мимо
+   * реестра разошёлся бы с первым на разборе мусора и на умолчании.
+   *
+   * Не задан — момент не пишется, и воронка честно говорит, что третьего
+   * шага у неё нет. Так работали все проверки, писавшиеся до 4.4.
+   */
+  readonly settings?: SettingsRegistry | undefined;
   readonly logger?: Logger | undefined;
   readonly now?: (() => Date) | undefined;
 }
@@ -1383,7 +1399,21 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * сбое — период дважды не тратит.
      */
     if (!quickAdd) {
-      await markTrialSpent(db, { batchId: batch.id, now });
+      /**
+       * Предел читается **здесь**, а не внутри отметки.
+       *
+       * Отметка — запись в базу, и тащить в неё реестр настроек значило
+       * бы дать ей второго читателя настроек. Читаем один раз и передаём
+       * значением: тогда момент «пробный кончился» хранит именно то
+       * число, которое действовало в эту секунду.
+       */
+      const trialLimit = await deps.settings?.number('trialDumps');
+
+      await markTrialSpent(db, {
+        batchId: batch.id,
+        now,
+        ...(trialLimit === undefined ? {} : { trialLimit }),
+      });
     }
 
     /**

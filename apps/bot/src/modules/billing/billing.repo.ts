@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, sql } from 'drizzle-orm';
 
 import {
   billingEvents,
@@ -74,6 +74,14 @@ export interface NewInvoice {
    * перезапуска.
    */
   readonly renewsPeriodEnd?: Date | undefined;
+  /** Код, по которому выставлен счёт (задача 4.4). */
+  readonly promoCode?: string | undefined;
+  /**
+   * Цена без скидки. Ставится всегда, даже когда скидки нет: иначе
+   * «сколько недополучено по кодам» пришлось бы считать вычитанием
+   * нынешней цены, а она меняется.
+   */
+  readonly amountFullMinor?: number | undefined;
 }
 
 export async function createInvoice(db: Executor, params: NewInvoice): Promise<BillingInvoice> {
@@ -93,6 +101,8 @@ export async function createInvoice(db: Executor, params: NewInvoice): Promise<B
       ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
       ...(params.autoRenew === undefined ? {} : { autoRenew: params.autoRenew }),
       ...(params.renewsPeriodEnd === undefined ? {} : { renewsPeriodEnd: params.renewsPeriodEnd }),
+      ...(params.promoCode === undefined ? {} : { promoCode: params.promoCode }),
+      ...(params.amountFullMinor === undefined ? {} : { amountFullMinor: params.amountFullMinor }),
     })
     .returning();
 
@@ -479,6 +489,22 @@ export async function dueForRenewal(
     )
     .orderBy(billingSubscriptions.currentPeriodEnd)
     .limit(params.limit);
+}
+
+/**
+ * Сколько раз человек платил за всю жизнь.
+ *
+ * Одно определение «первого периода» на всех: и промокод, и воронка
+ * отвечают на «платил ли хоть раз» этим запросом. Состояние, а не флаг в
+ * профиле: флаг, разойдясь с правдой, не сверяется ни с чем.
+ */
+export async function paidInvoicesCount(db: Executor, userId: string): Promise<number> {
+  const [row] = await db
+    .select({ total: count() })
+    .from(billingInvoices)
+    .where(and(eq(billingInvoices.userId, userId), eq(billingInvoices.status, 'paid')));
+
+  return row?.total ?? 0;
 }
 
 /** Сколько людей платят прямо сейчас — для обзора в панели (§15). */

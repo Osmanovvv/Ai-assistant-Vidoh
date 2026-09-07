@@ -1,9 +1,10 @@
-import { and, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 
 import { batches, billingSubscriptions } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
 import {
+  createInvoice,
   endPeriodNow,
   invoiceByRef,
   markEventProcessed,
@@ -151,6 +152,29 @@ export async function hasPaidAccess(
   return paid.some((one) => one.currentPeriodEnd.getTime() > now.getTime());
 }
 
+/**
+ * Сколько пробных выгрузок у человека — условием SQL, а не числом.
+ *
+ * Одно определение на всех, кто про это спрашивает: гейт доступа, сегмент
+ * рассылки, воронка. Сегодня оно было написано **тремя** способами, и
+ * своё определение в любом из них означало бы, что панель показывает
+ * воронку не про тех людей, которых бот на самом деле блокирует.
+ *
+ * Принимает выражение «чей человек»: у гейта это конкретный
+ * идентификатор, у рассылки и у воронки — колонка соседней таблицы.
+ */
+export function trialSpentSql(who: SQL | AnyColumn | string): SQL {
+  return sql`(
+    select count(*) from ${batches}
+    where ${batches.userId} = ${who} and ${batches.trialCountedAt} is not null
+  )`;
+}
+
+/** Исчерпан ли пробный период — тем же условием. */
+export function trialOverSql(who: SQL | AnyColumn | string, limit: number): SQL {
+  return sql`${trialSpentSql(who)} >= ${limit}`;
+}
+
 /** Сколько выгрузок этого человека потратили пробный период. */
 export async function trialSpent(db: Executor, userId: string): Promise<number> {
   const [row] = await db
@@ -179,7 +203,22 @@ export async function trialSpent(db: Executor, userId: string): Promise<number> 
  */
 export async function markTrialSpent(
   db: Executor,
-  params: { readonly batchId: string; readonly now?: Date | undefined },
+  params: {
+    readonly batchId: string;
+    /**
+     * Предел, действующий сейчас (задача 4.4).
+     *
+     * Передаётся значением, а не читается здесь: реестр настроек — тот
+     * же, из которого предел читает гейт, и второй читатель мимо реестра
+     * разошёлся бы с первым на разборе мусора и на умолчании.
+     *
+     * Не задан — момент «конец пробного» не пишется, и воронка честно
+     * скажет, что третьего шага у неё нет. Это законное состояние: так
+     * работали все проверки, писавшиеся до 4.4.
+     */
+    readonly trialLimit?: number | undefined;
+    readonly now?: Date | undefined;
+  },
 ): Promise<boolean> {
   const now = params.now ?? new Date();
 
@@ -197,9 +236,42 @@ export async function markTrialSpent(
         )`,
       ),
     )
-    .returning({ id: batches.id });
+    .returning({ id: batches.id, userId: batches.userId });
 
-  return updated.length > 0;
+  const marked = updated[0];
+
+  if (marked === undefined) return false;
+
+  /**
+   * Последняя капля — момент конца пробного периода (4.4).
+   *
+   * Пишется той же выгрузкой, которая предел добила, и ровно один раз на
+   * человека: за это отвечает уникальный индекс, а не порядок вызовов.
+   * `on conflict` здесь не нужен — условие `where` само отбивает
+   * повторную запись, а гонку двух процессов отобьёт индекс, и его отказ
+   * означал бы настоящую ошибку.
+   */
+  if (params.trialLimit === undefined || params.trialLimit <= 0) return true;
+
+  const spent = await trialSpent(db, marked.userId);
+
+  if (spent < params.trialLimit) return true;
+
+  await db
+    .update(batches)
+    .set({ trialOverAt: now, trialLimit: params.trialLimit })
+    .where(
+      and(
+        eq(batches.id, params.batchId),
+        isNull(batches.trialOverAt),
+        sql`not exists (
+          select 1 from ${batches} as already
+          where already.user_id = ${marked.userId} and already.trial_over_at is not null
+        )`,
+      ),
+    );
+
+  return true;
 }
 
 // ── Оплаченная подписка (§14, задача 4.2) ─────────────────────────────
@@ -407,8 +479,48 @@ export async function applyPaymentEvent(
    */
   const providerInvId = /^\d+$/u.test(externalId) ? Number(externalId) : undefined;
 
+  /**
+   * Продление оплаченного счёта заводит **новую** строку, а не правит
+   * старую.
+   *
+   * Так устроены звёзды: Telegram присылает продление с тем же
+   * `invoice_payload`, и счёт по метке находится **тот же самый** — тот,
+   * что оплачен месяц назад. Пометь мы его оплаченным снова, и `paid_at`
+   * уехал бы на новую дату, уничтожив дату первого платежа, а выручка
+   * увидела бы за три месяца **один** платёж вместо трёх. Отчёт по
+   * звёздному рельсу занижался бы ровно на всё, кроме последнего периода.
+   *
+   * Схема и говорит «одна строка на каждую попытку оплаты» — здесь это
+   * правило и восстанавливается. Робокассы это не касается: у неё
+   * продление уже заводит свой счёт со своей меткой (`claimRenewal`), и
+   * сюда приходит именно он, ещё неоплаченный.
+   *
+   * `invoiceByRef` берёт самый свежий счёт по метке, поэтому следующее
+   * продление найдёт эту новую строку, а не первую.
+   */
+  const paying =
+    event.renewal && invoice.status === 'paid'
+      ? await createInvoice(db, {
+          provider: params.provider,
+          userId: invoice.userId,
+          plan: invoice.plan,
+          kind: 'renewal',
+          amountMinor: event.amount,
+          currency: event.currency,
+          ref: invoice.ref,
+          /**
+           * Скидка на продление не переносится.
+           *
+           * Промокод — на первый период; поставь мы здесь его код и
+           * полную цену, «недополучено по кодам» росло бы каждый месяц
+           * само. Пустая полная цена означает «без скидки».
+           */
+          autoRenew: true,
+        })
+      : invoice;
+
   await markInvoicePaid(db, {
-    id: invoice.id,
+    id: paying.id,
     ...(providerInvId === undefined || !Number.isSafeInteger(providerInvId)
       ? {}
       : { providerInvId }),

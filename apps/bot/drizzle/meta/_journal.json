@@ -239,6 +239,20 @@
       "when": 1788805200000,
       "tag": "0033_renewal_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788810000000,
+      "tag": "0034_promo",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788811000000,
+      "tag": "0035_trial_over_moment",
+      "breakpoints": true
     }
   ]
 }

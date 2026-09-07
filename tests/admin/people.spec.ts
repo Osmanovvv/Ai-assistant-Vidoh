@@ -42,8 +42,12 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
      */
     await signIn(page);
 
-    await expect(page.getByTestId('revenue')).toHaveText('399.00 ₽');
-    await expect(page.getByTestId('payments')).toHaveText('1 платёж');
+    /**
+     * На стенде два оплаченных счёта: обычный на 399 ₽ и по промокоду на
+     * 99 ₽ (задача 4.4). Брошенный на 3990 ₽ в выручку не попадает.
+     */
+    await expect(page.getByTestId('revenue')).toHaveText('498.00 ₽');
+    await expect(page.getByTestId('payments')).toHaveText('2 платежа');
     await expect(page.getByTestId('revenue')).not.toContainText('3990');
     await expect(page.getByTestId('payers')).toHaveText('1');
   });
@@ -57,8 +61,14 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
      */
     await signIn(page);
 
-    await expect(page.getByTestId('conversion')).toHaveText('0 из 0');
-    await expect(page.getByText('пробный период израсходован полностью')).toBeVisible();
+    /**
+     * На стенде у Ани записан момент конца пробного периода при пределе
+     * один и есть оплаченный счёт — то есть переход у неё случился.
+     * Рядом обязана стоять дата начала ведения моментов: без неё ноль в
+     * этом месте читался бы как «никто не дошёл», а не «записей нет».
+     */
+    await expect(page.getByTestId('conversion')).toHaveText('1 из 1');
+    await expect(page.getByTestId('moments-since')).toContainText('пределы: 1');
   });
 
   test('список людей показывает выгрузки и расход', async ({ page }) => {
@@ -140,5 +150,37 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
       const response = await request.get(path, { failOnStatusCode: false });
       expect(response.status(), path).toBe(401);
     }
+  });
+
+  test('воронка по источникам: четыре шага и названный прямой заход', async ({ page }) => {
+    /**
+     * Условие готовности 4.4: «в админке виден срез по источникам и
+     * воронка „регистрация, первая выгрузка, конец пробного, оплата“».
+     *
+     * Между агрегатом и страницей есть шов — имена полей в ответе, — и
+     * покрыт он только здесь: переименуй `paidAfterTrial` и обе половины
+     * останутся зелёными, а панель покажет пустые ячейки.
+     *
+     * Отдельно проверяется, что прямой заход **назван словом**: пустая
+     * ячейка читается как «нет данных», а человек-то есть.
+     */
+    await signIn(page);
+
+    const funnel = page.getByTestId('funnel');
+
+    await expect(funnel).toBeVisible();
+
+    const all = funnel.getByRole('row', { name: /Все вместе/u });
+
+    await expect(all).toBeVisible();
+
+    // На стенде одиннадцать человек, у Ани разобранная выгрузка,
+    // записанный момент конца пробного и оплаченный счёт.
+    await expect(funnel.getByRole('row', { name: /blogger7/u })).toBeVisible();
+    await expect(funnel.getByRole('row', { name: /без источника/u })).toBeVisible();
+
+    // И сказано, с какого дня ведутся моменты: ноль без этого читался бы
+    // как «никто не дошёл».
+    await expect(page.getByTestId('moments-since')).toBeVisible();
   });
 });

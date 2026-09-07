@@ -99,7 +99,15 @@ export function createStarsProvider(deps: StarsDeps): PaymentProvider {
        * У годового тарифа автопродления в звёздах не существует: это
        * разовый платёж, и обещать по нему продление нельзя.
        */
-      const subscription = params.plan === 'monthly';
+      /**
+       * Подписка — только месячная и только если её попросили.
+       *
+       * Отказ просить приходит от промокода (задача 4.4): Telegram
+       * продлевает подписку **по сумме счёта**, значит подписочный
+       * промо-счёт означал бы скидку навсегда, и заметить это можно было
+       * бы только по выручке через месяц.
+       */
+      const subscription = params.plan === 'monthly' && params.renewable !== false;
 
       if (subscription && params.amount > STARS_MAX_SUBSCRIPTION) {
         throw new PermanentError(

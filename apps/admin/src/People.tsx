@@ -4,7 +4,7 @@ import {
   overview,
   peoplePage,
   personCard,
-  type Conversion,
+  type Funnel,
   type Money,
   type Overview,
   type PeoplePage,
@@ -90,10 +90,8 @@ function payments(list: readonly Revenue[]): string {
  * Процент от трёх человек выглядит как знание, знанием не являясь.
  * Поэтому «2 из 7», а доля пусть считается в голове того, кто смотрит.
  */
-function funnel(value: Conversion): string {
-  if (value.trialSize === 0) return '—';
-
-  return `${String(value.paid)} из ${String(value.trialFinished)}`;
+function conversionText(value: Funnel): string {
+  return `${String(value.total.paidAfterTrial)} из ${String(value.total.trialOver)}`;
 }
 
 /** Подписка человека в одну строку — для списка. */
@@ -177,7 +175,12 @@ export function OverviewPanel(): React.ReactElement {
           <span className="итог__число" data-testid="revenue">
             {earned(report.revenue)}
           </span>
-          <span className="панель__кто" data-testid="payments">
+          {/* Блоком, а не строкой: иначе «498.00 ₽2 платежа» слипается. */}
+          <span
+            className="панель__кто"
+            data-testid="payments"
+            style={{ display: 'block', marginTop: 2 }}
+          >
             {payments(report.revenue)}
           </span>
         </div>
@@ -190,20 +193,77 @@ export function OverviewPanel(): React.ReactElement {
         <div className="итог">
           <span className="итог__имя">Из пробного в оплату</span>
           <span className="итог__число" data-testid="conversion">
-            {funnel(report.conversion)}
+            {conversionText(report.funnel)}
           </span>
         </div>
       </section>
 
-      {report.conversion.trialSize > 0 && (
-        <p className="оговорка">
-          Переход считается по тем, у кого пробный период израсходован полностью — это{' '}
-          {report.conversion.trialSize} разобранных выгрузок. Новички, ещё не дошедшие до границы, в
-          знаменатель не попадают: они не «не купили», они не выбирали.
+      <FunnelBlock value={report.funnel} />
+
+      {report.missing.map((note) => (
+        <p className="оговорка" key={note}>
+          {note}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Воронка и разрез по источникам (§15 и §14, задача 4.4).
+ *
+ * **Ни одного процента.** Четыре числа в ряд и знаменатель рядом:
+ * процент от трёх человек выглядит как знание, знанием не являясь. На
+ * боевом людей двое.
+ *
+ * **Источник без названия называется словом.** Пустая ячейка читается
+ * как «нет данных», а человек-то есть: он пришёл по прямой ссылке.
+ */
+function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement {
+  const rows = [{ ...value.total, source: 'ВСЕ' }, ...value.bySource];
+
+  return (
+    <div className="разрез" data-testid="funnel">
+      <h3 className="разрез__имя">Воронка по источникам</h3>
+
+      <div className="таблица-обёртка">
+        <table className="таблица">
+          <thead>
+            <tr>
+              <th>Источник</th>
+              <th className="таблица__число">Регистрация</th>
+              <th className="таблица__число">Первая выгрузка</th>
+              <th className="таблица__число">Конец пробного</th>
+              <th className="таблица__число">Оплата</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={row.source ?? `прямой-${String(index)}`}>
+                <td>
+                  {index === 0 ? 'Все вместе' : (row.source ?? 'без источника (прямой заход)')}
+                </td>
+                <td className="таблица__число">{row.registered}</td>
+                <td className="таблица__число">{row.firstDump}</td>
+                <td className="таблица__число">{row.trialOver}</td>
+                <td className="таблица__число">{row.paidAfterTrial}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {value.momentsSince !== null && (
+        <p className="панель__кто" data-testid="moments-since">
+          Моменты конца пробного периода ведутся с {when(value.momentsSince)}
+          {value.trialLimits.length > 0
+            ? `; встреченные пределы: ${value.trialLimits.join(', ')}`
+            : ''}
+          .
         </p>
       )}
 
-      {report.missing.map((note) => (
+      {value.missing.map((note) => (
         <p className="оговорка" key={note}>
           {note}
         </p>
