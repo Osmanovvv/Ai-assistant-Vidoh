@@ -253,6 +253,13 @@
       "when": 1788811000000,
       "tag": "0035_trial_over_moment",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788820000000,
+      "tag": "0036_refunded",
+      "breakpoints": true
     }
   ]
 }

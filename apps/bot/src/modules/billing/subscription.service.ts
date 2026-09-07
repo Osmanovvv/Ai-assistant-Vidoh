@@ -10,6 +10,7 @@ import {
   markEventProcessed,
   markInvoiceFailed,
   markInvoicePaid,
+  markInvoiceRefunded,
   markPastDue,
   recordEvent,
   stopAutoRenew,
@@ -387,8 +388,50 @@ async function applyInside(
   }
 
   if (invoice.userId === null) {
-    // Человек удалил данные, а событие пришло. Платёж записан, доступ
-    // возвращать некому: подписка ушла каскадом вместе с ним.
+    /**
+     * Человек удалил данные, а платёж пришёл — и след обязан остаться.
+     *
+     * **Найдено ревизией четвёртого этапа.** Прежде здесь стоял простой
+     * возврат `unknown` — до записи события. Робокасса получала `OK` и
+     * не повторяла, строки события не было, счёт оставался
+     * «выставленным»: деньги пришли и не были видны **нигде** — ни в
+     * выручке (та считает оплаченные), ни в разделе ошибок (тот читает
+     * неудачные). Обращение «я заплатила» в панели не находилось.
+     *
+     * Сценарий не выдуманный: человек нажимает «Перейти к оплате», уходит
+     * на страницу провайдера и до её завершения нажимает «Удалить мои
+     * данные».
+     *
+     * Теперь событие записывается, а счёт помечается оплаченным
+     * пришедшей суммой. Доступ возвращать некому — подписка ушла
+     * каскадом вместе с человеком, — но деньги видны, и разобрать
+     * обращение есть чем. Обезличенные строки панель уже умеет
+     * показывать.
+     */
+    const externalId = 'externalId' in event ? event.externalId : `${event.kind}:${event.ref}`;
+
+    const noted = await recordEvent(db, {
+      provider: params.provider,
+      externalId,
+      kind: event.kind,
+      signatureOk: true,
+      payload: params.payload ?? {},
+      ...(params.method === undefined ? {} : { method: params.method }),
+      invoiceId: invoice.id,
+    });
+
+    if (!noted.first) return { kind: 'duplicate' };
+
+    if (event.kind === 'paid') {
+      await markInvoicePaid(db, {
+        id: invoice.id,
+        ...(params.outSum === undefined ? {} : { outSumReceived: params.outSum }),
+        now,
+      });
+    }
+
+    if (noted.id !== undefined) await markEventProcessed(db, noted.id, now);
+
     return { kind: 'unknown', why: 'счёт обезличен: человек удалил данные' };
   }
 
@@ -456,6 +499,18 @@ async function applyInside(
      */
     await stopAutoRenew(db, { userId: invoice.userId, provider: params.provider, now });
     await endPeriodNow(db, { userId: invoice.userId, provider: params.provider, now });
+
+    /**
+     * И счёт помечается возвращённым, а не остаётся оплаченным.
+     *
+     * **Найдено ревизией.** Прежде доступ снимался правильно, а счёт
+     * оставался `paid`: выручка в панели продолжала считать вернувшиеся
+     * деньги, отличить возврат было нечем, а человек навсегда числился
+     * платившим — то есть терял право на промокод «первый период», не
+     * получив периода.
+     */
+    await markInvoiceRefunded(db, { id: invoice.id, now });
+
     await finish();
 
     return { kind: 'stopped' };
@@ -539,25 +594,38 @@ async function applyInside(
    *
    * `invoiceByRef` берёт самый свежий счёт по метке, поэтому следующее
    * продление найдёт эту новую строку, а не первую.
+   *
+   * **Условие «это продление» здесь убрано на ревизии.** Промо-счёт
+   * уходит разовым, значит вторая оплата **той же ссылки** приходит без
+   * признака продления — и прежде переписывала уже оплаченную строку:
+   * восемьдесят звёзд получены, сорок учтены, в промокодах «одно
+   * применение» вместо двух. Дважды оплаченная ссылка — это два платежа,
+   * чем бы они себя ни называли.
    */
   const paying =
-    event.renewal && invoice.status === 'paid'
+    invoice.status === 'paid'
       ? await createInvoice(db, {
           provider: params.provider,
           userId: invoice.userId,
           plan: invoice.plan,
-          kind: 'renewal',
+          /**
+           * Вид берём у события, а не ставим «продление» всегда.
+           *
+           * Вторая оплата разовой ссылки продлением не является: назвать
+           * её так значило бы соврать в отчёте о том, за что заплатили.
+           */
+          kind: event.renewal ? 'renewal' : 'initial',
           amountMinor: event.amount,
           currency: event.currency,
           ref: invoice.ref,
           /**
-           * Скидка на продление не переносится.
+           * Скидка не переносится ни на продление, ни на вторую оплату.
            *
            * Промокод — на первый период; поставь мы здесь его код и
            * полную цену, «недополучено по кодам» росло бы каждый месяц
            * само. Пустая полная цена означает «без скидки».
            */
-          autoRenew: true,
+          autoRenew: event.renewal,
         })
       : invoice;
 

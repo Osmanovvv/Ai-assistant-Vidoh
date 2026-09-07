@@ -1437,6 +1437,16 @@ export const billingInvoiceStatus = pgEnum('billing_invoice_status', [
   'failed',
   'expired',
   'canceled',
+  /**
+   * Деньги вернулись (задача 4.2, найдено ревизией четвёртого этапа).
+   *
+   * Прежде возвращённый счёт оставался `paid`: доступ снимался
+   * правильно, а выручка в панели продолжала считать вернувшиеся деньги,
+   * и отличить возврат было нечем. Человек при этом навсегда числился
+   * платившим — то есть терял право на промокод «первый период», не
+   * получив периода.
+   */
+  'refunded',
 ]);
 
 export const billingSubStatus = pgEnum('billing_sub_status', [
@@ -1632,6 +1642,16 @@ export const billingInvoices = pgTable(
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     paidAt: timestamp('paid_at', { withTimezone: true }),
+
+    /**
+     * Когда деньги вернулись (ревизия четвёртого этапа).
+     *
+     * Отдельно от `paidAt`, а не вместо него: чтобы в отчёте было видно
+     * и что заплатили, и что вернули. Затирание даты оплаты стёрло бы
+     * историю того месяца.
+     */
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+
     expiresAt: timestamp('expires_at', { withTimezone: true }),
   },
   (table) => [

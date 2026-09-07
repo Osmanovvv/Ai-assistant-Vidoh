@@ -12,7 +12,13 @@ import {
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
-import { createInvoice, invoiceByRef, nextInvId, subscriptionOf } from './billing.repo.js';
+import {
+  createInvoice,
+  invoiceByRef,
+  nextInvId,
+  paidInvoicesCount,
+  subscriptionOf,
+} from './billing.repo.js';
 import type { PaymentEvent } from './provider.js';
 import {
   accessOf,
@@ -973,5 +979,177 @@ describe('§16: удаление данных человека', () => {
 
     expect(outcome.kind).toBe('unknown');
     expect(await testDb().select().from(billingSubscriptions)).toHaveLength(0);
+  });
+});
+
+describe('деньги видны, даже когда услугу выдать некому (ревизия этапа)', () => {
+  it('оплата по обезличенному счёту записывается, а не исчезает', async () => {
+    /**
+     * **Найдено ревизией четвёртого этапа.** Человек нажал «Перейти к
+     * оплате», ушёл на страницу провайдера и до её завершения нажал
+     * «Удалить мои данные». Настоящее подписанное уведомление приходило
+     * на обезличенный счёт — и прежде тут стоял простой возврат
+     * `unknown` **до** записи события: Робокасса получала `OK` и не
+     * повторяла, строки события не было, счёт оставался «выставленным».
+     *
+     * Деньги приходили и не были видны нигде: ни в выручке (та считает
+     * оплаченные), ни в разделе ошибок (тот читает неудачные).
+     * Обращение «я заплатила» в панели не находилось.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'обезличен' });
+
+    await testDb()
+      .update(billingInvoices)
+      .set({ userId: null })
+      .where(eq(billingInvoices.ref, 'обезличен'));
+
+    const outcome = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'обезличен', externalId: '8001' }),
+      outSum: '399.00',
+    });
+
+    expect(outcome.kind).toBe('unknown');
+
+    // Событие записано — есть по чему разбирать обращение.
+    const events = await testDb().select().from(billingEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.externalId).toBe('8001');
+
+    // И счёт помечен оплаченным пришедшей суммой.
+    const invoice = await invoiceByRef(testDb(), { provider: RAIL, ref: 'обезличен' });
+    expect(invoice?.status).toBe('paid');
+    expect(invoice?.outSumReceived).toBe('399.00');
+  });
+
+  it('повторная доставка по обезличенному счёту не задваивается', async () => {
+    // Идемпотентность обязана работать и здесь: Робокасса повторяет
+    // доставку, пока не получит OK, а OK мы отдаём.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'обезличен-2' });
+
+    await testDb()
+      .update(billingInvoices)
+      .set({ userId: null })
+      .where(eq(billingInvoices.ref, 'обезличен-2'));
+
+    const event = paid({ ref: 'обезличен-2', externalId: '8002' });
+
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event })).kind).toBe('unknown');
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event })).kind).toBe('duplicate');
+
+    expect(await testDb().select().from(billingEvents)).toHaveLength(1);
+  });
+});
+
+describe('вторая оплата той же ссылки — это второй платёж (ревизия этапа)', () => {
+  it('оплата уже оплаченного счёта заводит новую строку даже без признака продления', async () => {
+    /**
+     * **Найдено ревизией.** Промо-счёт уходит разовым, значит вторая
+     * оплата той же ссылки приходит **без** признака продления — и
+     * прежде переписывала уже оплаченную строку: восемьдесят звёзд
+     * получены, сорок учтены, в промокодах «одно применение» вместо
+     * двух, и подписка при этом продлена.
+     *
+     * Дважды оплаченная ссылка — это два платежа, чем бы они себя ни
+     * называли.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'дважды' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'дважды', externalId: '8101' }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      // Признака продления нет: это просто вторая оплата той же ссылки.
+      event: paid({ ref: 'дважды', externalId: '8102' }),
+      now: new Date('2026-09-08T10:00:00.000Z'),
+    });
+
+    const rows = await testDb()
+      .select()
+      .from(billingInvoices)
+      .where(eq(billingInvoices.ref, 'дважды'));
+
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((one) => one.status === 'paid')).toHaveLength(2);
+
+    // Вторая строка — не продление: назвать её так значило бы соврать в
+    // отчёте о том, за что заплатили.
+    const second = rows.find((one) => one.paidAt?.toISOString().startsWith('2026-09-08'));
+    expect(second?.kind).toBe('initial');
+    expect(second?.autoRenew).toBe(false);
+  });
+});
+
+describe('возврат виден как возврат (ревизия этапа)', () => {
+  it('возвращённый счёт перестаёт быть оплаченным', async () => {
+    /**
+     * **Найдено ревизией.** Доступ снимался правильно, а счёт оставался
+     * `paid`: выручка в панели продолжала считать вернувшиеся деньги,
+     * отличить возврат было нечем, а человек навсегда числился
+     * платившим — то есть терял право на промокод «первый период», не
+     * получив периода.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'вернули' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'вернули', externalId: '8201' }),
+    });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: {
+        kind: 'refunded',
+        externalId: '8202',
+        ref: 'вернули',
+        amount: 39_900,
+        currency: 'RUB',
+      },
+      now: new Date('2026-09-20T10:00:00.000Z'),
+    });
+
+    const invoice = await invoiceByRef(testDb(), { provider: RAIL, ref: 'вернули' });
+
+    expect(invoice?.status).toBe('refunded');
+    expect(invoice?.refundedAt?.toISOString()).toBe('2026-09-20T10:00:00.000Z');
+    // Дата оплаты цела: обе нужны отчёту того месяца.
+    expect(invoice?.paidAt).not.toBeNull();
+
+    /**
+     * Доступ снят: период обрывается моментом возврата, а не «сейчас».
+     * Деньги вернулись — значит услуга не оплачена.
+     */
+    const subscription = await subscriptionOf(testDb(), { userId, provider: RAIL });
+    expect(subscription?.currentPeriodEnd.toISOString()).toBe('2026-09-20T10:00:00.000Z');
+  });
+
+  it('после возврата человек снова считается не платившим', async () => {
+    // Периода он не получил, значит промокод «на первый период» ему
+    // по-прежнему положен.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'вернули-2' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'вернули-2', externalId: '8301' }),
+    });
+
+    expect(await paidInvoicesCount(testDb(), userId)).toBe(1);
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: {
+        kind: 'refunded',
+        externalId: '8302',
+        ref: 'вернули-2',
+        amount: 39_900,
+        currency: 'RUB',
+      },
+    });
+
+    expect(await paidInvoicesCount(testDb(), userId)).toBe(0);
   });
 });

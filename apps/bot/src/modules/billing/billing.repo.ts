@@ -273,6 +273,27 @@ export async function markInvoicePaid(
     .where(eq(billingInvoices.id, params.id));
 }
 
+/**
+ * Пометить счёт возвращённым (задача 4.2, ревизия четвёртого этапа).
+ *
+ * Отдельным состоянием, а не `failed`: неудача и возврат — разные вещи.
+ * Неудача означает «денег не было», возврат — «деньги были и ушли
+ * обратно». Первое разбирают как поломку, второе как решение.
+ *
+ * Из выручки такие счёта исключаются, и из «платил ли хоть раз» тоже:
+ * иначе человек, которому вернули деньги, терял бы право на промокод
+ * «первый период», не получив периода.
+ */
+export async function markInvoiceRefunded(
+  db: Executor,
+  params: { readonly id: string; readonly now: Date },
+): Promise<void> {
+  await db
+    .update(billingInvoices)
+    .set({ status: 'refunded', refundedAt: params.now })
+    .where(eq(billingInvoices.id, params.id));
+}
+
 export async function markInvoiceFailed(
   db: Executor,
   params: {
@@ -589,6 +610,13 @@ export async function paidInvoicesCount(db: Executor, userId: string): Promise<n
   const [row] = await db
     .select({ total: count() })
     .from(billingInvoices)
+    /**
+     * Возвращённые счёта не считаются, и это находка ревизии.
+     *
+     * Человек, которому вернули деньги, периода не получил — а прежде
+     * навсегда числился платившим и терял право на промокод «первый
+     * период». Состояние `refunded` отличается от `paid` именно этим.
+     */
     .where(and(eq(billingInvoices.userId, userId), eq(billingInvoices.status, 'paid')));
 
   return row?.total ?? 0;
