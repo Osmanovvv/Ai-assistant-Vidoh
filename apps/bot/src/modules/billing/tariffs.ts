@@ -1,0 +1,131 @@
+import type { PlanKind } from './provider.js';
+import type { SettingsRegistry } from '../settings/settings.repo.js';
+
+/**
+ * Тарифы (§14 ТЗ, задача 4.2).
+ *
+ * §14 дословно: «Тарифы месячный и годовой. Стоимость задается в
+ * админ-панели». Значит цена — не константа кода, а настройка, и всё
+ * здесь построено вокруг этого.
+ *
+ * **Ноль означает «цена не задана», а не «бесплатно».** Пока заказчица
+ * не назвала цифру, продавать нечего: кнопка оплаты не показывается, счёт
+ * не создаётся. Придуманная нами цена по умолчанию означала бы, что бот
+ * однажды продаст подписку за выдуманные деньги, а заметить это можно
+ * будет только по чужой жалобе.
+ *
+ * **Рельсов два, цены разные — и это нарочно.** Курс звезды к рублю
+ * задаёт Telegram, он меняется, и пересчитывать его в коде значило бы
+ * однажды продать год за две звезды. Паритет требует, чтобы **набор
+ * тарифов** совпадал на обоих рельсах, а не чтобы совпадали цифры.
+ */
+
+/** Рельс оплаты. Имя с двоеточием — как у моделей в учёте расхода. */
+export type Rail = 'robokassa:smz' | 'telegram:stars';
+
+export const RAILS = ['robokassa:smz', 'telegram:stars'] as const;
+
+export const PLANS = ['monthly', 'yearly'] as const;
+
+export interface Price {
+  /** Копейки у рублей, штуки у звёзд. */
+  readonly amountMinor: number;
+  readonly currency: 'RUB' | 'XTR';
+}
+
+/**
+ * Сколько стоит тариф на этом рельсе. `undefined` — цена не задана.
+ *
+ * Возвращать ноль было бы хуже: ноль пришлось бы проверять в каждом
+ * вызывающем месте, и однажды кто-нибудь не проверил бы.
+ */
+export async function priceOf(
+  settings: SettingsRegistry,
+  params: { readonly plan: PlanKind; readonly rail: Rail },
+): Promise<Price | undefined> {
+  if (params.rail === 'telegram:stars') {
+    const stars = await settings.number(
+      params.plan === 'monthly' ? 'priceMonthlyStars' : 'priceYearlyStars',
+    );
+
+    return stars > 0 ? { amountMinor: stars, currency: 'XTR' } : undefined;
+  }
+
+  const kopecks = await settings.number(
+    params.plan === 'monthly' ? 'priceMonthlyRub' : 'priceYearlyRub',
+  );
+
+  return kopecks > 0 ? { amountMinor: kopecks, currency: 'RUB' } : undefined;
+}
+
+/** Все заданные тарифы рельса. Пусто — продавать нечего. */
+export async function tariffsOf(
+  settings: SettingsRegistry,
+  rail: Rail,
+): Promise<readonly { readonly plan: PlanKind; readonly price: Price }[]> {
+  const out: { plan: PlanKind; price: Price }[] = [];
+
+  for (const plan of PLANS) {
+    const price = await priceOf(settings, { plan, rail });
+    if (price !== undefined) out.push({ plan, price });
+  }
+
+  return out;
+}
+
+/**
+ * Конец оплаченного периода.
+ *
+ * **Месяц считается календарным, а не тридцатью днями.** Человек,
+ * заплативший 31 января, ждёт списания в конце февраля, а не 2 марта;
+ * «тридцать дней» дают тринадцать списаний в год вместо двенадцати, и
+ * это заметят по счёту, а не по нашему коду.
+ *
+ * Переполнение короткого месяца решается в пользу человека: 31 января
+ * плюс месяц — это 28 февраля, а не 3 марта. `Date` в JavaScript сам
+ * перекидывает лишние дни вперёд, поэтому дата обрезается вручную.
+ */
+export function periodEndAfter(from: Date, plan: PlanKind): Date {
+  const months = plan === 'monthly' ? 1 : 12;
+  const end = new Date(from.getTime());
+  const day = end.getUTCDate();
+
+  // Первое число месяца — чтобы прибавление месяцев не перескочило.
+  end.setUTCDate(1);
+  end.setUTCMonth(end.getUTCMonth() + months);
+
+  // Последний день целевого месяца: нулевой день следующего.
+  const lastDay = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate();
+  end.setUTCDate(Math.min(day, lastDay));
+
+  return end;
+}
+
+/**
+ * Сколько опоздание продления считается опозданием, а не простоем.
+ *
+ * Неделя. Внутрь недели укладываются и задержка списания, и наши
+ * повторы, и повторы Робокассы; всё, что дольше, — это уже не «списание
+ * задержалось», а «человек не платил и вернулся».
+ */
+const RENEWAL_GRACE_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Продление считается от конца оплаченного, а не от «сейчас».
+ *
+ * **Порога сначала не было, и это была ошибка** — её нашла проверка.
+ * Списание не мгновенно: продление приходит на день-два позже конца
+ * периода. Без порога такое продление считалось от «сейчас», и человек
+ * терял эти два дня — каждый месяц, то есть больше трёх недель за год,
+ * которые он оплатил. Годовщина при этом уползала вперёд.
+ *
+ * И обратная крайность так же неверна: считать всегда от конца периода
+ * значило бы, что вернувшийся через полгода получает период, который
+ * кончился в прошлом, — заплатил и остался без доступа.
+ *
+ * Поэтому порог: опоздание внутри недели — продление, дольше — новый
+ * период с этого дня.
+ */
+export function renewFrom(currentPeriodEnd: Date, now: Date): Date {
+  return currentPeriodEnd.getTime() + RENEWAL_GRACE_MS >= now.getTime() ? currentPeriodEnd : now;
+}
