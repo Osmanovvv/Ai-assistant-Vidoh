@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 
+import type { BillingSubscription } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { newRef } from './checkout.service.js';
 import {
@@ -9,8 +10,10 @@ import {
   nextInvId,
   parentPaymentFor,
 } from './billing.repo.js';
-import { markPastDue } from './billing.repo.js';
+import { markPastDue, renewalsAwaitingAnswer, subscriptionOf } from './billing.repo.js';
 import { chargeRecurring, type RobokassaDeps } from './providers/robokassa.js';
+import type { PaymentProvider } from './provider.js';
+import { applyPaymentEvent } from './subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
 import { priceOf, type Rail } from './tariffs.js';
 
@@ -52,6 +55,18 @@ export interface RenewalDeps {
   readonly db: Database;
   readonly logger: Logger;
   readonly robokassa: RobokassaDeps;
+  /**
+   * Провайдер — чтобы спросить состояние ушедшей операции.
+   *
+   * Ответ «OK<номер>» на дочернее списание означает **создание
+   * операции**, а не списание денег: узнать исход можно только вопросом
+   * (`OpStateExt`). Без него счёт продления, не получивший уведомления,
+   * висел бы навсегда, а человек не узнал бы, что доступ кончится.
+   *
+   * Необязателен: без него разбор зависших не работает, и это законное
+   * состояние — так живут все проверки, писавшиеся до ревизии.
+   */
+  readonly provider?: PaymentProvider | undefined;
   readonly settings: SettingsRegistry;
   /** Кому сказать, что продление не прошло. */
   readonly onFailed?:
@@ -102,12 +117,31 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
     });
 
     if (price === undefined) {
-      // Цену сняли, а подписка идёт. Списывать наугад нельзя.
-      deps.logger.warn(
+      /**
+       * Цену сняли, а подписка идёт. Списывать наугад нельзя — но и
+       * молчать нельзя, и это находка ревизии.
+       *
+       * Прежде здесь были `warn` и `continue`. Ноль в панели означает
+       * «тариф не продаётся», и заказчица ставит его, чтобы закрыть
+       * продажу новым, — а вместе с продажей молча останавливались
+       * продления **всем действующим** подписчикам. Счёта нет, значит
+       * нет и в разделе ошибок; `onFailed` не звался, значит человеку не
+       * сказано ничего. Через день-два десять платящих людей слышали
+       * «Пробные разборы закончились», а в обзоре стояло «Платят
+       * сейчас: 0».
+       *
+       * Теперь это обычная неудача продления: подписка помечена,
+       * человек предупреждён, доступ живёт до конца оплаченного
+       * периода. Счёта нет — значит и помечать нечего.
+       */
+      deps.logger.error(
         { userId: subscription.userId, plan: subscription.plan },
-        'Продление некуда считать: цена снята',
+        'Продление некуда считать: цена снята, подписка помечена и человек предупреждён',
       );
-      skipped += 1;
+
+      await giveUp(deps, { subscription, now });
+
+      failed += 1;
       continue;
     }
 
@@ -143,6 +177,7 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
       invId,
       parentInvId: parent.providerInvId,
       renewsPeriodEnd: subscription.currentPeriodEnd,
+      now,
     });
 
     if (claimed === undefined) {
@@ -176,10 +211,22 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
         'Ответ на дочернее списание потерян: повтора не будет',
       );
 
-      await markInvoiceFailed(deps.db, {
-        id: claimed.id,
+      /**
+       * Тем же хвостом, что и явный отказ.
+       *
+       * Прежде здесь была только запись в журнал: подписка оставалась
+       * `active` с включённым продлением, человек не узнавал ничего, и
+       * доступ кончался у него внезапно. Разница между «Робокасса
+       * отказала» и «Робокасса не ответила» — только в тексте на счёте;
+       * для человека это одно и то же событие.
+       */
+      await giveUp(deps, {
+        subscription,
+        invoiceId: claimed.id,
+        now,
         errorText: 'ответ на дочернее списание потерян',
       });
+
       failed += 1;
       continue;
     }
@@ -196,42 +243,224 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
       continue;
     }
 
-    await markInvoiceFailed(deps.db, {
-      id: claimed.id,
+    await giveUp(deps, {
+      subscription,
+      invoiceId: claimed.id,
+      now,
       ...(answer.answer === '' ? {} : { errorText: answer.answer }),
     });
-
-    await markPastDue(deps.db, {
-      userId: subscription.userId,
-      provider: ROBOKASSA_RAIL,
-      now,
-    });
-
-    /**
-     * Человеку говорим сами, и говорим до конца периода.
-     *
-     * Молчание здесь означало бы, что доступ кончится без предупреждения
-     * — худший исход из возможных: он платил, он не отменял, и вдруг
-     * бот перестал разбирать.
-     */
-    if (deps.onFailed !== undefined) {
-      try {
-        await deps.onFailed({
-          userId: subscription.userId,
-          paidUntil: subscription.currentPeriodEnd,
-        });
-      } catch (error) {
-        deps.logger.error(
-          { err: error, userId: subscription.userId },
-          'Не удалось предупредить о неудачном продлении',
-        );
-      }
-    }
 
     failed += 1;
   }
 
   return { charged, failed, skipped };
+}
+
+/**
+ * Продление не состоялось: пометить, предупредить, оставить доступ.
+ *
+ * **Одной функцией на все ветки неудачи, и это находка ревизии.** Прежде
+ * хвост стоял только у явного отказа Робокассы, а у потерянного ответа
+ * была лишь запись в журнал. То есть при обрыве сети человек, который
+ * платил и не отменял, просто перестал бы получать разборы седьмого
+ * числа — без предупреждения и без объяснения. План обещал обратное
+ * дословно, и обещание было неверным.
+ *
+ * Три действия, и все три обязательны:
+ *  - счёт помечен неудачным — иначе он не виден в разделе ошибок;
+ *  - подписка помечена `past_due` — иначе она вечно первая в выборке
+ *    продления и вытесняет живые (см. `dueForRenewal`);
+ *  - человек предупреждён — молчание означает, что доступ кончится
+ *    внезапно.
+ *
+ * Доступ **не** закрывается: §14 велит держать его до конца оплаченного
+ * периода. Отобрать сегодня значило бы отобрать оплаченное.
+ */
+async function giveUp(
+  deps: RenewalDeps,
+  params: {
+    readonly subscription: BillingSubscription;
+    /** Счёт продления, если он успел завестись. */
+    readonly invoiceId?: string | undefined;
+    readonly errorText?: string | undefined;
+    readonly now: Date;
+  },
+): Promise<void> {
+  if (params.invoiceId !== undefined) {
+    await markInvoiceFailed(deps.db, {
+      id: params.invoiceId,
+      ...(params.errorText === undefined ? {} : { errorText: params.errorText }),
+    });
+  }
+
+  await markPastDue(deps.db, {
+    userId: params.subscription.userId,
+    provider: ROBOKASSA_RAIL,
+    now: params.now,
+  });
+
+  /**
+   * Человеку говорим сами, и говорим до конца периода.
+   *
+   * Молчание здесь означало бы, что доступ кончится без предупреждения —
+   * худший исход из возможных: он платил, он не отменял, и вдруг бот
+   * перестал разбирать.
+   */
+  if (deps.onFailed === undefined) return;
+
+  try {
+    await deps.onFailed({
+      userId: params.subscription.userId,
+      paidUntil: params.subscription.currentPeriodEnd,
+    });
+  } catch (error) {
+    deps.logger.error(
+      { err: error, userId: params.subscription.userId },
+      'Не удалось предупредить о неудачном продлении',
+    );
+  }
+}
+
+/**
+ * Сколько ждём уведомления, прежде чем спросить самим.
+ *
+ * Два часа. Робокасса повторяет доставку, банк списывает не мгновенно, и
+ * спрашивать через минуту значило бы принять «ещё не дошло» за «денег
+ * нет». Два часа при суточном запасе до конца периода оставляют человеку
+ * время заплатить руками, если продление всё-таки не прошло.
+ */
+export const AWAIT_ANSWER_MS = 2 * 3_600_000;
+
+/**
+ * Разбор ушедших списаний, не получивших ответа.
+ *
+ * **Зачем понадобился.** Ответ «OK<номер>» означает создание операции, а
+ * не списание денег. Если денег на карте не хватило, уведомления не
+ * будет **никогда** — и прежде такой счёт оставался «выставленным»
+ * навсегда: не видно ни в выручке, ни в разделе ошибок, а человек не
+ * знал, что доступ кончится. Подписка при этом вечно шла первой в
+ * выборке продления и вытесняла живые.
+ *
+ * Здесь спрашиваем провайдера и делаем одно из двух:
+ *  - деньги есть, а уведомление потерялось — **доводим оплату сами**.
+ *    Ключ идемпотентности у события тот же, что принесло бы уведомление
+ *    (номер счёта), поэтому опоздавшее уведомление отобьётся как повтор;
+ *  - денег нет — помечаем подписку и предупреждаем человека, оставляя
+ *    доступ до конца оплаченного периода (§14).
+ */
+export async function resolveAwaiting(deps: RenewalDeps): Promise<{
+  readonly finished: number;
+  readonly failed: number;
+  readonly unknown: number;
+}> {
+  const provider = deps.provider;
+
+  if (provider === undefined) return { finished: 0, failed: 0, unknown: 0 };
+
+  const now = deps.now?.() ?? new Date();
+
+  const waiting = await renewalsAwaitingAnswer(deps.db, {
+    provider: ROBOKASSA_RAIL,
+    olderThan: new Date(now.getTime() - AWAIT_ANSWER_MS),
+    limit: BATCH,
+  });
+
+  let finished = 0;
+  let failed = 0;
+  let unknown = 0;
+
+  for (const invoice of waiting) {
+    if (invoice.userId === null || invoice.invId === null) {
+      unknown += 1;
+      continue;
+    }
+
+    const subscription = await subscriptionOf(deps.db, {
+      userId: invoice.userId,
+      provider: ROBOKASSA_RAIL,
+    });
+
+    if (subscription === undefined) {
+      unknown += 1;
+      continue;
+    }
+
+    let state;
+
+    try {
+      state = await provider.statusOf({
+        tgId: 0,
+        subscriptionRef: String(invoice.invId),
+      });
+    } catch (error) {
+      /**
+       * Не спросилось — не решаем ничего.
+       *
+       * Сеть моргнула, Робокасса не ответила: следующий проход
+       * переспросит. Принять молчание провайдера за «денег нет» значило
+       * бы напугать платящего человека без причины.
+       */
+      deps.logger.warn(
+        { err: error, invId: invoice.invId },
+        'Состояние ушедшего списания не спросилось: переспросим следующим проходом',
+      );
+      unknown += 1;
+      continue;
+    }
+
+    if (state === undefined) {
+      unknown += 1;
+      continue;
+    }
+
+    if (state.active) {
+      /**
+       * Деньги есть, уведомление потерялось — доводим сами.
+       *
+       * Событие строится тем же ключом, который принёс бы уведомление:
+       * номером счёта. Значит опоздавшее уведомление отобьётся как
+       * повтор, а не продлит период второй раз.
+       */
+      const applied = await applyPaymentEvent(deps.db, {
+        provider: ROBOKASSA_RAIL,
+        event: {
+          kind: 'paid',
+          externalId: String(invoice.invId),
+          ref: invoice.ref,
+          amount: invoice.amountMinor,
+          currency: invoice.currency,
+          renewal: true,
+        },
+        method: 'opstate',
+        payload: { source: 'opstate', invId: invoice.invId },
+        now,
+      });
+
+      deps.logger.warn(
+        { invId: invoice.invId, applied: applied.kind },
+        'Уведомление о продлении потерялось, оплата доведена по состоянию операции',
+      );
+
+      finished += 1;
+      continue;
+    }
+
+    deps.logger.error(
+      { invId: invoice.invId, userId: invoice.userId },
+      'Продление не оплачено: помечаю подписку и предупреждаю человека',
+    );
+
+    await giveUp(deps, {
+      subscription,
+      invoiceId: invoice.id,
+      now,
+      errorText: 'операция создана, но денег не поступило',
+    });
+
+    failed += 1;
+  }
+
+  return { finished, failed, unknown };
 }
 
 /**
@@ -254,9 +483,22 @@ export function startRenewals(deps: RenewalDeps, intervalMs = RENEWAL_TICK_MS): 
     running = true;
 
     void runRenewals(deps)
-      .then((round) => {
+      .then(async (round) => {
         if (round.charged > 0 || round.failed > 0) {
           deps.logger.info(round, 'Проход продления подписок');
+        }
+
+        /**
+         * Разбор зависших идёт тем же тиком, а не своим таймером.
+         *
+         * Два расписания на одно дело разошлись бы: списание уходит в
+         * одном проходе, а разбирать его исход стал бы другой, и
+         * порядок между ними стал бы делом случая.
+         */
+        const resolved = await resolveAwaiting(deps);
+
+        if (resolved.finished > 0 || resolved.failed > 0) {
+          deps.logger.info(resolved, 'Разбор ушедших списаний без ответа');
         }
       })
       .catch((error: unknown) => {

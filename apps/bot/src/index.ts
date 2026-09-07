@@ -756,6 +756,15 @@ async function main(): Promise<void> {
           logger,
           robokassa: robokassaDeps,
           settings,
+          /**
+           * Провайдер — чтобы спросить исход ушедшего списания.
+           *
+           * «OK<номер>» означает создание операции, а не списание
+           * денег. Без этого вопроса счёт, не получивший уведомления,
+           * висел бы навсегда, а человек не узнал бы, что доступ
+           * кончится.
+           */
+          ...(robokassa === undefined ? {} : { provider: robokassa }),
           onFailed: (params) => payNotifier.renewalFailed(params),
         })
       : () => undefined;

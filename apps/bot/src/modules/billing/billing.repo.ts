@@ -125,7 +125,18 @@ export async function createInvoice(db: Executor, params: NewInvoice): Promise<B
  */
 export async function claimRenewal(
   db: Executor,
-  params: NewInvoice & { readonly renewsPeriodEnd: Date },
+  params: NewInvoice & {
+    readonly renewsPeriodEnd: Date;
+    /**
+     * Когда заведено — переданными часами, а не базой.
+     *
+     * По этому времени разбор зависших решает, пора ли спрашивать
+     * провайдера об исходе. Ставь его база — и код с проходом жили бы по
+     * разным часам: в бою разница незаметна, а в проверке с
+     * подставленным временем счёт оказывался старым в момент создания.
+     */
+    readonly now?: Date | undefined;
+  },
 ): Promise<BillingInvoice | undefined> {
   const [row] = await db
     .insert(billingInvoices)
@@ -139,6 +150,7 @@ export async function claimRenewal(
       ref: params.ref,
       renewsPeriodEnd: params.renewsPeriodEnd,
       autoRenew: true,
+      ...(params.now === undefined ? {} : { createdAt: params.now }),
       ...(params.invId === undefined ? {} : { invId: params.invId }),
       ...(params.parentInvId === undefined ? {} : { parentInvId: params.parentInvId }),
       ...(params.outSumSent === undefined ? {} : { outSumSent: params.outSumSent }),
@@ -490,6 +502,23 @@ export async function markPastDue(
  * Берутся те, у кого срок вот-вот кончится, автопродление включено и
  * рельс умеет продлевать сам. Звёзды сюда не попадают: там продлевает
  * Telegram, а мы только получаем уведомление.
+ *
+ * **Ждущие подтверждения исключены, и это находка ревизии.** Прежде их
+ * не исключало ничто, и вот что получалось. Списание отправлено
+ * (`OK<номер>`), денег на карте не хватило, уведомления не будет —
+ * подписка навсегда остаётся `active` с автопродлением и концом периода
+ * **в прошлом**. Порядок здесь по возрастанию срока, значит такая строка
+ * идёт первой всегда: каждый час она тратит номер из последовательности
+ * и упирается в запрет второго списания за тот же период.
+ *
+ * Пятьдесят таких — и выборка целиком состоит из них: ни одна живая
+ * подписка в проходе до списания не доходит, продления прекращаются **у
+ * всех платящих сразу**, а в журнал не уходит ни строчки, потому что
+ * проход пишет только при удачах и явных отказах.
+ *
+ * Полусоединением, а не отдельным состоянием: состояние пришлось бы
+ * снимать, а забытое снятие — это тот же вечный застой, только тише.
+ * Наличие счёта продления на этот период — факт, который не забывается.
  */
 export async function dueForRenewal(
   db: Executor,
@@ -504,9 +533,48 @@ export async function dueForRenewal(
         eq(billingSubscriptions.autoRenew, true),
         eq(billingSubscriptions.status, 'active'),
         sql`${billingSubscriptions.currentPeriodEnd} <= ${params.before}`,
+        sql`not exists (
+          select 1 from ${billingInvoices}
+          where ${billingInvoices.provider} = ${billingSubscriptions.provider}
+            and ${billingInvoices.userId} = ${billingSubscriptions.userId}
+            and ${billingInvoices.renewsPeriodEnd} = ${billingSubscriptions.currentPeriodEnd}
+        )`,
       ),
     )
     .orderBy(billingSubscriptions.currentPeriodEnd)
+    .limit(params.limit);
+}
+
+/**
+ * Счёта продления, ушедшие и не получившие ответа.
+ *
+ * Списание создано, а уведомление не пришло: денег не хватило, карта
+ * отвалилась, уведомление потерялось. Такой счёт остаётся в состоянии
+ * «выставлен» навсегда — то есть не виден ни в выручке, ни в разделе
+ * ошибок, — а человек не знает, что доступ кончится.
+ *
+ * Разбирает это отдельный проход: спросить провайдера и, если денег
+ * действительно нет, пометить подписку и предупредить человека **до**
+ * конца оплаченного периода.
+ */
+export async function renewalsAwaitingAnswer(
+  db: Executor,
+  params: { readonly provider: Rail; readonly olderThan: Date; readonly limit: number },
+): Promise<readonly BillingInvoice[]> {
+  return await db
+    .select()
+    .from(billingInvoices)
+    .where(
+      and(
+        eq(billingInvoices.provider, params.provider),
+        eq(billingInvoices.kind, 'renewal'),
+        eq(billingInvoices.status, 'created'),
+        isNotNull(billingInvoices.renewsPeriodEnd),
+        isNotNull(billingInvoices.userId),
+        sql`${billingInvoices.createdAt} <= ${params.olderThan}`,
+      ),
+    )
+    .orderBy(billingInvoices.createdAt)
     .limit(params.limit);
 }
 
