@@ -155,7 +155,15 @@ describe('разрез по людям — §21 п.14 «по каждому по
 
     expect(rublesOf(first?.money ?? [])).toBe(7);
     expect(rublesOf(second?.money ?? [])).toBe(3);
-    expect(first?.tgId).toBe(4001);
+
+    /**
+     * Телеграмного номера в строке нет, и это проверяется нарочно.
+     *
+     * Прежде он уезжал в браузер в каждой строке и не рисовался ни в
+     * одной колонке — то есть личный идентификатор ходил туда, где он
+     * никому не нужен. Проверка стоит, чтобы он не вернулся молча.
+     */
+    expect(JSON.stringify(report.byUser)).not.toContain('4001');
   });
 
   it('обезличенный расход показан отдельно, а не потерян', async () => {
@@ -277,5 +285,110 @@ describe('разрез по моделям', () => {
     expect(rublesOf(report.byModel.find((row) => row.key === 'yandex:deluxe')?.money ?? [])).toBe(
       9,
     );
+  });
+});
+
+describe('средние считаются от своих множеств (ревизия четвёртого этапа)', () => {
+  /**
+   * **Найдено ревизией, и это не косметика: по среднему на человека
+   * назначают цену подписки.**
+   *
+   * Прежде оба средних делили **общую** сумму — вместе с обезличенной и
+   * вместе с расходом вне выгрузок — на число только уцелевших людей и
+   * выгрузок. Отчёт противоречил себе на одном экране: ниже стояло «ещё
+   * 500 ₽ на тех, кто удалил данные», а в итогах «на человека 300 ₽» при
+   * настоящей себестоимости 50 ₽.
+   */
+
+  /** Выгрузка, к которой можно привязать вызов. */
+  async function batch(userId: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done' })
+      .returning({ id: batches.id });
+
+    return row?.id ?? '';
+  }
+
+  it('«на человека» не включает расход тех, кто удалил данные', async () => {
+    /**
+     * Двое живых по 50 ₽ и 500 ₽ обезличенных. Правильное среднее — 50,
+     * а не 300: обезличенные строки в разрез по людям не попадают, и в
+     * знаменателе их нет.
+     */
+    await call({ userId: anya, rubles: 50 });
+    await call({ userId: boris, rubles: 50 });
+    await call({ rubles: 500 });
+
+    const report = await costBreakdown(testDb(), { since: SINCE });
+
+    expect(rublesOf(report.perUser)).toBe(50);
+
+    // И обезличенное по-прежнему видно отдельно — вместе с числом вызовов.
+    expect(rublesOf(report.unattributed)).toBe(500);
+    expect(report.unattributedCalls).toBe(1);
+  });
+
+  it('«на выгрузку» не включает расход вне выгрузок', async () => {
+    /**
+     * Выгрузка уходит каскадом вместе с человеком, а строка учёта
+     * остаётся. Прежде эти деньги молча попадали в числитель, и
+     * себестоимость разбора росла от **чужого** удаления.
+     */
+    const first = await batch(anya);
+    const second = await batch(anya);
+
+    await call({ userId: anya, batchId: first, rubles: 10 });
+    await call({ userId: anya, batchId: second, rubles: 10 });
+    // Вызов без выгрузки: её удалили вместе с данными человека.
+    await call({ rubles: 200 });
+
+    const report = await costBreakdown(testDb(), { since: SINCE });
+
+    expect(report.dumps).toBe(2);
+    expect(rublesOf(report.perDump)).toBe(10);
+
+    expect(rublesOf(report.unlinked)).toBe(200);
+    expect(report.unlinkedCalls).toBe(1);
+  });
+
+  it('отчёт сходится сам с собой: сумма разрезов плюс отдельные величины', async () => {
+    /**
+     * Отчёт, не сходящийся сам с собой, разбирающий сочтёт поломкой — и
+     * будет прав.
+     */
+    const own = await batch(anya);
+
+    await call({ userId: anya, batchId: own, rubles: 30 });
+    await call({ rubles: 70 });
+
+    const report = await costBreakdown(testDb(), { since: SINCE });
+
+    const byUser = report.byUser.reduce((sum, row) => sum + rublesOf(row.money), 0);
+    const total = report.byStage.reduce((sum, row) => sum + rublesOf(row.money), 0);
+
+    expect(total).toBe(100);
+    expect(byUser + rublesOf(report.unattributed)).toBe(total);
+  });
+
+  it('порядок разреза по людям устойчив при равном числе вызовов', async () => {
+    /**
+     * У запроса по людям нет `order by`, значит порядок страницы
+     * наследует порядок строк Postgres. Тот же дефект уже чинили в
+     * списке людей (4.6): один человек попадал на две страницы, другой —
+     * ни на одну.
+     */
+    await call({ userId: anya, rubles: 1 });
+    await call({ userId: boris, rubles: 1 });
+
+    const first = await costBreakdown(testDb(), { since: SINCE, userLimit: 1, userOffset: 0 });
+    const second = await costBreakdown(testDb(), { since: SINCE, userLimit: 1, userOffset: 1 });
+
+    expect(first.byUser).toHaveLength(1);
+    expect(second.byUser).toHaveLength(1);
+
+    // Страницы не пересекаются и вместе дают обоих.
+    expect(first.byUser[0]?.key).not.toBe(second.byUser[0]?.key);
+    expect(new Set([first.byUser[0]?.key, second.byUser[0]?.key]).size).toBe(2);
   });
 });

@@ -65,6 +65,111 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
     await expect(totals.locator('.итог', { hasText: 'На человека' })).toContainText('10.00 ₽');
   });
 
+  test('имя итога не совпадает с обзорным: множества разные', async ({ page }) => {
+    /**
+     * Ревизия четвёртого этапа. «Разобрано выгрузок» стояло здесь на
+     * `count(distinct ai_calls.batch_id)`, а в обзоре — на выгрузках в
+     * состоянии «готово». Одно имя на двух разных множествах: числа
+     * расходятся систематически (сорвавшаяся с обращениями попадает
+     * только сюда, закрытая без обращений — только туда), и человек
+     * читает расхождение как ошибку учёта.
+     *
+     * Проверка держит **имя**, потому что чинилось именно имя.
+     */
+    await signIn(page, 'Расходы');
+
+    const totals = page.locator('.итоги');
+
+    await expect(totals).toContainText('Выгрузок с обращениями');
+    await expect(totals.locator('.итог__имя', { hasText: /^Разобрано выгрузок$/u })).toHaveCount(0);
+  });
+
+  test('при смене периода числа прежнего периода не остаются на экране', async ({ page }) => {
+    /**
+     * Ревизия четвёртого этапа. Эффект сбрасывал только сообщение об
+     * отказе: под уже подсвеченной кнопкой «7 дней» оставались числа за
+     * 30 дней, и «Считаю…» показывалось лишь на самой первой загрузке.
+     * Пара «период с числами» врала — а по среднему на человека
+     * назначают цену подписки.
+     */
+    await signIn(page, 'Расходы');
+    await expect(page.locator('.итоги')).toContainText('10.00 ₽');
+
+    // Ответ придержан, чтобы застать окно, в котором дефект и жил.
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await page.route('**/admin/api/costs?*days=7*', async (route) => {
+      await held;
+      await route.continue();
+    });
+
+    await page.getByRole('button', { name: '7 дней' }).click();
+
+    // Кнопка уже подсвечена — значит числа рядом с ней обязаны молчать.
+    await expect(page.getByRole('button', { name: '7 дней' })).toHaveClass(/--выбран/u);
+    await expect(page.getByText('Считаю…')).toBeVisible();
+    await expect(page.locator('.итоги')).toHaveCount(0);
+
+    release();
+    await expect(page.locator('.итоги')).toContainText('10.00 ₽');
+  });
+
+  test('опоздавший ответ прежнего периода не закрепляется', async ({ page }) => {
+    /**
+     * Два быстрых нажатия: ответ первого запроса приходит последним.
+     * Прежде `setReport` вызывал любой завершившийся запрос, и на экране
+     * закреплялись числа не того периода.
+     *
+     * Стенд отдаёт одни и те же числа за любой период, поэтому ответ за
+     * семь дней здесь **подменяется** заметной суммой. Иначе проверка не
+     * смогла бы отличить починенное от сломанного: 10 ₽ на экране
+     * означали бы и правильный ответ, и опоздавший.
+     */
+    await signIn(page, 'Расходы');
+
+    const answered: number[] = [];
+    let holdFirst = (): void => {};
+    const first = new Promise<void>((resolve) => {
+      holdFirst = resolve;
+    });
+
+    await page.route('**/admin/api/costs?*', async (route) => {
+      const url = route.request().url();
+
+      if (!url.includes('days=7')) {
+        if (url.includes('days=90')) answered.push(90);
+        await route.continue();
+        return;
+      }
+
+      await first;
+
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+      const loud = [{ currency: 'rub', micros: 777_000_000 }];
+
+      answered.push(7);
+      await route.fulfill({ json: { ...body, perDump: loud, perUser: loud } });
+    });
+
+    await page.getByRole('button', { name: '7 дней' }).click();
+    await page.getByRole('button', { name: '90 дней' }).click();
+
+    await expect.poll(() => answered.includes(90)).toBe(true);
+
+    holdFirst();
+    await expect.poll(() => answered.includes(7)).toBe(true);
+
+    // Подсвечен девяностый — и числа на экране обязаны быть его: ни
+    // подменённых 777 ₽, ни вечного «Считаю…» вместо итогов.
+    await expect(page.getByRole('button', { name: '90 дней' })).toHaveClass(/--выбран/u);
+    await expect(page.locator('.итоги')).toContainText('10.00 ₽');
+    await expect(page.locator('.итоги')).not.toContainText('777');
+  });
+
   test('период переключается и запрос уходит с новым числом дней', async ({ page }) => {
     await signIn(page, 'Расходы');
 
