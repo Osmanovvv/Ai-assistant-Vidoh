@@ -251,18 +251,52 @@ export function requireAdmin(config: AdminAuthConfig) {
  */
 export const AUTH_ROUTES: readonly string[] = ['/login', '/code', '/logout'];
 
-export function createAuthRouter(config: AdminAuthConfig): Router {
+export function createAuthRouter(
+  config: AdminAuthConfig,
+  onError?: (error: unknown) => void,
+): Router {
   const router = Router();
   const attempts = new Map<string, Attempts>();
   const clock = (): Date => config.now?.() ?? new Date();
+
+  /**
+   * Обёртка обработчика входа: отказ не должен уносить процесс.
+   *
+   * **Найдено ревизией четвёртого этапа, и это была самая дорогая
+   * находка.** Прежде здесь стояло `void (async () => {…})()`. Запрос на
+   * вход **без заголовка `content-type`** оставляет `req.body`
+   * неопределённым — express 5 его не задаёт, а разборщик тела при чужом
+   * типе просто пропускает запрос дальше. Чтение `body.login` бросало
+   * `TypeError` внутри промиса, который никто не подхватывал: express не
+   * видит отказа, потому что обработчик вернул `undefined`, своего
+   * приёмника `unhandledRejection` у процесса нет, а Node по умолчанию
+   * такое падение доводит до выхода.
+   *
+   * То есть **посторонний одним запросом в сто байт останавливал бота
+   * целиком**. Путь открыт наружу, и никакого пароля для этого не
+   * требовалось.
+   *
+   * Защитных мер две, и обе нужны. Тело теперь читается защищённо — как
+   * на всех соседних путях панели. А отказ ловится здесь: чтобы
+   * **следующий** промах в этом обработчике стоил отказа во входе, а не
+   * остановки продукта. Ответ при этом тот же, что при неверном пароле:
+   * рассказывать снаружи, что именно сломалось, незачем.
+   */
+  const handle = (res: Response, work: () => Promise<void>): void => {
+    work().catch((error: unknown) => {
+      onError?.(error);
+
+      if (!res.headersSent) refuse(res);
+    });
+  };
 
   router.use(express.json({ limit: '4kb' }));
 
   // ── Шаг первый: логин и пароль ────────────────────────────────────────
   router.post('/login', (req: Request, res: Response) => {
-    void (async () => {
+    handle(res, async () => {
       const now = clock();
-      const body = req.body as { login?: unknown; password?: unknown };
+      const body = (req.body ?? {}) as { login?: unknown; password?: unknown };
       const login = typeof body.login === 'string' ? body.login : '';
       const password = typeof body.password === 'string' ? body.password : '';
 
@@ -297,14 +331,14 @@ export function createAuthRouter(config: AdminAuthConfig): Router {
       // Панель не открыта: следующий шаг — код. Никаких данных здесь
       // не отдаётся, только «нужен второй шаг».
       res.json({ ok: true, next: 'code' });
-    })();
+    });
   });
 
   // ── Шаг второй: одноразовый код ───────────────────────────────────────
   router.post('/code', (req: Request, res: Response) => {
-    void (async () => {
+    handle(res, async () => {
       const now = clock();
-      const body = req.body as { code?: unknown };
+      const body = (req.body ?? {}) as { code?: unknown };
       const code = typeof body.code === 'string' ? body.code : '';
 
       const who = `code:${whoAsked(req)}`;
@@ -335,7 +369,7 @@ export function createAuthRouter(config: AdminAuthConfig): Router {
       res.clearCookie(FIRST_STEP_COOKIE, { path: '/admin' });
       res.cookie(SESSION_COOKIE, session, cookieOptions(config, SESSION_TTL_MS));
       res.json({ ok: true });
-    })();
+    });
   });
 
   // ── Выход ─────────────────────────────────────────────────────────────

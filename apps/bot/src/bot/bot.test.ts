@@ -1,9 +1,12 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { GrammyError } from 'grammy';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createBot } from './bot.js';
+import { ALLOWED_UPDATES, createBot } from './bot.js';
 
 /**
  * Правило «та же правка — не ошибка» подключено к боту (задача 3.73).
@@ -98,5 +101,70 @@ describe('createBot', () => {
     const bot = createBot(FAKE_TOKEN, { botInfo: BOT_INFO, apiRoot });
 
     await expect(bot.api.editMessageText(1, 2, 'текст')).rejects.toBeInstanceOf(GrammyError);
+  });
+});
+
+describe('фильтр апдейтов пропускает всё, на что есть обработчик', () => {
+  /**
+   * **Список `ALLOWED_UPDATES` — фильтр, а не пожелание.** Он уходит в
+   * `setWebhook` при каждом старте, и апдейта, которого в нём нет, бот
+   * не получит вовсе: обработчик окажется написан, покрыт проверками и
+   * никогда не вызван.
+   *
+   * Так и вышло с оплатой звёздами (найдено ревизией четвёртого этапа):
+   * без `pre_checkout_query` Telegram не спрашивает подтверждения, а без
+   * подтверждения платежа не будет вовсе. Заметить это можно было бы
+   * только по нулевой выручке — жалобы бы не пришло, потому что оплата
+   * не начиналась.
+   *
+   * Проверка идёт по исходникам обработчиков: собрать бота целиком
+   * значило бы поднять базу, Redis, Telegram и модель.
+   */
+  function handled(): readonly string[] {
+    const dir = resolve(dirname(fileURLToPath(import.meta.url)), 'handlers');
+
+    const sources = readdirSync(dir)
+      .filter((name) => name.endsWith('.ts') && !name.includes('.test.'))
+      .map((name) => readFileSync(resolve(dir, name), 'utf8'))
+      .join(String.fromCharCode(10));
+
+    /**
+     * Ищем `bot.on('<что-то>')` — и берём только верхний тип апдейта.
+     *
+     * `message:successful_payment` доставляется внутри `message`, и
+     * отдельной строки в фильтре ему не нужно; поэтому всё после
+     * двоеточия отбрасывается.
+     */
+    return [...sources.matchAll(/bot\.on\(\s*'([a-z_]+)(?::[a-z_:]+)?'/gu)]
+      .map((match) => match[1] ?? '')
+      .filter((one) => one !== '');
+  }
+
+  it('каждый тип, на который подписан обработчик, есть в фильтре', () => {
+    const missing = [...new Set(handled())].filter(
+      (one) => !(ALLOWED_UPDATES as readonly string[]).includes(one),
+    );
+
+    expect(
+      missing,
+      `обработчик есть, а Telegram такие апдейты не пришлёт: ${missing.join(', ')}. ` +
+        'Функция окажется написана, покрыта проверками и никогда не вызвана.',
+    ).toEqual([]);
+  });
+
+  it('проверка правда что-то проверяет', () => {
+    // Пустой список сделал бы тест выше вечно зелёным.
+    expect(handled().length).toBeGreaterThan(2);
+    expect(handled()).toContain('pre_checkout_query');
+  });
+
+  it('оплата звёздами доставляема: подтверждение и изменение подписки', () => {
+    /**
+     * Названы отдельно, потому что цена их отсутствия разная и обе
+     * высокие: без первого платежа не будет вовсе, без второго мы
+     * показываем «продлевается сама» тому, кто отписался.
+     */
+    expect(ALLOWED_UPDATES).toContain('pre_checkout_query');
+    expect(ALLOWED_UPDATES).toContain('subscription');
   });
 });

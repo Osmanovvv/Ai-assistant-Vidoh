@@ -617,6 +617,49 @@ describe('отмена автопродления — §14 «в один тап�
     expect((await cancelRenewal(testDb(), { userId, provider: RAIL })).stopped).toBe(false);
   });
 
+  it('продление, уехавшее до отмены, НЕ включает автосписание обратно', async () => {
+    /**
+     * **Главная проверка отмены.** Человек нажимает «отключить
+     * продление», но операция у провайдера уже уехала, и её уведомление
+     * приходит через день. Прежде оно включало автопродление обратно — и
+     * следующий период списывался вопреки отмене, а экран подписки при
+     * этом говорил «продлевается сама».
+     *
+     * Отмена в один тап (§14) превращалась в отмену на один раз.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-20' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-20', externalId: '3020' }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    await cancelRenewal(testDb(), {
+      userId,
+      provider: RAIL,
+      now: new Date('2026-09-08T10:00:00.000Z'),
+    });
+
+    // Уведомление о продлении приходит уже после отмены.
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-20', externalId: '3021', renewal: true }),
+      now: new Date('2026-09-09T10:00:00.000Z'),
+    });
+
+    const subscription = await subscriptionOf(testDb(), { userId, provider: RAIL });
+
+    // Деньги пришли — период продлён: человек заплатил, пусть и не по
+    // своей воле, и отбирать оплаченное нельзя.
+    expect(subscription?.currentPeriodEnd.getTime()).toBeGreaterThan(
+      new Date('2026-10-07T10:00:00.000Z').getTime(),
+    );
+
+    // А вот продление остаётся выключенным, и отметка отмены цела.
+    expect(subscription?.autoRenew).toBe(false);
+    expect(subscription?.canceledAt).not.toBeNull();
+  });
+
   it('оплата после отмены снимает пометку «отменено»', async () => {
     // Человек передумал. Показывать ему «подписка отменена» на только что
     // оплаченной подписке было бы неправдой.

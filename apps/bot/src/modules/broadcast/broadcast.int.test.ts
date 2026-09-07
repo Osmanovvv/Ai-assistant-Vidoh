@@ -223,12 +223,34 @@ describe('составление и предпросмотр', () => {
       .from(users)
       .where(eq(users.tgId, ids[0] ?? 0));
 
+    const [other] = await testDb()
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.tgId, ids[1] ?? 0));
+
     // Один потратил две выгрузки из двух — пробный кончился.
     await testDb()
       .insert(batches)
       .values([
         { userId: row?.id ?? '', status: 'done', trialCountedAt: new Date() },
         { userId: row?.id ?? '', status: 'done', trialCountedAt: new Date() },
+      ]);
+
+    /**
+     * А у второго выгрузок столько же, но пробный они **не тратили**.
+     *
+     * Так бывает у платящего и у быстрых добавлений. Без этих строк
+     * проверка не различала бы «две выгрузки» и «два пробных»: снятие
+     * условия `trial_counted_at is not null` оставляло её зелёной, и
+     * рассылка «оплата открылась» ушла бы тем, у кого всё в порядке.
+     * Найдено диверсией над общим предикатом.
+     */
+    await testDb()
+      .insert(batches)
+      .values([
+        { userId: other?.id ?? '', status: 'done' },
+        { userId: other?.id ?? '', status: 'done' },
+        { userId: other?.id ?? '', status: 'done' },
       ]);
 
     const spent = await createBroadcast(testDb(), {

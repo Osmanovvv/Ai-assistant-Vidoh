@@ -112,12 +112,47 @@ describe('ссылка на оплату', () => {
     ).rejects.toThrow(PermanentError);
   });
 
-  it('автопродление просится у месяца и не просится у года', async () => {
+  it('на НЕсогласованном магазине Recurring не просится вовсе', async () => {
+    /**
+     * **Проверка переписана на ревизии четвёртого этапа: прежняя
+     * утверждала дефект.** Она требовала `Recurring=true` от провайдера
+     * с настройками по умолчанию — то есть от магазина, у которого
+     * услуга не согласована.
+     *
+     * А там `Recurring=true` падает кодом 34 **после** нажатия кнопки:
+     * купить месяц было нельзя вовсе, годовой при этом работал. Отказ
+     * выглядел бы как «у меня почему-то не проходит оплата», и искать
+     * его пришлось бы в переписке с провайдером.
+     *
+     * Согласование выключено по умолчанию нарочно (`RK_RECURRING=off`):
+     * обещать то, чего не проверяли, дороже, чем не обещать. Значит и
+     * запрос по умолчанию обязан быть разовым.
+     */
+    const checkout = await provider.createCheckout({
+      userId: 'u1',
+      tgId: 42,
+      plan: 'monthly',
+      amount: 39_900,
+      currency: 'RUB',
+      ref: 'r-4',
+      title: 'Подписка',
+      description: 'Месяц',
+      invoiceNumber: 1003,
+    });
+
+    expect(new URL(checkout.url).searchParams.get('Recurring')).toBeNull();
+    // И человеку обещано ровно то, о чём попросили.
+    expect(checkout.autoRenews).toBe(false);
+  });
+
+  it('на согласованном просится у месяца и не просится у года', async () => {
     /**
      * У годового тарифа списание раз в год без напоминания — человек за
      * год забудет, что подписывался. §14 требует автосписание, но не
      * требует делать его там, где оно вредит.
      */
+    const approved = createRobokassaProvider({ ...DEPS, recurringApproved: true });
+
     const base = {
       userId: 'u1',
       tgId: 42,
@@ -127,46 +162,70 @@ describe('ссылка на оплату', () => {
       description: 'Период',
     } as const;
 
-    const monthly = await provider.createCheckout({
+    const monthly = await approved.createCheckout({
       ...base,
       plan: 'monthly',
-      ref: 'r-4',
-      invoiceNumber: 1003,
-    });
-    const yearly = await provider.createCheckout({
-      ...base,
-      plan: 'yearly',
       ref: 'r-5',
       invoiceNumber: 1004,
     });
+    const yearly = await approved.createCheckout({
+      ...base,
+      plan: 'yearly',
+      ref: 'r-6',
+      invoiceNumber: 1005,
+    });
 
     expect(new URL(monthly.url).searchParams.get('Recurring')).toBe('true');
+    expect(monthly.autoRenews).toBe(true);
+
     expect(new URL(yearly.url).searchParams.get('Recurring')).toBeNull();
+    expect(yearly.autoRenews).toBe(false);
   });
 
-  it('продление не обещается, пока оно не согласовано', async () => {
+  it('обещание человеку и содержимое запроса не расходятся', async () => {
     /**
-     * Робокасса включает периодические платежи отдельной заявкой. На
-     * несогласованном магазине `Recurring=true` падает кодом 34 — уже
-     * после того, как человек нажал кнопку. Пообещать продление и не
-     * дать его хуже, чем продать разовый период.
+     * Раньше это были два независимых условия: `Recurring` ставился по
+     * тарифу, а `autoRenews` — по тарифу и согласованию. Разойдясь, они
+     * дают либо «обещали продление, а не просили», либо «попросили
+     * продление, а промолчали». Оба случая человек узнаёт из банка.
+     *
+     * Проверяется на всех четырёх сочетаниях: согласовано или нет,
+     * промо-счёт или обычный.
      */
-    const params = {
+    const approved = createRobokassaProvider({ ...DEPS, recurringApproved: true });
+
+    const base = {
       userId: 'u1',
       tgId: 42,
       plan: 'monthly',
       amount: 39_900,
       currency: 'RUB',
-      ref: 'r-6',
       title: 'Подписка',
       description: 'Месяц',
-      invoiceNumber: 1005,
     } as const;
 
-    expect((await provider.createCheckout(params)).autoRenews).toBe(false);
+    const cases = [
+      { who: provider, renewable: undefined, ref: 'r-7', invoiceNumber: 1006 },
+      { who: provider, renewable: false, ref: 'r-8', invoiceNumber: 1007 },
+      { who: approved, renewable: undefined, ref: 'r-9', invoiceNumber: 1008 },
+      { who: approved, renewable: false, ref: 'r-10', invoiceNumber: 1009 },
+    ] as const;
 
-    const approved = createRobokassaProvider({ ...DEPS, recurringApproved: true });
-    expect((await approved.createCheckout(params)).autoRenews).toBe(true);
+    for (const one of cases) {
+      const checkout = await one.who.createCheckout({
+        ...base,
+        ref: one.ref,
+        invoiceNumber: one.invoiceNumber,
+        ...(one.renewable === undefined ? {} : { renewable: one.renewable }),
+      });
+
+      const asked = new URL(checkout.url).searchParams.get('Recurring') === 'true';
+
+      expect(
+        asked,
+        `${one.ref}: попросили ${String(asked)}, обещали ${String(checkout.autoRenews)}`,
+      ).toBe(checkout.autoRenews);
+    }
   });
 
   it('тестовый режим виден в запросе', async () => {
