@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { errors, restartBatch, type ErrorsPage } from './api.js';
+import { access, errors, restartBatch, type AccessView, type ErrorsPage } from './api.js';
 
 /**
  * Журнал сбоев (§15 ТЗ, задача 4.10).
@@ -44,12 +44,26 @@ export function ErrorsPanel(): React.ReactElement {
   const [page, setPage] = useState<ErrorsPage | undefined>(undefined);
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const [said, setSaid] = useState<string | undefined>(undefined);
+  const [seen, setSeen] = useState<AccessView | undefined>(undefined);
 
   const load = useCallback(() => {
     void errors(days)
       .then(setPage)
       .catch(() => {
         setProblem('Не удалось прочитать журнал');
+      });
+
+    /**
+     * Журнал доступа читается **отдельным** запросом и своим состоянием.
+     *
+     * Его отказ не должен прятать сорвавшиеся разборы: они срочные, а
+     * журнал доступа — для разбора инцидента. Поэтому неудача здесь
+     * говорит словами в своём разрезе, а не отказом на всю страницу.
+     */
+    void access(days)
+      .then(setSeen)
+      .catch(() => {
+        setSeen(undefined);
       });
   }, [days]);
 
@@ -274,6 +288,71 @@ export function ErrorsPanel(): React.ReactElement {
           {note}
         </p>
       ))}
+
+      {/*
+        Журнал доступа к персональным данным (§16, обещание задачи 4.10).
+
+        Ревизия этапа нашла обещание неисполненным: «сам журнал как раздел
+        панели — это 4.10, где живут журналы». Задачу закрыли, раздел не
+        появился, читателей у таблицы не было ни одного. Журнал, который
+        никто не читает, исполняет §16 на бумаге: он отвечает на вопрос
+        «кто смотрел данные этого человека» только тому, у кого есть SQL к
+        боевой базе.
+
+        Имён здесь нет нарочно: раздел про обращения, а не про людей.
+        Покажи мы имена — журнал доступа сам стал бы вторым списком людей.
+      */}
+      <div className="разрез">
+        <h3 className="разрез__имя">
+          Кто смотрел персональные данные{' '}
+          {seen !== undefined && seen.total > 0 && `— всего ${String(seen.total)}`}
+        </h3>
+
+        {seen === undefined ? (
+          <p className="разрез__пусто">Журнал доступа прочитать не удалось.</p>
+        ) : seen.rows.length === 0 ? (
+          <p className="разрез__пусто" data-testid="no-access">
+            За этот срок к персональным данным не обращались.
+          </p>
+        ) : (
+          <div className="таблица-обёртка">
+            <table className="таблица" data-testid="access">
+              <thead>
+                <tr>
+                  <th>Когда</th>
+                  <th>Кто смотрел</th>
+                  <th>Куда</th>
+                  <th>На кого</th>
+                  <th className="таблица__число">Людей в ответе</th>
+                </tr>
+              </thead>
+              <tbody>
+                {seen.rows.map((row) => (
+                  <tr key={`${row.at}${row.route}${row.login}`}>
+                    <td>{when(row.at)}</td>
+                    <td>{row.login}</td>
+                    <td className="панель__кто">{row.route}</td>
+                    <td className="панель__кто">{row.subjectUserId ?? '—'}</td>
+                    {/*
+                      «Не установлено» словом, а не прочерком и не единицей.
+                      Прежде в столбце стояла единица от умолчания базы:
+                      журнал утверждал «в ответ попал один человек» про
+                      страницу из двадцати. Пустая клетка читается как факт.
+                    */}
+                    <td className="таблица__число">{row.subjects ?? 'не установлено'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {seen !== undefined && seen.rows.length < seen.total && (
+          <p className="оговорка">
+            Показаны последние {String(seen.rows.length)} из {String(seen.total)}.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

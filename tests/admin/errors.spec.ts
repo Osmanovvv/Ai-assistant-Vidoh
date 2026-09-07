@@ -96,3 +96,79 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
     await expect(page.getByText('повтора нет и не будет', { exact: false })).toBeVisible();
   });
 });
+
+test.describe('журнал доступа к персональным данным (§16, обещание задачи 4.10)', () => {
+  /**
+   * **Обещание, которое ревизия четвёртого этапа нашла неисполненным.**
+   * План сказал дословно: «И сам журнал как раздел панели (§15 не просит
+   * его показывать, но разбирать инцидент по SQL неудобно) — это 4.10,
+   * где живут журналы». Задачу закрыли, раздел не появился, а читателей
+   * у таблицы не было ни одного вне тестов. Журнал без читателя исполняет
+   * §16 на бумаге: он отвечает на вопрос «кто смотрел данные этого
+   * человека» только тому, у кого есть SQL к боевой базе.
+   */
+
+  test('обращение к карточке видно в журнале доступа — с тем, на кого смотрели', async ({
+    page,
+  }) => {
+    // Сначала настоящее обращение: открываем карточку человека.
+    await signIn(page, 'Пользователи');
+    await page.getByRole('button', { name: 'Аня' }).click();
+    await expect(page.getByTestId('card')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Ошибки' }).click();
+
+    const log = page.getByTestId('access');
+
+    await expect(log).toBeVisible();
+    await expect(log.getByRole('row', { name: /people\/:userId/u }).first()).toBeVisible();
+  });
+
+  test('у списка стоит настоящее число людей, а не выдуманная единица', async ({ page }) => {
+    /**
+     * Столбец стоял `not null default 1`, а записывать в него было нечему:
+     * умолчание базы утверждало «в ответ попал один человек» про каждую
+     * страницу списка. Разбирающий инцидент сделал бы из этого вывод,
+     * обратный правде.
+     */
+    await signIn(page, 'Пользователи');
+    await expect(page.getByTestId('people')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Ошибки' }).click();
+
+    const log = page.getByTestId('access');
+
+    // Строка ищется по клетке пути, а не по имени строки: имя строки —
+    // это все её клетки слитно, и «оканчивается на /api/people» в нём не
+    // проверить.
+    const people = log
+      .locator('tr', { has: page.locator('td', { hasText: /^\/api\/people$/u }) })
+      .first();
+
+    await expect(people).toBeVisible();
+
+    /**
+     * На стенде посеян один человек — значит и в журнале единица, но
+     * взятая **с ответа**. Отличить её от прежней выдуманной единицы
+     * можно на разделе, где число людей не известно: там теперь стоит «не
+     * установлено», а прежде стояла та же единица.
+     */
+    const errorsRow = log
+      .locator('tr', { has: page.locator('td', { hasText: /^\/api\/errors$/u }) })
+      .first();
+
+    await expect(errorsRow).toContainText('не установлено');
+  });
+
+  test('имён людей в журнале доступа нет', async ({ page }) => {
+    /**
+     * Раздел про обращения, а не про людей. Покажи он имена — журнал
+     * доступа сам стал бы вторым списком людей, то есть новой утечкой
+     * вместо защиты.
+     */
+    await signIn(page, 'Ошибки');
+
+    await expect(page.getByTestId('access')).toBeVisible();
+    await expect(page.getByTestId('access')).not.toContainText('Оля');
+  });
+});
