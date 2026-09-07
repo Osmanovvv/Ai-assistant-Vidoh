@@ -200,6 +200,19 @@ export function OverviewPanel(): React.ReactElement {
             {payments(report.revenue)}
           </span>
         </div>
+        {report.refunded.length > 0 && (
+          <div className="итог">
+            <span className="итог__имя">Возвращено за 30 дней</span>
+            <span className="итог__число" data-testid="refunded">
+              {earned(report.refunded)}
+            </span>
+            {/* Отдельной величиной, а не вычетом: «заработали и вернули»
+                и «не заработали» — разные новости с одной суммой. */}
+            <span className="панель__кто" style={{ display: 'block', marginTop: 2 }}>
+              {payments(report.refunded)}
+            </span>
+          </div>
+        )}
         <div className="итог">
           <span className="итог__имя">Платят сейчас</span>
           <span className="итог__число" data-testid="payers">

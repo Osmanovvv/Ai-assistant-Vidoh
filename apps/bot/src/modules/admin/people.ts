@@ -61,6 +61,15 @@ export interface Overview {
    * задаёт Telegram, он меняется, и «итого» пришлось бы придумать.
    */
   readonly revenue: readonly Revenue[];
+  /**
+   * Возвращено за период — по рельсам, как и выручка.
+   *
+   * Отдельной величиной, а не вычетом из выручки: «заработали 399 и
+   * вернули 399» и «не заработали ничего» — разные новости, а сумма у
+   * них одна. Прежде возвращённый счёт оставался оплаченным, и выручка
+   * молча считала вернувшиеся деньги.
+   */
+  readonly refunded: readonly Revenue[];
   /** Сколько людей платят прямо сейчас. */
   readonly payers: number;
   /**
@@ -141,6 +150,16 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
     .where(and(eq(billingInvoices.status, 'paid'), gte(billingInvoices.paidAt, since)))
     .groupBy(billingInvoices.currency);
 
+  const refundedRows = await db
+    .select({
+      currency: billingInvoices.currency,
+      minor: sql<string>`coalesce(sum(${billingInvoices.amountMinor}), 0)::bigint`,
+      payments: count(),
+    })
+    .from(billingInvoices)
+    .where(and(eq(billingInvoices.status, 'refunded'), gte(billingInvoices.refundedAt, since)))
+    .groupBy(billingInvoices.currency);
+
   const payers = await activePayersCount(db, now);
 
   /**
@@ -163,6 +182,11 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
       .filter((row): row is { currency: 'rub' | 'usd'; total: string } => row.currency !== null)
       .map((row) => ({ currency: row.currency, micros: Number(row.total) })),
     revenue: revenueRows.map((row) => ({
+      currency: row.currency,
+      minor: Number(row.minor),
+      payments: row.payments,
+    })),
+    refunded: refundedRows.map((row) => ({
       currency: row.currency,
       minor: Number(row.minor),
       payments: row.payments,

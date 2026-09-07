@@ -134,6 +134,8 @@ export interface Overview {
   readonly spend: readonly Money[];
   /** Выручка по рельсам: рубли в копейках, звёзды штуками (задача 4.2). */
   readonly revenue: readonly Revenue[];
+  /** Возвращено за период — отдельной величиной, а не вычетом. */
+  readonly refunded: readonly Revenue[];
   readonly payers: number;
   readonly funnel: Funnel;
   /** Чего в обзоре ещё нет и почему — словами, а не пустыми колонками. */
