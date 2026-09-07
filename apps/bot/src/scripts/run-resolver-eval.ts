@@ -43,7 +43,9 @@ const { pinned, rest } = parsePins(process.argv.slice(2));
 const [datasetArg, outArg] = rest;
 
 if (datasetArg === undefined) {
-  process.stderr.write('Использование: run-resolver-eval <набор> [отчёты] [--use resolver=версия]\n');
+  process.stderr.write(
+    'Использование: run-resolver-eval <набор> [отчёты] [--use resolver=версия]\n',
+  );
   process.exit(2);
 }
 

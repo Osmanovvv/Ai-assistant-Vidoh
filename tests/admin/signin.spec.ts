@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { LOGIN, PASSWORD, currentCode } from './panel.js';
+import { LOGIN, PASSWORD, currentCode, signIn } from './panel.js';
 
 /**
  * Вход в панель глазами человека (§15 ТЗ, задачи 4.5 и 4.12).
@@ -145,5 +145,30 @@ test.describe('палитра из §12.4', () => {
       .getByRole('button', { name: 'Дальше' })
       .evaluate((node) => getComputedStyle(node).backgroundColor);
     expect(button).toBe('rgb(107, 78, 78)');
+  });
+});
+
+test.describe('истёкший пропуск', () => {
+  test('возвращает окно входа, а не «не удалось прочитать»', async ({ page, context }) => {
+    /**
+     * **Дефект был во всех разделах разом.** Пропуск живёт двенадцать
+     * часов; истёк — и раздел показывал «не удалось прочитать расходы».
+     * Человек читал это как поломку панели и шёл искать её в логах,
+     * вместо того чтобы войти заново. Окно входа возвращалось только
+     * перезагрузкой страницы.
+     *
+     * Здесь пропуск не ждут двенадцать часов, а убирают: для панели это
+     * то же самое — печенья нет, любой запрос получает отказ.
+     */
+    await signIn(page, 'Расходы');
+    await expect(page.getByTestId('costs')).toBeVisible();
+
+    await context.clearCookies();
+
+    // Любое действие в разделе идёт на сервер и получает отказ.
+    await page.getByRole('button', { name: '7 дней' }).click();
+
+    await expect(page.locator('input[name="login"]')).toBeVisible();
+    await expect(page.getByText('Не удалось прочитать')).toHaveCount(0);
   });
 });

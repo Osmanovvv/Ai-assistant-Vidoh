@@ -112,7 +112,10 @@ export async function enqueueUserProcessing(
  */
 export const BROADCAST_QUEUE = 'broadcast';
 
-export interface BroadcastJob { readonly kind: 'send'; readonly broadcastId: string }
+export interface BroadcastJob {
+  readonly kind: 'send';
+  readonly broadcastId: string;
+}
 
 export function createBroadcastQueue(
   connection: Redis,

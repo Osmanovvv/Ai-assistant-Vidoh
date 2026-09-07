@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { signOut, whoAmI } from './api.js';
+import { signOut, SIGNED_OUT_EVENT, whoAmI } from './api.js';
 import { BroadcastPanel } from './Broadcast.js';
 import { ErrorsPanel } from './Errors.js';
 import { Costs } from './Costs.js';
@@ -62,6 +62,24 @@ export function App(): React.ReactElement {
   }, []);
 
   useEffect(check, [check]);
+
+  /**
+   * Истёкший пропуск возвращает окно входа сам.
+   *
+   * Любое обращение, получившее отказ, объявляет об этом событием
+   * (см. `api.ts`). Иначе раздел показывал бы «не удалось прочитать
+   * расходы», и человек искал бы поломку там, где её нет.
+   */
+  useEffect(() => {
+    const onSignedOut = (): void => {
+      setState({ kind: 'out' });
+    };
+
+    window.addEventListener(SIGNED_OUT_EVENT, onSignedOut);
+    return () => {
+      window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut);
+    };
+  }, []);
 
   if (state.kind === 'checking') return <div className="вход" />;
   if (state.kind === 'out') return <SignIn onSignedIn={check} />;

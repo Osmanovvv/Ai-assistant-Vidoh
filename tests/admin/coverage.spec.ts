@@ -69,7 +69,7 @@ test.describe('покрытие разделов §15', () => {
      */
     // Через hasOwn, а не «in»: «in» сужает тип до пустого — все восемь
     // разделов покрыты, — и проверка стала бы непроверяемой.
-    const waiting = SECTIONS.filter((one) => !Object.hasOwn(one, "spec"));
+    const waiting = SECTIONS.filter((one) => !Object.hasOwn(one, 'spec'));
 
     expect(waiting.map((one) => one.title)).toEqual([]);
   });

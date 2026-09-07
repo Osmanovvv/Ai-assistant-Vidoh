@@ -99,11 +99,7 @@ async function writeResolverRun(params: {
     promptVersion: params.version,
   };
 
-  await writeFile(
-    join(evalDir, 'resolver', 'runs', params.name),
-    JSON.stringify(report),
-    'utf8',
-  );
+  await writeFile(join(evalDir, 'resolver', 'runs', params.name), JSON.stringify(report), 'utf8');
 }
 
 beforeAll(async () => {
@@ -501,29 +497,29 @@ describe('признание вместо предупреждения', () => {
     expect(row?.note).toContain('2026-09-07');
   });
 
-  it("повторное включение не множит пометку", async () => {
+  it('повторное включение не множит пометку', async () => {
     /**
      * Откатились и вернулись обратно тем же днём — пометка та же.
      * Примечание, в которое одно и то же дописывается десять раз,
      * перестают читать, а вместе с ним перестают читать и остальное.
      */
     const twice = {
-      stage: "classifier" as const,
-      version: "classifier@2",
+      stage: 'classifier' as const,
+      version: 'classifier@2',
       evalDir,
-      by: "аня",
+      by: 'аня',
       acknowledged: true,
-      now: new Date("2026-09-07T10:00:00.000Z"),
+      now: new Date('2026-09-07T10:00:00.000Z'),
     };
 
     await activateVersion(testDb(), twice);
-    await activatePrompt(testDb(), "classifier", "classifier@1");
+    await activatePrompt(testDb(), 'classifier', 'classifier@1');
     await activateVersion(testDb(), twice);
 
     const [row] = await testDb()
       .select({ note: promptVersions.note })
       .from(promptVersions)
-      .where(eq(promptVersions.version, "classifier@2"));
+      .where(eq(promptVersions.version, 'classifier@2'));
 
     expect(row?.note?.match(/без прогона/gu)).toHaveLength(1);
   });
@@ -656,7 +652,7 @@ describe('стадии, которые набор не мерит', () => {
   });
 });
 
-describe("у резолвера свой набор — и панель его спрашивает", () => {
+describe('у резолвера свой набор — и панель его спрашивает', () => {
   /**
    * Дыра, найденная проверкой на представлении: набор разбора резолвера
    * не мерит, но у резолвера **есть** свой набор — со своим отчётом и
@@ -668,72 +664,68 @@ describe("у резолвера свой набор — и панель его �
 
   beforeEach(async () => {
     await seedPrompt(testDb(), {
-      stage: "resolver",
-      version: "resolver@7",
-      prompt: "Реши, что делать с репликой.",
+      stage: 'resolver',
+      version: 'resolver@7',
+      prompt: 'Реши, что делать с репликой.',
       schemaName: RESOLVER_SCHEMA_NAME,
     });
   });
 
-  it("без прогона своего набора не включается", async () => {
+  it('без прогона своего набора не включается', async () => {
     // Прогон разбора есть и он про resolver@7 — не помогает: его мерил
     // не тот набор.
-    await writeRun({ name: "a.json", versions: { resolver: "resolver@7" } });
+    await writeRun({ name: 'a.json', versions: { resolver: 'resolver@7' } });
 
     const outcome = await activateVersion(testDb(), {
-      stage: "resolver",
-      version: "resolver@7",
+      stage: 'resolver',
+      version: 'resolver@7',
       evalDir,
-      by: "аня",
+      by: 'аня',
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(" ") : "").toContain(
-      "резолвера",
-    );
+    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('резолвера');
   });
 
-  it("прогон своего набора на другой версии не считается", async () => {
-    await writeResolverRun({ name: "a.json", version: "resolver@6" });
+  it('прогон своего набора на другой версии не считается', async () => {
+    await writeResolverRun({ name: 'a.json', version: 'resolver@6' });
 
     const outcome = await activateVersion(testDb(), {
-      stage: "resolver",
-      version: "resolver@7",
+      stage: 'resolver',
+      version: 'resolver@7',
       evalDir,
-      by: "аня",
+      by: 'аня',
     });
 
     expect(outcome.ok).toBe(false);
   });
 
-  it("прогон не прошёл порог — тоже нельзя", async () => {
+  it('прогон не прошёл порог — тоже нельзя', async () => {
     await writeResolverRun({
-      name: "a.json",
-      version: "resolver@7",
+      name: 'a.json',
+      version: 'resolver@7',
       good: false,
     });
 
     const outcome = await activateVersion(testDb(), {
-      stage: "resolver",
-      version: "resolver@7",
+      stage: 'resolver',
+      version: 'resolver@7',
       evalDir,
-      by: "аня",
+      by: 'аня',
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(" ") : "").toContain(
-      "порог",
-    );
+    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('порог');
   });
 
-  it("прогнанная своим набором версия включается", async () => {
-    await writeResolverRun({ name: "a.json", version: "resolver@7" });
+  it('прогнанная своим набором версия включается', async () => {
+    await writeResolverRun({ name: 'a.json', version: 'resolver@7' });
 
     const outcome = await activateVersion(testDb(), {
-      stage: "resolver",
-      version: "resolver@7",
+      stage: 'resolver',
+      version: 'resolver@7',
       evalDir,
-      by: "аня",
+      by: 'аня',
     });
 
     expect(outcome.ok).toBe(true);

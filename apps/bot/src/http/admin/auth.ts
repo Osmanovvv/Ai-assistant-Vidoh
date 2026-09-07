@@ -120,28 +120,74 @@ declare module 'express-serve-static-core' {
 const MAX_ATTEMPTS = 10;
 const ATTEMPT_WINDOW_MS = 10 * 60_000;
 
+/**
+ * Сверх меры — **задержка, а не запрет**, и это исправление настоящего
+ * дефекта.
+ *
+ * Сначала здесь стоял отказ: превысил десять попыток — не пускаем до конца
+ * окна. Счёт при этом вёлся один на всех, и любой желающий десятью
+ * запросами запирал панель настоящему администратору на десять минут.
+ * Заслон от подбора оказывался кнопкой «выключить панель», доступной кому
+ * угодно.
+ *
+ * Теперь счёт ведётся **по адресу обратившегося**, а перебор меры даёт
+ * паузу перед ответом. Настоящий администратор с другого адреса не
+ * замечает ничего; попавший под общий с подбирающим адрес ждёт две секунды
+ * вместо отказа. Подбирающему пауза дороже, чем нам: она ложится поверх
+ * scrypt и держит его соединение.
+ */
+const OVER_LIMIT_DELAY_MS = 2_000;
+
+/** Сколько адресов помним. Больше — выкидываем протухшие. */
+const ATTEMPT_JAR_LIMIT = 10_000;
+
 interface Attempts {
   count: number;
   until: number;
 }
 
-function tooManyAttempts(jar: Map<string, Attempts>, key: string, now: number): boolean {
+/** Пауза перед ответом, если попыток с этого адреса уже слишком много. */
+function overLimitDelayMs(jar: Map<string, Attempts>, key: string, now: number): number {
   const seen = jar.get(key);
-  if (seen === undefined || seen.until <= now) return false;
+  if (seen === undefined || seen.until <= now) return 0;
 
-  return seen.count >= MAX_ATTEMPTS;
+  return seen.count >= MAX_ATTEMPTS ? OVER_LIMIT_DELAY_MS : 0;
 }
 
 function noteAttempt(jar: Map<string, Attempts>, key: string, now: number): void {
   const seen = jar.get(key);
 
   if (seen === undefined || seen.until <= now) {
+    // Чужие адреса копятся, а память не бесконечна: перед новой записью
+    // выкидываем те, чьё окно кончилось.
+    if (jar.size >= ATTEMPT_JAR_LIMIT) {
+      for (const [name, old] of jar) {
+        if (old.until <= now) jar.delete(name);
+      }
+    }
+
     jar.set(key, { count: 1, until: now + ATTEMPT_WINDOW_MS });
     return;
   }
 
   seen.count++;
 }
+
+/**
+ * Кто обратился.
+ *
+ * `req.ip` верен только потому, что серверу сказано, скольким посредникам
+ * верить (`trust proxy` в `server.ts`). Скажи мы неверно — адрес стал бы
+ * одним и тем же у всех, и счёт снова оказался бы общим. Поэтому мера тут
+ * мягкая: задержка, а не запрет.
+ */
+function whoAsked(req: Request): string {
+  return req.ip ?? 'неизвестно';
+}
+
+const sleep = async (ms: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+};
 
 /** Один и тот же отказ на все случаи. */
 function refuse(res: Response): void {
@@ -220,10 +266,9 @@ export function createAuthRouter(config: AdminAuthConfig): Router {
       const login = typeof body.login === 'string' ? body.login : '';
       const password = typeof body.password === 'string' ? body.password : '';
 
-      if (tooManyAttempts(attempts, 'login', now.getTime())) {
-        refuse(res);
-        return;
-      }
+      const who = `login:${whoAsked(req)}`;
+      const delay = overLimitDelayMs(attempts, who, now.getTime());
+      if (delay > 0) await sleep(delay);
 
       /**
        * Пароль сверяется **всегда**, даже при чужом логине.
@@ -236,7 +281,7 @@ export function createAuthRouter(config: AdminAuthConfig): Router {
       const ok = matches && login === config.login;
 
       if (!ok) {
-        noteAttempt(attempts, 'login', now.getTime());
+        noteAttempt(attempts, who, now.getTime());
         refuse(res);
         return;
       }
@@ -257,39 +302,40 @@ export function createAuthRouter(config: AdminAuthConfig): Router {
 
   // ── Шаг второй: одноразовый код ───────────────────────────────────────
   router.post('/code', (req: Request, res: Response) => {
-    const now = clock();
-    const body = req.body as { code?: unknown };
-    const code = typeof body.code === 'string' ? body.code : '';
+    void (async () => {
+      const now = clock();
+      const body = req.body as { code?: unknown };
+      const code = typeof body.code === 'string' ? body.code : '';
 
-    if (tooManyAttempts(attempts, 'code', now.getTime())) {
-      refuse(res);
-      return;
-    }
+      const who = `code:${whoAsked(req)}`;
+      const delay = overLimitDelayMs(attempts, who, now.getTime());
+      if (delay > 0) await sleep(delay);
 
-    const ticket = cookiesOf(req.headers.cookie)[FIRST_STEP_COOKIE];
-    const first =
-      ticket === undefined
-        ? undefined
-        : readPass({ secret: config.sessionSecret, pass: ticket, kind: 'firstStep', now });
+      const ticket = cookiesOf(req.headers.cookie)[FIRST_STEP_COOKIE];
+      const first =
+        ticket === undefined
+          ? undefined
+          : readPass({ secret: config.sessionSecret, pass: ticket, kind: 'firstStep', now });
 
-    if (first === undefined || !codeMatches({ secret: config.totpSecret, code, now })) {
-      noteAttempt(attempts, 'code', now.getTime());
-      refuse(res);
-      return;
-    }
+      if (first === undefined || !codeMatches({ secret: config.totpSecret, code, now })) {
+        noteAttempt(attempts, who, now.getTime());
+        refuse(res);
+        return;
+      }
 
-    const session = issuePass({
-      secret: config.sessionSecret,
-      kind: 'session',
-      login: first.login,
-      now,
-    });
+      const session = issuePass({
+        secret: config.sessionSecret,
+        kind: 'session',
+        login: first.login,
+        now,
+      });
 
-    // Пропуск первого шага больше не нужен: он своё отслужил, и
-    // оставлять его в браузере значит держать лишний ключ.
-    res.clearCookie(FIRST_STEP_COOKIE, { path: '/admin' });
-    res.cookie(SESSION_COOKIE, session, cookieOptions(config, SESSION_TTL_MS));
-    res.json({ ok: true });
+      // Пропуск первого шага больше не нужен: он своё отслужил, и
+      // оставлять его в браузере значит держать лишний ключ.
+      res.clearCookie(FIRST_STEP_COOKIE, { path: '/admin' });
+      res.cookie(SESSION_COOKIE, session, cookieOptions(config, SESSION_TTL_MS));
+      res.json({ ok: true });
+    })();
   });
 
   // ── Выход ─────────────────────────────────────────────────────────────

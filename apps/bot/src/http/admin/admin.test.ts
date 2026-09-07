@@ -287,6 +287,62 @@ describe('без авторизации панель не отдаёт данн�
     ).toEqual([]);
   });
 
+  it('собранный со всем роутер знает все пути из исходников', async () => {
+    /**
+     * **Страж от забывчивости, и он написан по третьему случаю.**
+     *
+     * Раздел объявляется под условием: расходы — при базе, промпты —
+     * при папке набора, рассылка — при очереди. Проверка выше собирает
+     * роутер и берёт у него список путей; забыл дать зависимость —
+     * путей меньше, а проверка зелёная. Так случилось трижды: на
+     * задачах 4.7, 4.8 и 4.10, и каждый раз это находилось руками.
+     *
+     * Здесь то же самое находится само: число объявлений `closed` и
+     * `open` в исходниках сверяется с числом путей у роутера,
+     * собранного со всеми зависимостями. Разошлось — значит роутер
+     * собран не полностью, и список путей неполон.
+     */
+    const declared: string[] = [];
+
+    for await (const entry of glob('src/http/admin/**/*.ts')) {
+      const path = entry.split(sep).join('/');
+      if (path.includes('.test.')) continue;
+
+      const source = await readFile(path, 'utf8');
+
+      for (const [index, line] of source.split(/\r?\n/u).entries()) {
+        // Объявление функции — не вызов: `const closed = (` мимо.
+        if (/^\s*(closed|open)\s*\(/u.test(line)) {
+          declared.push(`${path}:${String(index + 1)}`);
+        }
+      }
+    }
+
+    const mount = createAdminRouter({
+      config: configOf(),
+      db: NEVER_TOUCHED,
+      settings: NEVER_TOUCHED as unknown as SettingsRegistry,
+      staticDir: join(import.meta.dirname, '../../../../admin/dist'),
+      evalDir: join(import.meta.dirname, 'нет-такой-папки'),
+      evalRunner: NEVER_RUN,
+      enqueueBroadcast: NEVER_QUEUED,
+      enqueueUser: NEVER_QUEUED,
+    });
+
+    const known = mount.routes.length + mount.openRoutes.length;
+
+    expect(
+      known,
+      [
+        `В исходниках объявлено ${String(declared.length)} путей, а роутер знает ${String(known)}.`,
+        'Значит роутер в проверке собран не со всеми необязательными',
+        'зависимостями — и часть путей не проверяется вовсе.',
+        'Добавь недостающую зависимость в `withEverything` и сюда.',
+        ...declared,
+      ].join('\n'),
+    ).toBe(declared.length);
+  });
+
   it('открытая страница панели не отдаёт данных — только оболочку', async () => {
     /**
      * Страница панели открыта нарочно: иначе окно входа не загрузить.
@@ -638,32 +694,160 @@ describe('печенье пропуска защищено', () => {
 });
 
 describe('подбор пароля замедляется', () => {
-  it('после десяти промахов верный пароль тоже не пускает', async () => {
+  /**
+   * Адрес подставляется заголовком, и в проверке это можно.
+   *
+   * Сервер верит **одному** посредителю (`trust proxy: 1` в `server.ts`),
+   * и в бою этот один — Caddy: он дописывает настоящий адрес последним, а
+   * берётся именно последний, поэтому подставить свой нельзя. Здесь Caddy
+   * нет, ближайший к серверу — сам клиент, и подстановка работает: ровно
+   * то, что нужно, чтобы изобразить двух разных обратившихся.
+   */
+  async function tryLogin(
+    base: string,
+    params: { readonly from: string; readonly password: string },
+  ): Promise<Response> {
+    return await fetch(`${base}/admin/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': params.from },
+      body: JSON.stringify({ login: LOGIN, password: params.password }),
+    });
+  }
+
+  it('сверх меры ответ приходит с задержкой, но верный пароль пускает', async () => {
     /**
-     * Счётчик в памяти процесса — цена названа в `auth.ts`: при
-     * нескольких копиях процесса счёт у каждой свой. Подбор это не
-     * останавливает, а замедляет; вместе со scrypt, который стоит около
-     * ста миллисекунд за попытку, этого достаточно для панели с одним
-     * человеком.
+     * **Здесь стоял дефект, и проверка его закрепляла.** Было так:
+     * десять промахов — и верный пароль тоже не пускает до конца окна.
+     * Счёт при этом вёлся один на всех, значит любой желающий десятью
+     * запросами запирал панель настоящему администратору на десять минут.
+     * Заслон от подбора оказывался кнопкой «выключить панель».
+     *
+     * Теперь мера — задержка: подбирающему дорого, администратору
+     * возможно. Проверяется и то и другое: и что задержка появилась, и
+     * что вход всё же состоялся.
      */
     const base = await serve(configOf());
 
     for (let attempt = 0; attempt < 10; attempt++) {
-      const response = await fetch(`${base}/admin/api/auth/login`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ login: LOGIN, password: `не тот ${String(attempt)}` }),
+      const response = await tryLogin(base, {
+        from: '10.0.0.7',
+        password: `не тот ${String(attempt)}`,
       });
 
       expect(response.status).toBe(401);
     }
 
-    const honest = await fetch(`${base}/admin/api/auth/login`, {
+    const startedAt = Date.now();
+    const honest = await tryLogin(base, { from: '10.0.0.7', password: PASSWORD });
+
+    expect(honest.status).toBe(200);
+    // Две секунды задержки минус запас на неточность часов.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_800);
+  }, 60_000);
+
+  it('промахи одного адреса не задерживают другого', async () => {
+    /**
+     * То, из-за чего счёт стал по адресу. Настоящий администратор не
+     * должен ждать из-за того, что кто-то другой подбирает пароль.
+     */
+    const base = await serve(configOf());
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await tryLogin(base, { from: '10.0.0.8', password: `не тот ${String(attempt)}` });
+    }
+
+    const startedAt = Date.now();
+    const honest = await tryLogin(base, { from: '10.0.0.9', password: PASSWORD });
+
+    expect(honest.status).toBe(200);
+    // Без задержки: scrypt около ста миллисекунд, до двух секунд далеко.
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+  }, 60_000);
+});
+
+describe('тело запроса вмещает то, что панель посылает', () => {
+  /**
+   * **Здесь был дефект, и невидимый.** Предел тела стоял 16 КБ, а самый
+   * большой промпт продукта весит 15,3 КБ — с экранированием JSON правка
+   * `classifier@6` из панели упиралась в отказ. Панель говорила «не
+   * удалось сохранить» и не объясняла, почему; ни один тест этого не
+   * видел, потому что все посылали короткие тела.
+   *
+   * Проверяется на пути настроек: он отвечает 400 на неизвестное имя —
+   * **после** разбора тела. Значит 400 означает «тело разобрано», а 413 —
+   * «не влезло». Иначе понадобился бы живой Postgres ради проверки
+   * предела.
+   */
+  async function postBody(base: string, session: string, size: number): Promise<number> {
+    const response = await fetch(`${base}/admin/api/settings`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ login: LOGIN, password: PASSWORD }),
+      headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${session}` },
+      body: JSON.stringify({ name: 'нет-такой-настройки', value: 'а'.repeat(size) }),
     });
 
-    expect(honest.status).toBe(401);
-  }, 60_000);
+    return response.status;
+  }
+
+  it('промпт в шестьдесят тысяч знаков доезжает', async () => {
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: NEVER_TOUCHED,
+        adminSettings: NEVER_TOUCHED as unknown as SettingsRegistry,
+      }),
+    );
+
+    const session = await signIn(base);
+
+    // Шестьдесят тысяч русских знаков — это около 120 КБ в UTF-8, вчетверо
+    // больше нынешнего самого длинного промпта.
+    expect(await postBody(base, session, 60_000)).toBe(400);
+  }, 30_000);
+
+  it('но предел всё же есть: мегабайт не принимается', async () => {
+    // Путь за стражем, слать сюда мегабайты некому — но безграничное
+    // тело означало бы, что вошедший может занять память процесса.
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: NEVER_TOUCHED,
+        adminSettings: NEVER_TOUCHED as unknown as SettingsRegistry,
+      }),
+    );
+
+    const session = await signIn(base);
+
+    expect(await postBody(base, session, 1_000_000)).toBe(413);
+  }, 30_000);
+});
+
+describe('битый запрос отвечает своим кодом, а не пятисотым', () => {
+  it('невалидный JSON — 400, а не «сломались мы»', async () => {
+    /**
+     * Пятисотый значит «сломались мы». Отвечать им на присланный мусор
+     * значит отправлять того, кто разбирает сбой, искать поломку не там —
+     * а заодно поднимать долю ошибок в мониторинге (§18) на чужих
+     * кривых запросах.
+     */
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: NEVER_TOUCHED,
+        adminSettings: NEVER_TOUCHED as unknown as SettingsRegistry,
+      }),
+    );
+
+    const session = await signIn(base);
+
+    const response = await fetch(`${base}/admin/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${session}` },
+      body: '{это не json',
+    });
+
+    expect(response.status).toBe(400);
+  }, 30_000);
 });

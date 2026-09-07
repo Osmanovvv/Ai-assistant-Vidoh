@@ -114,3 +114,42 @@ test.describe('рассылка (§15; задача 4.10)', () => {
     expect(Number(left ?? '0')).toBeGreaterThan(0);
   });
 });
+
+test.describe('остановленная рассылка не тупик', () => {
+  test('продолжается с того места, где встала', async ({ page }) => {
+    /**
+     * **Без этой кнопки остановка была ловушкой.** Остановил, передумал —
+     * и продолжить нечем: пришлось бы составлять новую, а она ушла бы
+     * **всем**, включая тех, кто письмо уже прочёл. Кнопка «Остановить»
+     * тем самым означала «или доотправить сейчас, или прислать половине
+     * людей второе письмо».
+     */
+    await openBroadcast(page);
+
+    await page.getByTestId('broadcast-text').fill('Рассылка, которую продолжат.');
+    await page.getByTestId('broadcast-preview').click();
+    await page.getByTestId('broadcast-make').click();
+    await page.getByTestId('broadcast-send').click();
+
+    const stop = page.locator('[data-testid^="broadcast-stop-"]').first();
+    await expect(stop).toBeVisible();
+    await stop.click();
+
+    const status = page.locator('[data-testid^="broadcast-status-"]').first();
+    await expect(status).toHaveText('остановлена', { timeout: 20_000 });
+
+    const row = page.locator('tbody tr').first();
+    const sentBefore = Number((await row.locator('td').nth(4).textContent()) ?? '0');
+
+    // Продолжаем — и рассылка доходит до конца, никого не задев дважды.
+    await page.locator('[data-testid^="broadcast-resume-"]').first().click();
+
+    await expect(status).toHaveText('разослана', { timeout: 20_000 });
+
+    const sentAfter = Number((await row.locator('td').nth(4).textContent()) ?? '0');
+    const left = Number((await row.locator('td').nth(7).textContent()) ?? '1');
+
+    expect(sentAfter).toBeGreaterThan(sentBefore);
+    expect(left).toBe(0);
+  });
+});

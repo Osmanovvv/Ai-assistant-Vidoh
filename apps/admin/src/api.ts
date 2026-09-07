@@ -22,13 +22,38 @@ export class NotSignedIn extends Error {
   }
 }
 
+/**
+ * Событие «пропуск больше не годится» — на всю панель.
+ *
+ * **Здесь был дефект, и во всех разделах разом.** Пропуск живёт
+ * двенадцать часов; истёк он — и раздел показывал «не удалось
+ * прочитать расходы». Человек читал это как поломку панели и шёл
+ * искать её в логах, вместо того чтобы просто войти заново. Окно
+ * входа возвращалось только при перезагрузке страницы.
+ *
+ * Событием, а не проверкой в каждом разделе: разделов восемь, и
+ * девятый однажды забыли бы. Слушает его `App` — то самое место, где
+ * решается, показывать панель или вход.
+ */
+export const SIGNED_OUT_EVENT = 'vydoh:пропуск-истёк';
+
+function announceSignedOut(): void {
+  // Проверка на наличие окна — ради тестов в среде без браузера.
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${ROOT}${path}`, {
     credentials: 'same-origin',
     ...init,
   });
 
-  if (response.status === 401) throw new NotSignedIn();
+  if (response.status === 401) {
+    announceSignedOut();
+    throw new NotSignedIn();
+  }
 
   if (!response.ok) {
     throw new Error(`Панель ответила ${String(response.status)}`);
@@ -258,6 +283,14 @@ export interface PromptsPage {
   /** Прогнан ли набор на том, что включено сейчас. */
   readonly freshness: Freshness;
   readonly run: EvalRun;
+  /**
+   * Есть ли кому прогнать набор.
+   *
+   * На боевом сервере набора нет и быть не должно: в нём живые
+   * расшифровки людей (§16). Кнопка прогона там не рисуется вовсе —
+   * кнопка, которая всегда отказывает, учит не верить панели.
+   */
+  readonly canRun: boolean;
 }
 
 export function prompts(): Promise<PromptsPage> {
@@ -308,7 +341,10 @@ export async function activatePrompt(params: {
     body: JSON.stringify(params),
   });
 
-  if (response.status === 401) throw new NotSignedIn();
+  if (response.status === 401) {
+    announceSignedOut();
+    throw new NotSignedIn();
+  }
 
   if (response.status === 409) {
     const body = (await response.json()) as { readonly reasons?: readonly string[] };
@@ -385,6 +421,11 @@ export function stopBroadcast(
   id: string,
 ): Promise<{ readonly ok: boolean; readonly asked: boolean; readonly note: string }> {
   return post(`/broadcast/${encodeURIComponent(id)}/stop`, {});
+}
+
+/** Продолжить остановленную: иначе остановка была ловушкой. */
+export function resumeBroadcast(id: string): Promise<{ readonly ok: boolean }> {
+  return post(`/broadcast/${encodeURIComponent(id)}/resume`, {});
 }
 
 export function retryBroadcast(
