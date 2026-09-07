@@ -59,7 +59,18 @@ export interface CostRow {
 export interface UserCostRow extends CostRow {
   /** Как человека называть в панели: имя из профиля либо код. */
   readonly title: string;
-  readonly tgId: number | null;
+  /**
+   * Телеграмного номера здесь нет нарочно (ревизия четвёртого этапа).
+   *
+   * Он уезжал в браузер в каждой строке страницы и не рисовался ни в
+   * одной колонке: панель берёт из строки только имя. То есть личный
+   * идентификатор ходил туда, где он никому не нужен, — а
+   * минимизация §16 говорит обратное.
+   *
+   * Имя остаётся: без него разрез по людям не прочесть, и путь по-прежнему
+   * объявлен персональным. Понадобится номер разбирающему — его надо
+   * нарисовать колонкой, а не возить молча.
+   */
 }
 
 export interface CostBreakdown {
@@ -71,6 +82,17 @@ export interface CostBreakdown {
   readonly userCount: number;
   /** Расход строк без человека: он ушёл, а история осталась (§16). */
   readonly unattributed: readonly Money[];
+  /** Сколько обезличенных вызовов: без числа сверить колонки нечем. */
+  readonly unattributedCalls: number;
+  /**
+   * Расход вне выгрузок — отдельной величиной (ревизия этапа).
+   *
+   * Выгрузка уходит каскадом вместе с человеком, а строка учёта
+   * остаётся. Прежде эти деньги молча попадали в числитель среднего «на
+   * выгрузку», и себестоимость разбора росла от чужого удаления.
+   */
+  readonly unlinked: readonly Money[];
+  readonly unlinkedCalls: number;
   /** Средний расход на разобранную выгрузку. */
   readonly perDump: readonly Money[];
   /** Средний расход на человека. */
@@ -125,15 +147,25 @@ function fold(rows: readonly Grouped[]): CostRow[] {
     byKey.set(row.key, seen);
   }
 
-  return [...byKey.entries()]
-    .map(([key, seen]) => ({
-      key,
-      calls: seen.calls,
-      failed: seen.failed,
-      unknownPrices: seen.unknown,
-      money: [...seen.money.entries()].map(([currency, micros]) => ({ currency, micros })),
-    }))
-    .sort((first, second) => second.calls - first.calls);
+  return (
+    [...byKey.entries()]
+      .map(([key, seen]) => ({
+        key,
+        calls: seen.calls,
+        failed: seen.failed,
+        unknownPrices: seen.unknown,
+        money: [...seen.money.entries()].map(([currency, micros]) => ({ currency, micros })),
+      }))
+      /**
+       * Довесок по ключу при равных вызовах — иначе порядок не задан.
+       *
+       * У запроса по людям нет `order by`, значит порядок страницы
+       * наследует порядок строк Postgres, а сортировка только по числу
+       * вызовов неустойчива. Тот же дефект уже чинили в списке людей
+       * (4.6): один человек попадал на две страницы, другой — ни на одну.
+       */
+      .sort((first, second) => second.calls - first.calls || first.key.localeCompare(second.key))
+  );
 }
 
 /** Сумма по валютам, делённая на число. Ноль делителя — пустой список. */
@@ -211,6 +243,35 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
     .groupBy(aiCalls.costCurrency);
 
   /**
+   * Обращения **вне выгрузок** — своим разрезом (ревизия этапа).
+   *
+   * Выгрузка уходит каскадом вместе с человеком, а строка учёта
+   * остаётся: §16 требует удалить его данные, но себестоимость — наша
+   * история. Значит расход без выгрузки — нормальное состояние, а не
+   * сбой.
+   *
+   * Прежде он молча уходил в числитель среднего «на выгрузку» и нигде не
+   * показывался. Один активный человек с двадцатью выгрузками и 200 ₽,
+   * удалив данные, поднимал себестоимость разбора с 10 до 12.50 ₽ — от
+   * **чужого** удаления, и объяснения на странице не было.
+   *
+   * Соседний модуль этот вопрос уже решил правильно: `cost-per-dump.ts`
+   * держит такие вызовы отдельным полем и в расчёт на выгрузку не берёт.
+   */
+  const unlinkedRows = await db
+    .select({ key: sql<string>`'вне выгрузок'`, currency: aiCalls.costCurrency, ...counters })
+    .from(aiCalls)
+    .where(and(where, sql`${aiCalls.batchId} is null`))
+    .groupBy(aiCalls.costCurrency);
+
+  /** Расход, привязанный к выгрузке — числитель среднего «на выгрузку». */
+  const linkedRows = await db
+    .select({ key: sql<string>`'в выгрузках'`, currency: aiCalls.costCurrency, ...counters })
+    .from(aiCalls)
+    .where(and(where, sql`${aiCalls.batchId} is not null`))
+    .groupBy(aiCalls.costCurrency);
+
+  /**
    * Выгрузки считаются по тем же строкам учёта, а не по таблице выгрузок.
    *
    * Иначе средний расход считался бы от одного числа, а сумма — от
@@ -242,7 +303,7 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
     page.length === 0
       ? []
       : await db
-          .select({ id: users.id, tgId: users.tgId, firstName: users.firstName })
+          .select({ id: users.id, firstName: users.firstName })
           .from(users)
           // Через `inArray`, а не склейкой строки: коды приходят из базы
           // и опасности не несут, но собирать SQL текстом — привычка,
@@ -264,11 +325,11 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
       // Имя, если есть; иначе код — но не пустая строка: пустая ячейка в
       // отчёте читается как «нет данных», а человек-то есть.
       title: profile?.firstName ?? `без имени (${row.key.slice(0, 8)})`,
-      tgId: profile?.tgId ?? null,
     };
   });
 
-  const money = totalOf(byStage);
+  const anonymous = fold(anonymousRows);
+  const unlinked = fold(unlinkedRows);
 
   return {
     since,
@@ -276,9 +337,33 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
     byModel,
     byUser,
     userCount: foldedUsers.length,
-    unattributed: totalOf(fold(anonymousRows)),
-    perDump: divide(money, totals?.dumps ?? 0),
-    perUser: divide(money, totals?.people ?? 0),
+    unattributed: totalOf(anonymous),
+    /**
+     * Число обезличенных вызовов, а не только их деньги.
+     *
+     * Прежде наверх уходила одна сумма, и колонку «Вызовов» в разрезе по
+     * людям было не с чем сверить: расхождение с итогом «Обращений к
+     * моделям» проверить нечем.
+     */
+    unattributedCalls: anonymous.reduce((sum, row) => sum + row.calls, 0),
+    /** Расход вне выгрузок — отдельной величиной, а не в числителе. */
+    unlinked: totalOf(unlinked),
+    unlinkedCalls: unlinked.reduce((sum, row) => sum + row.calls, 0),
+    /**
+     * **Числители берутся из тех же множеств, что знаменатели.**
+     *
+     * Найдено ревизией этапа. Прежде оба средних делили **общую** сумму
+     * — вместе с обезличенной и вместе с расходом вне выгрузок — на
+     * число только уцелевших людей и выгрузок. Двенадцать человек по
+     * 50 ₽, десять удалили данные: панель показывала «По людям» две
+     * строки по 50 ₽, ниже «ещё 500 ₽ на тех, кто удалил данные», а в
+     * итогах «На человека 300 ₽» — при настоящей себестоимости 50 ₽.
+     *
+     * Отчёт противоречил себе на одном экране, и это не косметика: по
+     * среднему на человека назначают цену подписки.
+     */
+    perDump: divide(totalOf(fold(linkedRows)), totals?.dumps ?? 0),
+    perUser: divide(totalOf(foldedUsers), totals?.people ?? 0),
     dumps: totals?.dumps ?? 0,
     calls: totals?.calls ?? 0,
     complete: (totals?.unknownPrices ?? 0) === 0,

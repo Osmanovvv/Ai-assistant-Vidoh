@@ -100,7 +100,10 @@ export interface CostRow {
 
 export interface UserCostRow extends CostRow {
   readonly title: string;
-  readonly tgId: number | null;
+  /**
+   * Телеграмного номера здесь нет: он уезжал в браузер и не рисовался
+   * ни в одной колонке (ревизия четвёртого этапа).
+   */
 }
 
 export interface Costs {
@@ -110,6 +113,10 @@ export interface Costs {
   readonly byUser: readonly UserCostRow[];
   readonly userCount: number;
   readonly unattributed: readonly Money[];
+  readonly unattributedCalls: number;
+  /** Расход вне выгрузок: он не входит в среднее «на выгрузку». */
+  readonly unlinked: readonly Money[];
+  readonly unlinkedCalls: number;
   readonly perDump: readonly Money[];
   readonly perUser: readonly Money[];
   readonly dumps: number;
