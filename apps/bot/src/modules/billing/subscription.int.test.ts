@@ -1317,3 +1317,66 @@ describe('удаление данных отменяет продление у �
     expect(watcher.asked).toEqual([]);
   });
 });
+
+describe('личное из тела события не доходит до базы (§16, ревизия этапа)', () => {
+  /**
+   * **Барьер стоит в единственной точке записи, и проверяется он через
+   * настоящий путь.** Разбор вымарывания покрыт своими девятью
+   * проверками, но они меряют функцию. Здесь меряется то, что она
+   * действительно стоит на пути: заведи кто-нибудь запись события мимо
+   * `recordEvent` — и покраснеет вот это.
+   *
+   * Строка события на человеке не висит: `invoice_id` при удалении
+   * обнуляется, а сама строка остаётся навсегда. Значит его почта и имя
+   * пережили бы §16, при том что комментарий схемы обещает обратное.
+   */
+  it('почта плательщика не попадает в billing_events', async () => {
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'приват-1' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'приват-1', externalId: '9001' }),
+      payload: {
+        OutSum: '399.00',
+        InvId: '9001',
+        EMail: 'anya@example.com',
+        Shp_ref: 'приват-1',
+      },
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    const [event] = await testDb().select().from(billingEvents);
+    const written = JSON.stringify(event?.payload);
+
+    expect(written).not.toContain('anya@example.com');
+    expect(written).not.toContain('EMail":"');
+
+    // Деньги и метка остались: спор без них не разобрать.
+    expect(written).toContain('399.00');
+    expect(written).toContain('приват-1');
+  });
+
+  it('имя человека из апдейта звёзд не попадает в billing_events', async () => {
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'приват-2' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'приват-2', externalId: '9002' }),
+      payload: {
+        message: {
+          from: { id: 4_001, first_name: 'Аня', username: 'anya_v' },
+          successful_payment: { total_amount: 150, invoice_payload: 'приват-2' },
+        },
+      },
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    const [event] = await testDb().select().from(billingEvents);
+    const written = JSON.stringify(event?.payload);
+
+    expect(written).not.toContain('Аня');
+    expect(written).not.toContain('anya_v');
+    expect(written).not.toContain('4001');
+    expect(written).toContain('150');
+  });
+});

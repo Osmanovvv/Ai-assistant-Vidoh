@@ -125,6 +125,28 @@ export interface Costs {
   readonly complete: boolean;
 }
 
+/** Обращение к персональным данным из панели (§16). */
+export interface AccessRow {
+  readonly at: string;
+  readonly login: string;
+  readonly route: string;
+  /** На кого смотрели. Пусто — на многих сразу либо человек удалён. */
+  readonly subjectUserId: string | null;
+  /** Сколько человек в ответе. Пусто — **не установлено**, не «один». */
+  readonly subjects: number | null;
+}
+
+export interface AccessView {
+  readonly days: number;
+  readonly rows: readonly AccessRow[];
+  readonly total: number;
+}
+
+/** Журнал доступа к персональным данным (§16, обещание задачи 4.10). */
+export function access(days: number): Promise<AccessView> {
+  return call<AccessView>(`/access?days=${String(days)}`);
+}
+
 /** Расход в разрезах за последние `days` дней (§21 п.14). */
 export function costs(days: number): Promise<Costs> {
   return call<Costs>(`/costs?days=${String(days)}`);

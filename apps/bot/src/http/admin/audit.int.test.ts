@@ -12,7 +12,7 @@ import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { createServer } from '../server.js';
 import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
-import { accessTo, recentAccess, recordAccess } from './audit.js';
+import { accessTo, checkParam, recentAccess, recordAccess } from './audit.js';
 import { createAdminRouter, SESSION_COOKIE, type AdminAuthConfig } from './index.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
@@ -365,5 +365,183 @@ describe('панель не рисует кнопок, за которыми н�
     });
 
     expect(((await response.json()) as { readonly canRun: boolean }).canRun).toBe(true);
+  });
+});
+
+/** Сервер со всеми зависимостями: часть разделов живёт под условием. */
+function withEverything(): Express {
+  return createServer({
+    healthChecks: [],
+    admin: configOf(),
+    adminDb: testDb(),
+    adminSettings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+  });
+}
+
+describe('число людей в ответе — настоящее, а не догадка (§16, ревизия этапа)', () => {
+  /**
+   * **Столбец `subjects` утверждал «в ответ попал один человек» про
+   * каждую страницу списка.** Он стоял `not null default 1`, а
+   * `recordAccess` вызывался без него — умолчание базы превращалось в
+   * утверждение. Разбирающий инцидент увидел бы двадцать обращений «к
+   * одному человеку» вместо «к странице из двадцати» и сделал бы вывод,
+   * обратный правде. Это ровно тот инвариант: пустая клетка читается как
+   * факт.
+   */
+
+  it('список людей записывает столько людей, сколько выдал', async () => {
+    // Три человека в базе, страница из двух: в журнале обязано быть 2.
+    await upsertUser(testDb(), { tgId: 7_002, firstName: 'Боря' });
+    await upsertUser(testDb(), { tgId: 7_003, firstName: 'Вера' });
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminSettings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/people?limit=2`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { rows: unknown[] }).rows).toHaveLength(2);
+
+    const [row] = await recentAccess(testDb());
+
+    expect(row?.route).toBe('/api/people');
+    expect(row?.subjects).toBe(2);
+  });
+
+  it('карточка записывает одного — и того, на кого смотрели', async () => {
+    const base = await listen(
+      createServer({ healthChecks: [], admin: configOf(), adminDb: testDb() }),
+    );
+
+    const response = await fetch(`${base}/admin/api/people/${person}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(200);
+
+    const [row] = await recentAccess(testDb());
+
+    expect(row?.subjectUserId).toBe(person);
+    expect(row?.subjects).toBe(1);
+  });
+
+  it('где число не установлено, там пусто — а не единица', async () => {
+    /**
+     * У журнала сбоев в ответе несколько списков, и человек может стоять
+     * в двух сразу: посчитать его длиной одного из них значило бы вернуть
+     * ту самую догадку. Пусто честнее — панель печатает это словом «не
+     * установлено».
+     */
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminSettings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+      }),
+    );
+
+    await fetch(`${base}/admin/api/errors`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    const [row] = await recentAccess(testDb());
+
+    expect(row?.route).toBe('/api/errors');
+    expect(row?.subjects).toBeNull();
+  });
+
+  it('имя параметра сверяется с путём — иначе «на одного» стало бы «на многих»', () => {
+    /**
+     * Опечатка в имени параметра давала `undefined`, и запись тихо
+     * превращалась в «смотрели на многих»: тип этого не поймает, там
+     * строка. Теперь не поднимется сервер — громко и у всех сразу.
+     */
+    expect(() => {
+      checkParam('/api/people/:userId', { personal: true, subjects: 'one', param: 'userld' });
+    }).toThrow(/userld/u);
+
+    expect(() => {
+      checkParam('/api/people/:userId', { personal: true, subjects: 'one', param: 'userId' });
+    }).not.toThrow();
+
+    // И все объявленные пути такую сверку проходят — вот она, на живом
+    // роутере, собранном со всеми зависимостями.
+    for (const route of everything().routes) {
+      expect(() => {
+        checkParam(route.path, route.exposure);
+      }, route.path).not.toThrow();
+    }
+  });
+});
+
+describe('журнал доступа читается панелью (§16, обещание задачи 4.10)', () => {
+  /**
+   * **Обещание, которое ревизия нашла неисполненным.** План 4.11 сказал
+   * дословно: «И сам журнал как раздел панели (§15 не просит его
+   * показывать, но разбирать инцидент по SQL неудобно) — это 4.10, где
+   * живут журналы». Задачу 4.10 закрыли, раздела не появилось, а
+   * `recentAccess` и `accessTo` остались без вызывающих вне тестов.
+   * Журнал без читателя исполняет §16 на бумаге.
+   */
+
+  it('раздел отдаёт обращения с числом людей и с тем, на кого смотрели', async () => {
+    const base = await listen(withEverything());
+
+    // Настоящее обращение к карточке, а не посев: проверяется путь целиком.
+    await fetch(`${base}/admin/api/people/${person}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    const response = await fetch(`${base}/admin/api/access?days=1`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(200);
+
+    const view = (await response.json()) as {
+      readonly rows: readonly {
+        readonly route: string;
+        readonly subjectUserId: string | null;
+        readonly subjects: number | null;
+      }[];
+      readonly total: number;
+    };
+
+    const card = view.rows.find((row) => row.route === '/api/people/:userId');
+
+    expect(card?.subjectUserId).toBe(person);
+    expect(card?.subjects).toBe(1);
+
+    // И само чтение журнала — тоже обращение к персональным данным.
+    expect(view.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it('имён людей в журнале доступа нет — иначе он стал бы вторым списком людей', async () => {
+    const base = await listen(withEverything());
+
+    await fetch(`${base}/admin/api/people/${person}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    const response = await fetch(`${base}/admin/api/access`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(await response.text()).not.toContain('Аня');
+  });
+
+  it('журнал доступа закрыт без входа', async () => {
+    const base = await listen(withEverything());
+
+    expect((await fetch(`${base}/admin/api/access`)).status).toBe(401);
   });
 });

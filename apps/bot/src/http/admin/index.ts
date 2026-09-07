@@ -37,7 +37,7 @@ import {
 } from '../../modules/settings/settings.repo.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
-import { recordAccess, type Exposure } from './audit.js';
+import { accessView, checkParam, noteSubjects, recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
 
 export {
@@ -243,12 +243,22 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     exposure: Exposure,
     handler: RequestHandler,
   ): void => {
+    /**
+     * Имя параметра сверяется с путём **на сборке**, а не в бою: ошибка
+     * здесь означает журнал без того, на кого смотрели. Разбор — в
+     * `checkParam`, чтобы его могла позвать и проверка.
+     */
+    checkParam(path, exposure);
+
     routes.push({ method, path, exposure });
 
     if (!exposure.personal || deps.db === undefined) {
       router[method](path, handler);
       return;
     }
+
+    /** Где в ответе лежат люди, если раздел это объявил. */
+    const rowsField = exposure.subjects === 'many' ? exposure.rows : undefined;
 
     const db = deps.db;
 
@@ -274,8 +284,56 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
         login,
         route: path,
         ...(subject === undefined ? {} : { subjectUserId: subject }),
+        // Единица ставится только там, где она **известна**: путь с одним
+        // человеком в параметре. У списков число снимается с ответа ниже.
+        ...(exposure.subjects === 'one' ? { subjects: 1 } : {}),
       }).then(
-        () => {
+        ({ id }) => {
+          /**
+           * Число людей уточняется **после** того, как ответ собран.
+           *
+           * Порядок задан §16: запись идёт до выдачи данных, а сколько
+           * людей выдано, до выдачи неизвестно. Поэтому запись сначала
+           * честно говорит «не установлено», а число дописывается по
+           * ответу. Неудача дописывания оставляет «не установлено» — и
+           * это лучше выдуманной единицы, которая здесь и стояла.
+           */
+          if (rowsField !== undefined && id !== undefined) {
+            const answer = res.json.bind(res);
+
+            res.json = (body: unknown): Response => {
+              const list = (body as Record<string, unknown> | null | undefined)?.[rowsField];
+
+              if (!Array.isArray(list)) return answer(body);
+
+              /**
+               * Ответ уходит **после** того, как число записано.
+               *
+               * Не «заодно»: запись и ответ разошлись бы во времени, и
+               * панель показывала бы «не установлено» у обращения, число
+               * которого уже известно, — а разбирающий инцидент читал бы
+               * это как «список отдали, не посчитав». Цена — один запрос
+               * к базе на страницу; §16 и так велит писать до выдачи.
+               *
+               * Неудача записи ответ не отменяет: §16 исполнен строкой,
+               * которая уже есть, а число в ней останется «не
+               * установлено» — то есть честным.
+               */
+              void noteSubjects(db, { id, subjects: list.length })
+                .catch((error: unknown) => {
+                  deps.onError?.(error);
+                })
+                .then(
+                  () => answer(body),
+                  (error: unknown) => {
+                    deps.onError?.(error);
+                  },
+                );
+
+              return res;
+            };
+          }
+
           handler(req, res, next);
         },
         (error: unknown) => {
@@ -379,7 +437,8 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
        * «сводкой» велик именно потому, что страница выглядит как
        * бухгалтерия; на этом соблазне журнал доступа и обходят.
        */
-      { personal: true, subjects: 'many' },
+      // `byUser` — по строке на человека; журнал запишет их число.
+      { personal: true, subjects: 'many', rows: 'byUser' },
       (req: Request, res: Response) => {
         const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
         const limit = boundedNumber(req.query['limit'], { fallback: 50, min: 1, max: 200 });
@@ -460,7 +519,9 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     closed(
       'get',
       '/api/people',
-      { personal: true, subjects: 'many' },
+      // `rows` — по строке на человека: журнал получит настоящее число
+      // выданных людей вместо прежней выдуманной единицы.
+      { personal: true, subjects: 'many', rows: 'rows' },
       (req: Request, res: Response) => {
         const limit = boundedNumber(req.query['limit'], { fallback: 20, min: 1, max: 100 });
         const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 1_000_000 });
@@ -998,6 +1059,39 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           (error: unknown) => {
             deps.onError?.(error);
             res.status(500).json({ error: 'не удалось прочитать журнал' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Журнал доступа к персональным данным (§16, обещание задачи 4.10).
+     *
+     * Ревизия этапа нашла обещание неисполненным: «сам журнал как раздел
+     * панели — это 4.10, где живут журналы», задача закрыта, раздела нет,
+     * а читателей у таблицы не было вовсе. Журнал без читателя исполняет
+     * §16 на бумаге.
+     *
+     * Персональный и сам: по нему видно, на кого смотрели. Число людей в
+     * ответе не объявляется (`rows` нет) — строки здесь про обращения, и
+     * человек в них может повторяться или отсутствовать; посчитать его
+     * длиной списка значило бы вернуть ту самую догадку.
+     */
+    closed(
+      'get',
+      '/api/access',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const days = boundedNumber(req.query['days'], { fallback: 7, min: 1, max: 366 });
+        const limit = boundedNumber(req.query['limit'], { fallback: 100, min: 1, max: 500 });
+
+        void accessView(db, { days, limit }).then(
+          (view) => {
+            res.json(view);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать журнал доступа' });
           },
         );
       },

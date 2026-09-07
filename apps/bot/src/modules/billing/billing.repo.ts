@@ -9,6 +9,7 @@ import {
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { PlanKind } from './provider.js';
+import { safePayload } from './payload.js';
 import type { Rail } from './tariffs.js';
 
 /**
@@ -381,7 +382,15 @@ export async function recordEvent(
       externalId: params.externalId,
       kind: params.kind,
       signatureOk: params.signatureOk,
-      payload: params.payload,
+      /**
+       * Вымарывание стоит **здесь**, а не у вызывающих.
+       *
+       * Столбец один, и путей к нему два — уведомление Робокассы и
+       * служебное сообщение звёзд. Поставь проверку у вызывающих, и
+       * третий путь однажды пройдёт мимо неё молча; здесь мимо не
+       * пройдёт никто, потому что другого способа записать событие нет.
+       */
+      payload: safePayload(params.payload),
       ...(params.method === undefined ? {} : { method: params.method }),
       ...(params.invoiceId === undefined ? {} : { invoiceId: params.invoiceId }),
     })
