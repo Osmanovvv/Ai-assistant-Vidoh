@@ -4,10 +4,13 @@ import {
   overview,
   peoplePage,
   personCard,
+  type Conversion,
   type Money,
   type Overview,
   type PeoplePage,
   type PersonCard,
+  type PersonRow,
+  type Revenue,
 } from './api.js';
 
 /**
@@ -20,9 +23,14 @@ import {
  * поправили. Ровно тем путём, которым 31.08.2026 пришлось идти через ssh
  * и SQL.
  *
- * **Обзор честно говорит, чего в нём нет.** §15 просит переход в оплату
- * и выручку; их не существует до задачи 4.2. Пустая колонка читается как
- * «ноль», то есть как факт, — поэтому вместо неё объяснение.
+ * **Обзор честно говорит, чего в нём нет.** Пустая колонка читается как
+ * «ноль», то есть как факт, — поэтому вместо неё объяснение. Выручка и
+ * переход в оплату появились с задачей 4.2; переход не считается, пока
+ * неизвестен размер пробного периода, и об этом сказано словами.
+ *
+ * **Выручка не сведена в одно число нарочно.** Рубли и звёзды — разные
+ * деньги: курс звезды задаёт Telegram, он меняется, и «итого» пришлось
+ * бы придумать. Плюс из звёзд Telegram берёт свою долю.
  */
 
 const PAGE = 20;
@@ -36,6 +44,77 @@ function money(list: readonly Money[]): string {
       return one.currency === 'usd' ? `$${amount}` : `${amount} ₽`;
     })
     .join(' + ');
+}
+
+/** Выручка суммами: «399.00 ₽» или «399.00 ₽ + 150 ⭐». */
+function earned(list: readonly Revenue[]): string {
+  if (list.length === 0) return '—';
+
+  return list
+    .map((one) =>
+      one.currency === 'XTR' ? `${String(one.minor)} ⭐` : `${(one.minor / 100).toFixed(2)} ₽`,
+    )
+    .join(' + ');
+}
+
+/**
+ * Сколько было платежей — отдельной строкой под суммой.
+ *
+ * Не украшение: одна оплата на три тысячи и тридцать по сотне — разные
+ * новости, а сумма у них похожая. Но и не часть большого числа: «399.00 ₽
+ * (1)» без подписи читается как непонятная приписка.
+ */
+function payments(list: readonly Revenue[]): string {
+  const total = list.reduce((sum, one) => sum + one.payments, 0);
+
+  if (total === 0) return 'платежей не было';
+
+  const tail = total % 100;
+  const last = total % 10;
+
+  const word =
+    tail >= 11 && tail <= 14
+      ? 'платежей'
+      : last === 1
+        ? 'платёж'
+        : last < 5
+          ? 'платежа'
+          : 'платежей';
+
+  return `${String(total)} ${word}`;
+}
+
+/**
+ * Переход из пробного в оплату — двумя числами, а не процентом.
+ *
+ * Процент от трёх человек выглядит как знание, знанием не являясь.
+ * Поэтому «2 из 7», а доля пусть считается в голове того, кто смотрит.
+ */
+function funnel(value: Conversion): string {
+  if (value.trialSize === 0) return '—';
+
+  return `${String(value.paid)} из ${String(value.trialFinished)}`;
+}
+
+/** Подписка человека в одну строку — для списка. */
+function subscriptionText(row: PersonRow): string {
+  const subscription = row.subscription;
+
+  if (subscription === undefined) return '—';
+
+  const plan = subscription.plan === 'monthly' ? 'месяц' : 'год';
+  const rail = subscription.rail === 'telegram:stars' ? 'звёзды' : 'карта';
+
+  /**
+   * «Кончилась» отличается от «не платил», и это разные строки.
+   * Разбирающий жалобу обязан их различать: у первого доступ был.
+   */
+  if (!subscription.live) return `кончилась ${when(subscription.paidUntil)}`;
+
+  const renew = subscription.autoRenew ? 'продлевается' : 'без продления';
+  const trouble = subscription.status === 'past_due' ? ', продление не прошло' : '';
+
+  return `${plan}, ${rail}, до ${when(subscription.paidUntil)} — ${renew}${trouble}`;
 }
 
 /** Дата в местном виде. Пусто — прочерк, а не «Invalid Date». */
@@ -93,7 +172,36 @@ export function OverviewPanel(): React.ReactElement {
           <span className="итог__имя">Расход на модели</span>
           <span className="итог__число">{money(report.spend)}</span>
         </div>
+        <div className="итог">
+          <span className="итог__имя">Выручка за 30 дней</span>
+          <span className="итог__число" data-testid="revenue">
+            {earned(report.revenue)}
+          </span>
+          <span className="панель__кто" data-testid="payments">
+            {payments(report.revenue)}
+          </span>
+        </div>
+        <div className="итог">
+          <span className="итог__имя">Платят сейчас</span>
+          <span className="итог__число" data-testid="payers">
+            {report.payers}
+          </span>
+        </div>
+        <div className="итог">
+          <span className="итог__имя">Из пробного в оплату</span>
+          <span className="итог__число" data-testid="conversion">
+            {funnel(report.conversion)}
+          </span>
+        </div>
       </section>
+
+      {report.conversion.trialSize > 0 && (
+        <p className="оговорка">
+          Переход считается по тем, у кого пробный период израсходован полностью — это{' '}
+          {report.conversion.trialSize} разобранных выгрузок. Новички, ещё не дошедшие до границы, в
+          знаменатель не попадают: они не «не купили», они не выбирали.
+        </p>
+      )}
 
       {report.missing.map((note) => (
         <p className="оговорка" key={note}>
@@ -178,6 +286,7 @@ export function PeoplePanel(): React.ReactElement {
                 <th>Был</th>
                 <th className="таблица__число">Выгрузок</th>
                 <th className="таблица__число">Пробных</th>
+                <th>Подписка</th>
                 <th className="таблица__число">Расход</th>
               </tr>
             </thead>
@@ -202,6 +311,7 @@ export function PeoplePanel(): React.ReactElement {
                   <td>{when(row.lastActiveAt)}</td>
                   <td className="таблица__число">{row.dumps}</td>
                   <td className="таблица__число">{row.trialSpent}</td>
+                  <td data-testid={`subscription-${row.id}`}>{subscriptionText(row)}</td>
                   <td className="таблица__число">{money(row.spend)}</td>
                 </tr>
               ))}
@@ -280,7 +390,8 @@ function Card({
         <span className="панель__кто">
           {card.person.title}
           {card.person.username === null ? '' : ` · @${card.person.username}`} · выгрузок{' '}
-          {card.person.dumps} · расход {money(card.person.spend)}
+          {card.person.dumps} · расход {money(card.person.spend)} · подписка{' '}
+          {subscriptionText(card.person)}
         </span>
       </div>
 

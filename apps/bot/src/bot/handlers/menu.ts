@@ -15,6 +15,7 @@ import { listTopics } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
+import { BILLING_ACTION } from './billing.js';
 import { DELETE_STEP_ONE } from './privacy.js';
 import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
@@ -25,8 +26,8 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 /**
  * Меню и списки (§12.1 ТЗ, задача 2.18).
  *
- * **Пунктов меньше, чем в §12.1, и это осознанно.** «Проекты» появятся с
- * задачей 3.12, «Подписка» — на четвёртом этапе. Кнопка, за которой ничего
+ * **Пунктов меньше, чем в §12.1, и это осознанно.** «Проекты» появились с
+ * задачей 3.12, «Подписка» — с 4.2. Кнопка, за которой ничего
  * нет, хуже отсутствующей: она обещает и не выполняет, и человек перестаёт
  * верить остальным.
  *
@@ -70,6 +71,15 @@ export function rootKeyboard(texts: TextProfile): InlineKeyboard {
     ],
     [{ label: texts.menu.buttonHelp, action: MENU_ACTION.help }],
     [{ label: texts.menu.buttonSettings, action: MENU_ACTION.settings }],
+    /**
+     * «Подписка» стоит здесь всегда, а не по наличию оплаты.
+     *
+     * Соблазн показывать её только продающему боту понятен, но экран за
+     * ней осмыслен и без товара: он говорит, до какого числа оплачено, и
+     * даёт отключить продление. Человеку, который уже платит, эта кнопка
+     * нужна ровно тогда, когда цены с рельса сняли.
+     */
+    [{ label: texts.menu.buttonSubscription, action: BILLING_ACTION.open }],
     [{ label: texts.menu.buttonDeleteData, action: DELETE_STEP_ONE }],
   ]);
 }

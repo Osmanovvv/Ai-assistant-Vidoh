@@ -12,6 +12,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { toShortId } from '../../modules/shared/short-id.js';
 import { registerCardHandlers } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
+import { BILLING_ACTION } from './billing.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
 
 /**
@@ -173,18 +174,21 @@ describe('меню', () => {
       defaultTexts.menu.buttonToday,
       defaultTexts.menu.buttonHelp,
       defaultTexts.menu.buttonSettings,
+      defaultTexts.menu.buttonSubscription,
       defaultTexts.menu.buttonDeleteData,
     ]);
   });
 
   it('в меню нет кнопок, за которыми пока ничего нет', async () => {
-    // §12.1 перечисляет девять пунктов, но «Проекты» и «Подписка»
-    // приходят со своими задачами. Кнопка, которая обещает и не
-    // выполняет, дороже отсутствующей.
-    //
-    // «Настройки» с задачи 3.17 в меню есть — и за ними два работающих
-    // выключателя, которых требует §11. Остальное содержимое экрана
-    // остаётся четвёртому этапу.
+    /**
+     * §12.1 перечисляет девять пунктов, и приходят они со своими
+     * задачами: «Настройки» с 3.17, «Подписка» с 4.2. Кнопка, которая
+     * обещает и не выполняет, дороже отсутствующей — поэтому проверка
+     * называет то, чего ещё нет, и убывает по мере готовности.
+     *
+     * «Проекты» отдельным пунктом меню так и не появились: экран проекта
+     * открывается из карточки записи (задача 3.82), а не из корня.
+     */
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -194,7 +198,28 @@ describe('меню', () => {
     );
 
     expect(labels).not.toContain('Проекты');
-    expect(labels).not.toContain('Подписка');
+  });
+
+  it('«Подписка» ведёт на экран подписки, а не в пустоту', async () => {
+    /**
+     * Кнопка в корне меню и обработчик оплаты живут в разных файлах, и
+     * связывает их только строка `callback_data`. Разойдись они — кнопка
+     * молча перестанет отвечать: Telegram покажет часики и погасит их, а
+     * человек решит, что бот сломался.
+     *
+     * Тот же класс отказа, что «написано, покрыто тестами и
+     * недостижимо»: обе половины целы, а связки между ними нет.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(commandUpdate('/menu'));
+
+    const button = keyboardOf(calls.find((call) => call.method === 'sendMessage')).find(
+      (one) => one.text === defaultTexts.menu.buttonSubscription,
+    );
+
+    expect(button?.callback_data).toBe(BILLING_ACTION.open);
   });
 
   describe('настройки (§11, задача 3.17)', () => {

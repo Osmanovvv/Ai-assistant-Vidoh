@@ -394,7 +394,14 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       (req: Request, res: Response) => {
         const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
 
-        void overview(db, days).then(
+        /**
+         * Реестр значений передаётся, если он есть.
+         *
+         * От него зависит только переход из пробного в оплату: без
+         * размера пробного периода посчитать его нечем, и обзор честно
+         * скажет об этом строкой, а не покажет ноль.
+         */
+        void overview(db, days, deps.settings).then(
           (report) => {
             res.json(report);
           },

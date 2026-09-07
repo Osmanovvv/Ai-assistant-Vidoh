@@ -226,6 +226,57 @@ describe('productionWarnings', () => {
     // Суточный и общий — независимые: задан любой, присмотр есть.
     expect(productionWarnings(parseWith({ ACCOUNT_SPEND_CEILING_RUB: '3000' }))).toEqual([]);
   });
+
+  it('ловит нарушение паритета: Робокасса есть, звёзд нет', () => {
+    /**
+     * Не «неполная настройка», а нарушение с названной санкцией: бота
+     * делают недоступным из магазинных версий Telegram либо отключают
+     * от платёжной платформы. Выключить звёзды «на минутку» слишком
+     * легко, поэтому проверка не глазами.
+     */
+    const env = parseWith({
+      ...withCeiling,
+      RK_MERCHANT_LOGIN: 'vydoh',
+      RK_PASSWORD1: 'п1',
+      RK_PASSWORD2: 'п2',
+      STARS: 'off',
+    });
+
+    expect(productionWarnings(env).some((one) => one.includes('паритета'))).toBe(true);
+  });
+
+  it('без Робокассы выключенные звёзды нарушением не считаются', () => {
+    // Паритет — про «продаётся снаружи, а за звёзды нет». Нет ни того,
+    // ни другого — нечему и нарушаться.
+    const env = parseWith({ ...withCeiling, STARS: 'off' });
+
+    expect(productionWarnings(env)).toEqual([]);
+  });
+
+  it('ловит тестовый режим Робокассы в бою', () => {
+    // Оплата проходит, а денег нет: со стороны человека «я заплатил»,
+    // со стороны учёта тишина.
+    const env = parseWith({
+      ...withCeiling,
+      RK_MERCHANT_LOGIN: 'vydoh',
+      RK_PASSWORD1: 'п1',
+      RK_PASSWORD2: 'п2',
+      RK_IS_TEST: 'on',
+    });
+
+    expect(productionWarnings(env).some((one) => one.includes('тестовом режиме'))).toBe(true);
+  });
+
+  it('«false» строкой не включает выключатели', () => {
+    /**
+     * `coerce.boolean` превращает «false» в true, и выключатель,
+     * который не выключается, — худший вид выключателя. Проверка на
+     * оба новых: паритет и тестовый режим.
+     */
+    expect(() => parseWith({ STARS: 'false' })).toThrow(EnvValidationError);
+    expect(() => parseWith({ RK_IS_TEST: 'false' })).toThrow(EnvValidationError);
+    expect(() => parseWith({ RK_RECURRING: 'false' })).toThrow(EnvValidationError);
+  });
 });
 
 describe('провайдер расшифровки', () => {

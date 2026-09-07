@@ -3,13 +3,25 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   aiCalls,
+  appSettings,
   batches,
+  billingEvents,
+  billingInvoices,
+  billingSubscriptions,
   itemRevisions,
   items,
   messagesRaw,
   pendingQuestions,
   users,
 } from '../../db/schema.js';
+import { createLogger } from '../../infra/logger.js';
+import {
+  createInvoice,
+  invoiceByRef,
+  markInvoicePaid,
+  nextInvId,
+} from '../billing/billing.repo.js';
+import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import { overview, people, personCard } from './people.js';
@@ -30,6 +42,7 @@ import { overview, people, personCard } from './people.js';
 
 let anya = '';
 let boris = '';
+let settings: SettingsRegistry;
 
 beforeEach(async () => {
   await testDb().delete(itemRevisions);
@@ -37,11 +50,21 @@ beforeEach(async () => {
   await testDb().delete(aiCalls);
   await testDb().delete(items);
   await testDb().delete(messagesRaw);
+  await testDb().delete(billingEvents);
+  await testDb().delete(billingSubscriptions);
+  await testDb().delete(billingInvoices);
+  await testDb().delete(appSettings);
   await testDb().delete(batches);
   await testDb().delete(users);
 
   anya = (await upsertUser(testDb(), { tgId: 8_001, firstName: 'Аня', username: 'anya' })).id;
   boris = (await upsertUser(testDb(), { tgId: 8_002, firstName: 'Борис' })).id;
+
+  settings = new SettingsRegistry({
+    db: testDb(),
+    logger: createLogger({ level: 'silent' }),
+    ttlMs: 0,
+  });
 });
 
 /** Разобранная выгрузка с текстом и записями. */
@@ -119,16 +142,248 @@ describe('обзор (§15)', () => {
     expect(report.spend[0]?.micros).toBe(3_000_000);
   });
 
-  it('честно говорит, чего в нём ещё нет', async () => {
+  it('без реестра значений переход в оплату не выдумывается', async () => {
     /**
-     * §15 просит показать переход в оплату и выручку. Их не существует
-     * до задачи 4.2. Пустая колонка в панели читается как «ноль», то
-     * есть как факт, — поэтому вместо неё объяснение.
+     * Размер пробного периода задаётся в панели, и без него нельзя
+     * сказать, кончился ли пробный. Показать в этом случае ноль значило
+     * бы соврать: пустая колонка читается как факт. Поэтому вместо
+     * числа — объяснение словами.
      */
     const report = await overview(testDb(), 30);
 
     expect(report.missing).toHaveLength(1);
-    expect(report.missing[0]).toContain('4.2');
+    expect(report.missing[0]).toContain('пробного периода');
+    expect(report.conversion).toEqual({ trialFinished: 0, paid: 0, trialSize: 0 });
+  });
+
+  it('выручка считается по оплаченным счетам, а не по выставленным', async () => {
+    /**
+     * Выставленных счетов всегда больше: человек нажимает кнопку и
+     * уходит думать. Считать их выручкой значило бы показать заказчице
+     * деньги, которых нет.
+     */
+    await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId: anya,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'оплачен',
+      invId: await nextInvId(testDb()),
+    });
+
+    await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId: boris,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'брошен',
+      invId: await nextInvId(testDb()),
+    });
+
+    await markInvoicePaid(testDb(), {
+      id: (await invoiceByRef(testDb(), { provider: 'robokassa:smz', ref: 'оплачен' }))?.id ?? '',
+      now: new Date(),
+    });
+
+    const report = await overview(testDb(), 30, settings);
+
+    expect(report.revenue).toEqual([{ currency: 'RUB', minor: 39_900, payments: 1 }]);
+  });
+
+  it('рубли и звёзды не складываются в одно число', async () => {
+    /**
+     * Курс звезды задаёт Telegram, он меняется, и «итого» пришлось бы
+     * придумать. Придуманный курс в отчёте о выручке — худший вид
+     * округления.
+     */
+    for (const [ref, currency, amount] of [
+      ['рубли', 'RUB', 39_900],
+      ['звёзды', 'XTR', 150],
+    ] as const) {
+      await createInvoice(testDb(), {
+        provider: currency === 'XTR' ? 'telegram:stars' : 'robokassa:smz',
+        userId: anya,
+        plan: 'monthly',
+        kind: 'initial',
+        amountMinor: amount,
+        currency,
+        ref,
+      });
+
+      await markInvoicePaid(testDb(), {
+        id:
+          (
+            await invoiceByRef(testDb(), {
+              provider: currency === 'XTR' ? 'telegram:stars' : 'robokassa:smz',
+              ref,
+            })
+          )?.id ?? '',
+        now: new Date(),
+      });
+    }
+
+    const report = await overview(testDb(), 30, settings);
+
+    expect([...report.revenue].sort((a, b) => a.currency.localeCompare(b.currency))).toEqual([
+      { currency: 'RUB', minor: 39_900, payments: 1 },
+      { currency: 'XTR', minor: 150, payments: 1 },
+    ]);
+  });
+
+  it('переход считается только по дошедшим до конца пробного', async () => {
+    /**
+     * **Знаменатель — не «все люди».** Иначе доля падала бы от каждого
+     * новичка, который ещё и не выбирал: он не «не купил», он не дошёл
+     * до вопроса.
+     *
+     * Пробный период здесь — две выгрузки. У Ани две зачтённых и
+     * оплаченный счёт, у Бориса одна: он в знаменатель не попадает.
+     */
+    await putSetting(testDb(), { name: 'trialDumps', value: '2' });
+    settings.forget();
+
+    await sowDump({ userId: anya, said: 'раз', results: ['Дело'] });
+    await sowDump({ userId: anya, said: 'два', results: ['Дело'] });
+    await sowDump({ userId: boris, said: 'раз', results: ['Дело'] });
+
+    await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId: anya,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'анин',
+    });
+
+    await markInvoicePaid(testDb(), {
+      id: (await invoiceByRef(testDb(), { provider: 'robokassa:smz', ref: 'анин' }))?.id ?? '',
+      now: new Date(),
+    });
+
+    const report = await overview(testDb(), 30, settings);
+
+    expect(report.conversion).toEqual({ trialFinished: 1, paid: 1, trialSize: 2 });
+    expect(report.missing).toEqual([]);
+  });
+
+  it('при нулевом пробном периоде переход не считается вовсе', async () => {
+    /**
+     * Ноль означает «пробного периода нет». Тогда «дошли до конца» — все,
+     * и число ни о чём не говорит. Честнее нули, чем переход у людей,
+     * которым бесплатного и не давали.
+     */
+    await putSetting(testDb(), { name: 'trialDumps', value: '0' });
+    settings.forget();
+
+    const report = await overview(testDb(), 30, settings);
+
+    expect(report.conversion).toEqual({ trialFinished: 0, paid: 0, trialSize: 0 });
+  });
+
+  it('платящих считает по живому периоду, а не по числу счетов', async () => {
+    await testDb()
+      .insert(billingSubscriptions)
+      .values([
+        {
+          provider: 'robokassa:smz',
+          userId: anya,
+          plan: 'monthly',
+          currentPeriodEnd: new Date(Date.now() + 5 * 24 * 3_600_000),
+        },
+        {
+          provider: 'robokassa:smz',
+          userId: boris,
+          plan: 'monthly',
+          currentPeriodEnd: new Date(Date.now() - 5 * 24 * 3_600_000),
+        },
+      ]);
+
+    expect((await overview(testDb(), 30, settings)).payers).toBe(1);
+  });
+});
+
+describe('подписка в списке людей (§15, задача 4.2)', () => {
+  it('«не платил» и «кончилась» — разные состояния, а не одно', async () => {
+    /**
+     * Разбирающий жалобу обязан их различать: у второго доступ был, и
+     * жалоба «бот перестал разбирать» у них означает разное. Прочерк на
+     * оба случая отправил бы искать причину не там.
+     */
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: anya,
+        plan: 'monthly',
+        currentPeriodEnd: new Date(Date.now() - 24 * 3_600_000),
+      });
+
+    const page = await people(testDb(), { limit: 20, offset: 0 });
+    const byId = new Map(page.rows.map((row) => [row.id, row]));
+
+    expect(byId.get(anya)?.subscription?.live).toBe(false);
+    // Борис не платил ни разу — подписки нет вовсе.
+    expect(byId.get(boris)?.subscription).toBeUndefined();
+  });
+
+  it('из двух рельсов показывается тот, что кончится позже', async () => {
+    /**
+     * Рельсов два, а доступ общий. Показать тот, что кончится раньше,
+     * значило бы напугать разбирающего жалобу без причины.
+     */
+    const soon = new Date(Date.now() + 3 * 24 * 3_600_000);
+    const later = new Date(Date.now() + 30 * 24 * 3_600_000);
+
+    await testDb()
+      .insert(billingSubscriptions)
+      .values([
+        { provider: 'robokassa:smz', userId: anya, plan: 'monthly', currentPeriodEnd: soon },
+        { provider: 'telegram:stars', userId: anya, plan: 'yearly', currentPeriodEnd: later },
+      ]);
+
+    const page = await people(testDb(), { limit: 20, offset: 0 });
+    const found = page.rows.find((row) => row.id === anya);
+
+    expect(found?.subscription?.rail).toBe('telegram:stars');
+    expect(found?.subscription?.live).toBe(true);
+  });
+
+  it('неудачное продление видно как есть, а не как «активна»', async () => {
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: anya,
+        plan: 'monthly',
+        status: 'past_due',
+        currentPeriodEnd: new Date(Date.now() + 24 * 3_600_000),
+      });
+
+    const page = await people(testDb(), { limit: 20, offset: 0 });
+
+    expect(page.rows.find((row) => row.id === anya)?.subscription?.status).toBe('past_due');
+  });
+
+  it('карточка человека тоже знает про подписку', async () => {
+    // Карточка — то место, куда идут по жалобе. «Заплатил ли он» там
+    // первый вопрос, и уходить за ответом в список было бы странно.
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: anya,
+        plan: 'monthly',
+        currentPeriodEnd: new Date(Date.now() + 24 * 3_600_000),
+      });
+
+    const card = await personCard(testDb(), { userId: anya });
+
+    expect(card?.person.subscription?.live).toBe(true);
   });
 });
 

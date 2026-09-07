@@ -349,7 +349,7 @@ export async function applyPaymentEvent(
    * пойдёт продление. У звёзд идентификатор не числовой, и номера тут
    * нет вовсе; поле останется пустым, и это верно.
    */
-  const providerInvId = /^d+$/u.test(externalId) ? Number(externalId) : undefined;
+  const providerInvId = /^\d+$/u.test(externalId) ? Number(externalId) : undefined;
 
   await markInvoicePaid(db, {
     id: invoice.id,
@@ -367,13 +367,20 @@ export async function applyPaymentEvent(
     currentPeriodEnd: paidUntil,
     ...(event.subscriptionRef === undefined ? {} : { subscriptionRef: event.subscriptionRef }),
     /**
-     * Автопродление включается только там, где оно вообще бывает.
+     * Автопродление берётся с счёта, а не угадывается по тарифу.
      *
-     * У звёзд годовой тариф автопродлением не бывает: `subscription_period`
-     * в Bot API обязан быть тридцатью днями. Обещать продление, которого
-     * не будет, — худший вид обмана в оплате.
+     * Прежде здесь стояло `plan === 'monthly'`, и это была догадка,
+     * неверная на **обоих** рельсах: у звёзд годовой тариф продлеваться не
+     * умеет вовсе (`subscription_period` в Bot API обязан быть тридцатью
+     * днями), а у Робокассы даже месячное продление работает лишь после
+     * согласования услуги. Пометь мы подписку продлеваемой без обещания —
+     * человек ждал бы автосписания, которого не будет, а суточный
+     * работник каждый день ходил бы списывать несписуемое.
+     *
+     * Пришедшее продление — доказательство сильнее любой записи: если
+     * деньги списались сами, продление работает.
      */
-    autoRenew: event.renewal ? true : invoice.plan === 'monthly',
+    autoRenew: event.renewal ? true : (invoice.autoRenew ?? false),
     renewal: event.renewal,
     now,
   });

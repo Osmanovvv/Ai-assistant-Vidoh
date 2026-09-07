@@ -7,6 +7,9 @@ import {
   aiCalls,
   appSettings,
   batches,
+  billingEvents,
+  billingInvoices,
+  billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
   items,
@@ -79,6 +82,16 @@ if (seedUrl !== undefined) {
   await seeded.delete(broadcastDeliveries);
   await seeded.delete(broadcasts);
   await seeded.delete(aiCalls);
+  /**
+   * Счета чистятся **до** людей, и это не порядок ради порядка.
+   *
+   * У счёта связь с человеком обрывается, а не удаляется: выручка — наша
+   * история, а не его данные (§16). Значит удаление людей оставило бы
+   * обезличенные счета, и выручка на стенде росла бы с каждым прогоном.
+   */
+  await seeded.delete(billingEvents);
+  await seeded.delete(billingSubscriptions);
+  await seeded.delete(billingInvoices);
   await seeded.delete(users);
 
   const [person] = await seeded
@@ -127,6 +140,54 @@ if (seedUrl !== undefined) {
       firstName: `человек-${String(index + 1)}`,
     })),
   );
+
+  /**
+   * Оплаченная подписка — для выручки и статуса в списке (задача 4.2).
+   *
+   * У Ани, а не у отдельного человека: колонка «Подписка» проверяется в
+   * её строке, и заводить для этого одиннадцатого человека значило бы
+   * сдвинуть числа в рассылке и в расходах.
+   *
+   * Счёт **оплаченный**: выручка считается по оплаченным, и выставленный
+   * счёт в неё попасть не должен.
+   */
+  const [paidInvoice] = await seeded
+    .insert(billingInvoices)
+    .values({
+      provider: 'robokassa:smz',
+      userId: person.id,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'стенд-оплачен',
+      status: 'paid',
+      autoRenew: true,
+      paidAt: new Date(),
+    })
+    .returning({ id: billingInvoices.id });
+
+  if (paidInvoice === undefined) throw new Error('стенд: счёт не создался');
+
+  // Брошенный счёт: в выручку он попасть не должен.
+  await seeded.insert(billingInvoices).values({
+    provider: 'robokassa:smz',
+    userId: person.id,
+    plan: 'yearly',
+    kind: 'initial',
+    amountMinor: 399_000,
+    currency: 'RUB',
+    ref: 'стенд-брошен',
+    autoRenew: true,
+  });
+
+  await seeded.insert(billingSubscriptions).values({
+    provider: 'robokassa:smz',
+    userId: person.id,
+    plan: 'monthly',
+    autoRenew: true,
+    currentPeriodEnd: new Date('2027-01-15T10:00:00.000Z'),
+  });
 
   /**
    * Сорвавшийся разбор — для журнала ошибок (задача 4.10).

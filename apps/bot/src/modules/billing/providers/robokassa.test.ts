@@ -384,7 +384,7 @@ describe('состояние операции', () => {
       fetch: () => Promise.resolve(new Response(xml)),
     });
 
-    expect((await known.statusOf({ tgId: 42, subscriptionRef: '1001' })).active).toBe(false);
+    expect((await known.statusOf({ tgId: 42, subscriptionRef: '1001' }))?.active).toBe(false);
   });
 
   it('сетевой сбой временный, а мусор в ответе — постоянный', async () => {
