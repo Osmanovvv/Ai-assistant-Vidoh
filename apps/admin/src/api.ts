@@ -135,7 +135,7 @@ export interface Overview {
   /** Выручка по рельсам: рубли в копейках, звёзды штуками (задача 4.2). */
   readonly revenue: readonly Revenue[];
   readonly payers: number;
-  readonly conversion: Conversion;
+  readonly funnel: Funnel;
   /** Чего в обзоре ещё нет и почему — словами, а не пустыми колонками. */
   readonly missing: readonly string[];
 }
@@ -146,10 +146,24 @@ export interface Revenue {
   readonly payments: number;
 }
 
-export interface Conversion {
-  readonly trialFinished: number;
-  readonly paid: number;
-  readonly trialSize: number;
+/** Один разрез воронки (§15, задача 4.4). */
+export interface FunnelRow {
+  readonly source: string | null;
+  readonly registered: number;
+  readonly firstDump: number;
+  readonly trialOver: number;
+  readonly paidAfterTrial: number;
+  readonly paidWithoutTrialOver: number;
+  readonly trialStillRunning: number;
+}
+
+export interface Funnel {
+  readonly total: FunnelRow;
+  readonly bySource: readonly FunnelRow[];
+  readonly trialLimits: readonly number[];
+  readonly momentsSince: string | null;
+  readonly paidWithoutPerson: number;
+  readonly missing: readonly string[];
 }
 
 export interface PersonRow {
@@ -523,6 +537,44 @@ export interface ErrorsPage {
   readonly callsTotal: number;
   readonly paymentsTotal: number;
   readonly missing: readonly string[];
+}
+
+// ── Промокоды (§14, задача 4.4) ──────────────────────────────────────
+
+export interface PromoRow {
+  readonly code: string;
+  readonly plan: string;
+  readonly priceRubMinor: number;
+  readonly priceStars: number;
+  readonly validUntil: string | null;
+  readonly maxRedemptions: number | null;
+  readonly note: string | null;
+  readonly disabledAt: string | null;
+  readonly redeemed: number;
+  readonly discountMinor: number;
+  readonly currency: string;
+}
+
+export function promoCodes(): Promise<{ rows: readonly PromoRow[] }> {
+  return call<{ rows: readonly PromoRow[] }>('/promo');
+}
+
+export interface NewPromoBody {
+  readonly code: string;
+  readonly plan: string;
+  readonly priceRubMinor: number;
+  readonly priceStars: number;
+  readonly validUntil?: string | undefined;
+  readonly maxRedemptions?: number | undefined;
+  readonly note?: string | undefined;
+}
+
+export function savePromoCode(body: NewPromoBody): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>('/promo', body);
+}
+
+export function switchPromoCode(code: string, enabled: boolean): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>('/promo', { code, enabled });
 }
 
 export function errors(days: number): Promise<ErrorsPage> {

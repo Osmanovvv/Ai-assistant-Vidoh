@@ -18,7 +18,7 @@ import { createEvalRunner } from './modules/admin/eval-run.js';
 import { runningBroadcasts } from './modules/broadcast/broadcast.repo.js';
 import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
 import { newestRun } from './eval/freshness.js';
-import { registerBillingHandlers } from './bot/handlers/billing.js';
+import { createPromoConsumer, registerBillingHandlers } from './bot/handlers/billing.js';
 import { createBillingRouter } from './http/billing.js';
 import { createRobokassaProvider } from './modules/billing/providers/robokassa.js';
 import { createStarsProvider } from './modules/billing/providers/stars.js';
@@ -342,6 +342,16 @@ async function main(): Promise<void> {
     sender,
     onboarding: questions,
     topics: topicGateway,
+    /**
+     * §15 и §19: предел пробного периода — чтобы момент его конца знал,
+     * при каком числе он случился (задача 4.4).
+     *
+     * Забудь эту строку — и третий шаг воронки навсегда останется
+     * пустым при зелёных тестах. Ровно тот класс отказа, что уже был:
+     * «написано, покрыто тестами и недостижимо». За связку следит
+     * страж `dump.wiring.test.ts`.
+     */
+    settings,
   });
 
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
@@ -511,7 +521,19 @@ async function main(): Promise<void> {
       payRails: Object.keys(providers) as Rail[],
       // Ответ словами на вопрос опроса и правка записи из карточки
       // (задача 3.61). Ждёт бот чего-то или нет — решает база.
-      consume: consumeAwaited({ db, logger }),
+      consume: consumeAwaited({
+        db,
+        logger,
+        /**
+         * §14: промокод словами (задача 4.4).
+         *
+         * Приёмом ответа, а не командой: команда идёт мимо гейта и мимо
+         * потолка частоты, то есть даёт бесплатный неограниченный
+         * перебор кодов, а публикация в списке команд объявляет о
+         * скидках всем.
+         */
+        promo: createPromoConsumer({ db, settings, logger, providers }),
+      }),
       // §14: размер пробного периода задаётся без выкладки (4.3).
       settings,
     }),

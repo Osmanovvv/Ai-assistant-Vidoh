@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Executor } from '../../infra/db.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
 import { createInvoice, nextInvId, noteAutoRenew } from './billing.repo.js';
+import type { PromoOffer } from './promo.service.js';
 import type { Checkout, PaymentProvider, PlanKind } from './provider.js';
 import { PLANS, priceOf, RAILS, type Price, type Rail } from './tariffs.js';
 
@@ -86,6 +87,15 @@ export interface CheckoutRequest {
   /** Что человек увидит в окне оплаты. */
   readonly title: string;
   readonly description: string;
+  /**
+   * Промокод, уже проверенный (задача 4.4).
+   *
+   * Проверять его здесь нельзя: `promoFor` спрашивает и человека, и
+   * рельс, и тариф, и историю оплат, а выставление счёта про них знает
+   * не всё. Кто позвал — тот и проверил; проверка стоит непосредственно
+   * перед этим вызовом, чтобы между ними не прошло времени.
+   */
+  readonly promo?: PromoOffer | undefined;
 }
 
 export type CheckoutOutcome =
@@ -97,9 +107,23 @@ export async function startCheckout(
   db: Executor,
   params: CheckoutRequest,
 ): Promise<CheckoutOutcome> {
-  const price = await priceOf(params.settings, { plan: params.plan, rail: params.rail });
+  const full = await priceOf(params.settings, { plan: params.plan, rail: params.rail });
 
-  if (price === undefined) return { ok: false, why: 'no-price' };
+  if (full === undefined) return { ok: false, why: 'no-price' };
+
+  /**
+   * Скидка применяется **до** создания счёта и одним значением.
+   *
+   * Это и есть всё правило встраивания промокода. Счёт, подпись и сумма
+   * в ссылке считаются из одной переменной: `price` идёт и в
+   * `createInvoice`, и провайдеру, который подписывает ровно её.
+   * Разойтись они физически не могут — пока скидка применена здесь, а не
+   * где-то по пути.
+   *
+   * А сверка при приёме уведомления идёт со суммой **счёта**, а не с
+   * ценой из настроек, — потому скидка и не ломает приём оплаты.
+   */
+  const price = params.promo?.price ?? full;
 
   const ref = newRef();
 
@@ -121,6 +145,15 @@ export async function startCheckout(
     currency: price.currency,
     ref,
     ...(invId === undefined ? {} : { invId }),
+    /**
+     * Полная цена — на счёт, даже когда скидки нет.
+     *
+     * Иначе «сколько недополучено по кодам» пришлось бы считать
+     * вычитанием нынешней цены, а она меняется: у платежей прошлого
+     * месяца скидка вышла бы другой.
+     */
+    amountFullMinor: full.amountMinor,
+    ...(params.promo === undefined ? {} : { promoCode: params.promo.code }),
   });
 
   const checkout = await params.provider.createCheckout({
@@ -133,6 +166,21 @@ export async function startCheckout(
     title: params.title,
     description: params.description,
     ...(invId === undefined ? {} : { invoiceNumber: invId }),
+    /**
+     * Промо-счёт уходит **без** автопродления, на обоих рельсах.
+     *
+     * Это часть устройства скидки, а не оговорка. У звёзд продлевает
+     * Telegram сам и по сумме счёта — подписочный промо-счёт означал бы
+     * скидку навсегда, и заметить это можно было бы только по выручке
+     * через месяц. У Робокассы дочернее списание на сумму **больше**
+     * материнского официально не выяснено (в перечне ошибок есть код 30
+     * «неверная сумма»), а сама формула подписи продления документацией
+     * не подтверждена — ставить на это первое живое списание нельзя.
+     *
+     * «Только на первый период» получается отсюда само: следующий период
+     * человек покупает обычной кнопкой по полной цене.
+     */
+    ...(params.promo === undefined ? {} : { renewable: false }),
   });
 
   /**

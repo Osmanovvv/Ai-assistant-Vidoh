@@ -512,6 +512,99 @@ describe('отмена автопродления — §14 «в один тап�
     expect(await subscriptionOf(testDb(), { userId, provider: RAIL })).toBeUndefined();
   });
 
+  it('продление оплаченного счёта заводит НОВУЮ строку, а не правит старую', async () => {
+    /**
+     * **Так устроены звёзды**: Telegram присылает продление с тем же
+     * `invoice_payload`, и счёт по метке находится тот же — оплаченный
+     * месяц назад. Пометь мы его оплаченным снова, `paid_at` уехал бы на
+     * новую дату, уничтожив дату первого платежа, а выручка за три
+     * месяца показала бы **один** платёж вместо трёх.
+     *
+     * Отказ был бы полностью молчаливым: подписка продлевается, доступ
+     * есть, в журнале успех — и только отчёт о выручке занижен на всё,
+     * кроме последнего периода.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'звёздная' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'звёздная', externalId: 'charge-1' }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'звёздная', externalId: 'charge-2', renewal: true }),
+      now: new Date('2026-10-07T10:00:00.000Z'),
+    });
+
+    const rows = await testDb()
+      .select()
+      .from(billingInvoices)
+      .where(eq(billingInvoices.ref, 'звёздная'));
+
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((one) => one.status === 'paid')).toHaveLength(2);
+
+    // Дата первого платежа цела — по ней считается выручка того месяца.
+    const dates = rows
+      .map((one) => one.paidAt?.toISOString())
+      .sort((first, second) => (first ?? '').localeCompare(second ?? ''));
+
+    expect(dates).toEqual(['2026-09-07T10:00:00.000Z', '2026-10-07T10:00:00.000Z']);
+
+    // Второй счёт — продление, и скидка на него не переносится.
+    const renewal = rows.find((one) => one.kind === 'renewal');
+
+    expect(renewal).toBeDefined();
+    expect(renewal?.promoCode).toBeNull();
+    expect(renewal?.amountFullMinor).toBeNull();
+  });
+
+  it('следующее продление находит свежий счёт, а не первый', async () => {
+    // Иначе третий месяц снова правил бы первую строку, и разошлось бы
+    // всё то же самое, только на шаг позже.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'трижды' });
+
+    for (const [index, charge] of ['c-1', 'c-2', 'c-3'].entries()) {
+      await applyPaymentEvent(testDb(), {
+        provider: RAIL,
+        event: paid({ ref: 'трижды', externalId: charge, renewal: index > 0 }),
+        now: new Date(Date.UTC(2026, 8 + index, 7, 10)),
+      });
+    }
+
+    const rows = await testDb()
+      .select()
+      .from(billingInvoices)
+      .where(eq(billingInvoices.ref, 'трижды'));
+
+    expect(rows).toHaveLength(3);
+  });
+
+  it('продление неоплаченного счёта новой строки не заводит', async () => {
+    /**
+     * Так приходит Робокасса: продление у неё уже имеет свой счёт со
+     * своей меткой, заведённый суточным проходом и ещё не оплаченный.
+     * Завести рядом второй значило бы удвоить выручку на рублёвом
+     * рельсе — ошибка, обратная звёздной.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'renewal', ref: 'рублёвое' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'рублёвое', externalId: '7001', renewal: true }),
+    });
+
+    const rows = await testDb()
+      .select()
+      .from(billingInvoices)
+      .where(eq(billingInvoices.ref, 'рублёвое'));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('paid');
+  });
+
   it('повторная отмена не ломается и говорит правду', async () => {
     await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-3' });
     await applyPaymentEvent(testDb(), {

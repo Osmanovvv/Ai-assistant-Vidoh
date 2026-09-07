@@ -7,10 +7,15 @@ import {
   billingEvents,
   billingInvoices,
   billingSubscriptions,
+  promoCodes,
   users,
 } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
-import { createInvoice, subscriptionOf } from '../../modules/billing/billing.repo.js';
+import {
+  createInvoice,
+  markInvoicePaid,
+  subscriptionOf,
+} from '../../modules/billing/billing.repo.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import { createStarsProvider } from '../../modules/billing/providers/stars.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
@@ -18,7 +23,9 @@ import { putSetting, SettingsRegistry } from '../../modules/settings/settings.re
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
-import { BILLING_ACTION, registerBillingHandlers } from './billing.js';
+import { savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
+import { awaitingOf } from '../../modules/onboarding/awaiting.js';
+import { BILLING_ACTION, createPromoConsumer, registerBillingHandlers } from './billing.js';
 
 /**
  * Экран подписки и приём звёздной оплаты (§14 ТЗ, задача 4.2).
@@ -65,9 +72,18 @@ function fakeProvider(params: {
     checkouts,
     createCheckout: (request) => {
       checkouts.push(request);
+
+      /**
+       * Заглушка **слушается** `renewable`, как настоящие провайдеры.
+       *
+       * Первая версия возвращала обещание продления всегда и потому
+       * лгала: промо-счёт выглядел продлеваемым, и проверка «промо-счёт
+       * разовый» падала на заглушке, а не на коде. Заглушка, не
+       * повторяющая контракт, проверяет саму себя.
+       */
       return Promise.resolve({
         url: `https://оплата.тест/${request.ref}`,
-        autoRenews: params.autoRenews,
+        autoRenews: params.autoRenews && request.renewable !== false,
       });
     },
     readEvent: () => Promise.resolve(undefined),
@@ -165,10 +181,68 @@ function buttonsOf(
   return (markup?.inline_keyboard ?? []).flat();
 }
 
+/**
+ * Платящий человек: подписка **и** оплаченный счёт.
+ *
+ * Обе строки, а не одна: в бою подписка появляется только из оплаты, и
+ * подписка без счёта — состояние, которого не бывает. Заведи мы её без
+ * счёта, проверка мерила бы небывалое: например кнопку промокода у того,
+ * кто уже платил.
+ */
+async function payingPerson(params: {
+  readonly autoRenew: boolean;
+  readonly until: Date;
+  readonly ref: string;
+  readonly subscriptionRef?: string;
+}): Promise<void> {
+  const invoice = await createInvoice(testDb(), {
+    provider: 'robokassa:smz',
+    userId,
+    plan: 'monthly',
+    kind: 'initial',
+    amountMinor: 39_900,
+    currency: 'RUB',
+    ref: params.ref,
+  });
+
+  await markInvoicePaid(testDb(), { id: invoice.id, now: new Date() });
+
+  await testDb()
+    .insert(billingSubscriptions)
+    .values({
+      provider: 'robokassa:smz',
+      userId,
+      plan: 'monthly',
+      autoRenew: params.autoRenew,
+      currentPeriodEnd: params.until,
+      ...(params.subscriptionRef === undefined ? {} : { subscriptionRef: params.subscriptionRef }),
+    });
+}
+
+/** Заглушка контекста: приёму кода нужен только `reply`. */
+function fakeCtx(said: { text: string; markup?: unknown }[]) {
+  return {
+    reply: (text: string, other?: unknown) => {
+      said.push({ text, markup: other });
+      return Promise.resolve(undefined as never);
+    },
+  } as never;
+}
+
+/** Кнопки из того, что передали вторым аргументом в `reply`. */
+function keyboardIn(markup: unknown): { text: string; callback_data?: string }[] {
+  const found = markup as
+    | { reply_markup?: { inline_keyboard?: { text: string; callback_data?: string }[][] } }
+    | undefined;
+
+  return (found?.reply_markup?.inline_keyboard ?? []).flat();
+}
+
 beforeEach(async () => {
   await testDb().delete(billingEvents);
   await testDb().delete(billingSubscriptions);
   await testDb().delete(billingInvoices);
+  await testDb().delete(promoCodes);
   await testDb().delete(appSettings);
   await testDb().delete(users);
 
@@ -214,7 +288,11 @@ describe('экран подписки показывает только то, ч
 
     const labels = buttonsOf(sent(calls)[0]).map((one) => one.text);
 
-    expect(labels).toEqual([`Месяц — 399 ₽ · ${defaultTexts.billing.payByCard}`]);
+    // Плюс кнопка промокода: скидка на первый период (задача 4.4).
+    expect(labels).toEqual([
+      `Месяц — 399 ₽ · ${defaultTexts.billing.payByCard}`,
+      defaultTexts.billing.buttonPromo,
+    ]);
   });
 
   it('оба рельса с ценой дают четыре кнопки', async () => {
@@ -236,21 +314,18 @@ describe('экран подписки показывает только то, ч
       `Год — 3990 ₽ · ${defaultTexts.billing.payByCard}`,
       `Месяц — 150 ⭐ · ${defaultTexts.billing.payByStars}`,
       `Год — 1500 ⭐ · ${defaultTexts.billing.payByStars}`,
+      defaultTexts.billing.buttonPromo,
     ]);
   });
 
   it('у платящего видно срок и кнопка отмены', async () => {
     await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
 
-    await testDb()
-      .insert(billingSubscriptions)
-      .values({
-        provider: 'robokassa:smz',
-        userId,
-        plan: 'monthly',
-        autoRenew: true,
-        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
-      });
+    await payingPerson({
+      autoRenew: true,
+      until: new Date(Date.now() + 20 * 24 * 3_600_000),
+      ref: 'платящий',
+    });
 
     const { bot, calls } = createTestBot({
       'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
@@ -275,15 +350,11 @@ describe('экран подписки показывает только то, ч
      */
     await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
 
-    await testDb()
-      .insert(billingSubscriptions)
-      .values({
-        provider: 'robokassa:smz',
-        userId,
-        plan: 'monthly',
-        autoRenew: false,
-        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
-      });
+    await payingPerson({
+      autoRenew: false,
+      until: new Date(Date.now() + 20 * 24 * 3_600_000),
+      ref: 'без-продления',
+    });
 
     const { bot, calls } = createTestBot({
       'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
@@ -295,7 +366,8 @@ describe('экран подписки показывает только то, ч
     const labels = buttonsOf(sent(calls)[0]).map((one) => one.text);
 
     expect(labels).not.toContain(defaultTexts.billing.buttonCancel);
-    expect(labels).toHaveLength(1);
+    // И промокода тоже нет: он уже платил, а скидка — на первый период.
+    expect(labels).toEqual([`Месяц — 399 ₽ · ${defaultTexts.billing.payByCard}`]);
   });
 });
 
@@ -406,16 +478,12 @@ describe('отмена продления — §14 «в один тап»', () =
   beforeEach(async () => {
     await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
 
-    await testDb()
-      .insert(billingSubscriptions)
-      .values({
-        provider: 'robokassa:smz',
-        userId,
-        plan: 'monthly',
-        autoRenew: true,
-        subscriptionRef: 'способ-оплаты-1',
-        currentPeriodEnd: new Date('2026-10-07T10:00:00.000Z'),
-      });
+    await payingPerson({
+      autoRenew: true,
+      until: new Date('2026-10-07T10:00:00.000Z'),
+      ref: 'отменяемый',
+      subscriptionRef: 'способ-оплаты-1',
+    });
   });
 
   it('один тап отключает продление и оставляет доступ до конца периода', async () => {
@@ -679,6 +747,173 @@ describe('оплата звёздами приходит апдейтом', () =
     expect(subscription?.autoRenew).toBe(false);
     // Доступ остаётся: человек заплатил за период.
     expect(subscription?.currentPeriodEnd.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe('промокод (§14, задача 4.4)', () => {
+  beforeEach(async () => {
+    await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
+    await putSetting(testDb(), { name: 'priceMonthlyStars', value: '150' });
+
+    await savePromo(testDb(), {
+      code: 'BLOGGER7',
+      plan: 'monthly',
+      priceRubMinor: 9_900,
+      priceStars: 40,
+    });
+  });
+
+  it('кнопка промокода есть у того, кто ещё не платил', async () => {
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(BILLING_ACTION.open));
+
+    expect(buttonsOf(sent(calls)[0]).map((one) => one.text)).toContain(
+      defaultTexts.billing.buttonPromo,
+    );
+  });
+
+  it('у платившего кнопки промокода нет — скидка на первый период', async () => {
+    /**
+     * Кнопка обещала бы то, чего не будет, и человек получил бы отказ
+     * уже после ввода кода.
+     */
+    const old = await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'старый',
+    });
+
+    await markInvoicePaid(testDb(), { id: old.id, now: new Date() });
+
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(BILLING_ACTION.open));
+
+    expect(buttonsOf(sent(calls)[0]).map((one) => one.text)).not.toContain(
+      defaultTexts.billing.buttonPromo,
+    );
+  });
+
+  it('нажатие ставит ожидание ответа словами, а не команду', async () => {
+    /**
+     * Ответом словами, а не командой: команда идёт мимо гейта доступа и
+     * мимо потолка частоты, то есть даёт бесплатный неограниченный
+     * перебор кодов, а публикация в списке команд объявляет о скидках
+     * всем.
+     */
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(BILLING_ACTION.promo));
+
+    expect(textOf(sent(calls)[0])).toBe(defaultTexts.billing.promoAsk);
+    expect((await awaitingOf(testDb(), userId)).awaiting?.kind).toBe('promo');
+  });
+
+  it('годный код перерисовывает кнопки со скидкой', async () => {
+    /**
+     * Кнопки, а не счёт: код может подойти к обоим рельсам, и выбор
+     * рельса остаётся за человеком — плюс между вводом и нажатием он
+     * ещё может передумать.
+     */
+    const consume = createPromoConsumer({
+      db: testDb(),
+      settings,
+      logger,
+      providers: {
+        'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+        'telegram:stars': fakeProvider({ name: 'telegram:stars', autoRenews: true }),
+      },
+    });
+
+    const said: { text: string; markup?: unknown }[] = [];
+
+    const handled = await consume(fakeCtx(said), userId, ' blogger7 ');
+
+    expect(handled).toBe(true);
+    expect(said[0]?.text).toContain('Код подошёл');
+
+    const buttons = keyboardIn(said[0]?.markup);
+
+    expect(buttons.map((one) => one.text)).toEqual([
+      `Месяц по коду — 99 ₽ · ${defaultTexts.billing.payByCard}`,
+      `Месяц по коду — 40 ⭐ · ${defaultTexts.billing.payByStars}`,
+    ]);
+
+    // Код едет в кнопке уже приведённым к единому виду.
+    expect(buttons[0]?.callback_data).toBe(`${BILLING_ACTION.promoBuyPrefix}r:monthly:BLOGGER7`);
+  });
+
+  it('непохожее на код не съедается: мысль уходит в разбор', async () => {
+    /**
+     * Человек мог вместо кода сказать мысль. Ровно тот дефект, что уже
+     * был: «ответ съедал мысль».
+     */
+    const consume = createPromoConsumer({
+      db: testDb(),
+      settings,
+      logger,
+      providers: { 'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }) },
+    });
+
+    const said: { text: string; markup?: unknown }[] = [];
+
+    const handled = await consume(fakeCtx(said), userId, 'надо записать сына к врачу в четверг');
+
+    expect(handled).toBe(false);
+    expect(said.map((one) => one.text)).toEqual([defaultTexts.billing.promoUnknown]);
+  });
+
+  it('покупка по коду проверяет код заново', async () => {
+    /**
+     * Между вводом и нажатием код может кончиться или быть выключен, а
+     * строка кнопки подделывается тривиально. Решает проверка, а не
+     * кнопка — потому код и может ехать в `callback_data`.
+     */
+    await setPromoEnabled(testDb(), { code: 'BLOGGER7', enabled: false });
+
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.promoBuyPrefix}r:monthly:BLOGGER7`));
+
+    expect(textOf(sent(calls)[0])).toBe(defaultTexts.billing.promoExpired);
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(0);
+  });
+
+  it('годный код выставляет счёт на цену по коду и без продления', async () => {
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.promoBuyPrefix}r:monthly:BLOGGER7`));
+
+    const [invoice] = await testDb().select().from(billingInvoices);
+
+    expect(invoice?.amountMinor).toBe(9_900);
+    expect(invoice?.amountFullMinor).toBe(39_900);
+    expect(invoice?.promoCode).toBe('BLOGGER7');
+    // Промо-счёт разовый: иначе у звёзд скидка стала бы пожизненной.
+    expect(invoice?.autoRenew).toBe(false);
+
+    // И человеку сказано, что платёж разовый.
+    expect(textOf(sent(calls)[0])).toContain(defaultTexts.billing.oneTimeNote);
   });
 });
 

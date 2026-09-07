@@ -14,14 +14,13 @@ import {
   pendingQuestions,
   users,
 } from '../../db/schema.js';
-import { createLogger } from '../../infra/logger.js';
 import {
   createInvoice,
   invoiceByRef,
   markInvoicePaid,
   nextInvId,
 } from '../billing/billing.repo.js';
-import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
+import { markTrialSpent } from '../billing/subscription.service.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import { overview, people, personCard } from './people.js';
@@ -42,7 +41,6 @@ import { overview, people, personCard } from './people.js';
 
 let anya = '';
 let boris = '';
-let settings: SettingsRegistry;
 
 beforeEach(async () => {
   await testDb().delete(itemRevisions);
@@ -59,12 +57,6 @@ beforeEach(async () => {
 
   anya = (await upsertUser(testDb(), { tgId: 8_001, firstName: 'Аня', username: 'anya' })).id;
   boris = (await upsertUser(testDb(), { tgId: 8_002, firstName: 'Борис' })).id;
-
-  settings = new SettingsRegistry({
-    db: testDb(),
-    logger: createLogger({ level: 'silent' }),
-    ttlMs: 0,
-  });
 });
 
 /** Разобранная выгрузка с текстом и записями. */
@@ -142,18 +134,17 @@ describe('обзор (§15)', () => {
     expect(report.spend[0]?.micros).toBe(3_000_000);
   });
 
-  it('без реестра значений переход в оплату не выдумывается', async () => {
+  it('без записанных моментов третий шаг не выдумывается, а объясняется', async () => {
     /**
-     * Размер пробного периода задаётся в панели, и без него нельзя
-     * сказать, кончился ли пробный. Показать в этом случае ноль значило
-     * бы соврать: пустая колонка читается как факт. Поэтому вместо
-     * числа — объяснение словами.
+     * Моменты конца пробного периода пишутся с выкладки 4.4 и задним
+     * числом не досыпаются. Ноль без объяснения читался бы как факт
+     * «никто не дошёл» — а это «записей ещё нет».
      */
     const report = await overview(testDb(), 30);
 
-    expect(report.missing).toHaveLength(1);
-    expect(report.missing[0]).toContain('пробного периода');
-    expect(report.conversion).toEqual({ trialFinished: 0, paid: 0, trialSize: 0 });
+    expect(report.funnel.total.trialOver).toBe(0);
+    expect(report.funnel.momentsSince).toBeNull();
+    expect(report.missing.some((note) => note.includes('задним числом не досыпаются'))).toBe(true);
   });
 
   it('выручка считается по оплаченным счетам, а не по выставленным', async () => {
@@ -189,7 +180,7 @@ describe('обзор (§15)', () => {
       now: new Date(),
     });
 
-    const report = await overview(testDb(), 30, settings);
+    const report = await overview(testDb(), 30);
 
     expect(report.revenue).toEqual([{ currency: 'RUB', minor: 39_900, payments: 1 }]);
   });
@@ -226,7 +217,7 @@ describe('обзор (§15)', () => {
       });
     }
 
-    const report = await overview(testDb(), 30, settings);
+    const report = await overview(testDb(), 30);
 
     expect([...report.revenue].sort((a, b) => a.currency.localeCompare(b.currency))).toEqual([
       { currency: 'RUB', minor: 39_900, payments: 1 },
@@ -243,11 +234,10 @@ describe('обзор (§15)', () => {
      * Пробный период здесь — две выгрузки. У Ани две зачтённых и
      * оплаченный счёт, у Бориса одна: он в знаменатель не попадает.
      */
-    await putSetting(testDb(), { name: 'trialDumps', value: '2' });
-    settings.forget();
-
     await sowDump({ userId: anya, said: 'раз', results: ['Дело'] });
-    await sowDump({ userId: anya, said: 'два', results: ['Дело'] });
+    // Вторая выгрузка без отметки: отметку поставит `markTrialSpent`, и
+    // вместе с ней запишется момент — так же, как в бою.
+    const last = await sowDump({ userId: anya, said: 'два', results: ['Дело'], trial: false });
     await sowDump({ userId: boris, said: 'раз', results: ['Дело'] });
 
     await createInvoice(testDb(), {
@@ -265,24 +255,18 @@ describe('обзор (§15)', () => {
       now: new Date(),
     });
 
-    const report = await overview(testDb(), 30, settings);
-
-    expect(report.conversion).toEqual({ trialFinished: 1, paid: 1, trialSize: 2 });
-    expect(report.missing).toEqual([]);
-  });
-
-  it('при нулевом пробном периоде переход не считается вовсе', async () => {
     /**
-     * Ноль означает «пробного периода нет». Тогда «дошли до конца» — все,
-     * и число ни о чём не говорит. Честнее нули, чем переход у людей,
-     * которым бесплатного и не давали.
+     * Момент конца пробного ставится настоящим путём — отметкой, которую
+     * ставит конвейер. Записать его в базу руками значило бы проверить
+     * не то: воронка читает то, что пишет `markTrialSpent`.
      */
-    await putSetting(testDb(), { name: 'trialDumps', value: '0' });
-    settings.forget();
+    await markTrialSpent(testDb(), { batchId: last, trialLimit: 2 });
 
-    const report = await overview(testDb(), 30, settings);
+    const report = await overview(testDb(), 30);
 
-    expect(report.conversion).toEqual({ trialFinished: 0, paid: 0, trialSize: 0 });
+    expect(report.funnel.total.trialOver).toBe(1);
+    expect(report.funnel.total.paidAfterTrial).toBe(1);
+    expect(report.funnel.trialLimits).toEqual([2]);
   });
 
   it('платящих считает по живому периоду, а не по числу счетов', async () => {
@@ -303,7 +287,7 @@ describe('обзор (§15)', () => {
         },
       ]);
 
-    expect((await overview(testDb(), 30, settings)).payers).toBe(1);
+    expect((await overview(testDb(), 30)).payers).toBe(1);
   });
 });
 

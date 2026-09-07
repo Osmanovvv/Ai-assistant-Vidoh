@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { putSetting, settings, type SettingsPage } from './api.js';
+import {
+  promoCodes,
+  putSetting,
+  savePromoCode,
+  settings,
+  switchPromoCode,
+  type PromoRow,
+  type SettingsPage,
+} from './api.js';
 
 /**
  * Настройки (§15 ТЗ, задача 4.9).
@@ -201,6 +209,244 @@ export function SettingsPanel(): React.ReactElement {
           {note}
         </p>
       ))}
+
+      <PromoBlock />
+    </div>
+  );
+}
+
+/**
+ * Промокоды (§14, задача 4.4).
+ *
+ * §14 дословно: «Поддержка кода на первый период. Нужны для запуска
+ * через блогеров». Заводить их обязана заказчица сама — иначе запуск у
+ * блогера невозможен без нас, а это и есть смысл строки §14.
+ *
+ * Блоком в разделе настроек, а не девятым разделом панели: §15
+ * перечисляет восемь разделов, и девятый был бы расширением объёма.
+ *
+ * **Код называет цену, а не скидку.** Подсказки говорят это словами:
+ * поле в копейках без объяснения означает, что кто-нибудь введёт «199» и
+ * продаст месяц за два рубля.
+ */
+function PromoBlock(): React.ReactElement {
+  const [rows, setRows] = useState<readonly PromoRow[] | undefined>(undefined);
+  const [problem, setProblem] = useState<string | undefined>(undefined);
+  const [draft, setDraft] = useState({
+    code: '',
+    plan: 'monthly',
+    priceRubMinor: '',
+    priceStars: '',
+    maxRedemptions: '',
+    note: '',
+  });
+
+  const load = useCallback(() => {
+    void promoCodes()
+      .then((page) => {
+        setRows(page.rows);
+      })
+      .catch(() => {
+        setProblem('Не удалось прочитать промокоды');
+      });
+  }, []);
+
+  useEffect(load, [load]);
+
+  const empty = {
+    code: '',
+    plan: 'monthly',
+    priceRubMinor: '',
+    priceStars: '',
+    maxRedemptions: '',
+    note: '',
+  };
+
+  const save = (): void => {
+    setProblem(undefined);
+
+    void savePromoCode({
+      code: draft.code,
+      plan: draft.plan,
+      priceRubMinor: Number(draft.priceRubMinor),
+      priceStars: Number(draft.priceStars),
+      ...(draft.maxRedemptions === '' ? {} : { maxRedemptions: Number(draft.maxRedemptions) }),
+      ...(draft.note === '' ? {} : { note: draft.note }),
+    })
+      .then(() => {
+        setDraft(empty);
+        load();
+      })
+      .catch(() => {
+        setProblem(
+          'Код не подошёл: латиница, цифры и дефис, от 4 до 24 знаков; цены больше нуля; такого кода ещё не должно быть',
+        );
+      });
+  };
+
+  const switchOne = (code: string, enabled: boolean): void => {
+    void switchPromoCode(code, enabled)
+      .then(load)
+      .catch(() => {
+        setProblem('Не удалось изменить код');
+      });
+  };
+
+  const digitsOnly = (value: string): string => value.replace(/[^0-9]/gu, '');
+
+  return (
+    <div className="разрез" data-testid="promo" style={{ marginTop: 28 }}>
+      <h3 className="разрез__имя">Промокоды на первый период</h3>
+
+      <p className="оговорка">
+        Код называет <b>цену</b> первого периода, а не скидку. Обе цены обязательны: скидка только
+        на карту подталкивала бы людей мимо звёзд, а правила Telegram требуют паритета. Промо-платёж
+        разовый — дальше человек платит обычную цену, и сам он не продлевается.
+      </p>
+
+      {problem !== undefined && (
+        <p className="отказ" role="alert">
+          {problem}
+        </p>
+      )}
+
+      {rows !== undefined && rows.length > 0 && (
+        <div className="таблица-обёртка">
+          <table className="таблица">
+            <thead>
+              <tr>
+                <th>Код</th>
+                <th>Тариф</th>
+                <th className="таблица__число">Рубли</th>
+                <th className="таблица__число">Звёзды</th>
+                <th className="таблица__число">Оплат</th>
+                <th className="таблица__число">Недополучено</th>
+                <th>Кому</th>
+                <th> </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.code}>
+                  <td data-testid={`promo-${row.code}`}>
+                    {row.code}
+                    {row.disabledAt === null ? '' : ' (выключен)'}
+                  </td>
+                  <td>{row.plan === 'monthly' ? 'месяц' : 'год'}</td>
+                  <td className="таблица__число">{(row.priceRubMinor / 100).toFixed(2)} ₽</td>
+                  <td className="таблица__число">{row.priceStars} ⭐</td>
+                  <td className="таблица__число">
+                    {row.redeemed}
+                    {row.maxRedemptions === null ? '' : ` из ${String(row.maxRedemptions)}`}
+                  </td>
+                  <td className="таблица__число">
+                    {row.currency === 'XTR'
+                      ? `${String(row.discountMinor)} ⭐`
+                      : `${(row.discountMinor / 100).toFixed(2)} ₽`}
+                  </td>
+                  <td className="панель__кто">{row.note ?? ''}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="период__кнопка"
+                      onClick={() => {
+                        switchOne(row.code, row.disabledAt !== null);
+                      }}
+                    >
+                      {row.disabledAt === null ? 'Выключить' : 'Включить'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rows?.length === 0 && <p className="разрез__пусто">Кодов пока нет.</p>}
+
+      <div className="период" style={{ marginTop: 16, flexWrap: 'wrap', gap: 8 }}>
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 170 }}
+          name="promoCode"
+          placeholder="КОД-БЛОГЕРА"
+          value={draft.code}
+          onChange={(event) => {
+            setDraft({ ...draft, code: event.target.value.toUpperCase() });
+          }}
+        />
+        <select
+          className="поле__ввод"
+          style={{ maxWidth: 110 }}
+          name="promoPlan"
+          value={draft.plan}
+          onChange={(event) => {
+            setDraft({ ...draft, plan: event.target.value });
+          }}
+        >
+          <option value="monthly">месяц</option>
+          <option value="yearly">год</option>
+        </select>
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 130 }}
+          name="promoRub"
+          inputMode="numeric"
+          placeholder="копейки"
+          value={draft.priceRubMinor}
+          onChange={(event) => {
+            setDraft({ ...draft, priceRubMinor: digitsOnly(event.target.value) });
+          }}
+        />
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 110 }}
+          name="promoStars"
+          inputMode="numeric"
+          placeholder="звёзды"
+          value={draft.priceStars}
+          onChange={(event) => {
+            setDraft({ ...draft, priceStars: digitsOnly(event.target.value) });
+          }}
+        />
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 120 }}
+          name="promoMax"
+          inputMode="numeric"
+          placeholder="сколько раз"
+          value={draft.maxRedemptions}
+          onChange={(event) => {
+            setDraft({ ...draft, maxRedemptions: digitsOnly(event.target.value) });
+          }}
+        />
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 200 }}
+          name="promoNote"
+          placeholder="кому выдан"
+          value={draft.note}
+          onChange={(event) => {
+            setDraft({ ...draft, note: event.target.value });
+          }}
+        />
+        <button
+          type="button"
+          className="период__кнопка"
+          name="promoSave"
+          disabled={draft.code === '' || draft.priceRubMinor === '' || draft.priceStars === ''}
+          onClick={save}
+        >
+          Завести код
+        </button>
+      </div>
+
+      <p className="панель__кто">
+        Копейки, а не рубли: 9900 = 99 ₽. Звёзды — штуками. «Сколько раз» пусто — без ограничения;
+        считаются только оплаченные, брошенный счёт квоту не тратит. Код не короче шести знаков и не
+        словарный: его увидят все подписчики блогера.
+      </p>
     </div>
   );
 }

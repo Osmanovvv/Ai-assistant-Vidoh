@@ -11,6 +11,7 @@ import { aiStage, type AiStage } from '../../db/schema.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { errorsView, restartBatch } from '../../modules/admin/errors.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
+import { promoRows, savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
 import {
   createBroadcast,
   isSegment,
@@ -163,24 +164,40 @@ export interface AdminDeps {
 }
 
 /**
- * Число из строки запроса — с потолком и полом.
+ * Число снаружи — с потолком и полом.
  *
  * Значения приходят снаружи: «за сколько дней» может оказаться словом,
  * отрицательным числом или десятью тысячами. Ни одно из трёх не должно
  * ни ронять панель, ни доходить до базы: запрос «за десять лет» на
  * боевой базе — это не отчёт, а остановка бота.
+ *
+ * **Строка и число оба законны, и это не удобство.** Из строки запроса
+ * приходит строка, из тела JSON — число: панель отправляет цены
+ * числами. Прежняя версия принимала только строку и возвращала
+ * умолчание на числе — то есть цена 14900, посланная панелью, доходила
+ * сюда нулём, и код отвергался с «цена должна быть больше нуля».
+ * Поймано браузерной проверкой промокодов; отказ был бы неразличим от
+ * ошибки человека.
  */
 function boundedNumber(
   raw: unknown,
   bounds: { readonly fallback: number; readonly min: number; readonly max: number },
 ): number {
-  if (typeof raw !== 'string') return bounds.fallback;
+  const parsed = numberIn(raw);
 
-  const digits = /^[0-9]+$/u;
-  const parsed = digits.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
-  if (!Number.isInteger(parsed)) return bounds.fallback;
+  if (parsed === undefined) return bounds.fallback;
 
   return Math.min(bounds.max, Math.max(bounds.min, parsed));
+}
+
+/** Целое из строки или числа. Всё прочее — «не число». */
+function numberIn(raw: unknown): number | undefined {
+  if (typeof raw === 'number') return Number.isInteger(raw) ? raw : undefined;
+
+  if (typeof raw !== 'string') return undefined;
+
+  // Регуляркой, а не `Number()`: тот принимает «0x10», « 12 » и «1e3».
+  return /^[0-9]+$/u.test(raw.trim()) ? Number(raw.trim()) : undefined;
 }
 
 /**
@@ -394,14 +411,7 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       (req: Request, res: Response) => {
         const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
 
-        /**
-         * Реестр значений передаётся, если он есть.
-         *
-         * От него зависит только переход из пробного в оплату: без
-         * размера пробного периода посчитать его нечем, и обзор честно
-         * скажет об этом строкой, а не покажет ноль.
-         */
-        void overview(db, days, deps.settings).then(
+        void overview(db, days).then(
           (report) => {
             res.json(report);
           },
@@ -554,6 +564,134 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           (error: unknown) => {
             deps.onError?.(error);
             res.status(500).json({ error: 'не удалось сохранить' });
+          },
+        );
+      },
+    );
+    /**
+     * Промокоды (§14, задача 4.4).
+     *
+     * В разделе настроек, а не девятым разделом панели: §15 перечисляет
+     * восемь разделов, и девятый был бы расширением объёма. Заводить
+     * коды заказчица обязана сама — иначе запуск через блогера
+     * невозможен без нас, а §14 просит именно его.
+     *
+     * **Не персональные данные:** код, цена, срок, квота и число
+     * применений. Ни одного имени и ни одного слова человека.
+     */
+    closed(
+      'get',
+      '/api/promo',
+      { personal: false, why: 'коды и число применений, без имён и без слов человека' },
+      (_req: Request, res: Response) => {
+        void promoRows(db).then(
+          (rows) => {
+            res.json({ rows });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать промокоды' });
+          },
+        );
+      },
+    );
+
+    closed(
+      'post',
+      '/api/promo',
+      { personal: false, why: 'заведение кода: данных человека здесь нет' },
+      (req: Request, res: Response) => {
+        const body: Record<string, unknown> =
+          typeof req.body === 'object' && req.body !== null
+            ? (req.body as Record<string, unknown>)
+            : {};
+
+        /**
+         * Выключение и заведение — один путь, разные тела.
+         *
+         * Отдельный путь на выключение потребовал бы третьего решения о
+         * персданных и третьей строки в стороже числа путей, а различие
+         * между ними — одно поле.
+         */
+        /**
+         * Код берётся строкой или не берётся вовсе.
+         *
+         * `String(что угодно)` превратил бы объект в «[object Object]» и
+         * завёл бы код с таким именем: тело приходит снаружи, и верить
+         * ему нельзя даже в панели.
+         */
+        const code = typeof body['code'] === 'string' ? body['code'] : '';
+
+        if (typeof body['enabled'] === 'boolean') {
+          void setPromoEnabled(db, { code, enabled: body['enabled'] }).then(
+            (changed) => {
+              if (!changed) {
+                res.status(404).json({ error: 'такого кода нет' });
+                return;
+              }
+
+              res.json({ ok: true });
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(500).json({ error: 'не удалось изменить код' });
+            },
+          );
+
+          return;
+        }
+
+        const plan = body['plan'] === 'yearly' ? 'yearly' : 'monthly';
+        const validUntil = typeof body['validUntil'] === 'string' ? body['validUntil'] : undefined;
+        const parsed = validUntil === undefined ? undefined : new Date(validUntil);
+
+        void savePromo(db, {
+          code,
+          plan,
+          priceRubMinor: boundedNumber(body['priceRubMinor'], {
+            fallback: 0,
+            min: 0,
+            max: 100_000_000,
+          }),
+          priceStars: boundedNumber(body['priceStars'], { fallback: 0, min: 0, max: 1_000_000 }),
+          ...(parsed === undefined || Number.isNaN(parsed.getTime()) ? {} : { validUntil: parsed }),
+          ...(body['maxRedemptions'] === undefined || body['maxRedemptions'] === null
+            ? {}
+            : {
+                maxRedemptions: boundedNumber(body['maxRedemptions'], {
+                  fallback: 1,
+                  min: 1,
+                  max: 1_000_000,
+                }),
+              }),
+          ...(typeof body['note'] === 'string' && body['note'] !== ''
+            ? { note: body['note'].slice(0, 200) }
+            : {}),
+        }).then(
+          (outcome) => {
+            if (!outcome.ok) {
+              /**
+               * Отказ назван, а не «не удалось».
+               *
+               * Заказчица правит поле сама: «такой код уже есть» и
+               * «цена должна быть больше нуля» — это две разные её
+               * следующие минуты.
+               */
+              const why: Record<string, string> = {
+                'bad-code': 'Код — латиница, цифры и дефис, от 4 до 24 знаков',
+                'bad-price': 'Обе цены должны быть больше нуля',
+                exists: 'Такой код уже есть. Выключите старый или назовите новый',
+              };
+
+              res.status(400).json({ error: why[outcome.why] ?? 'код не подошёл' });
+              return;
+            }
+
+            res.json({ ok: true, code: outcome.code });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось завести код' });
           },
         );
       },

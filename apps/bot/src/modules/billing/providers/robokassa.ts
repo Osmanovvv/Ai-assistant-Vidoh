@@ -177,6 +177,9 @@ export function createRobokassaProvider(deps: RobokassaDeps): PaymentProvider {
       }
 
       const outSum = outSumOf(params.amount);
+
+      /** Просим ли продление: месячный тариф и не промо-счёт. */
+      const wantsRenewal = params.plan === 'monthly' && params.renewable !== false;
       const userParams = marksOf({ ref: params.ref, kind: 'initial' });
 
       const query = new URLSearchParams({
@@ -196,13 +199,20 @@ export function createRobokassaProvider(deps: RobokassaDeps): PaymentProvider {
         }),
         ...userParams,
         /**
-         * Автопродление просим только у месячного тарифа.
+         * Автопродление просим только у месячного тарифа — и только если
+         * его вообще просят.
          *
          * У годового оно означало бы списание раз в год без напоминания —
          * а человек за год забудет, что подписывался. §14 требует
          * автосписание, но не требует делать его там, где оно вредит.
+         *
+         * Отказ просить приходит от промокода (задача 4.4): дочернее
+         * списание на сумму **больше** материнского официально не
+         * выяснено — в перечне ошибок есть код 30 «неверная сумма», а
+         * формула подписи продления документацией не подтверждена.
+         * Ставить на это первое живое списание нельзя.
          */
-        ...(params.plan === 'monthly' ? { Recurring: 'true' } : {}),
+        ...(wantsRenewal ? { Recurring: 'true' } : {}),
         ...(deps.isTest === true ? { IsTest: '1' } : {}),
       });
 
@@ -217,7 +227,7 @@ export function createRobokassaProvider(deps: RobokassaDeps): PaymentProvider {
          * после того, как человек нажал кнопку. Пока согласования нет,
          * честнее продать разовый период, чем обещать продление.
          */
-        autoRenews: params.plan === 'monthly' && deps.recurringApproved === true,
+        autoRenews: wantsRenewal && deps.recurringApproved === true,
       };
     },
 

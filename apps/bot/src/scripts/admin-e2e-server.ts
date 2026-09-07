@@ -1,4 +1,6 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+
+import { eq } from 'drizzle-orm';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +11,7 @@ import {
   batches,
   billingEvents,
   billingInvoices,
+  promoCodes,
   billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
@@ -17,6 +20,7 @@ import {
   users,
 } from '../db/schema.js';
 import { createEvalRunner } from '../modules/admin/eval-run.js';
+import { markTrialSpent } from '../modules/billing/subscription.service.js';
 import { sendChunk, type BroadcastSender } from '../modules/broadcast/broadcast.service.js';
 import { CLASSIFIER_SCHEMA_NAME } from '../modules/ai/schemas/index.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
@@ -92,6 +96,14 @@ if (seedUrl !== undefined) {
   await seeded.delete(billingEvents);
   await seeded.delete(billingSubscriptions);
   await seeded.delete(billingInvoices);
+  /**
+   * Коды чистятся тоже — иначе стенд не поднимется во второй раз.
+   *
+   * Код заведён с первичным ключом по себе, и повторный посев упал бы на
+   * нём. Плюс проверка промокодов **создаёт** код: без чистки второй
+   * прогон видел бы чужой код из первого и падал бы на «уже есть».
+   */
+  await seeded.delete(promoCodes);
   await seeded.delete(users);
 
   const [person] = await seeded
@@ -180,6 +192,47 @@ if (seedUrl !== undefined) {
     ref: 'стенд-брошен',
     autoRenew: true,
   });
+
+  /**
+   * Промокод с одной оплатой — для блока кодов и разреза (задача 4.4).
+   *
+   * Оплаченный счёт по коду и полная цена рядом: без неё «недополучено»
+   * посчитать нечем, а скидка блогерам выглядела бы провалом продаж.
+   */
+  await seeded.insert(promoCodes).values({
+    code: 'BLOGGER7',
+    plan: 'monthly',
+    priceRubMinor: 9_900,
+    priceStars: 40,
+    maxRedemptions: 50,
+    note: 'Марина, канал про быт',
+  });
+
+  await seeded.insert(billingInvoices).values({
+    provider: 'robokassa:smz',
+    userId: person.id,
+    plan: 'monthly',
+    kind: 'initial',
+    amountMinor: 9_900,
+    amountFullMinor: 39_900,
+    currency: 'RUB',
+    ref: 'стенд-по-коду',
+    promoCode: 'BLOGGER7',
+    status: 'paid',
+    autoRenew: false,
+    paidAt: new Date(),
+  });
+
+  // Источник перехода: по нему считается разрез §14.
+  await seeded.update(users).set({ referralSource: 'blogger7' }).where(eq(users.id, person.id));
+
+  /**
+   * Момент конца пробного периода — для третьего шага воронки.
+   *
+   * Ставится настоящим путём, отметкой конвейера: записать его руками
+   * значило бы проверить не то, что воронка читает.
+   */
+  await markTrialSpent(seeded, { batchId: batch.id, trialLimit: 1 });
 
   await seeded.insert(billingSubscriptions).values({
     provider: 'robokassa:smz',

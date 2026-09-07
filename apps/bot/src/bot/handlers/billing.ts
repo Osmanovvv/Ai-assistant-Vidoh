@@ -1,20 +1,26 @@
-import type { Bot } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import type { BillingSubscription } from '../../db/schema.js';
-import { invoiceByRef, subscriptionsOf } from '../../modules/billing/billing.repo.js';
+import {
+  invoiceByRef,
+  paidInvoicesCount,
+  subscriptionsOf,
+} from '../../modules/billing/billing.repo.js';
 import {
   priceText,
   sellable,
   startCheckout,
   untilText,
 } from '../../modules/billing/checkout.service.js';
-import type { PaymentProvider } from '../../modules/billing/provider.js';
+import { normalizeCode, promoFor, type PromoOffer } from '../../modules/billing/promo.service.js';
+import type { PaymentProvider, PlanKind } from '../../modules/billing/provider.js';
 import { applyPaymentEvent, cancelRenewal } from '../../modules/billing/subscription.service.js';
-import { RAILS, type Rail } from '../../modules/billing/tariffs.js';
+import { PLANS, RAILS, type Rail } from '../../modules/billing/tariffs.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
+import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
@@ -52,6 +58,21 @@ export const BILLING_ACTION = {
   /** `pay:b:<код рельса>:<тариф>` — купить. */
   buyPrefix: 'pay:b:',
   cancel: 'pay:stop',
+  /** Спросить промокод словами (§14, задача 4.4). */
+  promo: 'pay:promo',
+  /**
+   * `pay:p:<код рельса>:<тариф>:<КОД>` — купить по промокоду.
+   *
+   * Код едет в `callback_data` и заново проверяется при выставлении
+   * счёта: подделать строку тривиально, но решает проверка, а не
+   * кнопка. Взамен не нужно ни колонки «ожидающий код», ни своего срока
+   * жизни, ни второго источника правды о том, кто каким кодом платил.
+   *
+   * Предел `callback_data` — 64 **байта**; код ограничен латиницей,
+   * цифрами и дефисом до 24 знаков, префикс с рельсом и тарифом — до 17.
+   * За этим следит страж `bot/keyboards.test.ts`.
+   */
+  promoBuyPrefix: 'pay:p:',
 } as const;
 
 /**
@@ -137,7 +158,9 @@ async function screen(
   const context = await outputContextOf(deps.db, userId);
   const texts = textsFor(context.textProfile);
 
-  const rows = await planRows(deps, texts);
+  const plans = await planRows(deps, texts);
+  const rows = plans.length === 0 ? plans : [...plans, ...(await promoRow(deps, texts, userId))];
+
   const live = liveOne(await subscriptionsOf(deps.db, userId), Date.now());
 
   if (live === undefined) {
@@ -163,6 +186,116 @@ async function screen(
   };
 }
 
+/**
+ * Кнопка промокода — только тому, кому скидка вообще положена.
+ *
+ * Скидка на **первый** период: у платившего кнопка обещала бы то, чего
+ * не будет, и он получил бы отказ после ввода кода. Проверка — тот же
+ * запрос, которым `promoFor` решает то же самое; здесь он спрашивается
+ * один раз на открытие экрана, а не на каждый тариф.
+ */
+async function promoRow(
+  deps: BillingHandlerDeps,
+  texts: TextProfile,
+  userId: string,
+): Promise<{ label: string; action: string }[][]> {
+  const paid = await paidInvoicesCount(deps.db, userId);
+
+  return paid > 0 ? [] : [[{ label: texts.billing.buttonPromo, action: BILLING_ACTION.promo }]];
+}
+
+/**
+ * Выставить счёт и отправить ссылку.
+ *
+ * Общее для обычной покупки и покупки по промокоду: путь один, отличие —
+ * одно поле `promo`. Две копии этого кода разошлись бы в оговорке про
+ * продление, а она и есть главное, что человек здесь читает.
+ */
+async function sendCheckout(
+  deps: BillingHandlerDeps,
+  ctx: Pick<Context, 'reply'>,
+  params: {
+    readonly userId: string;
+    readonly tgId: number;
+    readonly plan: PlanKind;
+    readonly rail: Rail;
+    readonly provider: PaymentProvider;
+    readonly texts: TextProfile;
+    readonly promo?: PromoOffer | undefined;
+  },
+): Promise<void> {
+  const { texts } = params;
+  const planName = params.plan === 'monthly' ? texts.billing.monthly : texts.billing.yearly;
+
+  try {
+    const outcome = await startCheckout(deps.db, {
+      userId: params.userId,
+      tgId: params.tgId,
+      plan: params.plan,
+      rail: params.rail,
+      settings: deps.settings,
+      provider: params.provider,
+      /**
+       * Название счёта — не больше 32 знаков: столько принимает Telegram.
+       * Провайдер обрежет и сам, но обрезка «ВЫДОХ — под…» читается хуже,
+       * чем короткая строка, написанная сразу.
+       */
+      title: `ВЫДОХ, ${planName.toLowerCase()}`,
+      description: `Подписка на ВЫДОХ: разбор новых записей, ${planName.toLowerCase()}.`,
+      ...(params.promo === undefined ? {} : { promo: params.promo }),
+    });
+
+    if (!outcome.ok) {
+      await ctx.reply(texts.billing.noPrice);
+      return;
+    }
+
+    /**
+     * Оговорка про продление берётся у провайдера.
+     *
+     * Он один знает правду: у звёзд годовой тариф продлеваться не умеет
+     * вовсе, а у Робокассы продление работает только после согласования
+     * услуги. Скажи мы «продлевается» от себя — и половина людей узнала
+     * бы обратное из своего банка.
+     */
+    const note = outcome.checkout.autoRenews ? texts.billing.renewNote : texts.billing.oneTimeNote;
+
+    await ctx.reply(texts.billing.linkSent(note), {
+      reply_markup: {
+        inline_keyboard: [[{ text: texts.billing.buttonPay, url: outcome.checkout.url }]],
+      },
+    });
+  } catch (error) {
+    deps.logger.error(
+      { err: error, rail: params.rail, plan: params.plan },
+      'Не удалось выставить счёт',
+    );
+    await ctx.reply(texts.billing.checkoutFailed);
+  }
+}
+
+/**
+ * Почему код не подошёл — словами, которые человек может исправить.
+ *
+ * «Код не подошёл» без причины отправляет его писать в поддержку, а из
+ * пяти причин четыре он исправляет сам.
+ */
+function promoRefusal(texts: TextProfile, why: string): string {
+  switch (why) {
+    case 'not-first':
+      return texts.billing.promoNotFirst;
+    case 'spent':
+      return texts.billing.promoSpent;
+    case 'expired':
+    case 'disabled':
+      return texts.billing.promoExpired;
+    default:
+      // Нет такого кода, не тот тариф, снятая цена — для человека это
+      // одно и то же: код не работает, а проверять надо написание.
+      return texts.billing.promoUnknown;
+  }
+}
+
 /** Тексты того, кто нажал. Человека может и не быть — тогда общие. */
 async function textsOf(deps: BillingHandlerDeps, userId?: string): Promise<TextProfile> {
   if (userId === undefined) return textsFor();
@@ -170,6 +303,101 @@ async function textsOf(deps: BillingHandlerDeps, userId?: string): Promise<TextP
   const context = await outputContextOf(deps.db, userId);
 
   return textsFor(context.textProfile);
+}
+
+/**
+ * Приём промокода словами (§14, задача 4.4).
+ *
+ * Отдаётся приёму ответов (`consumeAwaited`) обратным вызовом: тот стоит
+ * **раньше** гейта доступа и раньше потолка частоты, поэтому код вводит
+ * и человек с кончившимся пробным периодом, и ввод не тратит ни
+ * выгрузку, ни обращение к модели.
+ *
+ * Собирается здесь, а не там, потому что для проверки кода нужны реестр
+ * цен и провайдеры оплаты — про них приёму ответа знать нечего.
+ *
+ * **Кнопки перерисовываются со скидкой, а не выставляется счёт.** Код
+ * может подойти к обоим рельсам, и выбор рельса остаётся за человеком;
+ * плюс между вводом и нажатием он ещё может передумать.
+ */
+export function createPromoConsumer(deps: BillingHandlerDeps) {
+  return async (ctx: Context, userId: string, raw: string): Promise<boolean> => {
+    const texts = await textsOf(deps, userId);
+    const code = normalizeCode(raw);
+
+    /**
+     * Непохожее на код не съедается.
+     *
+     * Человек мог вместо кода сказать мысль — тогда она обязана уйти в
+     * разбор, а не пропасть. Ровно тот дефект, что уже был: «ответ съедал
+     * мысль».
+     */
+    if (code === undefined) {
+      await ctx.reply(texts.billing.promoUnknown);
+      return false;
+    }
+
+    const rails = railsOf(deps);
+    const rows: { label: string; action: string }[][] = [];
+    let refusal: string | undefined;
+    let applied: { plan: string; price: string; full: string } | undefined;
+
+    for (const rail of rails) {
+      for (const plan of PLANS) {
+        const outcome = await promoFor(deps.db, {
+          code,
+          userId,
+          rail,
+          plan,
+          settings: deps.settings,
+        });
+
+        if (!outcome.ok) {
+          /**
+           * Причина запоминается первая **осмысленная**.
+           *
+           * Код проверяется на четырёх сочетаниях рельса и тарифа, и
+           * «не тот тариф» вернётся у трёх из них даже у годного кода.
+           * Сказать человеку «такого кода нет» из-за этого значило бы
+           * соврать, поэтому «уже платил», «кончился» и «истёк» имеют
+           * приоритет: они про него, а не про сочетание.
+           */
+          if (refusal === undefined || outcome.why !== 'unknown') {
+            refusal = promoRefusal(texts, outcome.why);
+          }
+          continue;
+        }
+
+        const planName = plan === 'monthly' ? texts.billing.monthly : texts.billing.yearly;
+        const railName =
+          rail === 'telegram:stars' ? texts.billing.payByStars : texts.billing.payByCard;
+
+        rows.push([
+          {
+            label: `${texts.billing.promoButton(planName, priceText(outcome.offer.price))} · ${railName}`,
+            action: `${BILLING_ACTION.promoBuyPrefix}${CODE_OF_RAIL[rail]}:${plan}:${code}`,
+          },
+        ]);
+
+        applied = {
+          plan: planName,
+          price: priceText(outcome.offer.price),
+          full: priceText(outcome.offer.full),
+        };
+      }
+    }
+
+    if (rows.length === 0 || applied === undefined) {
+      await ctx.reply(refusal ?? texts.billing.promoUnknown);
+      return true;
+    }
+
+    await ctx.reply(texts.billing.promoApplied(applied.plan, applied.price, applied.full), {
+      reply_markup: fitKeyboard(rows),
+    });
+
+    return true;
+  };
 }
 
 export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): void {
@@ -207,52 +435,14 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
         return;
       }
 
-      const planKind = plan === 'monthly' ? 'monthly' : 'yearly';
-      const planName = planKind === 'monthly' ? texts.billing.monthly : texts.billing.yearly;
-
-      try {
-        const outcome = await startCheckout(deps.db, {
-          userId: user.id,
-          tgId: ctx.from.id,
-          plan: planKind,
-          rail,
-          settings: deps.settings,
-          provider,
-          /**
-           * Название счёта — не больше 32 знаков: столько принимает
-           * Telegram. Провайдер обрежет и сам, но обрезка «ВЫДОХ — под…»
-           * читается хуже, чем короткая строка, написанная сразу.
-           */
-          title: `ВЫДОХ, ${planName.toLowerCase()}`,
-          description: `Подписка на ВЫДОХ: разбор новых записей, ${planName.toLowerCase()}.`,
-        });
-
-        if (!outcome.ok) {
-          await ctx.reply(texts.billing.noPrice);
-          return;
-        }
-
-        /**
-         * Оговорка про продление берётся у провайдера.
-         *
-         * Он один знает правду: у звёзд годовой тариф продлеваться не
-         * умеет вовсе, а у Робокассы продление работает только после
-         * согласования услуги. Скажи мы «продлевается» от себя — и
-         * половина людей узнала бы обратное из своего банка.
-         */
-        const note = outcome.checkout.autoRenews
-          ? texts.billing.renewNote
-          : texts.billing.oneTimeNote;
-
-        await ctx.reply(texts.billing.linkSent(note), {
-          reply_markup: {
-            inline_keyboard: [[{ text: texts.billing.buttonPay, url: outcome.checkout.url }]],
-          },
-        });
-      } catch (error) {
-        deps.logger.error({ err: error, rail, plan: planKind }, 'Не удалось выставить счёт');
-        await ctx.reply(texts.billing.checkoutFailed);
-      }
+      await sendCheckout(deps, ctx, {
+        userId: user.id,
+        tgId: ctx.from.id,
+        plan: plan === 'monthly' ? 'monthly' : 'yearly',
+        rail,
+        provider,
+        texts,
+      });
     },
   );
 
@@ -313,6 +503,86 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
         : texts.billing.renewalStopped(untilText(until)),
     );
   });
+
+  /**
+   * Спросить код словами (§14, задача 4.4).
+   *
+   * Ответ принимает уже готовое ожидание — то же, которым бот принимает
+   * имя и город. Оно стоит **раньше** гейта доступа и раньше потолка
+   * частоты, поэтому код вводит и человек с кончившимся пробным
+   * периодом, и ввод не тратит ни выгрузку, ни обращение к модели.
+   */
+  bot.callbackQuery(BILLING_ACTION.promo, async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const user = await findByTgId(deps.db, ctx.from.id);
+    if (user === undefined) return;
+
+    await setAwaiting(deps.db, user.id, AWAITING.promo);
+    await ctx.reply((await textsOf(deps, user.id)).billing.promoAsk);
+  });
+
+  bot.callbackQuery(
+    new RegExp(`^${BILLING_ACTION.promoBuyPrefix}([a-z]):(monthly|yearly):([A-Z0-9-]{4,24})$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+
+      const user = await findByTgId(deps.db, ctx.from.id);
+      if (user === undefined) return;
+
+      const texts = await textsOf(deps, user.id);
+
+      const [code, plan, promoCode] = ctx.callbackQuery.data
+        .slice(BILLING_ACTION.promoBuyPrefix.length)
+        .split(':');
+
+      const rail = code === undefined ? undefined : RAIL_OF_CODE.get(code);
+      const provider = rail === undefined ? undefined : deps.providers[rail];
+
+      if (
+        rail === undefined ||
+        provider === undefined ||
+        plan === undefined ||
+        promoCode === undefined
+      ) {
+        await ctx.reply(texts.billing.checkoutFailed);
+        return;
+      }
+
+      const planKind = plan === 'monthly' ? 'monthly' : 'yearly';
+
+      /**
+       * Код проверяется **заново**, в момент выставления счёта.
+       *
+       * Между вводом и нажатием кнопки проходит время, за которое код
+       * может кончиться или быть выключен, а сама строка кнопки
+       * подделывается тривиально. Решает проверка, а не кнопка — потому
+       * код и может ехать в `callback_data` без риска.
+       */
+      const checked = await promoFor(deps.db, {
+        code: promoCode,
+        userId: user.id,
+        rail,
+        plan: planKind,
+        settings: deps.settings,
+      });
+
+      if (!checked.ok) {
+        await ctx.reply(promoRefusal(texts, checked.why));
+        return;
+      }
+
+      await sendCheckout(deps, ctx, {
+        userId: user.id,
+        tgId: ctx.from.id,
+        plan: planKind,
+        rail,
+        provider,
+        texts,
+        promo: checked.offer,
+      });
+    },
+  );
 
   /**
    * Подтверждение платежа звёздами — и **отвечать надо за десять секунд**.

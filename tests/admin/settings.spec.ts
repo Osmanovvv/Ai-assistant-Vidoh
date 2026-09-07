@@ -98,4 +98,51 @@ test.describe('настройки (§15; задача 4.9)', () => {
     const response = await request.get('/admin/api/settings', { failOnStatusCode: false });
     expect(response.status()).toBe(401);
   });
+
+  test('промокоды: код заводится, виден и выключается — задача 4.4', async ({ page }) => {
+    /**
+     * §14: «Поддержка кода на первый период. Нужны для запуска через
+     * блогеров». Заводить их обязана заказчица сама — иначе запуск у
+     * блогера невозможен без нас, и строка §14 не выполнена.
+     *
+     * Путь проходится целиком, как человек: посмотреть засеянный код,
+     * завести новый, выключить его.
+     */
+    await signIn(page, 'Настройки');
+
+    const promo = page.getByTestId('promo');
+
+    await expect(promo).toBeVisible();
+
+    // Засеянный код с одной оплатой: видно применения и недополученное.
+    const seeded = page.getByRole('row', { name: /BLOGGER7/u });
+
+    await expect(seeded).toContainText('99.00 ₽');
+    await expect(seeded).toContainText('40 ⭐');
+    await expect(seeded).toContainText('1 из 50');
+    await expect(seeded).toContainText('300.00 ₽');
+    await expect(seeded).toContainText('Марина');
+
+    // Заводим новый.
+    await page.locator('input[name="promoCode"]').fill('осень-2026');
+    await page.locator('input[name="promoRub"]').fill('14900');
+    await page.locator('input[name="promoStars"]').fill('60');
+    await page.locator('button[name="promoSave"]').click();
+
+    // Код приведён к единому виду: кириллица не проходит, и панель
+    // говорит об этом, а не молчит.
+    await expect(page.getByRole('alert')).toContainText('латиница');
+
+    await page.locator('input[name="promoCode"]').fill('AUTUMN-2026');
+    await page.locator('button[name="promoSave"]').click();
+
+    await expect(page.getByTestId('promo-AUTUMN-2026')).toBeVisible();
+
+    // Выключение, а не удаление: по коду считается недополученное.
+    const fresh = page.getByRole('row', { name: /AUTUMN-2026/u });
+
+    await fresh.getByRole('button', { name: 'Выключить' }).click();
+
+    await expect(page.getByTestId('promo-AUTUMN-2026')).toContainText('выключен');
+  });
 });

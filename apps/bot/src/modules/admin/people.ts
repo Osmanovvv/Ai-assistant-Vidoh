@@ -13,8 +13,8 @@ import {
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { activePayersCount } from '../billing/billing.repo.js';
+import { funnelOf, type Funnel } from './funnel.js';
 import type { Money } from '../metering/cost-breakdown.js';
-import type { SettingsRegistry } from '../settings/settings.repo.js';
 
 /**
  * Люди в админ-панели: обзор, список, карточка (§15 ТЗ, задача 4.6).
@@ -63,8 +63,19 @@ export interface Overview {
   readonly revenue: readonly Revenue[];
   /** Сколько людей платят прямо сейчас. */
   readonly payers: number;
-  /** Переход из пробного периода в оплату (§15). */
-  readonly conversion: Conversion;
+  /**
+   * Воронка и разрез по источникам (§15, задача 4.4).
+   *
+   * Целиком, а не «переход из пробного в оплату» отдельным числом:
+   * третий и четвёртый шаги воронки и есть этот переход, и посчитай мы
+   * его здесь своим запросом — одно число оказалось бы посчитано двумя
+   * способами.
+   *
+   * По всем людям, а не за период обзора: воронка — когорта, и смешивать
+   * её с окном «за 30 дней» нельзя, иначе числа не сойдутся друг с
+   * другом.
+   */
+  readonly funnel: Funnel;
   /**
    * Чего в обзоре нет и почему — списком, а не молчанием.
    *
@@ -83,31 +94,7 @@ export interface Revenue {
   readonly payments: number;
 }
 
-/**
- * Переход из пробного периода в оплату.
- *
- * **Считается только по тем, у кого пробный период кончился.** Иначе
- * доля падала бы от каждого новичка, который ещё и не выбирал: он не
- * «не купил», он просто не дошёл до вопроса.
- *
- * Доли здесь нет — только два числа. Процент от трёх человек выглядит
- * как знание, а знанием не является; посчитать его по двум числам
- * умеет тот, кто смотрит.
- */
-export interface Conversion {
-  /** У кого пробный период израсходован полностью. */
-  readonly trialFinished: number;
-  /** Из них заплатившие хоть раз. */
-  readonly paid: number;
-  /** Размер пробного периода, при котором считали: без него числа немы. */
-  readonly trialSize: number;
-}
-
-export async function overview(
-  db: Executor,
-  days: number,
-  settings?: SettingsRegistry,
-): Promise<Overview> {
+export async function overview(db: Executor, days: number): Promise<Overview> {
   const since = new Date(Date.now() - days * 24 * 3_600_000);
   const now = new Date();
 
@@ -157,15 +144,14 @@ export async function overview(
   const payers = await activePayersCount(db, now);
 
   /**
-   * Размер пробного периода нужен, чтобы понять, кончился он или нет.
+   * Переход из пробного в оплату — воронкой, одним источником.
    *
-   * Реестр значений необязателен: без него обзор не врёт, а честно
-   * говорит, что перехода не посчитал. Так же он ведёт себя в тестах,
-   * которым до подписки дела нет.
+   * Реестр настроек ей не нужен вовсе: предел, при котором пробный
+   * период кончился, записан в самом моменте. Спроси мы настройку —
+   * получили бы нынешний предел вместо тогдашнего, то есть ровно ту
+   * неправду, ради которой момент и пишется.
    */
-  const trialSize = settings === undefined ? undefined : await settings.number('trialDumps');
-
-  const conversion = await conversionOf(db, trialSize);
+  const funnel = await funnelOf(db);
 
   return {
     days,
@@ -182,62 +168,14 @@ export async function overview(
       payments: row.payments,
     })),
     payers,
-    conversion,
-    missing:
-      trialSize === undefined
-        ? [
-            'Переход из пробного периода в оплату не посчитан: размер пробного периода неизвестен. Показывать вместо него ноль было бы неправдой.',
-          ]
-        : [],
-  };
-}
-
-/**
- * Сколько людей дошло до конца пробного периода и сколько из них платило.
- *
- * **Одним запросом, а не выборкой всех людей в память.** Панель обязана
- * работать на тысяче человек, а не на двадцати: проверка постраничности
- * это уже показала.
- *
- * Заплатившим считается тот, у кого есть **оплаченный** счёт — когда
- * угодно, а не за период обзора. Переход из пробного в оплату случается
- * один раз в жизни человека, и терять его через месяц было бы странно.
- */
-async function conversionOf(db: Executor, trialSize: number | undefined): Promise<Conversion> {
-  if (trialSize === undefined) return { trialFinished: 0, paid: 0, trialSize: 0 };
-
-  /**
-   * Ноль означает «пробного периода нет».
-   *
-   * Тогда «дошли до конца» — все, и число это ни о чём не говорит.
-   * Честнее вернуть нули, чем посчитать переход у людей, которым
-   * бесплатного и не давали.
-   */
-  if (trialSize <= 0) return { trialFinished: 0, paid: 0, trialSize };
-
-  const spent = db
-    .select({ userId: batches.userId })
-    .from(batches)
-    .where(sql`${batches.trialCountedAt} is not null`)
-    .groupBy(batches.userId)
-    .having(sql`count(*) >= ${trialSize}`)
-    .as('spent');
-
-  const [row] = await db
-    .select({
-      finished: sql<number>`count(*)::int`,
-      paid: sql<number>`count(*) filter (where exists (
-        select 1 from ${billingInvoices}
-        where ${billingInvoices.userId} = ${spent.userId}
-          and ${billingInvoices.status} = 'paid'
-      ))::int`,
-    })
-    .from(spent);
-
-  return {
-    trialFinished: row?.finished ?? 0,
-    paid: row?.paid ?? 0,
-    trialSize,
+    funnel,
+    /**
+     * Оговорки берутся у воронки: они про её же числа.
+     *
+     * Свой список здесь означал бы два места, где объясняют одно и то
+     * же, и однажды они разошлись бы.
+     */
+    missing: funnel.missing,
   };
 }
 

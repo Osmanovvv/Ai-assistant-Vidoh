@@ -15,6 +15,8 @@ import {
 import { buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
 import { cardKeyboard } from './handlers/card.js';
+import { BILLING_ACTION } from './handlers/billing.js';
+import { PLANS, RAILS } from '../modules/billing/tariffs.js';
 import { MENU_ACTION, rootKeyboard } from './handlers/menu.js';
 import { questionMessage } from './handlers/question.js';
 import { fitKeyboard, rowFits } from '../modules/presenter/keyboard.js';
@@ -141,6 +143,39 @@ function everyCallbackData(): { where: string; data: string }[] {
 
   fromKeyboard('card', cardKeyboard(itemFixture(), defaultTexts, MENU_ACTION.root));
 
+  /**
+   * Подписка (§14, задачи 4.2 и 4.4).
+   *
+   * **Экран подписки в этом страже не значился**, хотя план требует
+   * проверять все клавиатуры, а не те, что попались на глаза. Найдено
+   * перепроверкой четвёртого этапа: кнопки были, а предела им никто не
+   * мерил. С промокодами это перестало быть теорией — код едет в
+   * `callback_data` и удлиняет строку на двадцать четыре знака.
+   */
+  for (const data of Object.values(BILLING_ACTION)) {
+    found.push({ where: 'billing:action', data });
+  }
+
+  // Худший случай покупки: длинное имя рельса и годовой тариф.
+  for (const rail of RAILS) {
+    for (const plan of PLANS) {
+      found.push({
+        where: `billing:buy:${rail}`,
+        data: `${BILLING_ACTION.buyPrefix}${rail === 'telegram:stars' ? 's' : 'r'}:${plan}`,
+      });
+
+      /**
+       * Худший случай промокода: предел длины кода, какой пропускает
+       * `normalizeCode`. Именно на этом и попадаются: «SALE10» проходит,
+       * а «BLOGGER-NOVEMBER-2026-XX» — это уже двадцать четыре знака.
+       */
+      found.push({
+        where: `billing:promo:${rail}`,
+        data: `${BILLING_ACTION.promoBuyPrefix}${rail === 'telegram:stars' ? 's' : 'r'}:${plan}:${'X'.repeat(24)}`,
+      });
+    }
+  }
+
   return found;
 }
 
@@ -192,6 +227,8 @@ describe('идентификаторы действий не пересекаю�
       ONBOARDING.morningPrefix,
       ONBOARDING.eveningPrefix,
       ONBOARDING.topicPrefix,
+      BILLING_ACTION.buyPrefix,
+      BILLING_ACTION.promoBuyPrefix,
     ];
 
     const exact = [
@@ -210,6 +247,9 @@ describe('идентификаторы действий не пересекаю�
       DELETE_STEP_ONE,
       DELETE_STEP_TWO,
       DELETE_CANCEL,
+      BILLING_ACTION.open,
+      BILLING_ACTION.cancel,
+      BILLING_ACTION.promo,
     ];
 
     for (const prefix of prefixes) {

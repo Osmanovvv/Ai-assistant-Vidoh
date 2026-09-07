@@ -48,6 +48,18 @@ import { textsFor } from '../../texts/index.js';
 export interface AwaitingDeps {
   readonly db: Database;
   readonly logger: Logger;
+  /**
+   * Приём промокода словами (§14, задача 4.4).
+   *
+   * Обратным вызовом, а не зависимостями: чтобы проверить код, нужны
+   * реестр цен и провайдеры оплаты, а приёму ответа про них знать нечего.
+   * Собирается там же, где сам биллинг.
+   *
+   * Возвращает `true`, если код разобран (подошёл или честно отвергнут) —
+   * тогда сообщение дальше не идёт. Не задан — ожидание снимается, и
+   * сообщение идёт в разбор обычным путём, как до задачи.
+   */
+  readonly promo?: ((ctx: Context, userId: string, code: string) => Promise<boolean>) | undefined;
 }
 
 function keyboardOf(question: Question): InlineKeyboard {
@@ -116,6 +128,24 @@ export function consumeAwaited(deps: AwaitingDeps) {
       logger.info({ userId }, 'Имя задано словами');
       await askNext(ctx, userId, STEP.timezone);
       return true;
+    }
+
+    // ── Промокод словами (§14, задача 4.4) ───────────────────────────────
+    if (awaiting.kind === 'promo') {
+      /**
+       * Ожидание снимается **до** разбора кода, а не после.
+       *
+       * Каждая попытка требует нового нажатия кнопки — это и есть всё
+       * трение против перебора: приз перебора здесь скидка, а не деньги,
+       * и ставить счётчик на код было бы хуже, чем не ставить ничего.
+       * Счётчик на код позволил бы одному человеку сжечь код блогера для
+       * всей его аудитории — тот же дефект уже был во входе в панель.
+       */
+      await setAwaiting(db, userId, null);
+
+      if (deps.promo === undefined) return false;
+
+      return await deps.promo(ctx, userId, text);
     }
 
     // ── Город словами ────────────────────────────────────────────────────
