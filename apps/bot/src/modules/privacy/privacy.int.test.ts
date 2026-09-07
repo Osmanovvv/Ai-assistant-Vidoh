@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  broadcastDeliveries,
+  broadcasts,
   aiCalls,
   batches,
   items,
@@ -90,6 +92,28 @@ async function seedUser(tgId: number): Promise<string> {
   await testDb()
     .insert(userState)
     .values({ userId: user.id, energy: 'low', energyAt: new Date('2026-08-26T06:00:00.000Z') });
+
+  /**
+   * Строка рассылки (задача 4.10).
+   *
+   * В ней телеграм-номер человека, и при удалении она обязана уйти.
+   * Само письмо остаётся: оно ушло всем, и стирать его ради одного
+   * ушедшего нельзя.
+   */
+  const [mailing] = await testDb()
+    .insert(broadcasts)
+    .values({ text: 'Оплата открылась.', createdBy: 'аня', status: 'done' })
+    .returning({ id: broadcasts.id });
+
+  await testDb()
+    .insert(broadcastDeliveries)
+    .values({
+      broadcastId: mailing?.id ?? '',
+      userId: user.id,
+      tgId,
+      status: 'sent',
+      at: new Date(),
+    });
 
   return user.id;
 }
@@ -204,6 +228,16 @@ describe('deleteUserData', () => {
     expect(await testDb().select().from(items)).toHaveLength(0);
     expect(await testDb().select().from(topics)).toHaveLength(0);
     expect(await testDb().select().from(userState)).toHaveLength(0);
+
+    /**
+     * Строка рассылки уходит, а сама рассылка остаётся.
+     *
+     * В строке телеграм-номер человека — её удаление обязательно.
+     * Письмо ушло всем, и стирать его ради одного ушедшего нельзя:
+     * тогда пропала бы история того, что мы вообще рассылали.
+     */
+    expect(await testDb().select().from(broadcastDeliveries)).toHaveLength(0);
+    expect(await testDb().select().from(broadcasts)).toHaveLength(1);
   });
 
   it('после удаления бот начинает с нуля: критерий приёмки 13', async () => {

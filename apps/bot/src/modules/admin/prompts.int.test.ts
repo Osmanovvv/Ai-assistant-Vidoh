@@ -447,7 +447,7 @@ describe('заслон §10.3: непрогнанное не включаетс�
     });
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.ok === false ? outcome.refused.reasons.join(' ') : '').toContain('router');
+    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('router');
   });
 });
 

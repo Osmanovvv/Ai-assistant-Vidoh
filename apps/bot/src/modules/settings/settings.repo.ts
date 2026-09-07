@@ -85,6 +85,19 @@ export const SETTINGS = {
   resolverApply: { key: 'resolver.apply_pct', fallback: 80, measured: true },
   resolverCreate: { key: 'resolver.create_pct', fallback: 45, measured: true },
   resolverSimilarity: { key: 'resolver.similarity_pct', fallback: 50, measured: true },
+
+  /**
+   * Темп рассылки: сообщений в секунду (§15, задача 4.10).
+   *
+   * Telegram разрешает боту около тридцати сообщений в секунду на всё
+   * — включая ответы живым людям, которые пишут в эту же минуту.
+   * Двадцать оставляет им треть запаса.
+   *
+   * Настройкой, а не константой, потому что лимит не документирован
+   * точно и меняется, а рассылка на тысячу адресов — не то место, где
+   * хочется выкладывать новую версию, чтобы сбавить темп.
+   */
+  broadcastPerSecond: { key: 'broadcast.per_second', fallback: 20, measured: false },
 } as const;
 
 export type SettingName = keyof typeof SETTINGS;

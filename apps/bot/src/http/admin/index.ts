@@ -9,7 +9,18 @@ import express, {
 import type { Executor } from '../../infra/db.js';
 import { aiStage, type AiStage } from '../../db/schema.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
+import { errorsView, restartBatch } from '../../modules/admin/errors.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
+import {
+  createBroadcast,
+  isSegment,
+  listBroadcasts,
+  recipientsOf,
+  requestStop,
+  retryFailed,
+  SEGMENTS,
+  startBroadcast,
+} from '../../modules/broadcast/broadcast.repo.js';
 import {
   activateVersion,
   createHotfix,
@@ -122,6 +133,23 @@ export interface AdminDeps {
   readonly evalDir?: string | undefined;
   /** Кто запускает прогон набора по кнопке. Без него кнопки нет. */
   readonly evalRunner?: EvalRunner | undefined;
+  /**
+   * Кто ставит рассылку в очередь (§15, задача 4.10).
+   *
+   * Без него раздела рассылки нет: составить её и не суметь
+   * отправить — это кнопка, которая обманывает. Панель не знает про
+   * Redis и не должна: она просит «поставить», а как — дело того, кто
+   * её собрал.
+   */
+  readonly enqueueBroadcast?: ((broadcastId: string) => Promise<void>) | undefined;
+  /**
+   * Кто ставит в очередь перезапуск разбора (§17, задача 4.10).
+   *
+   * Без него кнопка «перезапустить» вернула бы выгрузку в очередь и
+   * ничего не запустила: досмотр подобрал бы её сам, но не сразу, и
+   * человек ждал бы неизвестно сколько.
+   */
+  readonly enqueueUser?: ((userId: string) => Promise<void>) | undefined;
   /**
    * Кэш активных промптов бота.
    *
@@ -514,6 +542,293 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
         );
       },
     );
+  }
+
+  if (deps.db !== undefined && deps.settings !== undefined) {
+    const db = deps.db;
+    const settings = deps.settings;
+
+    /**
+     * Рассылка (§15, задача 4.10).
+     *
+     * **Персональные данные, и это не формальность.** Ответ содержит
+     * число людей в сегменте, а список — кому уже ушло. Соблазн
+     * назвать это «сводкой» велик: цифры выглядят статистикой. Но
+     * сегмент «у кого пробный период кончился» — это сведение о
+     * конкретных людях, и §16 действует.
+     */
+    closed(
+      'get',
+      '/api/broadcast',
+      { personal: true, subjects: 'many' },
+      (_req: Request, res: Response) => {
+        void listBroadcasts(db).then(
+          (rows) => {
+            res.json({ rows, segments: SEGMENTS });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать рассылки' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Предпросмотр: сколько получателей и что именно уйдёт.
+     *
+     * §15 требует предпросмотра с подтверждением. Предпросмотр ничего
+     * не создаёт: человек должен иметь право посмотреть на число
+     * адресатов и уйти, не оставив черновика.
+     */
+    closed(
+      'get',
+      '/api/broadcast/preview',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const segment = req.query['segment'];
+
+        if (!isSegment(segment)) {
+          res.status(400).json({ error: 'нет такого сегмента' });
+          return;
+        }
+
+        void settings
+          .number('trialDumps')
+          .then(async (trialLimit) => {
+            const people = await recipientsOf(db, { segment, trialLimit });
+            return people.length;
+          })
+          .then(
+            (recipients) => {
+              res.json({ segment, recipients, title: SEGMENTS[segment] });
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(500).json({ error: 'не удалось посчитать получателей' });
+            },
+          );
+      },
+    );
+
+    /** Черновик: список получателей закрепляется здесь, но не уходит. */
+    closed(
+      'post',
+      '/api/broadcast',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const body = (req.body ?? {}) as { text?: unknown; segment?: unknown };
+
+        if (typeof body.text !== 'string' || !isSegment(body.segment)) {
+          res.status(400).json({ error: 'нужны text и segment' });
+          return;
+        }
+
+        const text = body.text;
+        const segment = body.segment;
+
+        void settings
+          .number('trialDumps')
+          .then(async (trialLimit) =>
+            await createBroadcast(db, {
+              text,
+              segment,
+              by: req.admin?.login ?? 'неизвестно',
+              trialLimit,
+            }),
+          )
+          .then(
+            (made) => {
+              res.json({ ok: true, id: made.id, recipients: made.recipients });
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(400).json({ error: error instanceof Error ? error.message : 'не вышло' });
+            },
+          );
+      },
+    );
+
+    /**
+     * Подтверждение — отдельным действием, и только при воркере.
+     *
+     * Кнопка «отправить», за которой некому отправлять, обманывает
+     * хуже отсутствующей: человек уверен, что тысяча людей получила
+     * письмо.
+     */
+    if (deps.enqueueBroadcast !== undefined) {
+      const enqueue = deps.enqueueBroadcast;
+
+      closed(
+        'post',
+        '/api/broadcast/:id/start',
+        { personal: true, subjects: 'many' },
+        (req: Request, res: Response) => {
+          const id = req.params['id'];
+
+          if (typeof id !== 'string') {
+            res.status(404).json({ error: 'не найдено' });
+            return;
+          }
+
+          void startBroadcast(db, id)
+            .then(async (started) => {
+              if (started) await enqueue(id);
+              return started;
+            })
+            .then(
+              (started) => {
+                // 409: запрос понят, но рассылка уже не черновик. Две
+                // нажатые кнопки не должны дать двух воркеров.
+                res
+                  .status(started ? 200 : 409)
+                  .json(started ? { ok: true } : { error: 'рассылка уже запущена или закончена' });
+              },
+              (error: unknown) => {
+                deps.onError?.(error);
+                res.status(500).json({ error: 'не удалось запустить' });
+              },
+            );
+        },
+      );
+
+      /** Повтор неудачных — «повторный запуск» из §15. */
+      closed(
+        'post',
+        '/api/broadcast/:id/retry',
+        { personal: true, subjects: 'many' },
+        (req: Request, res: Response) => {
+          const id = req.params['id'];
+
+          if (typeof id !== 'string') {
+            res.status(404).json({ error: 'не найдено' });
+            return;
+          }
+
+          void retryFailed(db, id)
+            .then(async (back) => {
+              if (back > 0) await enqueue(id);
+              return back;
+            })
+            .then(
+              (back) => {
+                res.json({ ok: true, back });
+              },
+              (error: unknown) => {
+                deps.onError?.(error);
+                res.status(500).json({ error: 'не удалось повторить' });
+              },
+            );
+        },
+      );
+    }
+
+    /**
+     * Остановка — есть всегда, даже без воркера.
+     *
+     * Кнопка «остановить» обязана работать в любом состоянии панели:
+     * рассылка могла быть запущена прошлой выкладкой и идти прямо
+     * сейчас. Отказать здесь значило бы держать её насильно.
+     */
+    closed(
+      'post',
+      '/api/broadcast/:id/stop',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const id = req.params['id'];
+
+        if (typeof id !== 'string') {
+          res.status(404).json({ error: 'не найдено' });
+          return;
+        }
+
+        void requestStop(db, id).then(
+          (asked) => {
+            // Просьба, а не приказ: воркер встанет перед следующей
+            // отправкой и сам поставит статус.
+            res.json({ ok: true, asked, note: asked ? 'останавливаю' : 'уже не идёт' });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось остановить' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Журнал сбоев (§15, задача 4.10).
+     *
+     * Персональные: видно, у кого сорвался разбор. Текстов расшифровок
+     * здесь нет нарочно — они в карточке, где доступ к ним тоже
+     * журналируется.
+     */
+    closed(
+      'get',
+      '/api/errors',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const days = boundedNumber(req.query['days'], { fallback: 7, min: 1, max: 366 });
+
+        void errorsView(db, days).then(
+          (view) => {
+            res.json(view);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать журнал' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Перезапуск сорвавшегося разбора (§17, задача 4.10).
+     *
+     * То, чего не хватало: сбойные выгрузки намеренно не
+     * переподхватываются, и человек не получал разбора никогда. Текст
+     * извинения обещал «админку, из которой их перезапускают» — вот она.
+     */
+    if (deps.enqueueUser !== undefined) {
+      const enqueueUser = deps.enqueueUser;
+
+      closed(
+        'post',
+        '/api/errors/batch/:id/restart',
+        {
+          personal: true,
+          subjects: 'many',
+        },
+        (req: Request, res: Response) => {
+          const id = req.params['id'];
+
+          if (typeof id !== 'string') {
+            res.status(404).json({ error: 'не найдено' });
+            return;
+          }
+
+          void restartBatch(db, id)
+            .then(async (outcome) => {
+              if (outcome.ok) await enqueueUser(outcome.userId);
+              return outcome;
+            })
+            .then(
+              (outcome) => {
+                if (!outcome.ok) {
+                  res.status(409).json({ error: outcome.why });
+                  return;
+                }
+
+                res.json({ ok: true });
+              },
+              (error: unknown) => {
+                deps.onError?.(error);
+                res.status(500).json({ error: 'не удалось перезапустить' });
+              },
+            );
+        },
+      );
+    }
   }
 
   if (deps.db !== undefined && deps.evalDir !== undefined) {

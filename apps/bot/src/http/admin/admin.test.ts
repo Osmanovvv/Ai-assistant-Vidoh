@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Executor } from '../../infra/db.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { createServer } from '../server.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
@@ -95,6 +96,11 @@ const NEVER_TOUCHED = {} as Executor;
  * Настоящий стоил бы денег, а тут до него не доходит ни разу — как и до
  * базы выше. Врёт он громко: `start` бросает вместо тихого «не вышло».
  */
+/** Очередь, до которой дело не дойдёт: страж отказывает раньше. */
+const NEVER_QUEUED = (): Promise<void> => {
+  throw new Error('очередь не должна использоваться в проверке стража');
+};
+
 const NEVER_RUN: EvalRunner = {
   state: () => ({ kind: 'idle' }),
   start: () => {
@@ -195,6 +201,9 @@ describe('без авторизации панель не отдаёт данн�
       staticDir: join(import.meta.dirname, '../../../../admin/dist'),
       evalDir: join(import.meta.dirname, 'нет-такой-папки'),
       evalRunner: NEVER_RUN,
+      settings: NEVER_TOUCHED as unknown as SettingsRegistry,
+      enqueueBroadcast: NEVER_QUEUED,
+      enqueueUser: NEVER_QUEUED,
     } as const;
 
     const { routes } = createAdminRouter(withEverything);
@@ -208,6 +217,9 @@ describe('без авторизации панель не отдаёт данн�
         adminDb: NEVER_TOUCHED,
         adminEvalDir: withEverything.evalDir,
         adminEvalRunner: NEVER_RUN,
+        adminSettings: withEverything.settings,
+        adminEnqueueBroadcast: NEVER_QUEUED,
+        adminEnqueueUser: NEVER_QUEUED,
       }),
     );
 
