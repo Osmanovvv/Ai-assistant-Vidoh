@@ -48,6 +48,7 @@ import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { AudioLimits } from '../speech/audio.service.js';
 import { run } from '../speech/ffmpeg.js';
 import { MockSpeechProvider } from '../speech/providers/mock.js';
+import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { PermanentSpeechError, TransientSpeechError } from '../speech/providers/types.js';
 import { createFailureReporter } from './failure-notice.js';
 import { upsertUser } from '../users/users.repo.js';
@@ -289,6 +290,16 @@ function handler(options: HandlerOptions) {
     ...(options.sender === undefined ? {} : { sender: options.sender }),
     ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
     ...(options.topics === undefined ? {} : { topics: options.topics }),
+    /**
+     * Реестр настроек — **всегда**, а не по желанию проверки.
+     *
+     * Найдено ревизией четвёртого этапа. Без него разбор не читает
+     * предел пробного периода, а значит и не тратит его: весь набор
+     * проверок про пробный период мерил обстановку, которой в бою нет.
+     * Момент «пробный кончился» в этих проверках не писался ни разу —
+     * `trialLimit` уезжал `undefined`.
+     */
+    settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
     now: () => options.now ?? at(60_000),
   });
 }
@@ -3161,7 +3172,24 @@ describe('пробный период тратит только разобран
     expect(marks[0]).not.toBeNull();
   });
 
-  it('быстрое добавление не тратит — план 4.3 требует прямо', async () => {
+  it('быстрое добавление тратит: оно платит четыре этапа из пяти', async () => {
+    /**
+     * **Посылка плана была неверной, и ревизия это доказала.**
+     *
+     * План 4.3 требовал прямо: «быстрые добавления не считаются — только
+     * выгрузки с разбором», и обоснование звучало так: «полсекунды не
+     * равны разбору». Но признак `quickAdd` вычисляется **после**
+     * маршрутизатора, извлечения, классификации и векторов — из платных
+     * этапов быстрое добавление пропускает единственный, презентацию.
+     * Заплачено четыре из пяти.
+     *
+     * Цена ошибки: человек, формулирующий мысли как «добавь ещё …», не
+     * кончал пробный период никогда, а в карточке панели это выглядело
+     * как «потрачено 0» при десятках разобранных выгрузок.
+     *
+     * Правка сделана по инварианту проекта: где черта оплаты, там и
+     * граница повтора. Требование плана исправлено вместе с кодом.
+     */
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();
 
@@ -3179,7 +3207,59 @@ describe('пробный период тратит только разобран
     // Сперва убедимся, что режим действительно включился: иначе
     // проверка прошла бы на обычной выгрузке и ничего не значила.
     expect(all.at(-1)).toBe(defaultTexts.answer.added);
-    expect((await trialMarks())[0]).toBeNull();
+    expect((await trialMarks())[0]).not.toBeNull();
+  });
+
+  it('на черте оплаты кончившийся пробный останавливает разбор до модели', async () => {
+    /**
+     * **Одиннадцать разборов вместо десяти.** Гейт приёма спрашивает
+     * «потрачено» в момент, когда человек говорит, а трата стояла в
+     * конце разбора: между точками — окно тишины плюс разбор, около
+     * полутора минут. Две мысли подряд, и вторая проходила гейт, пока
+     * первая ещё разбиралась.
+     *
+     * Здесь это воспроизведено прямо: предел добит, а выгрузка уже в
+     * очереди — ровно то состояние, в котором прежде платили одиннадцать
+     * раз. Обращения к модели быть не должно, и слово человеку — должно.
+     */
+    const prompts = await seedPrompts();
+    await putSetting(testDb(), { name: 'trialDumps', value: '1' });
+
+    // Один разбор уже потрачен: предел добит.
+    await testDb()
+      .insert(batches)
+      .values({
+        userId,
+        status: 'done',
+        openedAt: at(-600_000),
+        closedAt: at(-590_000),
+        trialCountedAt: at(-590_000),
+      });
+
+    const { sender, all } = recordingSender();
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты и врача', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    /**
+     * Меряются **деньги**, а не вызовы: строка учёта появляется у
+     * каждого платного обращения, и её отсутствие означает, что мы не
+     * заплатили ни разу. Считать вызовы обёрткой над провайдером было бы
+     * слабее — обёртка не видит расшифровку.
+     */
+    const paid = await testDb().select().from(aiCalls);
+
+    expect(paid).toHaveLength(0);
+
+    // И человеку сказано словами из словаря, а не промолчано.
+    expect(all.at(-1)).toBe(defaultTexts.limits.trialOver);
   });
 
   it('«привет» не тратит: разбирать было нечего', async () => {

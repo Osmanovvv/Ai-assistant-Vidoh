@@ -16,6 +16,7 @@ import {
 } from '../../modules/billing/checkout.service.js';
 import { normalizeCode, promoFor, type PromoOffer } from '../../modules/billing/promo.service.js';
 import type { PaymentProvider, PlanKind } from '../../modules/billing/provider.js';
+import { readStarsEvent } from '../../modules/billing/providers/stars.js';
 import { applyPaymentEvent, cancelRenewal } from '../../modules/billing/subscription.service.js';
 import { PLANS, RAILS, type Rail } from '../../modules/billing/tariffs.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
@@ -637,19 +638,45 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
     tgId: number,
     say: (text: string) => Promise<unknown>,
   ): Promise<void> => {
-    const provider = deps.providers['telegram:stars'];
-    if (provider === undefined) return;
+    /**
+     * **Выключенный рельс больше не глотает оплату.**
+     *
+     * Найдено ревизией четвёртого этапа. Прежде здесь стояло
+     * `if (provider === undefined) return;` — и это был самый дорогой
+     * молчаливый отказ в продукте: рельс звёзд выключается переменной
+     * окружения, а выключить его можно **после** того, как подписки уже
+     * созданы. Telegram продолжает списывать 150 звёзд каждый месяц и
+     * присылать нам служебное сообщение; бот выходил первой строкой.
+     * Деньги списаны, периода нет, счёт остался `created`, события нет,
+     * в журнале тишина, человеку не сказано ничего. Узнать об этом можно
+     * было только от него самого — и не по чем было проверить.
+     *
+     * Разбор для этого не нужен ключами: `readStarsEvent` читает тело
+     * апдейта и живёт снаружи провайдера. Дальше событие идёт обычным
+     * путём — человек получает то, за что заплатил, а в журнале
+     * остаётся громкий след того, что рельс выключен не вовремя.
+     */
+    const railOff = deps.providers['telegram:stars'] === undefined;
 
     let event;
 
     try {
-      event = await provider.readEvent(raw);
+      event = await readStarsEvent(raw);
     } catch (error) {
       deps.logger.error({ err: error, tgId }, 'Служебное сообщение об оплате не разобралось');
       return;
     }
 
     if (event === undefined) return;
+
+    if (railOff) {
+      // Ошибкой, а не предупреждением: это состояние требует правки
+      // руками — либо включить рельс, либо отменить подписки людям.
+      deps.logger.error(
+        { tgId, kind: event.kind },
+        'Оплата звёздами пришла при выключенном рельсе: Telegram продолжает списывать',
+      );
+    }
 
     const applied = await applyPaymentEvent(deps.db, {
       provider: 'telegram:stars',
