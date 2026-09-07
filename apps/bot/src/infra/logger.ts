@@ -88,13 +88,45 @@ function scrubText(value: unknown): unknown {
 }
 
 /**
- * Ошибка в журнал — без контекста апдейта и без токена в строках.
+ * Значения упавшего запроса, вклеенные в текст ошибки базы.
+ *
+ * **Найдено ревизией четвёртого этапа.** Отказ drizzle собирает своё
+ * сообщение как «Failed query: … / params: …» и кладёт значения ещё и в
+ * поле `params`. А значениями бывают слова человека: поиск по имени в
+ * панели уходит в запрос параметром, и упавший запрос уносил это имя в
+ * журнал — прямо против §16 и против того, о чём предупреждает шапка
+ * этого файла.
+ *
+ * Хвост отрезается, а не маскируется: сам текст запроса разбирающему
+ * нужен, а значения — нет, они и так есть у него в панели.
+ */
+const QUERY_PARAMS_TAIL = new RegExp(`${String.fromCharCode(10)}params:[\\s\\S]*$`, 'u');
+
+/**
+ * Поля отказа, которые несут значения запроса целиком.
+ *
+ * Выбрасываются, а не маскируются: в них нет ничего, кроме значений.
+ */
+const QUERY_FIELDS = new Set(['params', 'query', 'ctx']);
+
+function scrubMessage(value: unknown): unknown {
+  const text = scrubText(value);
+
+  return typeof text === 'string'
+    ? text.replace(QUERY_PARAMS_TAIL, `${String.fromCharCode(10)}params: [скрыто]`)
+    : text;
+}
+
+/**
+ * Ошибка в журнал — без контекста апдейта, без токена и без значений
+ * упавшего запроса.
  *
  * Стандартный сериализатор pino берёт `message`, `stack` и `type`, а всё
  * остальное копирует как есть. Здесь то же, но: `ctx` (контекст grammY
- * с токеном и текстом человека) выбрасывается, а вложенные причины
+ * с токеном и текстом человека) выбрасывается, вложенные причины
  * (`error`, `cause`) проходят ту же чистку, потому что токен сидит в
- * `err.error.error.message` — на третьем уровне.
+ * `err.error.error.message` — на третьем уровне, — а `params` и `query`
+ * отказа базы выбрасываются целиком: в них лежит то, что человек искал.
  */
 function scrubError(value: unknown, depth = 0): unknown {
   if (value === null || typeof value !== 'object' || depth > 5) return scrubText(value);
@@ -104,14 +136,14 @@ function scrubError(value: unknown, depth = 0): unknown {
 
   if (value instanceof Error) {
     out['type'] = value.name;
-    out['message'] = scrubText(value.message);
-    if (value.stack !== undefined) out['stack'] = scrubText(value.stack);
+    out['message'] = scrubMessage(value.message);
+    if (value.stack !== undefined) out['stack'] = scrubMessage(value.stack);
   }
 
   for (const [key, field] of Object.entries(source)) {
-    if (key === 'ctx') continue;
+    if (QUERY_FIELDS.has(key)) continue;
     if (key === 'message' || key === 'stack') {
-      out[key] = scrubText(field);
+      out[key] = scrubMessage(field);
       continue;
     }
     out[key] =

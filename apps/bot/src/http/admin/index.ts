@@ -307,7 +307,15 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
   router.use(noIndex);
 
   // ── Открытая часть: только вход ───────────────────────────────────────
-  router.use('/api/auth', createAuthRouter(deps.config));
+  /**
+   * Приёмник отказов передаётся и роутеру входа.
+   *
+   * Не для журнала как такового: без него `handle` в `auth.ts` съел бы
+   * отказ молча, а молчаливый отказ на входе в панель — это «пароль
+   * почему-то не подходит» без единой строки, по которой это можно
+   * разобрать.
+   */
+  router.use('/api/auth', createAuthRouter(deps.config, deps.onError));
 
   // ── Дальше — только с пропуском сессии ────────────────────────────────
   router.use('/api', requireAdmin(deps.config));

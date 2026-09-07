@@ -1,4 +1,4 @@
-import { and, count, eq, isNull, sql, type AnyColumn, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 
 import { batches, billingSubscriptions } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -175,14 +175,20 @@ export function trialOverSql(who: SQL | AnyColumn | string, limit: number): SQL 
   return sql`${trialSpentSql(who)} >= ${limit}`;
 }
 
-/** Сколько выгрузок этого человека потратили пробный период. */
+/**
+ * Сколько выгрузок этого человека потратили пробный период.
+ *
+ * Считает **тем же** условием, что отдаёт `trialSpentSql`, а не своим
+ * запросом. Иначе извлечение вышло бы половинчатым: я убрал бы третье
+ * определение и завёл четвёртое, а расхождение гейта с воронкой — ровно
+ * то, против чего всё это делалось.
+ */
 export async function trialSpent(db: Executor, userId: string): Promise<number> {
-  const [row] = await db
-    .select({ total: count() })
-    .from(batches)
-    .where(and(eq(batches.userId, userId), sql`${batches.trialCountedAt} is not null`));
+  const result = await db.execute<{ total: number }>(
+    sql`select ${trialSpentSql(sql`${userId}::uuid`)}::int as total`,
+  );
 
-  return row?.total ?? 0;
+  return result.rows[0]?.total ?? 0;
 }
 
 /**
@@ -545,8 +551,11 @@ export async function applyPaymentEvent(
      * человек ждал бы автосписания, которого не будет, а суточный
      * работник каждый день ходил бы списывать несписуемое.
      *
-     * Пришедшее продление — доказательство сильнее любой записи: если
-     * деньги списались сами, продление работает.
+     * Пришедшее продление — доказательство, что продление **умеет**
+     * работать, и только это. О воле человека оно не говорит ничего:
+     * решение «включить обратно или нет» принимает `upsertSubscription`,
+     * читая отметку отмены существующей строки. Отмена в один тап (§14)
+     * не должна превращаться в отмену на один раз.
      */
     autoRenew: event.renewal ? true : (invoice.autoRenew ?? false),
     renewal: event.renewal,

@@ -350,3 +350,49 @@ describe('ошибка grammY в журнале', () => {
     expect(typeof err['stack']).toBe('string');
   });
 });
+
+describe('отказ базы не уносит в журнал то, что искал человек', () => {
+  /**
+   * **Найдено ревизией четвёртого этапа.** Поиск по имени в панели уходит
+   * в запрос параметром, а отказ drizzle собирает своё сообщение как
+   * «Failed query: … / params: …» и кладёт значения ещё и в поле
+   * `params`. Упавший запрос уносил имя человека в журнал — прямо против
+   * §16 и против того, о чём предупреждает шапка самого этого файла.
+   *
+   * Текст запроса разбирающему нужен, значения — нет: они и так у него в
+   * панели. Поэтому хвост отрезается, а поля выбрасываются.
+   */
+  const NAME = 'Аня-Петрова';
+
+  function drizzleLikeError(): Error {
+    return Object.assign(
+      new Error(
+        [
+          'Failed query: select * from "users" where "users"."first_name" ilike $1',
+          `params: %${NAME}%`,
+        ].join(String.fromCharCode(10)),
+      ),
+      { query: 'select * from "users" where "users"."first_name" ilike $1', params: [`%${NAME}%`] },
+    );
+  }
+
+  function serialized(): string {
+    const { logger, records } = loggerWithSink();
+    logger.error({ err: drizzleLikeError() }, 'не удалось прочитать список');
+    return JSON.stringify(records);
+  }
+
+  it('искомое имя не встречается нигде: ни в message, ни в params, ни в query', () => {
+    const out = serialized();
+
+    expect(out).not.toContain(NAME);
+    expect(out).not.toContain('"params"');
+    expect(out).not.toContain('"query"');
+  });
+
+  it('а сам текст запроса остаётся — по нему и разбирают', () => {
+    // Выбросить всё значило бы оставить разбирающего без единой зацепки.
+    expect(serialized()).toContain('Failed query');
+    expect(serialized()).toContain('first_name');
+  });
+});
