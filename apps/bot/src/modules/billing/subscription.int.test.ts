@@ -19,12 +19,13 @@ import {
   paidInvoicesCount,
   subscriptionOf,
 } from './billing.repo.js';
-import type { PaymentEvent } from './provider.js';
+import type { PaymentEvent, PaymentProvider } from './provider.js';
 import {
   accessOf,
   applyPaymentEvent,
   cancelRenewal,
   markTrialSpent,
+  stopAllRenewals,
   trialSpent,
 } from './subscription.service.js';
 import { periodEndAfter, priceOf, renewFrom, tariffsOf } from './tariffs.js';
@@ -1151,5 +1152,168 @@ describe('возврат виден как возврат (ревизия эта
     });
 
     expect(await paidInvoicesCount(testDb(), userId)).toBe(0);
+  });
+});
+
+describe('удаление данных отменяет продление у провайдера (§16, ревизия этапа)', () => {
+  /**
+   * **Найдено ревизией, и это была утечка денег человека.** Ключ отмены
+   * звёздной подписки лежит в подписке, а она уходит каскадом вместе с
+   * человеком: §16 требует удалить его данные, и ключ — тоже его данные.
+   *
+   * Что получалось: человек нажимал «удалить данные», бот отвечал
+   * «Готово. Всё удалено», а Telegram продолжал списывать 150 звёзд
+   * каждый месяц. Отменить это не мог никто — ни он (бот отвечал «нечего
+   * отменять»), ни мы (ключа больше нет), ни панель.
+   */
+
+  /** Провайдер, помнящий, о чём просили, и умеющий отказать. */
+  function watching(fails = false) {
+    const asked: string[] = [];
+
+    return {
+      asked,
+      provider: {
+        name: 'telegram:stars',
+        createCheckout: () => Promise.reject(new Error('не нужно')),
+        readEvent: () => Promise.resolve(undefined),
+        stopRenewal: (params: { readonly subscriptionRef: string }) => {
+          if (fails) return Promise.reject(new Error('Telegram молчит'));
+
+          asked.push(params.subscriptionRef);
+          return Promise.resolve();
+        },
+        statusOf: () => Promise.resolve(undefined),
+      } as PaymentProvider,
+    };
+  }
+
+  async function starsSubscription(params: { readonly ref: string | null }): Promise<void> {
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'telegram:stars',
+        userId,
+        plan: 'monthly',
+        autoRenew: true,
+        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
+        ...(params.ref === null ? {} : { subscriptionRef: params.ref }),
+      });
+  }
+
+  it('живая подписка отменяется ключом первого платежа', async () => {
+    await starsSubscription({ ref: 'charge-первый' });
+
+    const watcher = watching();
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { 'telegram:stars': watcher.provider },
+    });
+
+    expect(watcher.asked).toEqual(['charge-первый']);
+    expect(outcome.stopped).toEqual(['telegram:stars']);
+    expect(outcome.failed).toEqual([]);
+
+    // И у себя тоже: если удаление не состоится, состояние сойдётся.
+    expect(
+      (await subscriptionOf(testDb(), { userId, provider: 'telegram:stars' }))?.autoRenew,
+    ).toBe(false);
+  });
+
+  it('отказ провайдера возвращается наверх, а не глотается', async () => {
+    /**
+     * §16 — право человека, и заложником чужого сбоя оно быть не может:
+     * удаление всё равно состоится. Но молчать нельзя, иначе он узнает
+     * о списании из своего счёта.
+     */
+    await starsSubscription({ ref: 'charge-первый' });
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { 'telegram:stars': watching(true).provider },
+    });
+
+    expect(outcome.failed).toEqual(['telegram:stars']);
+    expect(outcome.stopped).toEqual([]);
+  });
+
+  it('подписка без ключа отмены — тоже отказ, а не «всё в порядке»', async () => {
+    // Списание продолжится, и сказать об этом надо: молчание здесь и
+    // есть та самая утечка.
+    await starsSubscription({ ref: null });
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { 'telegram:stars': watching().provider },
+    });
+
+    expect(outcome.failed).toEqual(['telegram:stars']);
+  });
+
+  it('выключенный рельс — отказ: отменять нечем', async () => {
+    await starsSubscription({ ref: 'charge-первый' });
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: {},
+    });
+
+    expect(outcome.failed).toEqual(['telegram:stars']);
+  });
+
+  it('кончившуюся подписку провайдеру не несут', async () => {
+    /**
+     * Списаний она не породит, а лишний отказ человек прочтёт как «что-то
+     * не удалилось».
+     */
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'telegram:stars',
+        userId,
+        plan: 'monthly',
+        autoRenew: true,
+        currentPeriodEnd: new Date(Date.now() - 24 * 3_600_000),
+        subscriptionRef: 'charge-старый',
+      });
+
+    const watcher = watching();
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { 'telegram:stars': watcher.provider },
+    });
+
+    expect(watcher.asked).toEqual([]);
+    expect(outcome).toEqual({ stopped: [], failed: [] });
+  });
+
+  it('отменённое продление второй раз не отменяют', async () => {
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'telegram:stars',
+        userId,
+        plan: 'monthly',
+        autoRenew: false,
+        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
+        subscriptionRef: 'charge-первый',
+      });
+
+    const watcher = watching();
+
+    await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { 'telegram:stars': watcher.provider },
+    });
+
+    expect(watcher.asked).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNotNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, notInArray, sql } from 'drizzle-orm';
 
 import {
   billingEvents,
@@ -234,6 +234,36 @@ export async function parentPaymentFor(
       ),
     )
     .orderBy(desc(billingInvoices.paidAt))
+    .limit(1);
+
+  return row;
+}
+
+/**
+ * Живой промо-счёт человека, если он уже есть.
+ *
+ * Промокод даётся на **первый период**, и запрет второго промо-счёта
+ * стоит уникальным индексом. Значит повторное нажатие кнопки со скидкой
+ * не должно ни падать, ни заводить второй счёт: оно обязано вернуть
+ * человека к **той же** ссылке.
+ *
+ * Неудачные и возвращённые не считаются живыми: периода человек не
+ * получил, право на первый период за ним осталось.
+ */
+export async function livePromoInvoice(
+  db: Executor,
+  params: { readonly userId: string },
+): Promise<BillingInvoice | undefined> {
+  const [row] = await db
+    .select()
+    .from(billingInvoices)
+    .where(
+      and(
+        eq(billingInvoices.userId, params.userId),
+        isNotNull(billingInvoices.promoCode),
+        notInArray(billingInvoices.status, ['failed', 'refunded']),
+      ),
+    )
     .limit(1);
 
   return row;

@@ -18,7 +18,7 @@ import {
   subscriptionsOf,
   upsertSubscription,
 } from './billing.repo.js';
-import type { PaymentEvent } from './provider.js';
+import type { PaymentEvent, PaymentProvider } from './provider.js';
 import { periodEndAfter, renewFrom, type Rail } from './tariffs.js';
 
 /**
@@ -669,6 +669,93 @@ async function applyInside(
   await finish();
 
   return { kind: 'applied', paidUntil };
+}
+
+/**
+ * Отменить продление у всех провайдеров — перед удалением данных (§16).
+ *
+ * **Найдено ревизией четвёртого этапа, и это была утечка денег
+ * человека.** Ключ отмены звёздной подписки лежит в
+ * `billing_subscriptions.subscription_ref`, а эта строка уходит
+ * **каскадом** вместе с человеком: §16 требует удалить его данные, и
+ * ключ — тоже его данные.
+ *
+ * Что получалось: человек с звёздной подпиской нажимал «удалить данные»,
+ * бот отвечал «Готово. Всё удалено», а Telegram продолжал списывать 150
+ * звёзд каждый месяц. Отменить это не мог **никто**: он — потому что бот
+ * отвечал «нечего отменять» (подписок в базе нет), мы — потому что ключа
+ * больше не существовало, панель — по той же причине. Деньги уходили
+ * ежемесячно и бессрочно.
+ *
+ * Поэтому отмена зовётся **до** удаления. Наружу мы ходим до
+ * транзакции, а не внутри: держать замок на строках, пока отвечает
+ * Telegram, значило бы поставить удаление данных в зависимость от чужой
+ * доступности.
+ *
+ * **Отказ провайдера удаление не отменяет.** §16 — право человека, и
+ * заложником чужого сбоя оно быть не может. Но и молчать нельзя: тогда
+ * он узнает о списании из своего счёта. Отказ возвращается наверх,
+ * чтобы бот сказал словами, где отменить подписку самому.
+ */
+export async function stopAllRenewals(
+  db: Executor,
+  params: {
+    readonly userId: string;
+    readonly tgId: number;
+    readonly providers: Partial<Record<Rail, PaymentProvider>>;
+    readonly logger?: { readonly error: (context: object, message: string) => void } | undefined;
+    readonly now?: Date | undefined;
+  },
+): Promise<{ readonly stopped: readonly Rail[]; readonly failed: readonly Rail[] }> {
+  const now = params.now ?? new Date();
+  const stopped: Rail[] = [];
+  const failed: Rail[] = [];
+
+  for (const subscription of await subscriptionsOf(db, params.userId)) {
+    const rail = subscription.provider as Rail;
+
+    /**
+     * Отменяем только то, что ещё может списаться.
+     *
+     * Кончившийся период списаний не породит, а звать провайдера по
+     * мёртвой подписке — это лишний отказ, который человек прочтёт как
+     * «что-то не удалилось».
+     */
+    if (!subscription.autoRenew || subscription.currentPeriodEnd.getTime() <= now.getTime()) {
+      continue;
+    }
+
+    const provider = params.providers[rail];
+
+    if (provider === undefined || subscription.subscriptionRef === null) {
+      /**
+       * Отменять нечем — и это тоже отказ, а не «всё в порядке».
+       *
+       * Рельс выключен или ключа не было: списание продолжится, а
+       * сказать об этом надо. Молчание здесь и есть та самая утечка.
+       */
+      failed.push(rail);
+      continue;
+    }
+
+    try {
+      await provider.stopRenewal({
+        tgId: params.tgId,
+        subscriptionRef: subscription.subscriptionRef,
+      });
+
+      await stopAutoRenew(db, { userId: params.userId, provider: rail, now });
+      stopped.push(rail);
+    } catch (error) {
+      params.logger?.error(
+        { err: error, rail, userId: params.userId },
+        'Провайдер не отменил продление перед удалением данных: списания продолжатся',
+      );
+      failed.push(rail);
+    }
+  }
+
+  return { stopped, failed };
 }
 
 /**

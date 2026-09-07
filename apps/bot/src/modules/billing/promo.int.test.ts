@@ -13,7 +13,7 @@ import { createLogger } from '../../infra/logger.js';
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
-import { createInvoice, markInvoicePaid, nextInvId } from './billing.repo.js';
+import { createInvoice, markInvoicePaid, markInvoiceRefunded, nextInvId } from './billing.repo.js';
 import { startCheckout } from './checkout.service.js';
 import { normalizeCode, promoFor, promoRows, savePromo, setPromoEnabled } from './promo.service.js';
 import type { PaymentProvider } from './provider.js';
@@ -223,7 +223,14 @@ describe('годится ли код', () => {
       maxRedemptions: 1,
     });
 
+    /**
+     * Два человека, а не один: промо-счёт у человека может быть только
+     * один (запрет базы), и это правильно — код на первый период.
+     * Брошенный и оплаченный счёта одного кода приходят от разных
+     * людей, как и бывает у блогерской ссылки.
+     */
     const other = (await upsertUser(testDb(), { tgId: 4_500_002, firstName: 'Оля' })).id;
+    const third = (await upsertUser(testDb(), { tgId: 4_500_003, firstName: 'Ира' })).id;
 
     // Выставленный, но не оплаченный: квоту не тратит.
     await createInvoice(testDb(), {
@@ -243,7 +250,7 @@ describe('годится ли код', () => {
     // А оплаченный — тратит.
     const paid = await createInvoice(testDb(), {
       provider: 'robokassa:smz',
-      userId: other,
+      userId: third,
       plan: 'monthly',
       kind: 'initial',
       amountMinor: 9_900,
@@ -486,5 +493,171 @@ describe('коды в панели', () => {
 
     expect(row?.redeemed).toBe(0);
     expect(row?.discountMinor).toBe(0);
+  });
+});
+
+describe('промо-счёт один на человека (ревизия четвёртого этапа)', () => {
+  /**
+   * **Найдено ревизией, и это была самая дорогая находка промокодов.**
+   * «Первый период» проверялся только в момент выставления счёта, а
+   * счетов можно было завести сколько угодно: ссылки живут вечно, при
+   * оплате промокод не перепроверяется, а сроки складываются.
+   *
+   * Двенадцать нажатий той же кнопки — год за 1188 ₽ вместо 4788 ₽, и в
+   * панели «двенадцать применений».
+   */
+
+  async function offer() {
+    const outcome = await promoFor(testDb(), {
+      code: 'BLOGGER7',
+      userId,
+      rail: 'robokassa:smz',
+      plan: 'monthly',
+      settings,
+    });
+
+    if (!outcome.ok) throw new Error('код должен был подойти');
+
+    return outcome.offer;
+  }
+
+  it('повторное нажатие возвращает ту же ссылку, а не заводит второй счёт', async () => {
+    const provider = fakeProvider('robokassa:smz');
+
+    const first = await startCheckout(testDb(), {
+      userId,
+      tgId: 4_500_001,
+      plan: 'monthly',
+      rail: 'robokassa:smz',
+      settings,
+      provider,
+      title: 'ВЫДОХ, месяц',
+      description: 'Подписка',
+      promo: await offer(),
+    });
+
+    const second = await startCheckout(testDb(), {
+      userId,
+      tgId: 4_500_001,
+      plan: 'monthly',
+      rail: 'robokassa:smz',
+      settings,
+      provider,
+      title: 'ВЫДОХ, месяц',
+      description: 'Подписка',
+      promo: await offer(),
+    });
+
+    expect(first.ok && second.ok).toBe(true);
+
+    // Счёт один, а не два.
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(1);
+
+    // И ссылка та же: она строится из тех же параметров.
+    expect(first.ok ? first.ref : '').toBe(second.ok ? second.ref : 'другой');
+    expect(provider.asked).toHaveLength(2);
+    expect(provider.asked[0]?.amount).toBe(provider.asked[1]?.amount);
+  });
+
+  it('двенадцать нажатий дают один счёт, а не год по цене месяца', async () => {
+    const provider = fakeProvider('robokassa:smz');
+
+    for (let index = 0; index < 12; index += 1) {
+      await startCheckout(testDb(), {
+        userId,
+        tgId: 4_500_001,
+        plan: 'monthly',
+        rail: 'robokassa:smz',
+        settings,
+        provider,
+        title: 'ВЫДОХ, месяц',
+        description: 'Подписка',
+        promo: await offer(),
+      });
+    }
+
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(1);
+  });
+
+  it('запрет держит база, а не осторожность кода', async () => {
+    /**
+     * Между проверкой и вставкой всегда есть щель, и два нажатия подряд
+     * попадают в неё легко. Здесь второй счёт заводится в обход
+     * проверки — и упирается в уникальный индекс.
+     */
+    await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 9_900,
+      currency: 'RUB',
+      ref: 'первый-промо',
+      promoCode: 'BLOGGER7',
+    });
+
+    await expect(
+      createInvoice(testDb(), {
+        provider: 'robokassa:smz',
+        userId,
+        plan: 'monthly',
+        kind: 'initial',
+        amountMinor: 9_900,
+        currency: 'RUB',
+        ref: 'второй-промо',
+        promoCode: 'BLOGGER7',
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('после возврата денег право на первый период возвращается', async () => {
+    // Периода человек не получил — значит скидка ему по-прежнему
+    // положена, и второй промо-счёт законен.
+    const invoice = await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 9_900,
+      currency: 'RUB',
+      ref: 'вернули-промо',
+      promoCode: 'BLOGGER7',
+    });
+
+    await markInvoicePaid(testDb(), { id: invoice.id, now: new Date() });
+    await markInvoiceRefunded(testDb(), { id: invoice.id, now: new Date() });
+
+    await expect(
+      createInvoice(testDb(), {
+        provider: 'robokassa:smz',
+        userId,
+        plan: 'monthly',
+        kind: 'initial',
+        amountMinor: 9_900,
+        currency: 'RUB',
+        ref: 'снова-промо',
+        promoCode: 'BLOGGER7',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('обычная покупка без кода запретом не задета', async () => {
+    // Индекс частичный: он про промо-счёта, а не про все.
+    const provider = fakeProvider('robokassa:smz');
+
+    for (let index = 0; index < 3; index += 1) {
+      await startCheckout(testDb(), {
+        userId,
+        tgId: 4_500_001,
+        plan: 'monthly',
+        rail: 'robokassa:smz',
+        settings,
+        provider,
+        title: 'ВЫДОХ, месяц',
+        description: 'Подписка',
+      });
+    }
+
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(3);
   });
 });

@@ -8,6 +8,10 @@ import { batches, messagesRaw, topics, users } from '../../db/schema.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { createLogger } from '../../infra/logger.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
+import type { PaymentProvider } from '../../modules/billing/provider.js';
+import { billingSubscriptions } from '../../db/schema.js';
+import { defaultTexts } from '../../texts/index.js';
+import { findByTgId } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { incomingMiddleware } from './incoming.js';
@@ -46,7 +50,14 @@ const stubQueue = {
   add: () => Promise.resolve({}),
 } as unknown as Queue<PipelineJob>;
 
-function createTestBot(options: { withIncoming?: boolean; gateway?: FakeTopicGateway } = {}): {
+function createTestBot(
+  options: {
+    withIncoming?: boolean;
+    gateway?: FakeTopicGateway;
+    /** Провайдеры оплаты: отмена продления идёт до удаления (§16, §14). */
+    providers?: Partial<Record<'telegram:stars' | 'robokassa:smz', PaymentProvider>>;
+  } = {},
+): {
   bot: Bot;
   calls: ApiCall[];
   gateway: FakeTopicGateway;
@@ -82,7 +93,12 @@ function createTestBot(options: { withIncoming?: boolean; gateway?: FakeTopicGat
   registerStartHandlers(bot, { db: testDb(), logger, privacyPolicyUrl: POLICY_URL });
 
   const gateway = options.gateway ?? new FakeTopicGateway();
-  registerPrivacyHandlers(bot, { db: testDb(), logger, topics: gateway });
+  registerPrivacyHandlers(bot, {
+    db: testDb(),
+    logger,
+    topics: gateway,
+    ...(options.providers === undefined ? {} : { providers: options.providers }),
+  });
 
   return { bot, calls, gateway };
 }
@@ -403,5 +419,80 @@ describe('команды не попадают в выгрузку', () => {
     await bot.handleUpdate(textUpdate('/ надо бы разобраться с этим'));
 
     expect(await testDb().select().from(batches)).toHaveLength(1);
+  });
+});
+
+describe('удаление и подписка (§16 и §14, ревизия четвёртого этапа)', () => {
+  /**
+   * **«Готово. Всё удалено.» при продолжающихся списаниях — самая
+   * дорогая неправда, какую может сказать этот бот.** Ключ отмены
+   * звёздной подписки уходит каскадом вместе с человеком, и прежде бот
+   * отвечал так же, как при полном успехе: человек узнавал о списаниях
+   * из своего счёта.
+   */
+
+  function provider(fails: boolean): PaymentProvider {
+    return {
+      name: 'telegram:stars',
+      createCheckout: () => Promise.reject(new Error('не нужно')),
+      readEvent: () => Promise.resolve(undefined),
+      stopRenewal: () => (fails ? Promise.reject(new Error('Telegram молчит')) : Promise.resolve()),
+      statusOf: () => Promise.resolve(undefined),
+    };
+  }
+
+  async function liveStars(userId: string): Promise<void> {
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'telegram:stars',
+        userId,
+        plan: 'monthly',
+        autoRenew: true,
+        subscriptionRef: 'charge-первый',
+        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
+      });
+  }
+
+  it('подписка отменена — бот говорит «всё удалено»', async () => {
+    const { bot, calls } = createTestBot({ providers: { 'telegram:stars': provider(false) } });
+    await bot.init();
+
+    const person = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
+    await liveStars(person.id);
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_ONE));
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const said = calls
+      .filter((call) => call.method === 'editMessageText')
+      .map((call) => String(call.payload['text']));
+
+    expect(said.at(-1)).toBe(defaultTexts.privacy.deleteDone);
+  });
+
+  it('подписку отменить не удалось — бот говорит, где отменить самому', async () => {
+    /**
+     * Право на удаление при этом исполнено: §16 заложником чужого сбоя
+     * быть не может. Но и молчать нельзя — списания продолжатся.
+     */
+    const { bot, calls } = createTestBot({ providers: { 'telegram:stars': provider(true) } });
+    await bot.init();
+
+    const person = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
+    await liveStars(person.id);
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_ONE));
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const said = calls
+      .filter((call) => call.method === 'editMessageText')
+      .map((call) => String(call.payload['text']));
+
+    expect(said.at(-1)).toBe(defaultTexts.privacy.deleteDoneSubscriptionLeft);
+    expect(said.at(-1)).toContain('Подписки');
+
+    // И данные всё равно удалены: право исполнено.
+    expect(await findByTgId(testDb(), TG_ID)).toBeUndefined();
   });
 });
