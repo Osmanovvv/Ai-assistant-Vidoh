@@ -7,6 +7,7 @@ import {
   endPeriodNow,
   invoiceByRef,
   markEventProcessed,
+  markInvoiceFailed,
   markInvoicePaid,
   markPastDue,
   recordEvent,
@@ -223,6 +224,24 @@ export type AppliedEvent =
   | { readonly kind: 'duplicate' }
   | { readonly kind: 'stopped' }
   | { readonly kind: 'failed' }
+  /**
+   * Заплатили не столько, сколько в счёте, — доступа не даём.
+   *
+   * Подпись при этом сошлась: это не подделка, а другая сумма. Робокасса
+   * присылает `OutSum` — сумму, **зачисленную магазину**, и она может
+   * отличаться от запрошенной: конвертация валюты, изменение суммы в
+   * кабинете, частичная оплата. Считать любой пришедший платёж полным
+   * значило бы продать месяц за рубль.
+   *
+   * Событие записано и видно в панели: деньги пришли, услуга не выдана,
+   * и разбирать это должен человек.
+   */
+  | {
+      readonly kind: 'underpaid';
+      readonly expected: number;
+      readonly got: number;
+      readonly currency: string;
+    }
   /** Событие не про нас: метки нет в счетах. */
   | { readonly kind: 'unknown'; readonly why: string };
 
@@ -313,6 +332,13 @@ export async function applyPaymentEvent(
      * конца периода значило бы отдать месяц бесплатно, и это не то же
      * самое, что отмена автопродления: там человек **заплатил** и вправе
      * дожить период.
+     *
+     * **Частичный возврат обрывает период целиком, и это осознанно.**
+     * Сумма здесь не сверяется нарочно: возврат у нас ручной — его
+     * делает человек, разобравший обращение через `/paysupport`, — и
+     * пропорционально урезать срок он умеет лучше любой формулы. Гадать
+     * же, «сколько месяца осталось после возврата трёхсот рублей из
+     * трёхсот девяноста девяти», значит однажды посчитать не так.
      */
     await stopAutoRenew(db, { userId: invoice.userId, provider: params.provider, now });
     await endPeriodNow(db, { userId: invoice.userId, provider: params.provider, now });
@@ -321,7 +347,37 @@ export async function applyPaymentEvent(
     return { kind: 'stopped' };
   }
 
-  // Осталось `paid` — первый платёж или продление.
+  /**
+   * Осталось `paid`. И прежде чем выдать месяц — сверить сумму.
+   *
+   * **Подпись не про сумму, а про целостность.** Она подтверждает, что
+   * уведомление от Робокассы, а не то, что заплачено столько, сколько мы
+   * просили: `OutSum` — сумма, зачисленная магазину, и она может
+   * отличаться от запрошенной. Без этой сверки платёж на рубль по счёту
+   * на 399 давал бы полный месяц, и заметить это было бы нечем: событие
+   * прошло, подписка продлилась, в журнале успех.
+   *
+   * Сравнение «меньше», а не «не равно»: переплату забирать у человека
+   * незачем, а доступ он получил. Валюта сверяется тоже — 150 звёзд по
+   * рублёвому счёту это не 150 рублей.
+   */
+  if (event.currency !== invoice.currency || event.amount < invoice.amountMinor) {
+    await markInvoiceFailed(db, {
+      id: invoice.id,
+      errorText: `заплачено ${String(event.amount)} ${event.currency}, а в счёте ${String(invoice.amountMinor)} ${invoice.currency}`,
+      ...(params.outSum === undefined ? {} : { outSumReceived: params.outSum }),
+    });
+
+    await finish();
+
+    return {
+      kind: 'underpaid',
+      expected: invoice.amountMinor,
+      got: event.amount,
+      currency: event.currency,
+    };
+  }
+
   const subscription = await subscriptionOf(db, {
     userId: invoice.userId,
     provider: params.provider,

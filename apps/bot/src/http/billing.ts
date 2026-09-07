@@ -114,6 +114,27 @@ export function createBillingRouter(deps: BillingHttpDeps): Router {
             deps.logger?.warn({ why: outcome.why }, 'Оплата пришла, но продлевать некому');
           }
 
+          if (outcome.kind === 'underpaid') {
+            /**
+             * Сумма не сошлась со счётом — доступа не дали.
+             *
+             * Отвечаем `OK`: уведомление доставлено, и повторять его
+             * незачем — второй раз придёт та же сумма. Но в журнале это
+             * ошибка, а не предупреждение: деньги у нас, услуга не
+             * выдана, и разобрать это должен человек, а не следующий
+             * платёж.
+             */
+            deps.logger?.error(
+              {
+                invId: incoming['InvId'],
+                ожидали: outcome.expected,
+                пришло: outcome.got,
+                валюта: outcome.currency,
+              },
+              'Оплата пришла не на ту сумму: доступ не выдан',
+            );
+          }
+
           if (outcome.kind === 'applied' && deps.onPaid !== undefined) {
             const invoiceUser = await usersOfEvent(deps, event.ref);
 

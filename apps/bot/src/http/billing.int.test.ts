@@ -228,6 +228,60 @@ describe('подделка не проходит', () => {
   });
 });
 
+describe('сумма сверяется со счётом', () => {
+  it('оплата не на ту сумму отвечает OK, но доступа не даёт', async () => {
+    /**
+     * Подпись здесь **настоящая**: это не подделка, а другая сумма.
+     * `OutSum` — сумма, зачисленная магазину, и она может отличаться от
+     * запрошенной. Без сверки платёж на рубль по счёту на 399 давал бы
+     * полный месяц.
+     *
+     * Ответ `OK` — потому что уведомление доставлено, и повторять его
+     * незачем: второй раз придёт та же сумма. Отказ позвал бы Робокассу
+     * повторять вечно.
+     */
+    const response = await fetch(`${base}${ROBOKASSA_RESULT_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(signed({ outSum: '1.00', invId: '1010', ref: 'inv-1' })).toString(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('OK1010');
+
+    // А подписки нет: услуга не выдана.
+    expect(await testDb().select().from(billingSubscriptions)).toHaveLength(0);
+  });
+
+  it('и человеку про такую оплату не сообщают', async () => {
+    // Сказать «оплата прошла» там, где доступа не дали, — худший вид
+    // неправды: человек пойдёт пользоваться и упрётся в отказ.
+    const said: string[] = [];
+
+    const app = express();
+    app.use(
+      createBillingRouter({
+        db: testDb(),
+        robokassa: createRobokassaProvider(DEPS),
+        onPaid: (params) => {
+          said.push(params.userId);
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    const where = await listen(app);
+
+    await fetch(`${where}${ROBOKASSA_RESULT_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(signed({ outSum: '1.00', invId: '1011', ref: 'inv-1' })).toString(),
+    });
+
+    expect(said).toEqual([]);
+  });
+});
+
 describe('оповещение человека не мешает ответить Робокассе', () => {
   it('упавшее оповещение не превращается в отказ', async () => {
     /**

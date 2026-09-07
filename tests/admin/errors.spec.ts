@@ -69,4 +69,30 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
     await expect(page.getByTestId('restart-done')).toBeVisible();
     await expect(page.getByTestId('no-failed-batches')).toBeVisible();
   });
+
+  test('неудачный платёж виден с обеими суммами — задача 4.2', async ({ page }) => {
+    /**
+     * Самая дорогая строка журнала: человек заплатил и не получил
+     * доступ. Разница между «ждали» и «пришло» и есть весь разбор —
+     * показать одну сумму значило бы отправить разбирающего в журнал
+     * провайдера за второй.
+     *
+     * И отдельно проверяется, что сказано про отсутствие повтора:
+     * повторить списание — значит взять деньги второй раз, и молчание
+     * об этом читалось бы как «кнопку забыли сделать».
+     */
+    await signIn(page, 'Ошибки');
+
+    const section = page.getByTestId('failed-payments');
+
+    await expect(section).toBeVisible();
+
+    const row = page.getByRole('row', { name: /Оля/u });
+
+    await expect(row).toContainText('399.00 ₽');
+    await expect(row).toContainText('1.00');
+    await expect(row).toContainText('карта');
+
+    await expect(page.getByText('повтора нет и не будет', { exact: false })).toBeVisible();
+  });
 });

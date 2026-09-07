@@ -257,6 +257,13 @@ export async function markInvoiceFailed(
     readonly id: string;
     readonly errorCode?: number | undefined;
     readonly errorText?: string | undefined;
+    /**
+     * Пришедшая сумма строкой — при недоплате её надо сохранить.
+     *
+     * Разбирать «сколько же он заплатил» по журналу провайдера, когда у
+     * счёта пусто, значило бы идти за ответом в чужую систему.
+     */
+    readonly outSumReceived?: string | undefined;
   },
 ): Promise<void> {
   await db
@@ -265,6 +272,7 @@ export async function markInvoiceFailed(
       status: 'failed',
       ...(params.errorCode === undefined ? {} : { errorCode: params.errorCode }),
       ...(params.errorText === undefined ? {} : { errorText: params.errorText }),
+      ...(params.outSumReceived === undefined ? {} : { outSumReceived: params.outSumReceived }),
     })
     .where(eq(billingInvoices.id, params.id));
 }

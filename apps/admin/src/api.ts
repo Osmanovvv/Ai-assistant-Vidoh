@@ -496,13 +496,32 @@ export interface FailedSend {
   readonly at: string | null;
 }
 
+/** Неудачный платёж (§14, задача 4.2). */
+export interface FailedPayment {
+  readonly id: string;
+  readonly rail: string;
+  readonly userId: string | null;
+  readonly who: string;
+  readonly tgId: number | null;
+  readonly plan: string;
+  readonly kind: string;
+  readonly expectedMinor: number;
+  readonly currency: string;
+  readonly received: string | null;
+  readonly errorCode: number | null;
+  readonly errorText: string | null;
+  readonly at: string;
+}
+
 export interface ErrorsPage {
   readonly days: number;
   readonly batches: readonly FailedBatch[];
   readonly calls: readonly FailedCall[];
   readonly sends: readonly FailedSend[];
+  readonly payments: readonly FailedPayment[];
   readonly batchesTotal: number;
   readonly callsTotal: number;
+  readonly paymentsTotal: number;
   readonly missing: readonly string[];
 }
 

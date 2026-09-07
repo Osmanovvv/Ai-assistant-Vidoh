@@ -23,6 +23,16 @@ import { errors, restartBatch, type ErrorsPage } from './api.js';
 
 const DAYS = [1, 7, 30] as const;
 
+/**
+ * Сумма в наименьших единицах — человеку.
+ *
+ * Рубли в копейках, звёзды штуками: делить звёзды на сто значило бы
+ * показать «1.50 ⭐» там, где их полторы сотни.
+ */
+function minor(value: number, currency: string): string {
+  return currency === 'XTR' ? `${String(value)} ⭐` : `${(value / 100).toFixed(2)} ₽`;
+}
+
 function when(iso: string | null): string {
   if (iso === null) return '';
 
@@ -179,6 +189,54 @@ export function ErrorsPanel(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {page.payments.length > 0 && (
+        <div className="разрез">
+          <h3 className="разрез__имя" data-testid="failed-payments">
+            Неудачные платежи — {page.paymentsTotal} за период
+          </h3>
+
+          <p className="оговорка">
+            Самое дорогое в этом журнале: человек мог заплатить и не получить доступ. Разбирается
+            руками — повторить списание нельзя, это значило бы взять деньги второй раз.
+          </p>
+
+          <div className="таблица-обёртка">
+            <table className="таблица">
+              <thead>
+                <tr>
+                  <th>Когда</th>
+                  <th>Кто</th>
+                  <th>Рельс</th>
+                  <th>Тариф</th>
+                  <th className="таблица__число">Ждали</th>
+                  <th className="таблица__число">Пришло</th>
+                  <th>Что случилось</th>
+                </tr>
+              </thead>
+              <tbody>
+                {page.payments.map((row) => (
+                  <tr key={row.id}>
+                    <td>{when(row.at)}</td>
+                    <td>{row.who}</td>
+                    <td>{row.rail === 'telegram:stars' ? 'звёзды' : 'карта'}</td>
+                    <td>
+                      {row.plan === 'monthly' ? 'месяц' : 'год'}
+                      {row.kind === 'renewal' ? ', продление' : ''}
+                    </td>
+                    <td className="таблица__число">{minor(row.expectedMinor, row.currency)}</td>
+                    <td className="таблица__число">{row.received ?? '—'}</td>
+                    <td className="панель__кто">
+                      {row.errorCode === null ? '' : `${String(row.errorCode)}: `}
+                      {row.errorText ?? ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {page.sends.length > 0 && (
         <div className="разрез">

@@ -1,6 +1,6 @@
 import { and, count, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 
-import { aiCalls, batches, broadcastDeliveries, users } from '../../db/schema.js';
+import { aiCalls, batches, billingInvoices, broadcastDeliveries, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 
 /**
@@ -14,7 +14,11 @@ import type { Executor } from '../../infra/db.js';
  *  - **неуспешные вызовы модели** — причина, по которой выгрузка
  *    сорвалась, и заодно счёт: 403 не тарифится, а таймаут после
  *    отправки — да (задача 3.82);
- *  - **неудачные отправки рассылки** — их повтор живёт в самой рассылке.
+ *  - **неудачные отправки рассылки** — их повтор живёт в самой рассылке;
+ *  - **неудачные платежи** (задача 4.2) — самый дорогой источник:
+ *    человек мог заплатить и не получить доступ. Сюда попадают
+ *    недоплаты (сумма не сошлась со счётом), несостоявшиеся продления и
+ *    неоткрывшиеся страницы оплаты.
  *
  * **Перезапуск есть только у выгрузок, и это не недоделка.** Повторить
  * вызов модели в отрыве от выгрузки нельзя: он часть конвейера, и его
@@ -53,6 +57,35 @@ export interface FailedCall {
   readonly paid: boolean;
 }
 
+/**
+ * Неудачный платёж (§14, задача 4.2).
+ *
+ * **Отдельный источник, потому что цена промаха здесь другая.** Не
+ * увидеть сорвавшуюся выгрузку значит не ответить человеку; не увидеть
+ * недоплату значит взять деньги и не выдать услугу. Второе разбирается
+ * руками и разбирается срочно.
+ *
+ * Суммы обе: та, что в счёте, и та, что пришла. Разница между ними и
+ * есть весь разбор.
+ */
+export interface FailedPayment {
+  readonly id: string;
+  readonly rail: string;
+  readonly userId: string | null;
+  readonly who: string;
+  readonly tgId: number | null;
+  readonly plan: string;
+  readonly kind: string;
+  /** Сколько ждали, в наименьших единицах. */
+  readonly expectedMinor: number;
+  readonly currency: string;
+  /** Что пришло строкой, как её присылает провайдер. Пусто — не платили. */
+  readonly received: string | null;
+  readonly errorCode: number | null;
+  readonly errorText: string | null;
+  readonly at: string;
+}
+
 export interface FailedSend {
   readonly id: string;
   readonly broadcastId: string;
@@ -66,9 +99,11 @@ export interface ErrorsView {
   readonly batches: readonly FailedBatch[];
   readonly calls: readonly FailedCall[];
   readonly sends: readonly FailedSend[];
+  readonly payments: readonly FailedPayment[];
   /** Всего сорвавшихся выгрузок за период — список ограничен. */
   readonly batchesTotal: number;
   readonly callsTotal: number;
+  readonly paymentsTotal: number;
   /** Чего в журнале нарочно нет — словами, а не пустыми колонками. */
   readonly missing: readonly string[];
 }
@@ -142,6 +177,41 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
     .orderBy(desc(broadcastDeliveries.at))
     .limit(LIMIT);
 
+  /**
+   * Неудачные платежи за период (задача 4.2).
+   *
+   * Человек берётся связью со счётом, а не по имени в счёте: имени там
+   * нет и быть не должно. Обезличенный счёт (человек удалил данные)
+   * остаётся видимым — деньги были, и в учёте они наши.
+   */
+  const failedPayments = await db
+    .select({
+      id: billingInvoices.id,
+      rail: billingInvoices.provider,
+      userId: billingInvoices.userId,
+      firstName: users.firstName,
+      username: users.username,
+      tgId: users.tgId,
+      plan: billingInvoices.plan,
+      kind: billingInvoices.kind,
+      expectedMinor: billingInvoices.amountMinor,
+      currency: billingInvoices.currency,
+      received: billingInvoices.outSumReceived,
+      errorCode: billingInvoices.errorCode,
+      errorText: billingInvoices.errorText,
+      at: billingInvoices.createdAt,
+    })
+    .from(billingInvoices)
+    .leftJoin(users, eq(users.id, billingInvoices.userId))
+    .where(and(eq(billingInvoices.status, 'failed'), gte(billingInvoices.createdAt, from)))
+    .orderBy(desc(billingInvoices.createdAt))
+    .limit(LIMIT);
+
+  const [paymentsCount] = await db
+    .select({ total: count() })
+    .from(billingInvoices)
+    .where(and(eq(billingInvoices.status, 'failed'), gte(billingInvoices.createdAt, from)));
+
   return {
     days,
     batches: failedBatches.map((row) => ({
@@ -175,11 +245,28 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       error: row.error,
       at: row.at?.toISOString() ?? null,
     })),
+    payments: failedPayments.map((row) => ({
+      id: row.id,
+      rail: row.rail,
+      userId: row.userId,
+      who: nameOf(row),
+      tgId: row.tgId,
+      plan: row.plan,
+      kind: row.kind,
+      expectedMinor: row.expectedMinor,
+      currency: row.currency,
+      received: row.received,
+      errorCode: row.errorCode,
+      errorText: row.errorText,
+      at: row.at.toISOString(),
+    })),
     batchesTotal: batchesCount?.total ?? 0,
     callsTotal: callsCount?.total ?? 0,
+    paymentsTotal: paymentsCount?.total ?? 0,
     missing: [
       'Текстов расшифровок здесь нет нарочно: сказанное человеком — в его карточке, где доступ к нему журналируется (§16).',
       'Повторный запуск есть у выгрузок и у рассылки. Отдельный вызов модели повторить нельзя: он часть разбора, а не сам по себе.',
+      'У неудачных платежей повтора нет и не будет: повторить списание — значит взять деньги второй раз. Недоплата и возврат разбираются руками, через обращение человека.',
     ],
   };
 }
