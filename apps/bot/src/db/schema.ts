@@ -1370,6 +1370,232 @@ export const broadcastDeliveries = pgTable(
   ],
 );
 
+/**
+ * Подписка и оплата (§14 ТЗ, задача 4.2).
+ *
+ * **Рельсов два, таблицы одни.** Робокасса — основной, Telegram Stars —
+ * обязательный второй: правила платёжной платформы Telegram требуют
+ * паритета. Разводить их по разным таблицам значило бы поддерживать этот
+ * паритет в двух местах и однажды разойтись.
+ */
+
+export const billingPlan = pgEnum('billing_plan', ['monthly', 'yearly']);
+
+/**
+ * Первый платёж и продление различаются не суммой, а смыслом: первый
+ * заводит подписку, продление сдвигает срок. И повторяются они по-разному.
+ */
+export const billingChargeKind = pgEnum('billing_charge_kind', ['initial', 'renewal']);
+
+export const billingInvoiceStatus = pgEnum('billing_invoice_status', [
+  'created',
+  'paid',
+  'failed',
+  'expired',
+  'canceled',
+]);
+
+export const billingSubStatus = pgEnum('billing_sub_status', [
+  'active',
+  'past_due',
+  'canceled',
+  'expired',
+]);
+
+/** Счёт: одна строка на каждую попытку оплаты, включая каждое продление. */
+export const billingInvoices = pgTable(
+  'billing_invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    /** Чей рельс: `robokassa:smz` или `telegram:stars`. */
+    provider: text('provider').notNull(),
+
+    /**
+     * Человек уходит — счёт обезличивается, как в учёте расхода.
+     *
+     * §16 требует удалить данные человека, но выручка — не его данные, а
+     * наша история: без неё нельзя сказать, сколько продукт заработал. Ни
+     * строчки его текста здесь нет, поэтому строка остаётся, а связь
+     * пропадает.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+
+    plan: billingPlan('plan').notNull(),
+    kind: billingChargeKind('kind').notNull(),
+
+    /** НАШ номер счёта, отправленный Робокассе. */
+    invId: bigint('inv_id', { mode: 'number' }).unique(),
+
+    /**
+     * ФАКТИЧЕСКИЙ номер из уведомления — и только он годится дальше.
+     *
+     * Разделены нарочно. В документации Робокассы расходятся имена поля
+     * номера счёта (`InvId` в интерфейсе оплаты против `InvoiceID` в
+     * примере материнского платежа), а неизвестное поле она игнорирует и
+     * назначает номер сама. Тогда оплата пройдёт, а наш номер окажется
+     * мёртвым — и через месяц продление всех подписок разом уйдёт в
+     * пустоту. Поэтому продлеваем по номеру, который **пришёл**.
+     */
+    providerInvId: bigint('provider_inv_id', { mode: 'number' }),
+
+    /** Фактический номер материнского платежа: он идёт в PreviousInvoiceID. */
+    parentInvId: bigint('parent_inv_id', { mode: 'number' }),
+
+    /** Копейки у рублей, штуки у звёзд. Целое: дробные деньги однажды врут. */
+    amountMinor: integer('amount_minor').notNull(),
+    currency: text('currency').notNull(),
+
+    /**
+     * Строки сумм — сырыми: подпись считается по строке, а сверка суммы по
+     * числу. В бою Робокасса присылает шесть знаков после точки, в тесте два.
+     */
+    outSumSent: text('out_sum_sent'),
+    outSumReceived: text('out_sum_received'),
+
+    status: billingInvoiceStatus('status').notNull().default('created'),
+
+    /** Наша метка, которая вернётся в уведомлении. */
+    ref: text('ref').notNull(),
+
+    /**
+     * Чек НПД: состояние заведено, автоматики по нему нет.
+     *
+     * Нужна ли номенклатура при «Робочеках СМЗ» у самозанятой — в
+     * документации Робокассы противоречиво, а по звёздам чек она не
+     * выпишет вовсе: они идут мимо неё. Поле есть, чтобы ручной случай был
+     * видим, а не забыт.
+     */
+    receiptStatus: text('receipt_status').notNull().default('unknown'),
+
+    /**
+     * Почему не открылась оплата.
+     *
+     * У Робокассы HTTP 200 не означает успех: код ошибки приезжает внутри
+     * страницы (`RoboxContext.error.code`), и без сохранённого кода
+     * разобраться задним числом нечем.
+     */
+    errorCode: integer('error_code'),
+    errorText: text('error_text'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('billing_invoices_user_idx').on(table.userId, table.createdAt),
+    // По этому индексу продление находит материнский платёж.
+    index('billing_invoices_provider_inv_idx').on(table.provider, table.providerInvId),
+  ],
+);
+
+/** Подписка: одна на человека и рельс. */
+export const billingSubscriptions = pgTable(
+  'billing_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+
+    /**
+     * Здесь каскад, в отличие от счёта: подписка ушедшего человека не
+     * значит ничего, а в `subscriptionRef` лежит ключ к его способу оплаты —
+     * такому переживать удаление нельзя.
+     */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    plan: billingPlan('plan').notNull(),
+    status: billingSubStatus('status').notNull().default('active'),
+
+    /**
+     * Источник правды про автопродление — эта колонка, а не провайдер.
+     *
+     * Bot API признака «продление отключено» не отдаёт ни одним методом: по
+     * списку транзакций видно, когда и на сколько заплатили, но не будет ли
+     * следующего платежа. Значит выключаем мы, помним мы, а ответ провайдера
+     * годится только на сверку — и только там, где он есть.
+     */
+    autoRenew: boolean('auto_renew').notNull().default(true),
+
+    /**
+     * До какого времени оплачено. §14: после отмены автосписания доступ
+     * сохраняется до конца оплаченного периода — вот до этого времени.
+     *
+     * Двигается ТОЛЬКО подтверждённым уведомлением. Ответ «OK{InvoiceID}» на
+     * дочернее списание означает создание операции, а не списание денег —
+     * сдвигать срок по нему значило бы дарить месяц за неудачную попытку.
+     */
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+
+    /**
+     * Чем отменять автопродление. Смысл знает только провайдер: у звёзд это
+     * `telegram_payment_charge_id`, у Робокассы — фактический номер
+     * последнего успешного платежа.
+     */
+    subscriptionRef: text('subscription_ref'),
+
+    canceledAt: timestamp('canceled_at', { withTimezone: true }),
+    lastRenewalAt: timestamp('last_renewal_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Две активные подписки одного рельса означали бы два списания за
+    // один продукт.
+    uniqueIndex('billing_subscriptions_one_idx').on(table.userId, table.provider),
+  ],
+);
+
+/** Событие оплаты: сырое уведомление и защита от повторной обработки. */
+export const billingEvents = pgTable(
+  'billing_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+
+    /** Ключ провайдера: пришедший InvId либо telegram_payment_charge_id. */
+    externalId: text('external_id').notNull(),
+
+    kind: text('kind').notNull(),
+
+    /** Каким пришло. Метод уведомления выбирает владелец магазина, не мы. */
+    method: text('method'),
+
+    /**
+     * Сошлась ли подпись. Несошедшееся тоже записывается и НЕ меняет
+     * состояние: подделка обязана быть видна в журнале, а не выглядеть
+     * посторонним запросом (§16).
+     */
+    signatureOk: boolean('signature_ok').notNull(),
+
+    /**
+     * Тело уведомления. Личное вымарывается до записи: почта плательщика
+     * сюда не попадает, иначе она пережила бы удаление данных человека —
+     * строка-то висит на счёте, а не на нём.
+     */
+    payload: jsonb('payload').notNull(),
+
+    invoiceId: uuid('invoice_id').references(() => billingInvoices.id, {
+      onDelete: 'set null',
+    }),
+
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+  },
+  (table) => [
+    /**
+     * **Главный индекс задачи.** Условие готовности 4.2 — «повторная
+     * доставка события оплаты не создаёт второй платёж», и держится оно
+     * здесь: уникальностью, а не проверкой «сначала посмотрели, потом
+     * вставили». Робокасса повторяет уведомления, в том числе одновременно;
+     * чтение перед вставкой такую гонку пропускает.
+     */
+    uniqueIndex('billing_events_once_idx').on(table.provider, table.externalId, table.kind),
+    index('billing_events_received_idx').on(table.receivedAt),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserSettings = typeof userSettings.$inferSelect;
@@ -1411,3 +1637,9 @@ export type NewTopic = typeof topics.$inferInsert;
 export type Broadcast = typeof broadcasts.$inferSelect;
 export type NewBroadcast = typeof broadcasts.$inferInsert;
 export type BroadcastDelivery = typeof broadcastDeliveries.$inferSelect;
+export type BillingInvoice = typeof billingInvoices.$inferSelect;
+export type NewBillingInvoice = typeof billingInvoices.$inferInsert;
+export type BillingSubscription = typeof billingSubscriptions.$inferSelect;
+export type BillingEvent = typeof billingEvents.$inferSelect;
+export type BillingPlanValue = (typeof billingPlan.enumValues)[number];
+export type BillingSubStatusValue = (typeof billingSubStatus.enumValues)[number];
