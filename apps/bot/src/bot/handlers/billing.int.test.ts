@@ -615,6 +615,41 @@ describe('оплата звёздами приходит апдейтом', () =
     expect(await testDb().select().from(billingEvents)).toHaveLength(1);
   });
 
+  it('звёзд пришло меньше, чем в счёте — доступа нет', async () => {
+    /**
+     * Через Telegram это почти невозможно: сумму называем мы. Но «почти»
+     * здесь не аргумент — проверка стоит один разбор, а её отсутствие
+     * однажды стоит месяца за одну звезду. Человеку отвечаем тем же,
+     * чем при неудаче оплаты: разбирать будем руками.
+     */
+    await starsInvoice('звёздный-мало');
+
+    const { bot, calls } = createTestBot({ 'telegram:stars': stars() });
+    await bot.init();
+
+    seq += 1;
+
+    await bot.handleUpdate({
+      update_id: 752_000 + seq,
+      message: {
+        message_id: seq,
+        date: 0,
+        chat: { id: TG_ID, type: 'private', first_name: 'Нина' },
+        from: { id: TG_ID, is_bot: false, first_name: 'Нина' },
+        successful_payment: {
+          currency: 'XTR',
+          total_amount: 1,
+          invoice_payload: 'звёздный-мало',
+          telegram_payment_charge_id: 'charge-мало',
+          provider_payment_charge_id: 'charge-мало',
+        },
+      },
+    } as unknown as Update);
+
+    expect(await subscriptionOf(testDb(), { userId, provider: 'telegram:stars' })).toBeUndefined();
+    expect(textOf(sent(calls)[0])).toBe(defaultTexts.billing.checkoutFailed);
+  });
+
   it('отписка через Telegram снимает автопродление у нас', async () => {
     /**
      * Единственный способ узнать об отмене средствами Telegram —

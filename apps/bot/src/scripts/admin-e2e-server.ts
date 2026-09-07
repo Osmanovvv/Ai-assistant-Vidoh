@@ -207,6 +207,25 @@ if (seedUrl !== undefined) {
     .returning({ id: users.id });
 
   if (unlucky === undefined) throw new Error('стенд: второй человек не создался');
+  /**
+   * Недоплата — для журнала ошибок (задача 4.2).
+   *
+   * Самая дорогая строка журнала: человек заплатил, доступа не получил.
+   * У Оли, а не у Ани: у Ани проверяется живая подписка в списке, и
+   * второй неудачный счёт сбил бы разбор.
+   */
+  await seeded.insert(billingInvoices).values({
+    provider: 'robokassa:smz',
+    userId: unlucky.id,
+    plan: 'monthly',
+    kind: 'initial',
+    amountMinor: 39_900,
+    currency: 'RUB',
+    ref: 'стенд-недоплата',
+    status: 'failed',
+    outSumReceived: '1.00',
+    errorText: 'заплачено 100 RUB, а в счёте 39900 RUB',
+  });
 
   await seeded.insert(batches).values({
     userId: unlucky.id,

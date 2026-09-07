@@ -393,6 +393,27 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
       return;
     }
 
+    if (applied.kind === 'underpaid') {
+      /**
+       * Пришло не столько звёзд, сколько в счёте.
+       *
+       * Через Telegram это почти невозможно — сумму называем мы, — но
+       * «почти» здесь не аргумент: проверка стоит один разбор, а её
+       * отсутствие однажды стоит месяца за одну звезду. Человеку
+       * отвечаем тем же, чем при неудаче оплаты: разбираться будем
+       * руками, через /paysupport.
+       */
+      deps.logger.error(
+        { ожидали: applied.expected, пришло: applied.got, tgId },
+        'Оплата звёздами не на ту сумму: доступ не выдан',
+      );
+
+      const person = await findByTgId(deps.db, tgId);
+      await say((await textsOf(deps, person?.id)).billing.checkoutFailed);
+
+      return;
+    }
+
     // Повтор — молча: человек уже получил своё сообщение в первый раз.
     if (applied.kind === 'duplicate') return;
 

@@ -71,11 +71,18 @@ async function invoiceFor(params: {
   });
 }
 
+/**
+ * Событие оплаты. Тип узкий — именно `paid`, а не весь союз.
+ *
+ * Иначе `{ ...paid(…), amount: 1 }` в проверках на недоплату не
+ * складывается: у «человек отписался» суммы нет вовсе, и союз это
+ * справедливо запрещает.
+ */
 function paid(params: {
   readonly ref: string;
   readonly externalId: string;
   readonly renewal?: boolean;
-}): PaymentEvent {
+}): Extract<PaymentEvent, { kind: 'paid' }> {
   return {
     kind: 'paid',
     externalId: params.externalId,
@@ -419,6 +426,90 @@ describe('отмена автопродления — §14 «в один тап�
     expect(
       (await invoiceByRef(testDb(), { provider: RAIL, ref: 'c-12' }))?.providerInvId,
     ).toBeNull();
+  });
+
+  it('оплата меньше счёта доступа НЕ даёт', async () => {
+    /**
+     * **Подпись не про сумму, а про целостность.** Она подтверждает, что
+     * уведомление от Робокассы, а не то, что заплачено столько, сколько
+     * мы просили: `OutSum` — сумма, зачисленная магазину, и она может
+     * отличаться от запрошенной (конвертация валюты, изменение суммы в
+     * кабинете, частичная оплата).
+     *
+     * Без этой сверки платёж на рубль по счёту на 399 давал бы полный
+     * месяц, и заметить это было бы нечем: событие прошло, подписка
+     * продлилась, в журнале успех.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'мало' });
+
+    const outcome = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: { ...paid({ ref: 'мало', externalId: '3100' }), amount: 100 },
+    });
+
+    expect(outcome.kind).toBe('underpaid');
+    expect(await subscriptionOf(testDb(), { userId, provider: RAIL })).toBeUndefined();
+
+    // Счёт помечен неудачным, и видно, сколько же пришло.
+    const invoice = await invoiceByRef(testDb(), { provider: RAIL, ref: 'мало' });
+
+    expect(invoice?.status).toBe('failed');
+    expect(invoice?.errorText).toContain('100');
+  });
+
+  it('переплату у человека не отбирают', async () => {
+    // Доступ он получил, и отказывать из-за лишних копеек значило бы
+    // взять деньги и не дать услугу.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'много' });
+
+    const outcome = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: { ...paid({ ref: 'много', externalId: '3101' }), amount: 50_000 },
+    });
+
+    expect(outcome.kind).toBe('applied');
+  });
+
+  it('чужая валюта на ту же сумму доступа не даёт', async () => {
+    // 150 звёзд по рублёвому счёту — это не 150 рублей.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'валюта' });
+
+    const outcome = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: { ...paid({ ref: 'валюта', externalId: '3102' }), currency: 'XTR' },
+    });
+
+    expect(outcome.kind).toBe('underpaid');
+  });
+
+  it('недоплата остаётся видна в журнале событий', async () => {
+    // Деньги пришли, услуга не выдана — разбирать это должен человек, а
+    // не следующий платёж. Молчаливый отказ означал бы, что разбирать
+    // нечем.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'журнал' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: { ...paid({ ref: 'журнал', externalId: '3103' }), amount: 1 },
+    });
+
+    const events = await testDb().select().from(billingEvents);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.externalId).toBe('3103');
+  });
+
+  it('повторная доставка недоплаты не превращается в оплату', async () => {
+    // Идемпотентность обязана работать и на отказе: иначе повтор того же
+    // уведомления однажды прошёл бы по другой ветке.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'повтор-мало' });
+
+    const event = { ...paid({ ref: 'повтор-мало', externalId: '3104' }), amount: 1 };
+
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event })).kind).toBe('underpaid');
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event })).kind).toBe('duplicate');
+
+    expect(await subscriptionOf(testDb(), { userId, provider: RAIL })).toBeUndefined();
   });
 
   it('повторная отмена не ломается и говорит правду', async () => {
