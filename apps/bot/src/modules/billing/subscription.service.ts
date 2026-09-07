@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 
 import { batches, billingSubscriptions } from '../../db/schema.js';
-import type { Executor } from '../../infra/db.js';
+import type { Database, Executor } from '../../infra/db.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
 import {
   createInvoice,
@@ -324,7 +324,7 @@ export type AppliedEvent =
   | { readonly kind: 'unknown'; readonly why: string };
 
 export async function applyPaymentEvent(
-  db: Executor,
+  db: Database,
   params: {
     readonly provider: Rail;
     readonly event: PaymentEvent;
@@ -337,6 +337,42 @@ export async function applyPaymentEvent(
      * Робокасса присылает шесть знаков после точки, в тесте два, и
      * воспроизвести подпись по числу потом невозможно.
      */
+    readonly outSum?: string | undefined;
+    readonly now?: Date | undefined;
+  },
+): Promise<AppliedEvent> {
+  /**
+   * **Всё тело — одна транзакция, и это защита денег.**
+   *
+   * Найдено ревизией четвёртого этапа. Барьер идемпотентности —
+   * уникальный индекс `billing_events` — вставлялся первым, а работа
+   * (пометить счёт оплаченным, продлить подписку) шла отдельными
+   * запросами после него. Значит **барьер переживал работу, которую
+   * охраняет**: моргни база или убей процесс выкладкой между вставкой
+   * события и продлением подписки — и повторная доставка отбивалась как
+   * «уже обработано», хотя обработки не было.
+   *
+   * Итог того сценария: счёт помечен оплаченным, выручка посчитана,
+   * подписки нет, доступа нет, человеку не сказано ничего, а в журнале
+   * стоит обвинение в подделке — потому что сбой уходил в тот же
+   * `catch`, что и несошедшаяся подпись. Обнаружить это можно было
+   * только по жалобе человека, который заплатил.
+   *
+   * В транзакции откат снимает и барьер: следующая доставка (Робокасса
+   * повторяет, пока не получит `OK`) доработает начатое. Наружу из
+   * транзакции ничего не уходит — оповещение человека зовёт вызывающий,
+   * уже после успеха.
+   */
+  return await db.transaction(async (tx) => await applyInside(tx, params));
+}
+
+async function applyInside(
+  db: Executor,
+  params: {
+    readonly provider: Rail;
+    readonly event: PaymentEvent;
+    readonly method?: string | undefined;
+    readonly payload?: unknown;
     readonly outSum?: string | undefined;
     readonly now?: Date | undefined;
   },
