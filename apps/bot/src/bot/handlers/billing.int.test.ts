@@ -13,6 +13,7 @@ import {
 import { createLogger } from '../../infra/logger.js';
 import {
   createInvoice,
+  invoiceByRef,
   markInvoicePaid,
   subscriptionOf,
 } from '../../modules/billing/billing.repo.js';
@@ -590,6 +591,55 @@ describe('оплата звёздами приходит апдейтом', () =
       },
     } as unknown as Update;
   }
+
+  it('оплата при выключенном рельсе не исчезает: период выдан и след остался', async () => {
+    /**
+     * **Самый дорогой молчаливый отказ в продукте, найденный ревизией.**
+     *
+     * Рельс звёзд выключается переменной окружения — и выключить его
+     * можно **после** того, как подписки уже созданы. Telegram при этом
+     * продолжает списывать 150 звёзд каждый месяц и присылать нам
+     * служебное сообщение. Прежде обработчик выходил первой же строкой
+     * (`if (provider === undefined) return`): деньги списаны, периода
+     * нет, счёт остался `created`, события нет, в журнале тишина,
+     * человеку не сказано ничего. Узнать об этом можно было только от
+     * него самого.
+     *
+     * Разбор для этого не нужен ключами, поэтому он и вынесен из
+     * провайдера: человек получает то, за что заплатил.
+     */
+    await starsInvoice('звёздный-выключенный');
+
+    const said: string[] = [];
+    const { bot, calls } = createTestBot({});
+    await bot.init();
+
+    await bot.handleUpdate(
+      paymentUpdate({ ref: 'звёздный-выключенный', charge: 'charge-выключенный' }),
+    );
+
+    said.push(
+      ...calls
+        .filter((call) => call.method === 'sendMessage')
+        .map((call) => String(call.payload['text'])),
+    );
+
+    // Период выдан: подписка есть и живая.
+    const live = await subscriptionOf(testDb(), { userId, provider: 'telegram:stars' });
+
+    expect(live?.currentPeriodEnd.getTime()).toBeGreaterThan(Date.now());
+
+    // Счёт помечен оплаченным, а не оставлен «created».
+    const paid = await invoiceByRef(testDb(), {
+      provider: 'telegram:stars',
+      ref: 'звёздный-выключенный',
+    });
+
+    expect(paid?.status).toBe('paid');
+
+    // И человеку сказано, а не промолчано.
+    expect(said.join('\n')).not.toBe('');
+  });
 
   it('подтверждение платежа отвечает Telegram — иначе платежа не будет', async () => {
     /**

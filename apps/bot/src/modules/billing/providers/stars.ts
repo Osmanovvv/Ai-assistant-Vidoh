@@ -65,6 +65,136 @@ function fit(text: string, max: number): string {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
 }
 
+/**
+ * Разобрать служебное сообщение об оплате звёздами.
+ *
+ * **Отдельной функцией, а не только методом провайдера.** Разбор не
+ * требует ни ключей, ни доступа к Telegram — это чистое чтение тела
+ * апдейта. А провайдера может не быть: рельс звёзд выключается
+ * переменной окружения, и выключить его можно **после** того, как
+ * подписки уже созданы. Telegram при этом продолжает списывать звёзды
+ * каждый месяц.
+ *
+ * Прежде обработчик в таком случае выходил первой же строкой: деньги
+ * списаны, периода нет, записи нет, журнала нет, человеку не сказано
+ * ничего. Разбор, доступный без провайдера, снимает у этого молчания
+ * причину.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- отказ обязан быть отказом промиса, а не синхронным броском: контракт `readEvent` обещает промис
+export async function readStarsEvent(raw: unknown): Promise<PaymentEvent | undefined> {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+
+  const update = raw as {
+    readonly message?: {
+      readonly successful_payment?: {
+        readonly currency?: string;
+        readonly total_amount?: number;
+        readonly invoice_payload?: string;
+        readonly telegram_payment_charge_id?: string;
+        readonly subscription_expiration_date?: number;
+        readonly is_recurring?: true;
+        readonly is_first_recurring?: true;
+      };
+      readonly refunded_payment?: {
+        readonly currency?: string;
+        readonly total_amount?: number;
+        readonly invoice_payload?: string;
+        readonly telegram_payment_charge_id?: string;
+      };
+    };
+    readonly subscription?: {
+      readonly invoice_payload?: string;
+      readonly state?: 'canceled' | 'active' | 'failed';
+    };
+  };
+
+  const paid = update.message?.successful_payment;
+
+  if (paid !== undefined) {
+    const ref = paid.invoice_payload;
+    const charge = paid.telegram_payment_charge_id;
+
+    if (ref === undefined || charge === undefined || paid.total_amount === undefined) {
+      throw new PermanentError('Оплата звёздами без метки, идентификатора или суммы');
+    }
+
+    const renewal = paid.is_recurring === true && paid.is_first_recurring !== true;
+
+    return {
+      kind: 'paid',
+      externalId: charge,
+      ref,
+      amount: paid.total_amount,
+      currency: paid.currency ?? 'XTR',
+      renewal,
+      ...(paid.subscription_expiration_date === undefined
+        ? {}
+        : { paidUntil: new Date(paid.subscription_expiration_date * 1000) }),
+      /**
+       * Отменять подписку надо идентификатором **первого** платежа.
+       *
+       * Так требует Telegram: `charge_id` для отмены берётся из
+       * первого платежа подписки, а не из последнего продления.
+       * Поэтому на продлении мы его не отдаём вовсе — и тогда наша
+       * таблица сохраняет тот, что записан при первой оплате.
+       * Перезапиши мы его продлением, отмена перестала бы работать
+       * ровно у тех, кто платит давно.
+       */
+      ...(renewal ? {} : { subscriptionRef: charge }),
+    };
+  }
+
+  const refunded = update.message?.refunded_payment;
+
+  if (refunded !== undefined) {
+    const ref = refunded.invoice_payload;
+    const charge = refunded.telegram_payment_charge_id;
+
+    if (ref === undefined || charge === undefined) {
+      throw new PermanentError('Возврат звёзд без метки или идентификатора');
+    }
+
+    return {
+      kind: 'refunded',
+      externalId: charge,
+      ref,
+      amount: refunded.total_amount ?? 0,
+      currency: refunded.currency ?? 'XTR',
+    };
+  }
+
+  const changed = update.subscription;
+
+  if (changed !== undefined) {
+    const ref = changed.invoice_payload;
+
+    if (ref === undefined) {
+      throw new PermanentError('Изменение подписки без метки счёта');
+    }
+
+    /**
+     * Три состояния, и каждое значит своё.
+     *
+     * `canceled` — человек отписался сам; `failed` — продление не
+     * прошло, денег не хватило; `active` — включил обратно. Последнее
+     * нашей таблице сообщать нечем: событие «включил снова» в наших
+     * видах не предусмотрено, и придумывать его здесь неправильно —
+     * подписка оживёт следующим успешным платежом.
+     */
+    if (changed.state === 'canceled') {
+      return { kind: 'renewalStopped', ref };
+    }
+
+    if (changed.state === 'failed') {
+      return { kind: 'renewalFailed', ref };
+    }
+
+    return undefined;
+  }
+
+  return undefined;
+}
+
 export function createStarsProvider(deps: StarsDeps): PaymentProvider {
   return {
     name: STARS_RAIL,
@@ -146,120 +276,8 @@ export function createStarsProvider(deps: StarsDeps): PaymentProvider {
      * присылает никогда. Читать их как булево — значит однажды принять
      * отсутствие поля за осмысленный ответ.
      */
-    // eslint-disable-next-line @typescript-eslint/require-await -- отказ обязан быть отказом промиса, а не синхронным броском
-    async readEvent(raw: unknown): Promise<PaymentEvent | undefined> {
-      if (typeof raw !== 'object' || raw === null) return undefined;
-
-      const update = raw as {
-        readonly message?: {
-          readonly successful_payment?: {
-            readonly currency?: string;
-            readonly total_amount?: number;
-            readonly invoice_payload?: string;
-            readonly telegram_payment_charge_id?: string;
-            readonly subscription_expiration_date?: number;
-            readonly is_recurring?: true;
-            readonly is_first_recurring?: true;
-          };
-          readonly refunded_payment?: {
-            readonly currency?: string;
-            readonly total_amount?: number;
-            readonly invoice_payload?: string;
-            readonly telegram_payment_charge_id?: string;
-          };
-        };
-        readonly subscription?: {
-          readonly invoice_payload?: string;
-          readonly state?: 'canceled' | 'active' | 'failed';
-        };
-      };
-
-      const paid = update.message?.successful_payment;
-
-      if (paid !== undefined) {
-        const ref = paid.invoice_payload;
-        const charge = paid.telegram_payment_charge_id;
-
-        if (ref === undefined || charge === undefined || paid.total_amount === undefined) {
-          throw new PermanentError('Оплата звёздами без метки, идентификатора или суммы');
-        }
-
-        const renewal = paid.is_recurring === true && paid.is_first_recurring !== true;
-
-        return {
-          kind: 'paid',
-          externalId: charge,
-          ref,
-          amount: paid.total_amount,
-          currency: paid.currency ?? 'XTR',
-          renewal,
-          ...(paid.subscription_expiration_date === undefined
-            ? {}
-            : { paidUntil: new Date(paid.subscription_expiration_date * 1000) }),
-          /**
-           * Отменять подписку надо идентификатором **первого** платежа.
-           *
-           * Так требует Telegram: `charge_id` для отмены берётся из
-           * первого платежа подписки, а не из последнего продления.
-           * Поэтому на продлении мы его не отдаём вовсе — и тогда наша
-           * таблица сохраняет тот, что записан при первой оплате.
-           * Перезапиши мы его продлением, отмена перестала бы работать
-           * ровно у тех, кто платит давно.
-           */
-          ...(renewal ? {} : { subscriptionRef: charge }),
-        };
-      }
-
-      const refunded = update.message?.refunded_payment;
-
-      if (refunded !== undefined) {
-        const ref = refunded.invoice_payload;
-        const charge = refunded.telegram_payment_charge_id;
-
-        if (ref === undefined || charge === undefined) {
-          throw new PermanentError('Возврат звёзд без метки или идентификатора');
-        }
-
-        return {
-          kind: 'refunded',
-          externalId: charge,
-          ref,
-          amount: refunded.total_amount ?? 0,
-          currency: refunded.currency ?? 'XTR',
-        };
-      }
-
-      const changed = update.subscription;
-
-      if (changed !== undefined) {
-        const ref = changed.invoice_payload;
-
-        if (ref === undefined) {
-          throw new PermanentError('Изменение подписки без метки счёта');
-        }
-
-        /**
-         * Три состояния, и каждое значит своё.
-         *
-         * `canceled` — человек отписался сам; `failed` — продление не
-         * прошло, денег не хватило; `active` — включил обратно. Последнее
-         * нашей таблице сообщать нечем: событие «включил снова» в наших
-         * видах не предусмотрено, и придумывать его здесь неправильно —
-         * подписка оживёт следующим успешным платежом.
-         */
-        if (changed.state === 'canceled') {
-          return { kind: 'renewalStopped', ref };
-        }
-
-        if (changed.state === 'failed') {
-          return { kind: 'renewalFailed', ref };
-        }
-
-        return undefined;
-      }
-
-      return undefined;
-    },
+    /** Разбор живёт снаружи: он нужен и без провайдера. См. `readStarsEvent`. */
+    readEvent: readStarsEvent,
 
     /**
      * Отключить автопродление звёздной подписки.
