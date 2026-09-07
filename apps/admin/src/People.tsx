@@ -115,6 +115,22 @@ function subscriptionText(row: PersonRow): string {
   return `${plan}, ${rail}, до ${when(subscription.paidUntil)} — ${renew}${trouble}`;
 }
 
+/**
+ * Только дата, без времени.
+ *
+ * Для «моменты ведутся с …» секунды не значат ничего: человек читает
+ * это как «с седьмого сентября». А снимок экрана с секундами засева
+ * краснел бы на каждом прогоне — то есть страж превратился бы в шум,
+ * который перестают читать.
+ */
+function day(value: string | null): string {
+  if (value === null) return '—';
+
+  const at = new Date(value);
+
+  return Number.isNaN(at.getTime()) ? '—' : at.toLocaleDateString('ru-RU');
+}
+
 /** Дата в местном виде. Пусто — прочерк, а не «Invalid Date». */
 function when(value: string | null): string {
   if (value === null) return '—';
@@ -255,7 +271,7 @@ function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement 
 
       {value.momentsSince !== null && (
         <p className="панель__кто" data-testid="moments-since">
-          Моменты конца пробного периода ведутся с {when(value.momentsSince)}
+          Моменты конца пробного периода ведутся с {day(value.momentsSince)}
           {value.trialLimits.length > 0
             ? `; встреченные пределы: ${value.trialLimits.join(', ')}`
             : ''}
