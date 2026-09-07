@@ -1668,6 +1668,24 @@ export const billingInvoices = pgTable(
     index('billing_invoices_promo_idx')
       .on(table.promoCode)
       .where(sql`${table.promoCode} is not null`),
+    /**
+     * Один промо-счёт на человека — запретом базы (ревизия этапа).
+     *
+     * «Первый период» проверялся только при выставлении счёта, а счетов
+     * можно было завести сколько угодно: двенадцать нажатий той же
+     * кнопки давали год по цене месяца. Идемпотентность денежного
+     * действия обязана держаться индексом — между проверкой и вставкой
+     * всегда есть щель.
+     *
+     * Неудачные и возвращённые не входят: периода человек не получил,
+     * значит право на первый период за ним осталось.
+     */
+    uniqueIndex('billing_promo_once_idx')
+      .on(table.userId)
+      .where(
+        sql`${table.promoCode} is not null and ${table.userId} is not null
+            and ${table.status} not in ('failed', 'refunded')`,
+      ),
     uniqueIndex('billing_renewal_once_idx')
       .on(table.provider, table.userId, table.renewsPeriodEnd)
       .where(sql`${table.renewsPeriodEnd} is not null`),

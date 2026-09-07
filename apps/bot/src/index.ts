@@ -544,7 +544,19 @@ async function main(): Promise<void> {
     privacyPolicyUrl: env.PRIVACY_POLICY_URL,
     onboarding: questions,
   });
-  registerPrivacyHandlers(bot, { db, logger, topics: topicGateway });
+  registerPrivacyHandlers(bot, {
+    db,
+    logger,
+    topics: topicGateway,
+    /**
+     * §16 и §14: продление отменяется до удаления данных.
+     *
+     * Ключ отмены уходит каскадом вместе с человеком. Забудь эту
+     * строку — и звёздная подписка будет списываться после «всё
+     * удалено», а остановить её не сможет никто.
+     */
+    providers,
+  });
   registerMembershipHandlers(bot, db, logger);
   registerOnboardingHandlers(bot, db, logger, topicGateway);
   registerMenuHandlers(bot, db, logger);

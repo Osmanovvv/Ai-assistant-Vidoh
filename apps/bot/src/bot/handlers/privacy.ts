@@ -3,6 +3,9 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
+import { stopAllRenewals } from '../../modules/billing/subscription.service.js';
+import type { PaymentProvider } from '../../modules/billing/provider.js';
+import type { Rail } from '../../modules/billing/tariffs.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { removeThread } from '../../modules/topics/topics.service.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
@@ -33,6 +36,17 @@ export interface PrivacyDeps {
    * только что попросил всё стереть.
    */
   readonly topics: TopicGateway;
+  /**
+   * Провайдеры оплаты — чтобы отменить продление ДО удаления (§16, §14).
+   *
+   * Ключ отмены лежит в подписке, а она уходит каскадом вместе с
+   * человеком: не отмени мы продление заранее, списания продолжатся, и
+   * остановить их не сможет никто — ни он, ни мы, ни панель.
+   *
+   * Необязательны: без них удаление работает как прежде, и это законное
+   * состояние до подключения оплаты.
+   */
+  readonly providers?: Partial<Record<Rail, PaymentProvider>> | undefined;
 }
 
 export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
@@ -114,9 +128,34 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
       return;
     }
 
+    /**
+     * Продление отменяется **до** удаления и **до** транзакции.
+     *
+     * До удаления — потому что ключ отмены уходит каскадом вместе с
+     * человеком. До транзакции — потому что держать замок на его строках,
+     * пока отвечает Telegram, значило бы поставить право на удаление в
+     * зависимость от чужой доступности.
+     */
+    const renewals =
+      deps.providers === undefined
+        ? { stopped: [], failed: [] }
+        : await stopAllRenewals(db, {
+            userId: user.id,
+            tgId,
+            providers: deps.providers,
+            logger,
+          });
+
     const report = await deleteUserData(db, user.id);
     logger.info(
-      { tgId, messages: report.messages, dumps: report.dumps, threads: report.threadIds.length },
+      {
+        tgId,
+        messages: report.messages,
+        dumps: report.dumps,
+        threads: report.threadIds.length,
+        renewalsStopped: renewals.stopped.length,
+        renewalsLeft: renewals.failed.length,
+      },
       'Данные пользователя удалены по его запросу',
     );
 
@@ -161,7 +200,19 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
       logger.info({ tgId, deleted, gone, failed }, 'Ветки после удаления данных');
     }
 
-    await ctx.editMessageText(texts.privacy.deleteDone);
+    /**
+     * Если продление отменить не удалось — говорим об этом словами.
+     *
+     * «Готово. Всё удалено.» при продолжающихся списаниях — самая
+     * дорогая неправда, какую может сказать этот бот: человек узнает
+     * обратное из своего счёта. Право на удаление при этом не отменяется
+     * — оно уже исполнено.
+     */
+    await ctx.editMessageText(
+      renewals.failed.length > 0
+        ? texts.privacy.deleteDoneSubscriptionLeft
+        : texts.privacy.deleteDone,
+    );
   });
 
   bot.callbackQuery(DELETE_CANCEL, async (ctx) => {

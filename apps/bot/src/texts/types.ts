@@ -620,6 +620,14 @@ export interface TextProfile {
     readonly deleteFinalButton: string;
     readonly deleteCancelButton: string;
     readonly deleteDone: string;
+    /**
+     * Данные удалены, но подписку отменить не удалось (§16 и §14).
+     *
+     * Отдельная реплика, потому что случай отдельный: право на удаление
+     * бесспорно, а списания продолжатся. Молчание здесь означало бы, что
+     * человек узнает о них из своего счёта.
+     */
+    readonly deleteDoneSubscriptionLeft: string;
     readonly deleteCancelled: string;
     readonly nothingToDelete: string;
     readonly nothingToExport: string;

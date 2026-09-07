@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Executor } from '../../infra/db.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
-import { createInvoice, nextInvId, noteAutoRenew } from './billing.repo.js';
+import { createInvoice, livePromoInvoice, nextInvId, noteAutoRenew } from './billing.repo.js';
 import type { PromoOffer } from './promo.service.js';
 import type { Checkout, PaymentProvider, PlanKind } from './provider.js';
 import { PLANS, priceOf, RAILS, type Price, type Rail } from './tariffs.js';
@@ -124,6 +124,40 @@ export async function startCheckout(
    * ценой из настроек, — потому скидка и не ломает приём оплаты.
    */
   const price = params.promo?.price ?? full;
+
+  /**
+   * Промо-счёт у человека может быть только один — и он уже есть.
+   *
+   * **Найдено ревизией четвёртого этапа.** «Первый период» проверялся
+   * только в момент выставления счёта, а счетов можно было завести
+   * сколько угодно: ссылки живут вечно, при оплате промокод не
+   * перепроверяется, а сроки складываются. Двенадцать нажатий той же
+   * кнопки — год по цене месяца, и в панели «двенадцать применений».
+   *
+   * Запрет теперь стоит уникальным индексом, а здесь — вежливость к
+   * человеку: повторное нажатие возвращает его к **той же** ссылке, а не
+   * падает и не заводит второй счёт. Ссылка строится из тех же
+   * параметров, значит и указывает на тот же счёт.
+   */
+  const existing =
+    params.promo === undefined ? undefined : await livePromoInvoice(db, { userId: params.userId });
+
+  if (existing !== undefined) {
+    const again = await params.provider.createCheckout({
+      userId: params.userId,
+      tgId: params.tgId,
+      plan: existing.plan,
+      amount: existing.amountMinor,
+      currency: existing.currency,
+      ref: existing.ref,
+      title: params.title,
+      description: params.description,
+      renewable: false,
+      ...(existing.invId === null ? {} : { invoiceNumber: existing.invId }),
+    });
+
+    return { ok: true, checkout: again, ref: existing.ref };
+  }
 
   const ref = newRef();
 
