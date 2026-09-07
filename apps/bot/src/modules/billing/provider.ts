@@ -181,9 +181,20 @@ export interface PaymentProvider {
    */
   stopRenewal(params: { readonly tgId: number; readonly subscriptionRef: string }): Promise<void>;
 
-  /** Что провайдер думает об этой подписке. */
+  /**
+   * Что провайдер думает об этой подписке.
+   *
+   * `undefined` означает «провайдер не знает», и это не выдумка ради
+   * удобства: у звёзд состояния подписки нет ни в одном методе Bot API.
+   * Косвенно его можно поискать в списке транзакций, но старую подписку
+   * там уже не найти — список конечен. Вернуть в таком случае
+   * «неактивна» значило бы соврать и отобрать доступ у платящего.
+   *
+   * Источник правды про подписку — наша таблица; ответ провайдера
+   * годится на сверку там, где он вообще есть.
+   */
   statusOf(params: {
     readonly tgId: number;
     readonly subscriptionRef: string;
-  }): Promise<ProviderStatus>;
+  }): Promise<ProviderStatus | undefined>;
 }

@@ -132,8 +132,24 @@ export interface Overview {
   readonly newUsers: number;
   readonly dumps: number;
   readonly spend: readonly Money[];
+  /** Выручка по рельсам: рубли в копейках, звёзды штуками (задача 4.2). */
+  readonly revenue: readonly Revenue[];
+  readonly payers: number;
+  readonly conversion: Conversion;
   /** Чего в обзоре ещё нет и почему — словами, а не пустыми колонками. */
   readonly missing: readonly string[];
+}
+
+export interface Revenue {
+  readonly currency: string;
+  readonly minor: number;
+  readonly payments: number;
+}
+
+export interface Conversion {
+  readonly trialFinished: number;
+  readonly paid: number;
+  readonly trialSize: number;
 }
 
 export interface PersonRow {
@@ -148,6 +164,17 @@ export interface PersonRow {
   readonly trialSpent: number;
   readonly spend: readonly Money[];
   readonly blocked: boolean;
+  /** Подписка или её отсутствие (задача 4.2). */
+  readonly subscription?: PersonSubscription | undefined;
+}
+
+export interface PersonSubscription {
+  readonly rail: string;
+  readonly plan: string;
+  readonly status: string;
+  readonly autoRenew: boolean;
+  readonly paidUntil: string;
+  readonly live: boolean;
 }
 
 export interface PeoplePage {

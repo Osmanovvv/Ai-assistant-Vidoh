@@ -3,6 +3,8 @@ import { and, count, desc, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm'
 import {
   aiCalls,
   batches,
+  billingInvoices,
+  billingSubscriptions,
   itemRevisions,
   items,
   messagesRaw,
@@ -10,7 +12,9 @@ import {
   users,
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { activePayersCount } from '../billing/billing.repo.js';
 import type { Money } from '../metering/cost-breakdown.js';
+import type { SettingsRegistry } from '../settings/settings.repo.js';
 
 /**
  * Люди в админ-панели: обзор, список, карточка (§15 ТЗ, задача 4.6).
@@ -25,11 +29,15 @@ import type { Money } from '../metering/cost-breakdown.js';
  * разбиралась запросами в боевую базу через ssh, и заняло это не минуту.
  * Карточка существует, чтобы такого больше не было.
  *
- * **Чего здесь нет и почему.** §15 просит в обзоре «переход из пробного
- * периода в оплату» и «расход на модели против выручки». Выручки не
- * существует: подписка — задача 4.2. Показать вместо неё ноль значило бы
- * соврать в первой же строке панели, поэтому обзор честно говорит, чего
- * ещё нет, и не рисует пустых колонок.
+ * **Выручка и переход в оплату появились с задачей 4.2.** До неё обзор
+ * честно говорил, что их нет: пустая колонка в панели читается как ноль,
+ * то есть как факт. Теперь считается настоящее — оплаченные счёта и доля
+ * тех, кто после пробного периода заплатил.
+ *
+ * **Выручка не сводится в одно число, и это не лень.** Рубли и звёзды —
+ * разные деньги: курс звезды задаёт Telegram, он меняется, и сложить их
+ * в «итого» значило бы придумать курс. Кроме того из звёзд Telegram
+ * берёт свою долю. Показываем раздельно.
  */
 
 // ── Обзор ─────────────────────────────────────────────────────────────
@@ -47,17 +55,61 @@ export interface Overview {
   /** Расход на модели за период, по валютам. */
   readonly spend: readonly Money[];
   /**
+   * Выручка за период — по рельсам, а не одним числом.
+   *
+   * Рубли в копейках, звёзды штуками. Складывать нельзя: курс звезды
+   * задаёт Telegram, он меняется, и «итого» пришлось бы придумать.
+   */
+  readonly revenue: readonly Revenue[];
+  /** Сколько людей платят прямо сейчас. */
+  readonly payers: number;
+  /** Переход из пробного периода в оплату (§15). */
+  readonly conversion: Conversion;
+  /**
    * Чего в обзоре нет и почему — списком, а не молчанием.
    *
-   * §15 просит показать переход в оплату и выручку; их не существует до
-   * задачи 4.2. Пустая колонка в панели читается как «ноль», то есть
-   * как факт. Здесь вместо факта стоит объяснение.
+   * Пустая колонка читается как «ноль», то есть как факт. Здесь вместо
+   * факта стоит объяснение. Список пуст — значит показано всё, что §15
+   * просит.
    */
   readonly missing: readonly string[];
 }
 
-export async function overview(db: Executor, days: number): Promise<Overview> {
+export interface Revenue {
+  /** `RUB` в копейках, `XTR` в штуках звёзд. */
+  readonly currency: string;
+  readonly minor: number;
+  /** Сколько платежей: одна крупная оплата и десять мелких — разное. */
+  readonly payments: number;
+}
+
+/**
+ * Переход из пробного периода в оплату.
+ *
+ * **Считается только по тем, у кого пробный период кончился.** Иначе
+ * доля падала бы от каждого новичка, который ещё и не выбирал: он не
+ * «не купил», он просто не дошёл до вопроса.
+ *
+ * Доли здесь нет — только два числа. Процент от трёх человек выглядит
+ * как знание, а знанием не является; посчитать его по двум числам
+ * умеет тот, кто смотрит.
+ */
+export interface Conversion {
+  /** У кого пробный период израсходован полностью. */
+  readonly trialFinished: number;
+  /** Из них заплатившие хоть раз. */
+  readonly paid: number;
+  /** Размер пробного периода, при котором считали: без него числа немы. */
+  readonly trialSize: number;
+}
+
+export async function overview(
+  db: Executor,
+  days: number,
+  settings?: SettingsRegistry,
+): Promise<Overview> {
   const since = new Date(Date.now() - days * 24 * 3_600_000);
+  const now = new Date();
 
   const [people] = await db.select({ total: count() }).from(users);
 
@@ -85,6 +137,36 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
     .where(gte(aiCalls.createdAt, since))
     .groupBy(aiCalls.costCurrency);
 
+  /**
+   * Выручка — по **оплаченным** счетам, а не по выставленным.
+   *
+   * Выставленных счетов всегда больше: человек нажимает кнопку и уходит
+   * думать. Считать их выручкой значило бы показать заказчице деньги,
+   * которых нет.
+   */
+  const revenueRows = await db
+    .select({
+      currency: billingInvoices.currency,
+      minor: sql<string>`coalesce(sum(${billingInvoices.amountMinor}), 0)::bigint`,
+      payments: count(),
+    })
+    .from(billingInvoices)
+    .where(and(eq(billingInvoices.status, 'paid'), gte(billingInvoices.paidAt, since)))
+    .groupBy(billingInvoices.currency);
+
+  const payers = await activePayersCount(db, now);
+
+  /**
+   * Размер пробного периода нужен, чтобы понять, кончился он или нет.
+   *
+   * Реестр значений необязателен: без него обзор не врёт, а честно
+   * говорит, что перехода не посчитал. Так же он ведёт себя в тестах,
+   * которым до подписки дела нет.
+   */
+  const trialSize = settings === undefined ? undefined : await settings.number('trialDumps');
+
+  const conversion = await conversionOf(db, trialSize);
+
   return {
     days,
     activeUsers: active?.total ?? 0,
@@ -94,9 +176,68 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
     spend: spendRows
       .filter((row): row is { currency: 'rub' | 'usd'; total: string } => row.currency !== null)
       .map((row) => ({ currency: row.currency, micros: Number(row.total) })),
-    missing: [
-      'Переход из пробного периода в оплату и выручка появятся вместе с подпиской (задача 4.2). Показывать вместо них ноль было бы неправдой.',
-    ],
+    revenue: revenueRows.map((row) => ({
+      currency: row.currency,
+      minor: Number(row.minor),
+      payments: row.payments,
+    })),
+    payers,
+    conversion,
+    missing:
+      trialSize === undefined
+        ? [
+            'Переход из пробного периода в оплату не посчитан: размер пробного периода неизвестен. Показывать вместо него ноль было бы неправдой.',
+          ]
+        : [],
+  };
+}
+
+/**
+ * Сколько людей дошло до конца пробного периода и сколько из них платило.
+ *
+ * **Одним запросом, а не выборкой всех людей в память.** Панель обязана
+ * работать на тысяче человек, а не на двадцати: проверка постраничности
+ * это уже показала.
+ *
+ * Заплатившим считается тот, у кого есть **оплаченный** счёт — когда
+ * угодно, а не за период обзора. Переход из пробного в оплату случается
+ * один раз в жизни человека, и терять его через месяц было бы странно.
+ */
+async function conversionOf(db: Executor, trialSize: number | undefined): Promise<Conversion> {
+  if (trialSize === undefined) return { trialFinished: 0, paid: 0, trialSize: 0 };
+
+  /**
+   * Ноль означает «пробного периода нет».
+   *
+   * Тогда «дошли до конца» — все, и число это ни о чём не говорит.
+   * Честнее вернуть нули, чем посчитать переход у людей, которым
+   * бесплатного и не давали.
+   */
+  if (trialSize <= 0) return { trialFinished: 0, paid: 0, trialSize };
+
+  const spent = db
+    .select({ userId: batches.userId })
+    .from(batches)
+    .where(sql`${batches.trialCountedAt} is not null`)
+    .groupBy(batches.userId)
+    .having(sql`count(*) >= ${trialSize}`)
+    .as('spent');
+
+  const [row] = await db
+    .select({
+      finished: sql<number>`count(*)::int`,
+      paid: sql<number>`count(*) filter (where exists (
+        select 1 from ${billingInvoices}
+        where ${billingInvoices.userId} = ${spent.userId}
+          and ${billingInvoices.status} = 'paid'
+      ))::int`,
+    })
+    .from(spent);
+
+  return {
+    trialFinished: row?.finished ?? 0,
+    paid: row?.paid ?? 0,
+    trialSize,
   };
 }
 
@@ -118,6 +259,25 @@ export interface PersonRow {
   /** Расход на модели, по валютам. */
   readonly spend: readonly Money[];
   readonly blocked: boolean;
+  /**
+   * Подписка человека — или её отсутствие (§15, задача 4.2).
+   *
+   * `undefined` означает «не платил ни разу», и это не то же самое, что
+   * «подписка кончилась»: разбирающий жалобу должен различать человека,
+   * который никогда не платил, и человека, у которого период истёк.
+   */
+  readonly subscription?: PersonSubscription | undefined;
+}
+
+export interface PersonSubscription {
+  readonly rail: string;
+  readonly plan: string;
+  /** `active`, `past_due`, `canceled` — как в базе. */
+  readonly status: string;
+  readonly autoRenew: boolean;
+  readonly paidUntil: Date;
+  /** Оплачено ли прямо сейчас. Считается здесь, а не в панели. */
+  readonly live: boolean;
 }
 
 export interface PeoplePage {
@@ -222,6 +382,36 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
     .where(inArray(aiCalls.userId, ids))
     .groupBy(aiCalls.userId, aiCalls.costCurrency);
 
+  /**
+   * Подписки — одним запросом на страницу, как и остальные числа.
+   *
+   * Берётся самая долгая: рельсов два, а доступ общий, и показывать
+   * человеку с двумя рельсами тот, что кончится раньше, значило бы
+   * пугать разбирающего жалобу без причины.
+   */
+  const subscriptionRows = await db
+    .select()
+    .from(billingSubscriptions)
+    .where(inArray(billingSubscriptions.userId, ids))
+    .orderBy(desc(billingSubscriptions.currentPeriodEnd));
+
+  const now = Date.now();
+  const subscriptionBy = new Map<string, PersonSubscription>();
+
+  for (const row of subscriptionRows) {
+    // Первая для человека и есть самая долгая: порядок задан запросом.
+    if (subscriptionBy.has(row.userId)) continue;
+
+    subscriptionBy.set(row.userId, {
+      rail: row.provider,
+      plan: row.plan,
+      status: row.status,
+      autoRenew: row.autoRenew,
+      paidUntil: row.currentPeriodEnd,
+      live: row.currentPeriodEnd.getTime() > now,
+    });
+  }
+
   const dumpsBy = new Map(dumpCounts.map((row) => [row.userId, row]));
   const spendBy = new Map<string, Money[]>();
 
@@ -247,6 +437,7 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
     trialSpent: dumpsBy.get(row.id)?.trial ?? 0,
     spend: spendBy.get(row.id) ?? [],
     blocked: row.isBlocked,
+    ...(subscriptionBy.has(row.id) ? { subscription: subscriptionBy.get(row.id) } : {}),
   }));
 }
 

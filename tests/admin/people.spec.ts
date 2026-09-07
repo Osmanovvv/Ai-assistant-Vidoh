@@ -19,7 +19,7 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
    * открыть панель, найти человека, открыть карточку, прочитать.
    */
 
-  test('обзор показывает числа и честно говорит, чего в нём нет', async ({ page }) => {
+  test('обзор показывает числа', async ({ page }) => {
     await signIn(page);
 
     const totals = page.locator('.итоги');
@@ -27,10 +27,38 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     await expect(totals.locator('.итог', { hasText: 'Всего людей' })).toContainText('1');
     await expect(totals.locator('.итог', { hasText: 'Выгрузок разобрано' })).toContainText('1');
     await expect(totals.locator('.итог', { hasText: 'Расход на модели' })).toContainText('10.00 ₽');
+  });
 
-    // §15 просит переход в оплату и выручку; их нет до задачи 4.2, и
-    // панель говорит это словами, а не пустой колонкой.
-    await expect(page.getByText('4.2', { exact: false })).toBeVisible();
+  test('выручка идёт по оплаченным счетам, а брошенный в неё не попадает', async ({ page }) => {
+    /**
+     * **Шов между базой и страницей.** Агрегат выручки покрыт своими
+     * проверками, страница нарисована отдельно, но имена полей в ответе
+     * их связывают: переименуй `minor` — и обе половины останутся
+     * зелёными, а панель покажет `NaN ₽`.
+     *
+     * На стенде два счёта: оплаченный на 399 ₽ и брошенный на 3990 ₽.
+     * Увидеть в выручке второй значило бы показать заказчице деньги,
+     * которых нет.
+     */
+    await signIn(page);
+
+    await expect(page.getByTestId('revenue')).toHaveText('399.00 ₽');
+    await expect(page.getByTestId('payments')).toHaveText('1 платёж');
+    await expect(page.getByTestId('revenue')).not.toContainText('3990');
+    await expect(page.getByTestId('payers')).toHaveText('1');
+  });
+
+  test('переход в оплату не выдумывается, а объясняется', async ({ page }) => {
+    /**
+     * Пробный период на стенде — десять выгрузок (умолчание из кода), а
+     * разобрана одна. Значит до границы никто не дошёл, и «0 из 0» —
+     * правда, а не отсутствие данных. Рядом стоит оговорка, объясняющая
+     * знаменатель: без неё ноль читался бы как «никто не покупает».
+     */
+    await signIn(page);
+
+    await expect(page.getByTestId('conversion')).toHaveText('0 из 0');
+    await expect(page.getByText('пробный период израсходован полностью')).toBeVisible();
   });
 
   test('список людей показывает выгрузки и расход', async ({ page }) => {
@@ -40,6 +68,26 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
 
     await expect(row).toContainText('10.00 ₽');
     await expect(row).toContainText('1');
+  });
+
+  test('в списке видно подписку: тариф, рельс, срок и продление', async ({ page }) => {
+    /**
+     * Первый вопрос по жалобе «бот перестал разбирать» — платит ли
+     * человек. Уходить за ответом в базу означало бы ровно тот путь
+     * через ssh, ради отмены которого панель и существует.
+     *
+     * У Оли подписки нет вовсе, и это отдельная строка: «не платил» и
+     * «кончилась» — разные состояния, и путать их нельзя.
+     */
+    await signIn(page, 'Пользователи');
+
+    const anya = page.getByRole('row', { name: /Аня/u });
+
+    await expect(anya).toContainText('месяц');
+    await expect(anya).toContainText('карта');
+    await expect(anya).toContainText('продлевается');
+
+    await expect(page.getByRole('row', { name: /Оля/u })).toContainText('—');
   });
 
   test('поиск находит человека по имени', async ({ page }) => {

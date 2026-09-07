@@ -18,6 +18,14 @@ import { createEvalRunner } from './modules/admin/eval-run.js';
 import { runningBroadcasts } from './modules/broadcast/broadcast.repo.js';
 import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
 import { newestRun } from './eval/freshness.js';
+import { registerBillingHandlers } from './bot/handlers/billing.js';
+import { createBillingRouter } from './http/billing.js';
+import { createRobokassaProvider } from './modules/billing/providers/robokassa.js';
+import { createStarsProvider } from './modules/billing/providers/stars.js';
+import { startRenewals } from './modules/billing/renewal.service.js';
+import { createPaymentNotifier } from './modules/billing/notify.js';
+import type { PaymentProvider } from './modules/billing/provider.js';
+import type { Rail } from './modules/billing/tariffs.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
 import { SettingsRegistry } from './modules/settings/settings.repo.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
@@ -229,6 +237,59 @@ async function main(): Promise<void> {
    */
   const settings = new SettingsRegistry({ db, logger });
 
+  /**
+   * Рельсы оплаты (§14 ТЗ, задача 4.2).
+   *
+   * **Паритет — правило платформы, а не наше предпочтение.** Правила
+   * Telegram требуют: если цифровую услугу можно купить снаружи, та же
+   * услуга обязана продаваться и за звёзды. Санкция названа прямо — бота
+   * делают недоступным из магазинных версий Telegram либо отключают от
+   * платформы. Поэтому включённая Робокасса при выключенных звёздах —
+   * не «неполная настройка», а нарушение, и старт говорит об этом вслух.
+   *
+   * Робокасса требует всех трёх значений сразу: логин без пароля даёт
+   * подпись, которую она отвергнет на каждом платеже.
+   */
+  const rkLogin = env.RK_MERCHANT_LOGIN;
+  const rkFirst = env.RK_PASSWORD1;
+  const rkSecond = env.RK_PASSWORD2;
+
+  const robokassaDeps =
+    rkLogin !== undefined && rkFirst !== undefined && rkSecond !== undefined
+      ? {
+          merchantLogin: rkLogin,
+          password1: rkFirst,
+          password2: rkSecond,
+          algo: env.RK_HASH_ALGO,
+          isTest: env.RK_IS_TEST,
+          recurringApproved: env.RK_RECURRING,
+          logger,
+        }
+      : undefined;
+
+  const providers: Partial<Record<Rail, PaymentProvider>> = {
+    ...(robokassaDeps === undefined
+      ? {}
+      : { 'robokassa:smz': createRobokassaProvider(robokassaDeps) }),
+    ...(env.STARS ? { 'telegram:stars': createStarsProvider({ api: bot.api, logger }) } : {}),
+  };
+
+  if (robokassaDeps !== undefined && !env.STARS) {
+    logger.error(
+      'Робокасса включена, а звёзды выключены: правила Telegram требуют паритета. ' +
+        'Так бота отключают от платёжной платформы.',
+    );
+  }
+
+  if (robokassaDeps === undefined) {
+    logger.info('Робокасса выключена: не заданы RK_* — это нормально до согласования магазина');
+  } else if (!env.RK_RECURRING) {
+    logger.warn(
+      'Дочерние списания Робокассы не согласованы (RK_RECURRING=off): ' +
+        'бот честно продаёт разовый платёж и не обещает продления',
+    );
+  }
+
   // §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
   // цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
   // при старте, а не из отчёта через месяц.
@@ -428,12 +489,26 @@ async function main(): Promise<void> {
     }
   });
 
+  /**
+   * Оплата регистрируется **до** приёма входящего.
+   *
+   * Служебное сообщение об оплате звёздами приходит тем же потоком, что
+   * и голосовые: не перехвати мы его здесь, оно поехало бы в буфер
+   * выгрузки и разбиралось бы моделью как мысль человека. А
+   * `pre_checkout_query` ждать нельзя вовсе — на него надо ответить за
+   * десять секунд, иначе платёж не состоится.
+   */
+  registerBillingHandlers(bot, { db, settings, logger, providers });
+
   // Порядок важен: приём и сохранение идут до любых обработчиков.
   bot.use(
     incomingMiddleware({
       db,
       queue,
       sender,
+      // §14: конец пробного периода приглашает оплатить — но только там,
+      // где оплата действительно есть (4.2).
+      payRails: Object.keys(providers) as Rail[],
       // Ответ словами на вопрос опроса и правка записи из карточки
       // (задача 3.61). Ждёт бот чего-то или нет — решает база.
       consume: consumeAwaited({ db, logger }),
@@ -547,6 +622,34 @@ async function main(): Promise<void> {
     );
   }
 
+  /**
+   * Оповещение об оплате и о неудачном продлении.
+   *
+   * Один на два вызывающих: уведомление Робокассы приходит в HTTP, а
+   * неудачное продление находит суточный проход. Оба знают только наш
+   * `userId`, и путь до чата у них обязан быть один.
+   */
+  const payNotifier = createPaymentNotifier({ api: bot.api, db, logger });
+
+  /**
+   * Приём уведомлений Робокассы (§14, задача 4.2).
+   *
+   * Только при готовом провайдере: адрес без проверки подписи — это
+   * приглашение продлить себе подписку бесплатно, а адрес, отвечающий
+   * отказом на настоящее уведомление, — копилка повторных доставок.
+   */
+  const robokassa = providers['robokassa:smz'];
+
+  const billingRouter =
+    robokassa === undefined
+      ? undefined
+      : createBillingRouter({
+          db,
+          robokassa,
+          logger,
+          onPaid: (params) => payNotifier.paid(params),
+        });
+
   const app = createServer({
     ...(admin === undefined
       ? {}
@@ -578,6 +681,7 @@ async function main(): Promise<void> {
       { name: 'postgres', check: () => pingDb(db) },
       { name: 'redis', check: () => pingRedis(getRedis()) },
     ],
+    ...(billingRouter === undefined ? {} : { billingRouter }),
     webhookPath: WEBHOOK_PATH,
     // Сквозной идентификатор запроса на весь конвейер обработки (§18 ТЗ).
     //
@@ -615,9 +719,29 @@ async function main(): Promise<void> {
 
   if (!env.REMINDERS) logger.warn('Напоминания выключены переменной REMINDERS');
 
+  /**
+   * Продление рублёвых подписок (§14, задача 4.2).
+   *
+   * Только на рельсе Робокассы: у звёзд продлевает Telegram, а мы лишь
+   * получаем служебное сообщение. И только при согласованных дочерних
+   * списаниях: до согласования каждая попытка падает кодом 34, а бот всё
+   * равно обещал бы разовый платёж — ему и обещать нечего.
+   */
+  const stopRenewals =
+    robokassaDeps !== undefined && env.RK_RECURRING
+      ? startRenewals({
+          db,
+          logger,
+          robokassa: robokassaDeps,
+          settings,
+          onFailed: (params) => payNotifier.renewalFailed(params),
+        })
+      : () => undefined;
+
   installShutdownHandlers(server, worker, broadcastWorker, () => {
     stopSweep();
     stopScheduler();
+    stopRenewals();
   });
 }
 

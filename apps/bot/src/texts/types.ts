@@ -141,6 +141,8 @@ export interface TextProfile {
     readonly buttonDeleteData: string;
     /** Настройки (§11 и §12.1, задача 3.17): пока только напоминания. */
     readonly buttonSettings: string;
+    /** Подписка (§14, задача 4.2): оплата и отмена продления. */
+    readonly buttonSubscription: string;
     readonly buttonBack: string;
     /** Постраничность списков (задача 3.11). */
     readonly buttonPrevious: string;
@@ -535,6 +537,64 @@ export interface TextProfile {
     readonly tooManyDumps: string;
     /** Пробный период кончился (§14, задача 4.3). */
     readonly trialOver: string;
+  };
+
+  /**
+   * Подписка и оплата (§14, задача 4.2).
+   *
+   * Тексты про деньги — самое чувствительное место в боте: человек
+   * читает их, уже держа палец над кнопкой. Поэтому здесь нет ни
+   * одного восклицательного знака, ни одного «всего лишь» и ни одного
+   * обещания, которого рельс не выполнит.
+   */
+  readonly billing: {
+    /** Заголовок выбора тарифа. */
+    readonly choose: string;
+    /** Пробный период кончился — приглашение оплатить. */
+    readonly trialOverWithOffer: string;
+    /** Подписка есть: до какого числа оплачено. */
+    readonly active: (until: string) => string;
+    /** Подписка есть, но продление отключено. */
+    readonly activeNoRenew: (until: string) => string;
+    /** Кнопка тарифа: «Месяц — 399 ₽» или «Месяц — 150 ⭐». */
+    readonly planButton: (plan: string, price: string) => string;
+    readonly monthly: string;
+    readonly yearly: string;
+    /** Кнопка оплаты рублями и звёздами. */
+    readonly payByCard: string;
+    readonly payByStars: string;
+    /** Кнопка-ссылка на страницу оплаты. */
+    readonly buttonPay: string;
+    readonly buttonCancel: string;
+    readonly buttonBack: string;
+    /**
+     * Ссылка на оплату отправлена, и рядом — оговорка про продление.
+     *
+     * Функцией, а не двумя строками: оговорка обязана уехать в том же
+     * сообщении, что и кнопка. Отдельной репликой её прочитают уже после
+     * оплаты, а тогда она бесполезна.
+     */
+    readonly linkSent: (note: string) => string;
+    /** Оплата прошла. */
+    readonly paid: (until: string) => string;
+    /** Продление отключено, доступ до конца оплаченного. */
+    readonly renewalStopped: (until: string) => string;
+    /** Отменять нечего. */
+    readonly nothingToCancel: string;
+    /** Цена не задана — продавать нечего. */
+    readonly noPrice: string;
+    /** Оговорка про автопродление там, где его нет. */
+    readonly oneTimeNote: string;
+    /** Оговорка про автопродление там, где оно есть. */
+    readonly renewNote: string;
+    /** Не удалось выставить счёт. */
+    readonly checkoutFailed: string;
+    /** Ответ на /paysupport — требование правил Telegram. */
+    readonly paySupport: string;
+    /** Ответ на /terms — требование правил Telegram. */
+    readonly terms: string;
+    /** Продление не прошло: денег не хватило, доступ ещё есть. */
+    readonly renewalFailed: (until: string) => string;
   };
 
   readonly privacy: {

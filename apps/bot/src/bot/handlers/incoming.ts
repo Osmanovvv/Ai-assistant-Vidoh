@@ -1,5 +1,5 @@
 import type { Queue } from 'bullmq';
-import type { Context, MiddlewareFn } from 'grammy';
+import { InlineKeyboard, type Context, type MiddlewareFn } from 'grammy';
 
 import type { Database } from '../../infra/db.js';
 import type { PipelineJob } from '../../infra/queue.js';
@@ -10,7 +10,10 @@ import {
   isOverDumpLimit,
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
+import { sellable } from '../../modules/billing/checkout.service.js';
 import { accessOf } from '../../modules/billing/subscription.service.js';
+import type { Rail } from '../../modules/billing/tariffs.js';
+import { BILLING_ACTION } from './billing.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
 import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
@@ -57,6 +60,19 @@ export interface IncomingDeps {
    * ровно так, как до задачи.
    */
   readonly consume?: ((ctx: Context, userId: string) => Promise<boolean>) | undefined;
+  /**
+   * Рельсы оплаты, у которых есть провайдер (§14, задача 4.2).
+   *
+   * От них зависит, чем кончается пробный период: приглашением выбрать
+   * тариф или сообщением «оплата ещё не открыта». Пустой список —
+   * законное состояние, ровно в нём бот и жил до этой задачи, и обещать
+   * оплату в нём было бы обманом.
+   *
+   * Наличия рельса недостаточно: цена задаётся в панели (§15.3), и
+   * решение принимает `sellable` — одно место на кнопки и на это
+   * приглашение.
+   */
+  readonly payRails?: readonly Rail[] | undefined;
 }
 
 /**
@@ -199,7 +215,33 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
 
       if (!access.allowed) {
         const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
-        await ctx.reply(texts.limits.trialOver);
+
+        /**
+         * Приглашение к оплате — только если оплата действительно есть.
+         *
+         * «Выберите тариф» без единого тарифа отправляет человека искать
+         * кнопку, которой нет, и это худший конец пробного периода из
+         * возможных. Поэтому предложение и кнопка появляются вместе, а
+         * решает за обоих `sellable`: и провайдер, и назначенная цена.
+         */
+        const offers =
+          deps.payRails === undefined || deps.payRails.length === 0
+            ? []
+            : await sellable(deps.settings, deps.payRails);
+
+        await ctx.reply(
+          offers.length === 0 ? texts.limits.trialOver : texts.billing.trialOverWithOffer,
+          {
+            ...(offers.length === 0
+              ? {}
+              : {
+                  reply_markup: new InlineKeyboard().text(
+                    texts.menu.buttonSubscription,
+                    BILLING_ACTION.open,
+                  ),
+                }),
+          },
+        );
 
         return;
       }

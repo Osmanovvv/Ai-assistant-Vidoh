@@ -12,7 +12,7 @@ import {
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
-import { createInvoice, nextInvId, subscriptionOf } from './billing.repo.js';
+import { createInvoice, invoiceByRef, nextInvId, subscriptionOf } from './billing.repo.js';
 import type { PaymentEvent } from './provider.js';
 import {
   accessOf,
@@ -43,12 +43,20 @@ const RAIL = 'robokassa:smz';
 let userId = '';
 let settings: SettingsRegistry;
 
-/** Счёт, по метке которого потом придёт событие. */
+/**
+ * Счёт, по метке которого потом придёт событие.
+ *
+ * `autoRenew` задаётся здесь, а не угадывается по тарифу: обещание
+ * продления знает только провайдер, и знает он его при выставлении
+ * счёта. По умолчанию `true` — так выглядит счёт с рельса, где продление
+ * согласовано; случаи без обещания зовут с `autoRenew: false`.
+ */
 async function invoiceFor(params: {
   readonly plan: 'monthly' | 'yearly';
   readonly kind: 'initial' | 'renewal';
   readonly ref: string;
   readonly amountMinor?: number;
+  readonly autoRenew?: boolean;
 }): Promise<void> {
   await createInvoice(testDb(), {
     provider: RAIL,
@@ -59,6 +67,7 @@ async function invoiceFor(params: {
     currency: 'RUB',
     ref: params.ref,
     invId: await nextInvId(testDb()),
+    autoRenew: params.autoRenew ?? true,
   });
 }
 
@@ -336,6 +345,80 @@ describe('отмена автопродления — §14 «в один тап�
 
     expect(access.source).toBe('trial');
     expect(access.allowed).toBe(true);
+  });
+
+  it('месячный тариф без обещания продления автопродления НЕ включает', async () => {
+    /**
+     * **Главная проверка этого раздела.** Прежде автопродление
+     * выводилось из тарифа: `plan === 'monthly'`. Догадка неверна на
+     * обоих рельсах — у звёзд годовой тариф продлеваться не умеет вовсе,
+     * а у Робокассы даже месячное продление работает лишь после
+     * согласования услуги. Подписка помечалась продлеваемой, продление
+     * не приходило, а суточный проход каждый день ходил бы списывать
+     * несписуемое.
+     *
+     * Правду знает провайдер и говорит её при выставлении счёта. Здесь
+     * счёт без обещания — и подписка обязана это сохранить.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-9', autoRenew: false });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-9', externalId: '3009' }),
+    });
+
+    const subscription = await subscriptionOf(testDb(), { userId, provider: RAIL });
+
+    expect(subscription?.autoRenew).toBe(false);
+    // Доступ при этом полный: человек заплатил за период.
+    expect(subscription?.currentPeriodEnd.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('пришедшее продление включает автопродление даже без обещания', async () => {
+    /**
+     * Списавшиеся деньги — доказательство сильнее любой записи. Если
+     * продление пришло, оно работает, что бы ни было обещано при первом
+     * платеже: так бывает, когда услугу согласовали уже после оплаты.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-10', autoRenew: false });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-10', externalId: '3010', renewal: true }),
+    });
+
+    expect((await subscriptionOf(testDb(), { userId, provider: RAIL }))?.autoRenew).toBe(true);
+  });
+
+  it('фактический номер платежа сохраняется — по нему пойдёт продление', async () => {
+    /**
+     * Проверка на опечатку, которая ничего не ломала громко: регулярка
+     * распознавания номера была написана как `/^d+$/` вместо `/^\d+$/` и
+     * ловила строку из букв «d», а не цифры. Номер не сохранялся никогда,
+     * а продлевать без него нечем: в `PreviousInvoiceID` пришлось бы
+     * подставить наш номер, и Робокасса ответила бы ошибкой 40.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-11' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-11', externalId: '4242' }),
+    });
+
+    const invoice = await invoiceByRef(testDb(), { provider: RAIL, ref: 'c-11' });
+
+    expect(invoice?.providerInvId).toBe(4242);
+  });
+
+  it('нечисловой идентификатор платежа в номер счёта не превращается', async () => {
+    // У звёзд идентификатор не числовой. Записать его как номер значило
+    // бы отправить продление по выдуманному номеру.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'c-12' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'c-12', externalId: 'charge_abc' }),
+    });
+
+    expect(
+      (await invoiceByRef(testDb(), { provider: RAIL, ref: 'c-12' }))?.providerInvId,
+    ).toBeNull();
   });
 
   it('повторная отмена не ломается и говорит правду', async () => {

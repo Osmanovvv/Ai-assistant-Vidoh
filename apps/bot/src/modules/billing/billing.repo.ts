@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, sql } from 'drizzle-orm';
 
 import {
   billingEvents,
@@ -59,6 +59,21 @@ export interface NewInvoice {
   readonly parentInvId?: number | undefined;
   readonly outSumSent?: string | undefined;
   readonly expiresAt?: Date | undefined;
+  /**
+   * Обещано ли автопродление. Продлению известно сразу — оно наследует
+   * обещание материнского платежа; первому платежу это скажет провайдер,
+   * и потому там оно ставится вторым шагом, через `noteAutoRenew`.
+   */
+  readonly autoRenew?: boolean | undefined;
+  /**
+   * Конец периода, который оплачивает это продление.
+   *
+   * Он же ключ запрета второго списания: уникальный индекс по тройке
+   * «рельс, человек, этот срок» не даст завести второе продление за тот
+   * же период — ни второму процессу, ни повторному проходу после
+   * перезапуска.
+   */
+  readonly renewsPeriodEnd?: Date | undefined;
 }
 
 export async function createInvoice(db: Executor, params: NewInvoice): Promise<BillingInvoice> {
@@ -76,12 +91,85 @@ export async function createInvoice(db: Executor, params: NewInvoice): Promise<B
       ...(params.parentInvId === undefined ? {} : { parentInvId: params.parentInvId }),
       ...(params.outSumSent === undefined ? {} : { outSumSent: params.outSumSent }),
       ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
+      ...(params.autoRenew === undefined ? {} : { autoRenew: params.autoRenew }),
+      ...(params.renewsPeriodEnd === undefined ? {} : { renewsPeriodEnd: params.renewsPeriodEnd }),
     })
     .returning();
 
   if (row === undefined) throw new Error('Счёт не создался');
 
   return row;
+}
+
+/**
+ * Завести счёт на продление — или узнать, что он уже есть.
+ *
+ * Ключ здесь не наш и не в памяти: уникальный индекс по тройке «рельс,
+ * человек, конец продлеваемого периода». Второй проход, второй процесс и
+ * перезапуск в середине — все трое получают `undefined` и не списывают
+ * деньги во второй раз.
+ *
+ * `onConflictDoNothing` вместо чтения нарочно: проверить чтением значило
+ * бы оставить щель между проверкой и вставкой, а два прохода планировщика
+ * попадают в неё легко.
+ */
+export async function claimRenewal(
+  db: Executor,
+  params: NewInvoice & { readonly renewsPeriodEnd: Date },
+): Promise<BillingInvoice | undefined> {
+  const [row] = await db
+    .insert(billingInvoices)
+    .values({
+      provider: params.provider,
+      userId: params.userId,
+      plan: params.plan,
+      kind: 'renewal',
+      amountMinor: params.amountMinor,
+      currency: params.currency,
+      ref: params.ref,
+      renewsPeriodEnd: params.renewsPeriodEnd,
+      autoRenew: true,
+      ...(params.invId === undefined ? {} : { invId: params.invId }),
+      ...(params.parentInvId === undefined ? {} : { parentInvId: params.parentInvId }),
+      ...(params.outSumSent === undefined ? {} : { outSumSent: params.outSumSent }),
+    })
+    /**
+     * Условие повторяет условие индекса — иначе Postgres его не найдёт.
+     *
+     * Индекс частичный (у первых платежей срок пуст), а `on conflict` по
+     * частичному индексу требует того же `where`. Без него запрос падает
+     * 42P10 «нет подходящего ограничения» — и падает **на каждом**
+     * продлении, а не иногда.
+     */
+    .onConflictDoNothing({
+      target: [billingInvoices.provider, billingInvoices.userId, billingInvoices.renewsPeriodEnd],
+      where: sql`${billingInvoices.renewsPeriodEnd} is not null`,
+    })
+    .returning();
+
+  return row;
+}
+
+/**
+ * Записать на счёт обещание провайдера про автопродление.
+ *
+ * Отдельным шагом, а не полем при создании, потому что порядок обратный:
+ * счёт заводится **до** обращения к провайдеру (иначе быстрая оплата
+ * пришла бы раньше строки в базе), а правду про продление провайдер
+ * говорит уже в ответе.
+ *
+ * Не успей этот шаг — счёт останется без обещания, и оплата даст доступ
+ * без автопродления. Направление отказа выбрано так нарочно: не продлить
+ * обещанное дешевле, чем списать необещанное.
+ */
+export async function noteAutoRenew(
+  db: Executor,
+  params: { readonly id: string; readonly autoRenew: boolean },
+): Promise<void> {
+  await db
+    .update(billingInvoices)
+    .set({ autoRenew: params.autoRenew })
+    .where(eq(billingInvoices.id, params.id));
 }
 
 /** Счёт по нашей метке. По ней уведомление находит человека и тариф. */
@@ -94,6 +182,36 @@ export async function invoiceByRef(
     .from(billingInvoices)
     .where(and(eq(billingInvoices.provider, params.provider), eq(billingInvoices.ref, params.ref)))
     .orderBy(desc(billingInvoices.createdAt))
+    .limit(1);
+
+  return row;
+}
+
+/**
+ * Материнский платёж для продления: последний оплаченный с **фактическим**
+ * номером.
+ *
+ * Фактическим, а не нашим: в документации Робокассы расходятся имена
+ * поля номера (`InvId` против `InvoiceID`), а неизвестное поле она
+ * игнорирует и назначает номер сама. Продлевать по нашему номеру значило
+ * бы однажды отправить все продления в пустоту.
+ */
+export async function parentPaymentFor(
+  db: Executor,
+  params: { readonly provider: Rail; readonly userId: string },
+): Promise<BillingInvoice | undefined> {
+  const [row] = await db
+    .select()
+    .from(billingInvoices)
+    .where(
+      and(
+        eq(billingInvoices.provider, params.provider),
+        eq(billingInvoices.userId, params.userId),
+        eq(billingInvoices.status, 'paid'),
+        isNotNull(billingInvoices.providerInvId),
+      ),
+    )
+    .orderBy(desc(billingInvoices.paidAt))
     .limit(1);
 
   return row;

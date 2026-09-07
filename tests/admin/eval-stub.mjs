@@ -29,26 +29,47 @@ if (directory === undefined) {
 
 const runs = join(directory, 'runs');
 
-/** Версии из прошлого отчёта: заглушка меняет только прикреплённые. */
+/**
+ * Версии из прошлого отчёта: заглушка меняет только прикреплённые.
+ *
+ * Разбор чужого JSON проверяется по полю, а не приводится к типу:
+ * `JSON.parse` отдаёт `any`, и доверие к нему сделало бы заглушку тем
+ * местом, где проверка падает по своей вине, а не по делу.
+ */
 async function previousVersions() {
+  /** @type {Record<string, string>} */
+  const empty = {};
+
   try {
     const files = (await readdir(runs)).filter((name) => name.endsWith('.json')).sort();
     const last = files.at(-1);
-    if (last === undefined) return {};
+    if (last === undefined) return empty;
 
+    /** @type {unknown} */
     const report = JSON.parse(await readFile(join(runs, last), 'utf8'));
-    return report.promptVersions ?? {};
+
+    if (typeof report !== 'object' || report === null) return empty;
+
+    const found = /** @type {{ promptVersions?: unknown }} */ (report).promptVersions;
+
+    if (typeof found !== 'object' || found === null) return empty;
+
+    for (const [stage, version] of Object.entries(found)) {
+      if (typeof version === 'string') empty[stage] = version;
+    }
+
+    return empty;
   } catch {
-    return {};
+    return empty;
   }
 }
 
-const versions = { ...(await previousVersions()) };
+const versions = await previousVersions();
 
 for (let index = 0; index < rest.length; index++) {
   if (rest[index] !== '--use') continue;
 
-  const value = String(rest[index + 1] ?? '');
+  const value = rest[index + 1] ?? '';
   const at = value.indexOf('=');
   if (at === -1) continue;
 

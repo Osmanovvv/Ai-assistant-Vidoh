@@ -9,6 +9,7 @@ import express, {
   type Request,
   type RequestHandler,
   type Response,
+  type Router,
 } from 'express';
 
 /**
@@ -56,6 +57,15 @@ export interface ServerDeps {
   readonly adminEnqueueUser?: ((userId: string) => Promise<void>) | undefined;
   /** Кэш промптов бота: включение версии сбрасывает его (§15). */
   readonly adminPromptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
+  /**
+   * Приём уведомлений об оплате (§14, задача 4.2).
+   *
+   * Без него рублёвый рельс не работает вовсе: Робокасса стучит на
+   * ResultURL, и не ответить ей `OK` значит копить повторные доставки, а
+   * не «просто не продлить». Отсутствие роутера — законное состояние
+   * ровно до согласования магазина.
+   */
+  readonly billingRouter?: Router | undefined;
   /** Обработчик вебхука Telegram. Появляется на задаче 1.7. */
   readonly webhookPath?: string;
   readonly webhookHandler?: RequestHandler;
@@ -194,6 +204,15 @@ export function createServer(deps: ServerDeps): Express {
       }).router,
     );
   }
+
+  /**
+   * Оплата монтируется **до** вебхука и до обработчика ошибок.
+   *
+   * Свой разборщик тела у неё внутри: Робокасса присылает форму, а не
+   * JSON, и подключать разбор JSON на этот путь значило бы завести лишнюю
+   * поверхность там, куда стучится кто угодно.
+   */
+  if (deps.billingRouter !== undefined) app.use(deps.billingRouter);
 
   if (deps.webhookPath && deps.webhookHandler) {
     // Тело апдейта разбирается только на пути вебхука: остальным ручкам
