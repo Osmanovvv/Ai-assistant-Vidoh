@@ -14,6 +14,7 @@ import { overview, people, personCard } from '../../modules/admin/people.js';
 import { promoRows, savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
 import {
   cancelDraft,
+  countBroadcasts,
   createBroadcast,
   isSegment,
   listBroadcasts,
@@ -525,10 +526,21 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       /**
        * Персональные данные, хотя раздел про деньги.
        *
-       * Разрез по людям показывает имена и телеграмные номера — по ним
-       * человек узнаётся, значит §16 действует. Соблазн назвать это
-       * «сводкой» велик именно потому, что страница выглядит как
-       * бухгалтерия; на этом соблазне журнал доступа и обходят.
+       * Разрез по людям показывает **имена** — по ним человек узнаётся,
+       * значит §16 действует. Соблазн назвать это «сводкой» велик именно
+       * потому, что страница выглядит как бухгалтерия; на этом соблазне
+       * журнал доступа и обходят.
+       *
+       * Телеграмного номера здесь нет, и обещать его нельзя. Он уезжал в
+       * браузер в каждой строке страницы и не рисовался ни в одной
+       * колонке, за что его и убрали, — причина записана в
+       * `cost-breakdown.ts` у самого `UserCostRow`, вместе с тем, что
+       * делать, если номер однажды понадобится. Прежде тут стояло «имена
+       * и телеграмные номера»: читающий либо пошёл бы искать утечку,
+       * которой нет, либо «вернул» бы номер как потерянный. Тот же сорт
+       * расхождения этот файл разбирает у `/api/overview` двадцатью
+       * строками ниже — комментарий забыли, и он полгода спорил со
+       * строкой под ним.
        */
       // `byUser` — по строке на человека; журнал запишет их число.
       { personal: true, subjects: 'many', rows: 'byUser' },
@@ -673,7 +685,20 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           return;
         }
 
-        void personCard(db, { userId }).then(
+        /**
+         * Сколько выгрузок показать — из запроса (ревизия панели).
+         *
+         * `personCard` умеет отдать до пятидесяти, но обработчик его
+         * параметр не передавал и `req.query` не читал вовсе: настройка
+         * была достижима только из тестов, карточка навсегда обрезана
+         * двадцатью, а панель признавалась в этом словами «более старые
+         * из панели не открыть». Потолок сдерживает и сам `personCard` —
+         * здесь он стоит вторым, чтобы предел был назван там, где
+         * приходит чужое число.
+         */
+        const dumps = boundedNumber(req.query['dumps'], { fallback: 20, min: 1, max: 50 });
+
+        void personCard(db, { userId, dumpLimit: dumps }).then(
           (card) => {
             if (card === undefined) {
               res.status(404).json({ error: 'не найдено' });
@@ -962,25 +987,101 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
         const validUntil = typeof body['validUntil'] === 'string' ? body['validUntil'] : undefined;
         const parsed = validUntil === undefined ? undefined : new Date(validUntil);
 
+        /**
+         * Числа кода **проверяются, а не зажимаются** (ревизия панели, #10).
+         *
+         * `boundedNumber` рядом зажимает к пределам, и для отчётов это
+         * верно: «за десять лет» — не отчёт, а остановка бота, и лучше
+         * отдать месяц, чем упасть. Для кода блогера неверно: «0 раз»
+         * превращалось в квоту 1 — код с тысячей подписчиков умирал после
+         * первой оплаты, — а цена сверх миллиона рублей становилась
+         * миллионом. Ответ при этом 200: в таблице стояло другое число,
+         * чем ввёл человек, и ни одного слова о подмене. Поправить
+         * заведённый код нельзя (см. `savePromo`), значит цена молчания —
+         * новый код и просьба к блогеру переписать пост.
+         *
+         * Тот же приём, что у настроек: `checkValue` называет предел и в
+         * базу не пишет. «Больше нуля» остаётся за `savePromo` — правило
+         * про деньги живёт там, где деньги, и звучит одинаково для всех,
+         * кто её зовёт.
+         */
+        const checkedNumber = (
+          raw: unknown,
+          what: string,
+          bounds: { readonly min: number; readonly max: number },
+        ):
+          | { readonly ok: true; readonly value: number }
+          | { readonly ok: false; readonly why: string } => {
+          const value = numberIn(raw);
+
+          if (value === undefined) return { ok: false, why: `${what}: нужно целое число` };
+
+          if (value < bounds.min || value > bounds.max) {
+            return {
+              ok: false,
+              why: `${what}: допустимо от ${String(bounds.min)} до ${String(bounds.max)}`,
+            };
+          }
+
+          return { ok: true, value };
+        };
+
+        const rubles = checkedNumber(body['priceRubMinor'], 'Цена в рублях, копейками', {
+          min: 0,
+          max: 100_000_000,
+        });
+        const stars = checkedNumber(body['priceStars'], 'Цена в звёздах', {
+          min: 0,
+          max: 1_000_000,
+        });
+        /**
+         * Пустое поле — это `undefined`, и только оно снимает квоту.
+         *
+         * Ноль сюда доходит числом и означает «код нельзя применить ни
+         * разу»: такой код не нужен никому, и молчаливая единица вместо
+         * него — худший из ответов.
+         */
+        const quota =
+          body['maxRedemptions'] === undefined || body['maxRedemptions'] === null
+            ? undefined
+            : checkedNumber(body['maxRedemptions'], '«Сколько раз»', { min: 1, max: 1_000_000 });
+
+        if (!rubles.ok) {
+          res.status(400).json({ error: rubles.why });
+          return;
+        }
+
+        if (!stars.ok) {
+          res.status(400).json({ error: stars.why });
+          return;
+        }
+
+        if (quota !== undefined && !quota.ok) {
+          res.status(400).json({ error: quota.why });
+          return;
+        }
+
+        /**
+         * Неразобранный срок — тоже отказ, а не «без срока».
+         *
+         * Прежде такая строка молча превращалась в код без срока: панель
+         * поля не посылала вовсе, и случай был недостижим. Теперь поле в
+         * форме есть (ревизия панели, #3), и «завела до конца сентября» не
+         * должно означать «бессрочно» — это ровно та подмена, которую
+         * заказчица заметит через месяц по выручке.
+         */
+        if (parsed !== undefined && Number.isNaN(parsed.getTime())) {
+          res.status(400).json({ error: '«Действует до»: не разобрали дату' });
+          return;
+        }
+
         void savePromo(db, {
           code,
           plan,
-          priceRubMinor: boundedNumber(body['priceRubMinor'], {
-            fallback: 0,
-            min: 0,
-            max: 100_000_000,
-          }),
-          priceStars: boundedNumber(body['priceStars'], { fallback: 0, min: 0, max: 1_000_000 }),
-          ...(parsed === undefined || Number.isNaN(parsed.getTime()) ? {} : { validUntil: parsed }),
-          ...(body['maxRedemptions'] === undefined || body['maxRedemptions'] === null
-            ? {}
-            : {
-                maxRedemptions: boundedNumber(body['maxRedemptions'], {
-                  fallback: 1,
-                  min: 1,
-                  max: 1_000_000,
-                }),
-              }),
+          priceRubMinor: rubles.value,
+          priceStars: stars.value,
+          ...(parsed === undefined ? {} : { validUntil: parsed }),
+          ...(quota === undefined ? {} : { maxRedemptions: quota.value }),
           ...(typeof body['note'] === 'string' && body['note'] !== ''
             ? { note: body['note'].slice(0, 200) }
             : {}),
@@ -1033,9 +1134,17 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       '/api/broadcast',
       { personal: true, subjects: 'many' },
       (_req: Request, res: Response) => {
-        void listBroadcasts(db).then(
-          (rows) => {
-            res.json({ rows, segments: SEGMENTS });
+        /**
+         * Итог рядом со списком: список — последние двадцать.
+         *
+         * Без числа двадцать строк читаются как полный список, и после
+         * двадцать первой рассылки предыдущие исчезают молча — вместе с
+         * единственным путём к «Повторить неудачные». У соседнего
+         * журнала сбоев итог за период появился по той же причине.
+         */
+        void Promise.all([listBroadcasts(db), countBroadcasts(db)]).then(
+          ([rows, total]) => {
+            res.json({ rows, segments: SEGMENTS, total });
           },
           (error: unknown) => {
             deps.onError?.(error);
@@ -1435,19 +1544,83 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     }
   }
 
-  if (deps.db !== undefined && deps.evalDir !== undefined) {
+  /**
+   * Промпты (§15, задача 4.8): версии, включение, откат.
+   *
+   * **Не персональные данные, но самое ценное, что есть в продукте.**
+   * Промпты нарочно не лежат в публичном репозитории (решение 2.1);
+   * здесь они за тем же стражем, что и всё остальное. В журнал доступа
+   * не пишем: §16 про данные человека, а это наше ноу-хау.
+   */
+  const NOT_PERSONAL = {
+    personal: false,
+    why: 'промпты — ноу-хау продукта, но не данные человека (§16 про них)',
+  } as const;
+
+  /**
+   * Список версий отвечает **всегда**, когда есть база.
+   *
+   * **Найдено ревизией панели.** Без отчётов прогонов (`evalDir`) путей
+   * `/api/prompts*` не объявлялось вовсе — и GET на них ловила отдача
+   * файлов панели, отвечая `index.html` с кодом 200. Панель спотыкалась
+   * на разборе JSON и показывала красное «Не удалось прочитать
+   * промпты», то есть говорила о своей поломке там, где раздел выключен
+   * нарочно. А выключен он в двух не выдуманных состояниях: на любом
+   * новом сервере до первого `./ops/seed-prompts.sh` и после неудачной
+   * отправки отчётов — папку с ними скрипт сносит до распаковки.
+   *
+   * Поэтому раздел выключен **словами**: `enabled: false` и причина.
+   * Панель печатает объяснение и команду, а красная строка остаётся для
+   * настоящего сбоя.
+   */
+  if (deps.db !== undefined) {
     const db = deps.db;
     const evalDir = deps.evalDir;
     const runner = deps.evalRunner;
 
-    /**
-     * Промпты (§15, задача 4.8): версии, включение, откат.
-     *
-     * **Не персональные данные, но самое ценное, что есть в продукте.**
-     * Промпты нарочно не лежат в публичном репозитории (решение 2.1);
-     * здесь они за тем же стражем, что и всё остальное. В журнал доступа
-     * не пишем: §16 про данные человека, а это наше ноу-хау.
-     */
+    closed('get', '/api/prompts', NOT_PERSONAL, (_req: Request, res: Response) => {
+      if (evalDir === undefined) {
+        res.json({
+          enabled: false,
+          why:
+            'на сервере нет ни одного отчёта прогона контрольного набора, ' +
+            'а без них раздел не может судить о §10.3',
+          how: './ops/seed-prompts.sh (можно без --activate)',
+        });
+
+        return;
+      }
+
+      void promptsView(db, evalDir).then(
+        (view) => {
+          /**
+           * `canRun` — есть ли кому прогнать набор.
+           *
+           * На боевом набора нет и быть не должно: в нём живые
+           * расшифровки (§16). Без этого признака панель рисовала бы
+           * кнопку прогона всегда, а на сервере такого пути нет — и
+           * нажатие давало бы невнятный отказ вместо честного «прогон
+           * идёт с машины разработчика».
+           */
+          res.json({
+            enabled: true,
+            ...view,
+            run: runner?.state() ?? { kind: 'idle' },
+            canRun: runner !== undefined,
+          });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(500).json({ error: 'не удалось прочитать промпты' });
+        },
+      );
+    });
+  }
+
+  if (deps.db !== undefined && deps.evalDir !== undefined) {
+    const db = deps.db;
+    const evalDir = deps.evalDir;
+
     /**
      * Стадия из запроса — только та, что есть в перечислении базы.
      *
@@ -1463,35 +1636,9 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     /** Стадии, для которых набор вообще существует (общий и резолвера). */
     const MEASURABLE: readonly AiStage[] = [...MEASURED_STAGES, RESOLVER_STAGE];
 
-    const NOT_PERSONAL = {
-      personal: false,
-      why: 'промпты — ноу-хау продукта, но не данные человека (§16 про них)',
-    } as const;
-
-    closed('get', '/api/prompts', NOT_PERSONAL, (_req: Request, res: Response) => {
-      void promptsView(db, evalDir).then(
-        (view) => {
-          /**
-           * `canRun` — есть ли кому прогнать набор.
-           *
-           * На боевом набора нет и быть не должно: в нём живые
-           * расшифровки (§16). Без этого признака панель рисовала бы
-           * кнопку прогона всегда, а на сервере такого пути нет — и
-           * нажатие давало бы невнятный отказ вместо честного «прогон
-           * идёт с машины разработчика».
-           */
-          res.json({
-            ...view,
-            run: runner?.state() ?? { kind: 'idle' },
-            canRun: runner !== undefined,
-          });
-        },
-        (error: unknown) => {
-          deps.onError?.(error);
-          res.status(500).json({ error: 'не удалось прочитать промпты' });
-        },
-      );
-    });
+    // Действия раздела — только когда есть по чему судить о §10.3.
+    // Список версий отвечает и без отчётов, см. путь выше.
+    const runner = deps.evalRunner;
 
     /** Текст одной версии — отдельным запросом, см. `prompts.ts`. */
     closed('get', '/api/prompts/text', NOT_PERSONAL, (req: Request, res: Response) => {

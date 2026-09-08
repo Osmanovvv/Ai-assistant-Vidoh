@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { testDb } from '../../test/db.js';
-import { findByTgId, markBlocked, recordConsent, upsertUser } from './users.repo.js';
+import { findByTgId, markBlocked, recordConsentIfAbsent, upsertUser } from './users.repo.js';
 
 describe('upsertUser', () => {
   it('создаёт пользователя и настройки по умолчанию', async () => {
@@ -96,14 +96,29 @@ describe('markBlocked', () => {
   });
 });
 
-describe('recordConsent', () => {
-  it('фиксирует согласие на обработку данных', async () => {
+describe('recordConsentIfAbsent', () => {
+  /**
+   * Проверка переехала с `recordConsent` (ревизия панели).
+   *
+   * Та ставила `consent_at` безусловно, вызывающих не имела ни одного и
+   * была вторым — неверным — способом сказать «человек согласился»: §16
+   * требует помнить **первое** согласие. Спрашиваем то, что зовёт бот.
+   */
+  it('фиксирует согласие один раз и не сдвигает дату', async () => {
     const db = testDb();
     const user = await upsertUser(db, { tgId: 100, firstName: 'Аня' });
 
-    await recordConsent(db, user.id);
+    expect(await recordConsentIfAbsent(db, user.id)).toBe(true);
 
-    expect((await findByTgId(db, 100))?.consentAt).toBeInstanceOf(Date);
+    const first = (await findByTgId(db, 100))?.consentAt;
+    expect(first).toBeInstanceOf(Date);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Второе сообщение согласия не переписывает: иначе непонятно, когда
+    // человек согласился на самом деле.
+    expect(await recordConsentIfAbsent(db, user.id)).toBe(false);
+    expect((await findByTgId(db, 100))?.consentAt?.getTime()).toBe(first?.getTime());
   });
 });
 

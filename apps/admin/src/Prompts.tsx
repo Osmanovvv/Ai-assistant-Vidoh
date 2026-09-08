@@ -6,8 +6,10 @@ import {
   NotMeasured,
   promptText,
   prompts,
+  reasonOf,
   runEval,
   type EvalRun,
+  type FreshnessReason,
   type PromptRow,
   type PromptsPage,
 } from './api.js';
@@ -47,6 +49,29 @@ const STAGES: Record<string, string> = {
   speech: 'Речь',
   embedder: 'Векторы',
 };
+
+/**
+ * Имя стадии для человека. Ключ из базы — только если имени нет.
+ *
+ * Одним помощником на все места вывода: имена стояли в таблице и в
+ * заголовке текста, а список «набор не мерит» и причины отказа печатали
+ * ключи — «presenter», «router: включается…». Заказчица и проджект
+ * читали в одном месте «Ответ человеку», в другом «presenter» и должны
+ * были догадаться, что это одно и то же.
+ */
+function stageName(key: string): string {
+  return STAGES[key] ?? key;
+}
+
+/**
+ * Причина отказа словами: ключ стадии переведён, а не напечатан.
+ *
+ * Стадия приходит отдельным полем (`FreshnessReason`) — сервер её не
+ * склеивает нарочно: человеческие имена есть только здесь.
+ */
+function reasonLine(reason: FreshnessReason): string {
+  return typeof reason === 'string' ? reason : `${stageName(reason.stage)}: ${reason.text}`;
+}
 
 /** Слово, которым подтверждают включение без прогона. */
 const WORD = 'включаю без прогона';
@@ -111,16 +136,54 @@ export function PromptsPanel(): React.ReactElement {
   const [text, setText] = useState<string | undefined>(undefined);
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [refusal, setRefusal] = useState<
-    { readonly row: PromptRow; readonly reasons: readonly string[] } | undefined
+    { readonly row: PromptRow; readonly reasons: readonly FreshnessReason[] } | undefined
   >(undefined);
   const [word, setWord] = useState('');
   const [done, setDone] = useState<string | undefined>(undefined);
+  /**
+   * Запрос на прогон **в пути** — свой признак, а не загруженное состояние.
+   *
+   * Кнопка гасилась по `page.run.kind === 'running'`, то есть по тому,
+   * что уже пришло с сервера: между нажатием и ответом она оставалась
+   * живой. Второе нажатие получало 409 «прогон уже идёт» — и это была
+   * правда: прогон запущен и уже тратит деньги.
+   */
+  const [asking, setAsking] = useState(false);
+  /**
+   * Неудача **одного действия**, а не поломка раздела.
+   *
+   * Прежде отказ прогона уходил в `problem`, и ранний возврат заменял
+   * весь раздел одной красной строкой «Не удалось запустить прогон»: без
+   * таблицы, без отказа, без кнопки. Выйти можно было только сменой
+   * вкладки — и сообщение при этом было неправдой наоборот.
+   */
+  const [runProblem, setRunProblem] = useState<string | undefined>(undefined);
+  /**
+   * Отказ действия — включения версии или сохранения правки.
+   *
+   * Та же болезнь, что была у прогона, и лечится тем же: сервер называет
+   * причину («набор на этой версии не прогнан», «правка не отличается от
+   * основы»), а панель писала своё «не удалось включить версию» и
+   * ранним возвратом заменяла раздел одной красной строкой. Человек
+   * терял и таблицу, и набранный текст правки, и повода не узнавал.
+   */
+  const [refused, setRefused] = useState<string | undefined>(undefined);
+  /**
+   * Отказ чтения **одной** версии, а не раздела.
+   *
+   * Своё состояние, потому что место у него своё: окно версии открыто, и
+   * сказать про неудачу надо в нём. Без этого окно оставалось на «Читаю…»
+   * навсегда — молчание вместо причины.
+   */
+  const [textProblem, setTextProblem] = useState<string | undefined>(undefined);
 
   const load = useCallback(() => {
     void prompts()
       .then(setPage)
-      .catch(() => {
-        setProblem('Не удалось прочитать промпты');
+      .catch((error: unknown) => {
+        // Ранний возврат здесь на месте: не прочитан сам раздел, и
+        // показывать было бы нечего. Но причину называет сервер.
+        setProblem(reasonOf(error, 'Не удалось прочитать промпты'));
       });
   }, []);
 
@@ -132,14 +195,16 @@ export function PromptsPanel(): React.ReactElement {
    * Иначе человек, нажавший кнопку, остался бы перед неподвижным
    * экраном на несколько минут и нажал бы ещё раз.
    */
+  const runKind = page?.enabled === true ? page.run.kind : undefined;
+
   useEffect(() => {
-    if (page?.run.kind !== 'running') return undefined;
+    if (runKind !== 'running') return undefined;
 
     const timer = setInterval(load, 5_000);
     return () => {
       clearInterval(timer);
     };
-  }, [page?.run.kind, load]);
+  }, [runKind, load]);
 
   if (problem !== undefined) {
     return (
@@ -151,24 +216,57 @@ export function PromptsPanel(): React.ReactElement {
 
   if (page === undefined) return <p className="разрез__пусто">Читаю…</p>;
 
+  if (!page.enabled) {
+    /**
+     * Раздел выключен нарочно — и здесь об этом сказано словами.
+     *
+     * Прежде на этом месте стояло красное «Не удалось прочитать
+     * промпты»: путей `/api/prompts*` без отчётов прогонов не
+     * объявлялось вовсе, запрос ловила отдача файлов панели, и разбор
+     * ответа спотыкался. Человек читал это как поломку панели и шёл
+     * искать её в журналах — а раздела просто нет, по причине, которую
+     * сервер называет. Красная строка осталась только для настоящего
+     * сбоя.
+     */
+    return (
+      <div data-testid="prompts-off">
+        <p className="оговорка">Раздела промптов сейчас нет: {page.why}.</p>
+        <p className="оговорка" style={{ marginBottom: 8 }}>
+          Отчёты кладёт на сервер заливка промптов с машины разработчика:
+        </p>
+        <pre className="хвост" data-testid="prompts-off-how">
+          {page.how}
+        </pre>
+        <p className="оговорка">
+          Сам контрольный набор на сервер не едет и не должен: в нём живые расшифровки людей (§16).
+          Прогон и включение версий делаются оттуда же, с машины разработчика.
+        </p>
+      </div>
+    );
+  }
+
   const show = (row: PromptRow): void => {
     setOpen(row);
     setText(undefined);
     setDraft(undefined);
     setRefusal(undefined);
+    setRefused(undefined);
+    setTextProblem(undefined);
 
     void promptText(row.stage, row.version)
       .then((found) => {
         setText(found.prompt);
       })
-      .catch(() => {
-        setProblem('Не удалось прочитать текст версии');
+      .catch((error: unknown) => {
+        setTextProblem(reasonOf(error, 'Не удалось прочитать текст версии'));
       });
   };
 
   const activate = (row: PromptRow, acknowledged: boolean): void => {
     setDone(undefined);
     setRefusal(undefined);
+    setRunProblem(undefined);
+    setRefused(undefined);
 
     void activatePrompt({ stage: row.stage, version: row.version, acknowledged })
       .then(() => {
@@ -182,22 +280,40 @@ export function PromptsPanel(): React.ReactElement {
           return;
         }
 
-        setProblem('Не удалось включить версию');
+        setRefused(reasonOf(error, 'Не удалось включить версию'));
       });
   };
 
   const measure = (row: PromptRow): void => {
+    setAsking(true);
+    setRunProblem(undefined);
+
     void runEval({ stage: row.stage, version: row.version })
       .then(() => {
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось запустить прогон');
+      .catch((error: unknown) => {
+        /**
+         * Причину называет сервер — «прогон уже идёт», — и она
+         * единственная, по которой понятно, что делать: ждать, а не
+         * жать снова. Своё «не удалось запустить» на её месте было
+         * неправдой наоборот: прогон запущен и уже тратит деньги.
+         */
+        setRunProblem(reasonOf(error, 'Не удалось запустить прогон'));
+
+        // И перечитать состояние: на странице оно устарело — за этим и
+        // было второе нажатие.
+        load();
+      })
+      .finally(() => {
+        setAsking(false);
       });
   };
 
   const save = (): void => {
     if (open === undefined || draft === undefined || draft.trim() === '') return;
+
+    setRefused(undefined);
 
     void createHotfix({ stage: open.stage, basedOn: open.version, prompt: draft })
       .then((made) => {
@@ -206,8 +322,10 @@ export function PromptsPanel(): React.ReactElement {
         setDraft(undefined);
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось сохранить правку');
+      .catch((error: unknown) => {
+        // Окно и черновик остаются: человек правит набранное, а не
+        // набирает заново.
+        setRefused(reasonOf(error, 'Не удалось сохранить правку'));
       });
   };
 
@@ -226,13 +344,13 @@ export function PromptsPanel(): React.ReactElement {
           Набор на включённых сейчас версиях прогнан
           {page.freshness.runs.length === 0 ? '' : `: ${page.freshness.runs.join(', ')}`}.
           {page.freshness.unmeasured.length > 0 &&
-            ` Набор не мерит: ${page.freshness.unmeasured.join(', ')} — эти включаются без измерения.`}
+            ` Набор не мерит: ${page.freshness.unmeasured.map(stageName).join(', ')} — эти включаются без измерения.`}
         </p>
       ) : (
         <div className="отказ" data-testid="freshness-bad" role="alert">
           <p style={{ margin: 0 }}>Включённое сейчас набором не подтверждено:</p>
           <ul>
-            {page.freshness.reasons.map((line) => (
+            {page.freshness.reasons.map(reasonLine).map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
@@ -244,6 +362,12 @@ export function PromptsPanel(): React.ReactElement {
       {done !== undefined && (
         <p className="оговорка" data-testid="prompt-done" role="status">
           Готово: {done}
+        </p>
+      )}
+
+      {refused !== undefined && (
+        <p className="отказ" data-testid="prompt-refused" role="alert">
+          {refused}
         </p>
       )}
 
@@ -262,7 +386,7 @@ export function PromptsPanel(): React.ReactElement {
           <tbody>
             {page.versions.map((row) => (
               <tr key={`${row.stage}/${row.version}`} data-testid={`version-${row.version}`}>
-                <td>{STAGES[row.stage] ?? row.stage}</td>
+                <td>{stageName(row.stage)}</td>
                 <td>
                   {row.version}
                   {row.isActive && (
@@ -310,7 +434,7 @@ export function PromptsPanel(): React.ReactElement {
             Версия {refusal.row.version} не включена: набор на ней не прогнан.
           </p>
           <ul>
-            {refusal.reasons.map((line) => (
+            {refusal.reasons.map(reasonLine).map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
@@ -326,18 +450,28 @@ export function PromptsPanel(): React.ReactElement {
               type="button"
               className="период__кнопка"
               data-testid="measure"
-              disabled={running}
+              disabled={running || asking}
               onClick={() => {
                 measure(refusal.row);
               }}
             >
-              {running ? 'Прогон уже идёт' : 'Прогнать набор на этой версии'}
+              {asking
+                ? 'Запрашиваю прогон…'
+                : running
+                  ? 'Прогон уже идёт'
+                  : 'Прогнать набор на этой версии'}
             </button>
           ) : (
             <p style={{ margin: 0 }} data-testid="no-runner">
               Прогнать набор отсюда нельзя: сам набор живёт на машине разработчика — в нём живые
               расшифровки людей, и на сервере им делать нечего. Прогон и включение версии делаются
               оттуда.
+            </p>
+          )}
+
+          {runProblem !== undefined && (
+            <p style={{ margin: '8px 0 0' }} data-testid="run-problem" role="status">
+              Прогон не запустился: {runProblem}.
             </p>
           )}
 
@@ -372,10 +506,14 @@ export function PromptsPanel(): React.ReactElement {
       {open !== undefined && (
         <div className="разрез" data-testid="prompt-text">
           <h3 className="разрез__имя">
-            {STAGES[open.stage] ?? open.stage} — {open.version}
+            {stageName(open.stage)} — {open.version}
           </h3>
 
-          {text === undefined ? (
+          {textProblem !== undefined ? (
+            <p className="отказ" data-testid="prompt-text-problem" role="alert">
+              {textProblem}
+            </p>
+          ) : text === undefined ? (
             <p className="разрез__пусто">Читаю…</p>
           ) : (
             <>

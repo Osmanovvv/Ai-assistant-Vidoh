@@ -564,6 +564,14 @@ export async function createChosenTopics(
   db: Executor,
   userId: string,
   chosen: readonly string[],
+  /**
+   * Предел числа тем из настроек (§6.4, §15) — см. `createTopics`.
+   *
+   * Начальный набор шёл мимо предела: сфер на выбор девять, и человек,
+   * отметивший все, получал девять ветвей даже при умолчании восемь.
+   * Без реестра работает умолчание из кода.
+   */
+  maxTopics?: number,
 ): Promise<TopicsResult> {
   const names = chosen.length > 0 ? chosen : [...DEFAULT_TOPIC_NAMES];
 
@@ -575,6 +583,7 @@ export async function createChosenTopics(
     db,
     userId,
     withDefault.map((name) => ({ name, isDefault: name === FALLBACK_TOPIC })),
+    maxTopics,
   );
 
   return { created, fallback: chosen.length === 0 };

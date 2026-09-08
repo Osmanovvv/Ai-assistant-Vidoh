@@ -6,6 +6,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { promptVersions } from '../../db/schema.js';
+import type { FreshnessReason } from '../../eval/freshness.js';
 import type { EvalReport } from '../../eval/report.js';
 import type { ResolverReport } from '../../eval/resolver-report.js';
 import { testDb } from '../../test/db.js';
@@ -33,6 +34,20 @@ import { activateVersion, createHotfix, promptText, promptsView } from './prompt
  */
 
 let evalDir = '';
+
+/**
+ * Причины отказа одной строкой — так, как их склеивают вызывающие.
+ *
+ * Причина про стадию приходит с ключом в **отдельном поле**: человеческое
+ * имя стадии («Маршрутизатор») знает только панель, и переводить ей надо
+ * поле, а не догадываться, где в готовой фразе начинается «router».
+ * Скрипты склеивают так же — им ключ и нужен (`check-eval-fresh.ts`).
+ */
+function words(reasons: readonly FreshnessReason[]): string {
+  return reasons
+    .map((one) => (typeof one === 'string' ? one : `${one.stage}: ${one.text}`))
+    .join(' ');
+}
 
 /**
  * Отчёт прогона: то, что читает проверка свежести.
@@ -356,7 +371,7 @@ describe('заслон §10.3: непрогнанное не включаетс�
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('нет ни одного');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('нет ни одного');
 
     // И версия действительно не включена: отказ, а не отказ на словах.
     const [row] = await testDb()
@@ -383,7 +398,7 @@ describe('заслон §10.3: непрогнанное не включаетс�
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('classifier@2');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('classifier@2');
   });
 
   it('неполный отчёт не считается пройденным порогом', async () => {
@@ -415,7 +430,7 @@ describe('заслон §10.3: непрогнанное не включаетс�
 
     expect(outcome.ok).toBe(false);
 
-    const said = !outcome.ok ? outcome.refused.reasons.join(' ') : '';
+    const said = !outcome.ok ? words(outcome.refused.reasons) : '';
 
     // Пропуск назван словами, а не спрятан за «не прогоняли ни разу»:
     // иначе разбирающий пойдёт искать прогон, который на диске есть.
@@ -442,7 +457,7 @@ describe('заслон §10.3: непрогнанное не включаетс�
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('порог');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('порог');
   });
 
   it('прогнанная версия включается', async () => {
@@ -536,7 +551,30 @@ describe('заслон §10.3: непрогнанное не включаетс�
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('router');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('router');
+
+    /**
+     * **Ключ стадии — отдельным полем, а не внутри фразы (ревизия
+     * панели).** Причина приезжала склеенной — «router: включается X, а
+     * мерили Y», — и печаталась человеку как есть. В таблице рядом та же
+     * стадия называется «Маршрутизатор»: заказчица и проджект читают в
+     * одном месте одно, в другом другое и должны догадаться, что это одно
+     * и то же. Перевести склеенную фразу панель не может — переводить
+     * нечего.
+     */
+    const about = !outcome.ok
+      ? outcome.refused.reasons.filter(
+          (one): one is { readonly stage: string; readonly text: string } =>
+            typeof one !== 'string',
+        )
+      : [];
+
+    expect(about.map((one) => one.stage)).toContain('router');
+
+    // И в самой фразе ключа больше нет: он весь ушёл в поле.
+    expect(about.find((one) => one.stage === 'router')?.text).toBe(
+      'включается router@2, а мерили router@9',
+    );
   });
 });
 
@@ -777,7 +815,7 @@ describe('у резолвера свой набор — и панель его �
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('резолвера');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('резолвера');
   });
 
   it('прогон своего набора на другой версии не считается', async () => {
@@ -808,7 +846,7 @@ describe('у резолвера свой набор — и панель его �
     });
 
     expect(outcome.ok).toBe(false);
-    expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('порог');
+    expect(!outcome.ok ? words(outcome.refused.reasons) : '').toContain('порог');
   });
 
   it('прогнанная своим набором версия включается', async () => {
@@ -1012,6 +1050,24 @@ describe('заливка из файлов не гасит правку из п�
       .where(eq(promptVersions.version, made.version));
 
     expect(was?.note ?? '').toContain('погашена заливкой classifier@2');
+
+    /**
+     * **И прежнее примечание цело — найдено ревизией панели.**
+     *
+     * Пометка ставилась вместо примечания, а в нём лежит признание
+     * «включена без прогона набора: <кто>», обещанное человеку на экране
+     * включения словами «запишется в версию навсегда», и авторство
+     * правки. Других следов включения нет: колонок «включена когда и
+     * кем» в `prompt_versions` не бывает, а раздел промптов не
+     * персональный и в журнал доступа не пишется. Стиралось признание
+     * первым же штатным разворачиванием — то есть ровно перед разбором
+     * «почему стало хуже», для которого его и писали.
+     *
+     * Прежняя проверка этого не видела: она смотрела только на новую
+     * пометку, а уничтожение остального ей было невидимо.
+     */
+    expect(was?.note ?? '').toContain('без прогона набора');
+    expect(was?.note ?? '').toContain('hotfix из панели');
   });
 
   it('обычную файловую версию поверх файловой включает без разрешений', async () => {

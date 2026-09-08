@@ -43,9 +43,18 @@ const TITLES: Record<string, { readonly title: string; readonly hint: string }> 
     title: 'Выгрузок в сутки',
     hint: 'Потолок на человека (§10.5). Сообщения сверх него сохраняются, но разбор не заводится.',
   },
+  /**
+   * Предел числа тем (§6.4, §15).
+   *
+   * **Подпись говорит, что предел не отнимает уже созданное.** Он
+   * действует на создание — начальный набор по ответам опроса и согласие
+   * добавить сферу, — а у тех, у кого ветвей уже больше, ничего не
+   * убавляется: отнимать у человека ветку, в которой лежат его записи,
+   * настройка права не имеет.
+   */
   maxTopics: {
     title: 'Сколько тем',
-    hint: 'Больше тем — дольше выбор у модели и длиннее список у человека.',
+    hint: 'Предел на человека: столько ветвей бот заводит и не больше. Больше тем — дольше выбор у модели и длиннее список у человека. У тех, у кого ветвей уже больше, ничего не убавится.',
   },
   resolverApply: {
     title: 'Порог применения, %',
@@ -113,26 +122,6 @@ export function SettingsPanel(): React.ReactElement {
 
   useEffect(load, [load]);
 
-  /**
-   * Отказ **чтения** подменяет раздел, отказ **записи** — нет.
-   *
-   * Ревизия четвёртого этапа. Прежде состояние было одно: неудачная
-   * запись убирала со экрана всю таблицу вместе с полями ввода. Человек
-   * читал причину («допустимо от 1 до 1000») и не видел поля, которое
-   * надо поправить, — а вернуть таблицу можно было только перезагрузкой
-   * страницы. Ровно та же правка, что в разделе расходов: ожидание и
-   * отказ не должны подменять собой страницу.
-   */
-  if (unread !== undefined) {
-    return (
-      <p className="отказ" role="alert">
-        {unread}
-      </p>
-    );
-  }
-
-  if (page === undefined) return <p className="разрез__пусто">Читаю…</p>;
-
   const save = (name: string, value: string): void => {
     setSaved(undefined);
     setProblem(undefined);
@@ -149,9 +138,26 @@ export function SettingsPanel(): React.ReactElement {
       });
   };
 
+  /**
+   * Отказ чтения печатается **на месте таблицы**, а не вместо раздела.
+   *
+   * Ревизия четвёртого этапа сделала это для отказа записи: неудачная
+   * запись убирала с экрана таблицу вместе с полями ввода, человек читал
+   * причину («допустимо от 1 до 1000») и не видел поля, которое надо
+   * поправить. До отказа **чтения** правку не довели, и он подменял собой
+   * весь раздел вместе с блоком промокодов — а тот читается отдельным
+   * запросом и мог ответить нормально (ревизия панели, находка 11).
+   *
+   * Цена этого: код утёк в публичный канал, его надо срочно выключить, а
+   * на экране «Не удалось прочитать настройки» и выключить нечем. Ранний
+   * возврат допустим только на отказ чтения того, о чём весь раздел, — а
+   * промокоды в настройках не нуждаются ни в одном значении.
+   */
   return (
     <div data-testid="settings">
-      <p className="оговорка">Значения применяются сразу, без выкладки и без перезапуска бота.</p>
+      {page !== undefined && (
+        <p className="оговорка">Значения применяются сразу, без выкладки и без перезапуска бота.</p>
+      )}
 
       {problem !== undefined && (
         <p className="отказ" role="alert">
@@ -159,72 +165,82 @@ export function SettingsPanel(): React.ReactElement {
         </p>
       )}
 
-      <div className="таблица-обёртка">
-        <table className="таблица">
-          <thead>
-            <tr>
-              <th>Что</th>
-              <th className="таблица__число">Сейчас</th>
-              <th className="таблица__число">По умолчанию</th>
-              <th>Новое значение</th>
-            </tr>
-          </thead>
-          <tbody>
-            {page.rows.map((row) => {
-              const known = TITLES[row.name];
-              const draft = drafts[row.name] ?? String(row.value);
+      {unread !== undefined && (
+        <p className="отказ" role="alert">
+          {unread}
+        </p>
+      )}
 
-              return (
-                <tr key={row.name}>
-                  <td>
-                    <div>{known?.title ?? row.name}</div>
-                    <div className="панель__кто">{known?.hint ?? row.key}</div>
-                    {row.measured && (
-                      <div className="оговорка" style={{ margin: '6px 0 0' }} role="note">
-                        Значение получено замером. Вред от правки виден только на контрольном наборе
-                        — прогоните его после изменения.
-                      </div>
-                    )}
-                  </td>
-                  <td className="таблица__число" data-testid={`now-${row.name}`}>
-                    {row.value}
-                    {row.set ? '' : ' (из кода)'}
-                  </td>
-                  <td className="таблица__число">{row.fallback}</td>
-                  <td>
-                    <input
-                      className="поле__ввод"
-                      style={{ maxWidth: 120 }}
-                      name={row.name}
-                      inputMode="numeric"
-                      value={draft}
-                      onChange={(event) => {
-                        setDrafts({
-                          ...drafts,
-                          [row.name]: event.target.value.replace(/\D/gu, ''),
-                        });
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="период__кнопка"
-                      style={{ marginLeft: 8 }}
-                      disabled={draft === String(row.value) || draft === ''}
-                      onClick={() => {
-                        save(row.name, draft);
-                      }}
-                    >
-                      {saved === row.name ? 'Сохранено' : 'Сохранить'}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {unread === undefined && page === undefined && <p className="разрез__пусто">Читаю…</p>}
 
-      {page.missing.map((note) => (
+      {page !== undefined && (
+        <div className="таблица-обёртка">
+          <table className="таблица">
+            <thead>
+              <tr>
+                <th>Что</th>
+                <th className="таблица__число">Сейчас</th>
+                <th className="таблица__число">По умолчанию</th>
+                <th>Новое значение</th>
+              </tr>
+            </thead>
+            <tbody>
+              {page.rows.map((row) => {
+                const known = TITLES[row.name];
+                const draft = drafts[row.name] ?? String(row.value);
+
+                return (
+                  <tr key={row.name}>
+                    <td>
+                      <div>{known?.title ?? row.name}</div>
+                      <div className="панель__кто">{known?.hint ?? row.key}</div>
+                      {row.measured && (
+                        <div className="оговорка" style={{ margin: '6px 0 0' }} role="note">
+                          Значение получено замером. Вред от правки виден только на контрольном
+                          наборе — прогоните его после изменения.
+                        </div>
+                      )}
+                    </td>
+                    <td className="таблица__число" data-testid={`now-${row.name}`}>
+                      {row.value}
+                      {row.set ? '' : ' (из кода)'}
+                    </td>
+                    <td className="таблица__число">{row.fallback}</td>
+                    <td>
+                      <input
+                        className="поле__ввод"
+                        style={{ maxWidth: 120 }}
+                        name={row.name}
+                        inputMode="numeric"
+                        value={draft}
+                        onChange={(event) => {
+                          setDrafts({
+                            ...drafts,
+                            [row.name]: event.target.value.replace(/\D/gu, ''),
+                          });
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="период__кнопка"
+                        style={{ marginLeft: 8 }}
+                        disabled={draft === String(row.value) || draft === ''}
+                        onClick={() => {
+                          save(row.name, draft);
+                        }}
+                      >
+                        {saved === row.name ? 'Сохранено' : 'Сохранить'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {page?.missing.map((note) => (
         <p className="оговорка" key={note} style={{ marginTop: 20 }}>
           {note}
         </p>
@@ -248,18 +264,63 @@ export function SettingsPanel(): React.ReactElement {
  * **Код называет цену, а не скидку.** Подсказки говорят это словами:
  * поле в копейках без объяснения означает, что кто-нибудь введёт «199» и
  * продаст месяц за два рубля.
+ *
+ * **Срок действия достижим с экрана** (ревизия панели, находка 3). Бот
+ * срок соблюдает и отвечает человеку «код истёк», колонка есть в базе, а
+ * панель не умела ни задать срок, ни показать его: заказчице оставалось
+ * помнить и выключить руками. Обратная сторона была хуже — код со сроком
+ * в базе показывался живым, с кнопкой «Выключить», пока бот уже отвечал
+ * «истёк», и разобрать жалобу блогера было нечем.
  */
+
+/** Пустой черновик формы. Один на сброс после заведения и на первый вид. */
+const EMPTY_DRAFT = {
+  code: '',
+  plan: 'monthly',
+  priceRubMinor: '',
+  priceStars: '',
+  validUntil: '',
+  maxRedemptions: '',
+  note: '',
+};
+
+/**
+ * Последний день действия — до конца суток, а не до его начала.
+ *
+ * `<input type="date">` даёт «2026-09-30», и это полночь: код, заведённый
+ * «до 30 сентября», перестал бы работать в ночь **на** тридцатое — за
+ * сутки до того, что человек имел в виду, и ровно тогда, когда пост
+ * блогера ещё живёт. Строка без часового пояса читается по часам
+ * браузера: в этом же поясе панель показывает и все прочие времена.
+ */
+function endOfDay(date: string): string | undefined {
+  const at = new Date(`${date}T23:59:59.999`);
+
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
+}
+
+/** Срок словами. Бессрочный код так и назван — пустая клетка читается как факт. */
+function untilText(iso: string | null): string {
+  if (iso === null) return 'без срока';
+
+  const at = new Date(iso);
+
+  return Number.isNaN(at.getTime()) ? '—' : at.toLocaleDateString('ru-RU');
+}
+
+/** Истёк ли срок. То же правило, что у бота: момент прошёл — код не годится. */
+function expired(iso: string | null, now: number): boolean {
+  if (iso === null) return false;
+
+  const at = new Date(iso).getTime();
+
+  return !Number.isNaN(at) && at <= now;
+}
+
 function PromoBlock(): React.ReactElement {
   const [rows, setRows] = useState<readonly PromoRow[] | undefined>(undefined);
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  const [draft, setDraft] = useState({
-    code: '',
-    plan: 'monthly',
-    priceRubMinor: '',
-    priceStars: '',
-    maxRedemptions: '',
-    note: '',
-  });
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
 
   const load = useCallback(() => {
     void promoCodes()
@@ -273,15 +334,6 @@ function PromoBlock(): React.ReactElement {
 
   useEffect(load, [load]);
 
-  const empty = {
-    code: '',
-    plan: 'monthly',
-    priceRubMinor: '',
-    priceStars: '',
-    maxRedemptions: '',
-    note: '',
-  };
-
   const save = (): void => {
     setProblem(undefined);
 
@@ -290,11 +342,13 @@ function PromoBlock(): React.ReactElement {
       plan: draft.plan,
       priceRubMinor: Number(draft.priceRubMinor),
       priceStars: Number(draft.priceStars),
+      // Пусто — без срока: единственный способ сказать «бессрочно».
+      ...(draft.validUntil === '' ? {} : { validUntil: endOfDay(draft.validUntil) }),
       ...(draft.maxRedemptions === '' ? {} : { maxRedemptions: Number(draft.maxRedemptions) }),
       ...(draft.note === '' ? {} : { note: draft.note }),
     })
       .then(() => {
-        setDraft(empty);
+        setDraft(EMPTY_DRAFT);
         load();
       })
       .catch((error: unknown) => {
@@ -321,6 +375,12 @@ function PromoBlock(): React.ReactElement {
   };
 
   const digitsOnly = (value: string): string => value.replace(/[^0-9]/gu, '');
+
+  /**
+   * Одно «сейчас» на весь список: две пометки «истёк», посчитанные в
+   * разные миллисекунды, разошлись бы у кода, истекающего в эту секунду.
+   */
+  const now = Date.now();
 
   return (
     <div className="разрез" data-testid="promo" style={{ marginTop: 28 }}>
@@ -349,25 +409,41 @@ function PromoBlock(): React.ReactElement {
                 <th className="таблица__число">Звёзды</th>
                 <th className="таблица__число">Оплат</th>
                 <th className="таблица__число">Недополучено</th>
+                <th>До</th>
                 <th>Кому</th>
                 <th> </th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.code}>
-                  <td data-testid={`promo-${row.code}`}>
-                    {row.code}
-                    {row.disabledAt === null ? '' : ' (выключен)'}
-                  </td>
-                  <td>{row.plan === 'monthly' ? 'месяц' : 'год'}</td>
-                  <td className="таблица__число">{(row.priceRubMinor / 100).toFixed(2)} ₽</td>
-                  <td className="таблица__число">{row.priceStars} ⭐</td>
-                  <td className="таблица__число">
-                    {row.redeemed}
-                    {row.maxRedemptions === null ? '' : ` из ${String(row.maxRedemptions)}`}
-                  </td>
-                  {/*
+              {rows.map((row) => {
+                /**
+                 * Истёкший срок помечен так же явно, как выключение.
+                 *
+                 * Иначе панель показывает код живым, с кнопкой
+                 * «Выключить», пока бот отвечает человеку «код истёк», — и
+                 * разобрать жалобу блогера нечем. Обе пометки рядом, когда
+                 * верны обе: выключение и срок — разные причины, и человек
+                 * имеет право знать, какая из них снимается кнопкой.
+                 */
+                const marks = [
+                  ...(row.disabledAt === null ? [] : ['выключен']),
+                  ...(expired(row.validUntil, now) ? ['истёк'] : []),
+                ];
+
+                return (
+                  <tr key={row.code}>
+                    <td data-testid={`promo-${row.code}`}>
+                      {row.code}
+                      {marks.length === 0 ? '' : ` (${marks.join(', ')})`}
+                    </td>
+                    <td>{row.plan === 'monthly' ? 'месяц' : 'год'}</td>
+                    <td className="таблица__число">{(row.priceRubMinor / 100).toFixed(2)} ₽</td>
+                    <td className="таблица__число">{row.priceStars} ⭐</td>
+                    <td className="таблица__число">
+                      {row.redeemed}
+                      {row.maxRedemptions === null ? '' : ` из ${String(row.maxRedemptions)}`}
+                    </td>
+                    {/*
                     Недополученное — **по каждой валюте** (ревизия этапа).
 
                     Прежде показывалась одна величина, рублёвая, а «Оплат»
@@ -376,31 +452,33 @@ function PromoBlock(): React.ReactElement {
                     нигде не появлялась. Складывать нельзя — курс звезды
                     задаёт Telegram, — поэтому обе величины рядом.
                   */}
-                  <td className="таблица__число" data-testid={`promo-lost-${row.code}`}>
-                    {row.discounts.length === 0
-                      ? '—'
-                      : row.discounts
-                          .map((one) =>
-                            one.currency === 'XTR'
-                              ? `${String(one.minor)} ⭐`
-                              : `${(one.minor / 100).toFixed(2)} ₽`,
-                          )
-                          .join(' · ')}
-                  </td>
-                  <td className="панель__кто">{row.note ?? ''}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="период__кнопка"
-                      onClick={() => {
-                        switchOne(row.code, row.disabledAt !== null);
-                      }}
-                    >
-                      {row.disabledAt === null ? 'Выключить' : 'Включить'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    <td className="таблица__число" data-testid={`promo-lost-${row.code}`}>
+                      {row.discounts.length === 0
+                        ? '—'
+                        : row.discounts
+                            .map((one) =>
+                              one.currency === 'XTR'
+                                ? `${String(one.minor)} ⭐`
+                                : `${(one.minor / 100).toFixed(2)} ₽`,
+                            )
+                            .join(' · ')}
+                    </td>
+                    <td data-testid={`promo-until-${row.code}`}>{untilText(row.validUntil)}</td>
+                    <td className="панель__кто">{row.note ?? ''}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="период__кнопка"
+                        onClick={() => {
+                          switchOne(row.code, row.disabledAt !== null);
+                        }}
+                      >
+                        {row.disabledAt === null ? 'Выключить' : 'Включить'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -453,6 +531,22 @@ function PromoBlock(): React.ReactElement {
             setDraft({ ...draft, priceStars: digitsOnly(event.target.value) });
           }}
         />
+        {/*
+          Срок — датой, а не строкой: «до конца сентября» человек напишет
+          пятью способами, и разбирать их значило бы однажды завести код
+          бессрочным. Пусто — без срока.
+        */}
+        <input
+          className="поле__ввод"
+          style={{ maxWidth: 160 }}
+          name="promoUntil"
+          type="date"
+          aria-label="Действует до"
+          value={draft.validUntil}
+          onChange={(event) => {
+            setDraft({ ...draft, validUntil: event.target.value });
+          }}
+        />
         <input
           className="поле__ввод"
           style={{ maxWidth: 120 }}
@@ -486,9 +580,23 @@ function PromoBlock(): React.ReactElement {
       </div>
 
       <p className="панель__кто">
-        Копейки, а не рубли: 9900 = 99 ₽. Звёзды — штуками. «Сколько раз» пусто — без ограничения;
-        считаются только оплаченные, брошенный счёт квоту не тратит. Код не короче шести знаков и не
-        словарный: его увидят все подписчики блогера.
+        Копейки, а не рубли: 9900 = 99 ₽. Звёзды — штуками. «Действует до» — последний день, когда
+        код работает; пусто — без срока. «Сколько раз» пусто — без ограничения, а ноль не годится:
+        код, который нельзя применить ни разу, не нужен никому. Считаются только оплаченные,
+        брошенный счёт квоту не тратит. Код не короче шести знаков и не словарный: его увидят все
+        подписчики блогера.
+      </p>
+
+      {/*
+        Правки кода нет, и об этом сказано **до** заведения, а не после
+        (ревизия панели, находка 9). Опечатка в цене уже опубликованного
+        кода лечится только новым кодом, то есть просьбой к блогеру
+        переписать пост: человек имеет право знать это, пока цена ещё
+        черновик в поле, а не строка в базе.
+      */}
+      <p className="панель__кто">
+        Заведённый код не правится: ни цена, ни срок, ни квота, ни примечание. Ошиблись — выключите
+        его и заведите новый; выключение не стирает счёт применений и недополученного.
       </p>
     </div>
   );

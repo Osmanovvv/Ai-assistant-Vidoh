@@ -62,13 +62,20 @@ export async function markBlocked(db: Executor, tgId: number): Promise<void> {
     .where(eq(users.tgId, tgId));
 }
 
-/** §16 ТЗ: факт согласия на обработку данных. */
-export async function recordConsent(db: Executor, userId: string): Promise<void> {
-  await db
-    .update(users)
-    .set({ consentAt: sql`now()` })
-    .where(eq(users.id, userId));
-}
+/*
+  `recordConsent` убрана ревизией панели — вместе с `activeUserIds`.
+
+  Она ставила `consent_at` безусловно, то есть была вторым способом
+  сказать «человек согласился» — и способом неверным: §16 требует
+  запомнить **первое** согласие, а безусловная запись сдвигала бы дату
+  при каждом сообщении, и ответить «когда он согласился на самом деле»
+  стало бы нечем. Живёт правило в `recordConsentIfAbsent`, у которого
+  условие стоит в самом запросе.
+
+  Вызывающих у неё не было ни одного, кроме собственной проверки. Связку
+  теперь стережёт `broadcast/exports.test.ts`: этот файл добавлен в его
+  список модулей.
+*/
 
 /**
  * Фиксирует согласие, если его ещё не было (§16 ТЗ).
@@ -88,19 +95,25 @@ export async function recordConsentIfAbsent(db: Executor, userId: string): Promi
   return updated.length > 0;
 }
 
-/**
- * Пользователи, которым можно писать. Планировщик берёт адресатов только
- * отсюда: отправка заблокировавшему вернёт 403 и засорит журнал ошибок.
- */
-export async function activeUserIds(db: Executor): Promise<string[]> {
-  const rows = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.isBlocked, false))
-    .orderBy(users.createdAt);
+/*
+  `activeUserIds` убрана ревизией панели.
 
-  return rows.map((row) => row.id);
-}
+  Её комментарий утверждал: «Пользователи, которым можно писать.
+  Планировщик берёт адресатов только отсюда», — и это была неправда.
+  Планировщик набирает людей своим запросом (scheduler.service.ts: связь
+  с настройками и `is_blocked = false`), рассылка — своим
+  (`recipientsOf`, который к тому же знает про сегменты). Вызывающих у
+  функции не было ни одного, кроме её собственной проверки.
+
+  То есть правило «кому можно писать» существовало в двух местах: живом и
+  мёртвом. Мёртвое устаревает молча — про сегменты оно уже не знало, — и
+  однажды по нему написали бы код. Заодно оно обещало сопровождающему,
+  что менять правило надо здесь.
+
+  Связку теперь стережёт `broadcast/exports.test.ts`: этот файл добавлен
+  в его список модулей, и вернувшийся сюда экспорт без вызывающего
+  покраснеет — даже если его имя останется в этом комментарии.
+*/
 
 export async function findByTgId(db: Executor, tgId: number): Promise<User | undefined> {
   const [user] = await db.select().from(users).where(eq(users.tgId, tgId)).limit(1);

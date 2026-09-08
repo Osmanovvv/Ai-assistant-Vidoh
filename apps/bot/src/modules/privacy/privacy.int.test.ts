@@ -16,7 +16,7 @@ import {
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { recordAiCall } from '../metering/ai-calls.repo.js';
-import { recordConsent, upsertUser } from '../users/users.repo.js';
+import { recordConsentIfAbsent, upsertUser } from '../users/users.repo.js';
 import { deleteUserData, exportUserData } from './privacy.service.js';
 
 let userId: string;
@@ -30,7 +30,9 @@ async function seedUser(tgId: number): Promise<string> {
     username: 'anya',
     referralSource: 'blog',
   });
-  await recordConsent(testDb(), user.id);
+  // `recordConsent` убрана ревизией панели: она ставила отметку
+  // безусловно и вызывающих в продуктовом коде не имела.
+  await recordConsentIfAbsent(testDb(), user.id);
 
   for (const text of ['купить продукты', 'записать к врачу']) {
     seq++;

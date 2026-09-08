@@ -142,6 +142,35 @@ describe('вызов без цены', () => {
     expect((await costBreakdown(testDb(), { since: SINCE })).complete).toBe(false);
   });
 
+  it('обезличенный сбой без цены: он есть числом, а суммы у него нет', async () => {
+    /**
+     * Обстановка боя, которой не было ни в одной проверке раздела
+     * (ревизия панели, находки #2 и #8).
+     *
+     * Человек удалил данные — §16 обнулил `user_id`; вызов сорвался —
+     * цены у него нет и быть не может. Тогда сумма обезличенного расхода
+     * пуста, а число обезличенных вызовов больше нуля, и панель обязана
+     * сказать это словами: пустой список сумм печатался прочерком, и
+     * выходило «Ещё — потрачено … 1 обращений», где ноль от
+     * неизвестного не отличить.
+     *
+     * И отчёт при этом **полный**: оговорка «модели нет в прайс-листе»
+     * от сбоя загораться не должна — это то самое число, которое
+     * считается общим условием `unpricedSql()`.
+     */
+    await call({ userId: anya, rubles: 4 });
+    await call({ ok: false });
+
+    const report = await costBreakdown(testDb(), { since: SINCE });
+
+    expect(report.unattributed).toEqual([]);
+    expect(report.unattributedCalls).toBe(1);
+    expect(report.complete).toBe(true);
+
+    // Сбой не спрятан: он посчитан там, где для него колонка.
+    expect(report.byStage.reduce((sum, row) => sum + row.failed, 0)).toBe(1);
+  });
+
   it('а сорвавшийся вызов отчёт неполным НЕ делает: у отказа цены и не бывает', async () => {
     /**
      * Ревизия панели. `complete` управляет текстом на экране: «У части
@@ -288,6 +317,45 @@ describe('средние', () => {
 
     expect(report.perDump).toEqual([]);
     expect(report.perUser).toEqual([]);
+  });
+});
+
+describe('порядок валют в итогах (ревизия панели)', () => {
+  it('«на человека» показывает валюты в том же порядке, что «на выгрузку»', async () => {
+    /**
+     * Два соседних итога на одном экране приходят разными путями:
+     * «на выгрузку» — из фолда с одним ключом, где валюты уже
+     * отсортированы, «на человека» — сложением **многих** строк. Пока
+     * итоги не сортировались, второй наследовал порядок валют первой
+     * строки, а порядок строк выбирал план запроса: заказчица видела
+     * «₽, $» и «$, ₽» на одной странице.
+     *
+     * Обстановка задана так, чтобы порядок был предсказуемо **чужой**:
+     * первой строкой разреза по людям идёт та, где вызовов больше, а у
+     * неё только доллары. Значит без сортировки итог начинался бы с
+     * долларов, а сосед — с рублей.
+     */
+    const [mine] = await testDb()
+      .insert(batches)
+      .values({ userId: anya, status: 'done' as const })
+      .returning({ id: batches.id });
+    const [other] = await testDb()
+      .insert(batches)
+      .values({ userId: boris, status: 'done' as const })
+      .returning({ id: batches.id });
+
+    await call({ userId: anya, batchId: mine?.id, usd: 2 });
+    await call({ userId: anya, batchId: mine?.id, usd: 2 });
+    await call({ userId: boris, batchId: other?.id, rubles: 4 });
+
+    const report = await costBreakdown(testDb(), { since: SINCE });
+
+    const perUser = report.perUser.map((one) => one.currency);
+    const perDump = report.perDump.map((one) => one.currency);
+
+    expect(perUser).toEqual(perDump);
+    // И порядок именно наш — по имени валюты, а не по порядку строк.
+    expect(perUser).toEqual(['rub', 'usd']);
   });
 });
 

@@ -106,6 +106,35 @@ export async function activatePrompt(db: Database, stage: AiStage, version: stri
 }
 
 /**
+ * Дописать пометку в примечание версии, **не стирая прежнее**.
+ *
+ * **Найдено ревизией панели.** Гашение правки заливкой ставило
+ * примечание целиком (`set({ note: 'погашена заливкой X' })`), а в нём к
+ * этому моменту лежит всё, что обещано «навсегда»: «hotfix из панели,
+ * основана на …, автор …» и «включена <дата> без прогона набора: <кто>».
+ * Второе обещание напечатано человеку прямо на экране включения, и
+ * других следов у него нет вовсе: колонок «включена когда и кем» в
+ * `prompt_versions` не бывает, а раздел промптов объявлен не
+ * персональным, то есть в журнал доступа не пишется. Стиралось признание
+ * первым же штатным разворачиванием после правки по инциденту — то есть
+ * ровно перед тем разбором «почему стало хуже», для которого запись и
+ * делалась.
+ *
+ * Одним помощником на оба места (второе — признание в
+ * `modules/admin/prompts.ts`): две копии этого правила уже разошлись, и
+ * разошлись молча — одна дописывала, вторая перезаписывала.
+ *
+ * Та же пометка второй раз не дописывается: примечание, в которое одно и
+ * то же попадает десять раз, перестают читать, а вместе с ним перестают
+ * читать и остальное.
+ */
+export function noteWith(was: string | null | undefined, mark: string): string {
+  if (was === null || was === undefined || was === '') return mark;
+
+  return was.includes(mark) ? was : `${was}; ${mark}`;
+}
+
+/**
  * Правка из панели узнаётся по имени версии.
  *
  * `prompt_versions` не хранит признака «правка из панели», а имя ей даёт
@@ -146,8 +175,10 @@ export async function activateFromFile(
     readonly force?: boolean | undefined;
   },
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly hotfix: string }> {
+  // Примечание берётся тем же запросом: гашение его дописывает, а не
+  // заменяет, и прежний текст нужен здесь же.
   const [live] = await db
-    .select({ version: promptVersions.version })
+    .select({ version: promptVersions.version, note: promptVersions.note })
     .from(promptVersions)
     .where(and(eq(promptVersions.stage, params.stage), eq(promptVersions.isActive, true)))
     .limit(1);
@@ -159,9 +190,13 @@ export async function activateFromFile(
   if (hotfix !== undefined) {
     // Погашенная правка остаётся названной в примечании: иначе через
     // месяц никто не вспомнит, куда девалась правка по инциденту.
+    //
+    // Дописыванием (см. `noteWith`): прежде эта строка ставила
+    // примечание целиком и уносила с собой признание «включена без
+    // прогона набора» — единственный след того включения.
     await db
       .update(promptVersions)
-      .set({ note: `погашена заливкой ${params.version}` })
+      .set({ note: noteWith(live?.note, `погашена заливкой ${params.version}`) })
       .where(and(eq(promptVersions.stage, params.stage), eq(promptVersions.version, hotfix)));
   }
 

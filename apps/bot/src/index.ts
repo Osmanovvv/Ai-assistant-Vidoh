@@ -520,8 +520,21 @@ async function main(): Promise<void> {
     if (broadcastId === undefined || made < attempts) return;
 
     void finishBroadcast(db, broadcastId, 'failed').then(
-      () => {
-        logger.error({ broadcastId }, 'Рассылка объявлена сорвавшейся: попытки исчерпаны');
+      (became) => {
+        /**
+         * Слово в журнале — то же, что увидит человек в панели.
+         *
+         * У рассылки с просьбой остановиться исчерпанные попытки дают
+         * `stopped`, а не `failed`: слать больше некому, и выход у неё
+         * «Продолжить». Одно слово на два исхода посылало бы
+         * разбирающегося искать сорвавшуюся рассылку, которой нет.
+         */
+        logger.error(
+          { broadcastId, became },
+          became === 'stopped'
+            ? 'Рассылка закрыта как остановленная: попытки исчерпаны после просьбы остановить'
+            : 'Рассылка объявлена сорвавшейся: попытки исчерпаны',
+        );
       },
       (problem: unknown) => {
         logger.error({ err: problem, broadcastId }, 'Не удалось отметить рассылку сорвавшейся');

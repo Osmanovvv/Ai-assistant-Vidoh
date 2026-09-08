@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-import { evalFreshness, reportByName } from '../eval/freshness.js';
+import { evalFreshness, reportByName, type FreshnessReason } from '../eval/freshness.js';
 import { shares, type EvalReport } from '../eval/report.js';
 import type { ResolverReport } from '../eval/resolver-report.js';
 
@@ -71,9 +71,20 @@ const activating = await versionsToActivate();
  */
 const verdict = await evalFreshness({ evalDir, activating });
 
+/**
+ * Причина словами: стадия приезжает отдельным полем.
+ *
+ * Панель переводит ключ в человеческое имя («Маршрутизатор»), а здесь
+ * нужен как раз ключ — таким, каким он в базе, в отчёте и в имени файла
+ * промпта: по нему и идут править.
+ */
+function said(reason: FreshnessReason): string {
+  return typeof reason === 'string' ? reason : `${reason.stage}: ${reason.text}`;
+}
+
 if (!verdict.ok) {
   fail([
-    ...verdict.reasons,
+    ...verdict.reasons.map(said),
     '',
     '§10.3 ТЗ: любое изменение промпта прогоняется по набору. Прогнать:',
     '    npx tsx src/scripts/run-eval.ts ../../docs/eval',

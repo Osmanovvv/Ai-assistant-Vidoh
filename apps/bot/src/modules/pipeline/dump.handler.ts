@@ -1199,7 +1199,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const known = await topicsFor(db, batch.userId);
     const spheresCreated = known.own
       ? false
-      : (await createChosenTopics(db, batch.userId, [])).created > 0;
+      : (
+          await createChosenTopics(
+            db,
+            batch.userId,
+            [],
+            // Предел числа тем — из настроек (§6.4; ревизия панели).
+            // Базовых сфер пять, и при пределе ниже пяти этот путь был
+            // единственным, который мог его обойти: ветки создаются
+            // раньше любых ответов человека, то есть до шага «какие
+            // сферы важны», где предел уже соблюдается.
+            await deps.settings?.number('maxTopics'),
+          )
+        ).created > 0;
     if (spheresCreated) {
       deps.logger?.info({ userId: batch.userId }, 'Базовые сферы созданы на первой выгрузке');
     }

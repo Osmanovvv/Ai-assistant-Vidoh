@@ -943,6 +943,31 @@ describe('ревизия четвёртого этапа: числа людей 
     expect(report.unpricedCalls).toBe(1);
 
     /**
+     * То же число доходит до строки человека (ревизия панели).
+     *
+     * Оно считалось и здесь, и раньше — и выбрасывалось в сборке строки:
+     * обзор печатал «расход не меньше показанного», а список и карточка
+     * выдавали сумму за факт. Одно число, две правды.
+     *
+     * Проверка стоит рядом со сбоем нарочно: у вызова без цены нет и
+     * валюты, он лежит в группе с пустой валютой, а строка расхода такую
+     * группу пропускает. Посчитай мы оговорку после этой отбраковки — она
+     * выходила бы нулём всегда.
+     */
+    const row = (await people(testDb(), { limit: 20, offset: 0 })).rows.find(
+      (one) => one.id === person.id,
+    );
+
+    expect(row?.unpricedCalls).toBe(1);
+
+    // И у человека без таких вызовов оговорке взяться неоткуда.
+    const clean = (await people(testDb(), { limit: 20, offset: 0 })).rows.find(
+      (one) => one.id === anya,
+    );
+
+    expect(clean?.unpricedCalls).toBe(0);
+
+    /**
      * Раздел расходов считает то же число тем же условием — и два числа
      * не пересекаются: сорвавшийся вызов виден в «сбоев» у своего этапа,
      * а в «без цены» его нет. Прежде он попадал в оба разом.
@@ -956,5 +981,204 @@ describe('ревизия четвёртого этапа: числа людей 
 
     expect(router?.unknownPrices).toBe(0);
     expect(router?.failed).toBe(1);
+  });
+});
+
+describe('ревизия панели: обзор и карточка договаривают', () => {
+  it('сорвавшиеся выгрузки видны числом — иначе о поломке молчат все плитки', async () => {
+    /**
+     * Про сбои на обзоре не было ни одного числа, а разбор жалобы «бот
+     * молчит» начинают именно с него: панель открывается на обзоре.
+     * Единственным следом поломки была оговорка про вызовы без цены — то
+     * есть страница говорила о сбое чужими словами и в неверном смысле, а
+     * после её починки (отказы туда больше не попадают) не говорила о нём
+     * вовсе.
+     *
+     * Обстановка нарочно содержит и шум по статусу, и шум по времени:
+     * незакрытая выгрузка (`open`) — ни разобранная, ни сорвавшаяся, а
+     * сорвавшаяся сорок дней назад лежит вне окна обзора. Без них снятие
+     * условия на статус или на период прошло бы незамеченным.
+     */
+    await sowDump({ userId: anya, said: 'разобралась', results: ['Дело'] });
+
+    await testDb()
+      .insert(batches)
+      .values([
+        {
+          userId: anya,
+          status: 'failed',
+          openedAt: new Date(Date.now() - 2 * 3_600_000),
+          error: 'TransientSpeechError: распознавание не ответило',
+        },
+        {
+          userId: boris,
+          status: 'failed',
+          openedAt: new Date(Date.now() - 3 * 3_600_000),
+          error: '429 Too Many Requests',
+        },
+        // Вне окна обзора: сбой месяц назад не про «за 30 дней».
+        {
+          userId: boris,
+          status: 'failed',
+          openedAt: new Date(Date.now() - 40 * 86_400_000),
+          error: 'старый сбой',
+        },
+        // Ни разобрана, ни сорвалась: человек ещё говорит.
+        { userId: boris, status: 'open', openedAt: new Date(Date.now() - 3_600_000) },
+      ]);
+
+    const report = await overview(testDb(), 30);
+
+    expect(report.dumps).toBe(1);
+    expect(report.failedDumps).toBe(2);
+  });
+
+  it('правка показывает, что изменилось, а не только что она была', async () => {
+    /**
+     * §15 просит у карточки применённые изменения «для разбора жалоб на
+     * качество», а §19 ставит первым риском «резолвер портит записи».
+     * Таблица давала когда/запись/кто/почему — и ни одного слова про
+     * содержание правки, хотя снимки «до» и «после» лежат в базе целиком.
+     * Жалобу «бот поставил не ту дату» из неё разобрать было нельзя:
+     * видно, что правка была, и фразу модели, а «с четверга на пятницу»
+     * — нет. Именно за этим 31.08.2026 ходили в боевую базу через ssh.
+     */
+    const batch = await sowDump({ userId: anya, said: 'к врачу в четверг', results: ['К врачу'] });
+    const [item] = await testDb()
+      .select({ id: items.id })
+      .from(items)
+      .where(eq(items.sourceBatchId, batch));
+
+    if (item === undefined) throw new Error('запись не создалась');
+
+    const [said] = await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId: anya,
+        updateId: 930_001,
+        tgChatId: 8_001,
+        tgMessageId: 21,
+        batchId: batch,
+        kind: 'text',
+        text: 'нет, лучше в пятницу',
+      })
+      .returning({ id: messagesRaw.id });
+
+    if (said === undefined) throw new Error('сообщение не создалось');
+
+    await testDb()
+      .insert(itemRevisions)
+      .values({
+        itemId: item.id,
+        userId: anya,
+        changedBy: 'resolver',
+        reason: 'человек назвал другой день',
+        before: { text: 'К врачу', deadlineAt: '2026-09-03T09:00:00.000Z', status: 'new' },
+        after: {
+          text: 'К врачу в пятницу',
+          deadlineAt: '2026-09-04T09:00:00.000Z',
+          status: 'new',
+        },
+        sourceMessageId: said.id,
+      });
+
+    /**
+     * Запись с тех пор поменялась ещё раз — так и бывает в бою.
+     *
+     * Колонка с текстом записи берётся связью, то есть это **сегодняшний**
+     * текст; выдавать его за текст на момент правки нельзя, и в панели
+     * колонка потому названа «Запись сейчас». Прошлое лежит в снимке.
+     */
+    await testDb()
+      .update(items)
+      .set({ text: 'К врачу в пятницу утром' })
+      .where(eq(items.id, item.id));
+
+    const card = await personCard(testDb(), { userId: anya });
+    const change = card?.changes[0];
+    const fields = new Map((change?.changed ?? []).map((one) => [one.field, one]));
+
+    expect(fields.get('deadlineAt')).toEqual({
+      field: 'deadlineAt',
+      before: '2026-09-03T09:00:00.000Z',
+      after: '2026-09-04T09:00:00.000Z',
+    });
+    expect(fields.get('text')?.before).toBe('К врачу');
+    expect(fields.get('text')?.after).toBe('К врачу в пятницу');
+
+    // Неизменившееся поле в список не идёт: иначе правка утонет в снимке.
+    expect(fields.has('status')).toBe(false);
+
+    /**
+     * Слова человека, а не фраза модели. `reason` — это решение
+     * резолвера его же словами, и жалобу «почему бот так решил» им не
+     * разобрать: ссылка на сообщение лежала в базе и не читалась нигде.
+     */
+    expect(change?.said).toBe('нет, лучше в пятницу');
+
+    // Текст записи — сегодняшний, и он не тот, что был при правке.
+    expect(change?.itemText).toBe('К врачу в пятницу утром');
+  });
+
+  it('карточка говорит, сколько правок и вопросов всего, а не только показанных', async () => {
+    /**
+     * Оба списка обрезаны сотней, и об этом не было сказано ничего — ни
+     * числа, ни оговорки, тогда как у выгрузок и у сказанного вне
+     * выгрузок «показаны последние N из M» печатается. Разбирающий
+     * жалобу «бот испортил запись в июле» читал свежий хвост как полную
+     * историю и делал вывод «правок не было».
+     */
+    const batch = await sowDump({ userId: anya, said: 'много правок', results: ['Дело'] });
+    const [item] = await testDb()
+      .select({ id: items.id })
+      .from(items)
+      .where(eq(items.sourceBatchId, batch));
+
+    if (item === undefined) throw new Error('запись не создалась');
+
+    await testDb()
+      .insert(itemRevisions)
+      .values(
+        Array.from({ length: 101 }, (_unused, index) => ({
+          itemId: item.id,
+          userId: anya,
+          changedBy: 'resolver' as const,
+          reason: `правка ${String(index)}`,
+          before: { text: `было ${String(index)}` },
+          after: { text: `стало ${String(index)}` },
+          createdAt: new Date(Date.now() - index * 60_000),
+        })),
+      );
+
+    /**
+     * Вопросы закрыты все: открытый у человека может быть только один
+     * (частичный уникальный индекс), и допрос — то, чего §7.3 не
+     * допускает. Для предела списка это ничего не меняет.
+     */
+    await testDb()
+      .insert(pendingQuestions)
+      .values(
+        Array.from({ length: 101 }, (_unused, index) => ({
+          userId: anya,
+          itemId: item.id,
+          batchId: batch,
+          segment: `вопрос ${String(index)}`,
+          action: 'update',
+          changes: {},
+          expiresAt: new Date(Date.now() + 3_600_000),
+          resolvedAt: new Date(Date.now() - index * 60_000),
+          outcome: 'timeout' as const,
+          createdAt: new Date(Date.now() - index * 60_000),
+        })),
+      );
+
+    const card = await personCard(testDb(), { userId: anya });
+
+    // Показана сотня — и сказано, что всего сто одна.
+    expect(card?.changes).toHaveLength(100);
+    expect(card?.changesTotal).toBe(101);
+
+    expect(card?.questions).toHaveLength(100);
+    expect(card?.questionsTotal).toBe(101);
   });
 });

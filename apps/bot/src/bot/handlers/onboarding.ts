@@ -354,7 +354,20 @@ export function registerOnboardingHandlers(
 
     const { userId, state } = active;
     const chosen = chosenFromLabels(labelsOf(ctx), state.texts);
-    const result = await createChosenTopics(db, userId, chosen);
+    /**
+     * Предел числа тем — из настроек (§6.4, §15; ревизия панели).
+     *
+     * Прежде его читало только согласие добавить сферу, а начальный набор
+     * шёл мимо: сфер на выбор девять, и человек, отметивший все, получал
+     * девять ветвей даже при умолчании восемь. Заказчица смотрела на своё
+     * число, а бот жил по чужому.
+     */
+    const result = await createChosenTopics(
+      db,
+      userId,
+      chosen,
+      await settings?.number('maxTopics'),
+    );
 
     /**
      * Невыбранные сферы уходят в архив (задача 3.43).

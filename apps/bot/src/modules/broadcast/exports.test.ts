@@ -35,6 +35,16 @@ import { describe, expect, it } from 'vitest';
 const MODULES = [
   'src/modules/broadcast/broadcast.repo.ts',
   'src/modules/broadcast/broadcast.service.ts',
+  /**
+   * Люди — с ревизии панели: там нашлись `activeUserIds` и
+   * `recordConsent`, оба без вызывающих и оба вторым способом сказать
+   * то, что уже сказано живым кодом. `activeUserIds` обещала
+   * комментарием «планировщик берёт адресатов только отсюда» —
+   * неправду: адресатов рассылки набирает `recipientsOf`, а планировщик
+   * свой запрос. Модуль в списке не стоял, и стеречь эту связку было
+   * нечем.
+   */
+  'src/modules/users/users.repo.ts',
   'src/modules/billing/billing.repo.ts',
   'src/modules/billing/tariffs.ts',
   'src/modules/billing/promo.service.ts',
@@ -90,6 +100,27 @@ function exportsOf(text: string): readonly string[] {
 }
 
 /**
+ * Текст без комментариев: упоминание в комментарии — не вызов.
+ *
+ * **Страж спал на своём же случае** (ревизия панели). Он считал все
+ * совпадения имени во всех продуктовых файлах, а стиль этого модуля —
+ * оставлять на месте убранной функции памятную запись с её именем
+ * («`failedOf` убрана ревизией четвёртого этапа» — она и сейчас в
+ * `broadcast.repo.ts`). Значит вернись `export function failedOf` без
+ * единого вызывающего — упоминаний стало бы два (объявление и
+ * комментарий) против одного объявления, условие сироты не выполнилось
+ * бы, и проверка осталась бы зелёной ровно на том случае, ради которого
+ * написана. Проверено диверсией: см. проверку на поддельном дереве ниже.
+ *
+ * `[^:]` перед `//` — чтобы не съесть `https://…` в строке: съеденный
+ * хвост строки унёс бы с собой настоящий вызов и страж закричал бы на
+ * живой код.
+ */
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//gu, ' ').replace(/(^|[^:])\/\/[^\n]*/gmu, '$1');
+}
+
+/**
  * Сколько раз имя стоит в своём же объявлении.
  *
  * Обычно один раз. Считать, а не предполагать: предположение здесь
@@ -105,43 +136,74 @@ function declarationsOf(text: string, name: string): number {
   return patterns.reduce((sum, pattern) => sum + (text.match(pattern)?.length ?? 0), 0);
 }
 
+/**
+ * Экспорты названных модулей, которых никто не зовёт.
+ *
+ * Вынесено отдельной функцией нарочно: страж, который нельзя прогнать на
+ * поддельном дереве, не проверить диверсией — а именно так он и
+ * пропустил свой собственный случай. Проверка ниже гоняет эту функцию на
+ * дереве, где имя экспорта стоит в комментарии, и требует, чтобы сирота
+ * нашлась.
+ *
+ * Отсутствие файла здесь не разбирается: его отдельно спрашивает
+ * вызывающий — так у него получается сказать, какого именно файла нет.
+ */
+function orphansIn(
+  all: readonly { readonly path: string; readonly text: string }[],
+  modules: readonly string[],
+): readonly string[] {
+  // Комментарии режутся один раз на всё дерево, а не на каждое имя:
+  // модулей и имён десятки, файлов — сотни.
+  const code = all.map((one) => ({ path: one.path, text: withoutComments(one.text) }));
+  const orphans: string[] = [];
+
+  for (const modulePath of modules) {
+    const own = code.find((one) => one.path === modulePath);
+
+    if (own === undefined) continue;
+
+    for (const name of exportsOf(own.text)) {
+      if (ALLOWED.has(name)) continue;
+
+      /**
+       * Вызывающий может быть и **в своём модуле** — так правильно.
+       *
+       * Первая версия требовала вызывающего снаружи, и от неё краснели
+       * помощники, которыми модуль пользуется сам (`startRenewals`
+       * зовёт `runRenewals`, `chargeRecurring` — `errorTextOf`).
+       * Вопрос не в том, кто зовёт, а в том, зовёт ли **кто-нибудь**:
+       * `failedOf` не звал никто, и она хранила устаревшее знание про
+       * доставку.
+       *
+       * Считаются все упоминания имени в продуктовом коде **без
+       * комментариев**; если их ровно столько, сколько в самом
+       * объявлении, — значит только объявление и есть.
+       */
+      const mentions = code.reduce((sum, one) => {
+        const found = one.text.match(new RegExp(`\\b${name}\\b`, 'gu'));
+
+        return sum + (found?.length ?? 0);
+      }, 0);
+
+      if (mentions <= declarationsOf(own.text, name)) orphans.push(`${name} (${modulePath})`);
+    }
+  }
+
+  return orphans;
+}
+
 describe('у экспортов рассылки и денег есть вызывающие', () => {
   it('каждый экспорт кто-нибудь зовёт либо он назван исключением', async () => {
     const all = await sources();
-    const orphans: string[] = [];
 
     for (const modulePath of MODULES) {
-      const own = all.find((one) => one.path === modulePath);
-
-      expect(own, `не нашёлся файл ${modulePath}`).toBeDefined();
-      if (own === undefined) continue;
-
-      for (const name of exportsOf(own.text)) {
-        if (ALLOWED.has(name)) continue;
-
-        /**
-         * Вызывающий может быть и **в своём модуле** — так правильно.
-         *
-         * Первая версия требовала вызывающего снаружи, и от неё краснели
-         * помощники, которыми модуль пользуется сам (`startRenewals`
-         * зовёт `runRenewals`, `chargeRecurring` — `errorTextOf`).
-         * Вопрос не в том, кто зовёт, а в том, зовёт ли **кто-нибудь**:
-         * `failedOf` не звал никто, и она хранила устаревшее знание про
-         * доставку.
-         *
-         * Считаются все упоминания имени в продуктовом коде; если их
-         * ровно столько, сколько в самом объявлении, — значит только
-         * объявление и есть.
-         */
-        const mentions = all.reduce((sum, one) => {
-          const found = one.text.match(new RegExp(`\\b${name}\\b`, 'gu'));
-
-          return sum + (found?.length ?? 0);
-        }, 0);
-
-        if (mentions <= declarationsOf(own.text, name)) orphans.push(`${name} (${modulePath})`);
-      }
+      expect(
+        all.some((one) => one.path === modulePath),
+        `не нашёлся файл ${modulePath}`,
+      ).toBe(true);
     }
+
+    const orphans = orphansIn(all, MODULES);
 
     expect(
       orphans,
@@ -152,6 +214,66 @@ describe('у экспортов рассылки и денег есть вызы
         'либо назвать исключением с причиной в ALLOWED.',
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  it('упоминание в комментарии за вызов не считается', () => {
+    /**
+     * **Диверсия, которую страж прежде не замечал.**
+     *
+     * Дерево поддельное, но случай настоящий: убранная функция оставила
+     * после себя памятную запись с именем (так написано в
+     * `broadcast.repo.ts` про `failedOf` и в `users.repo.ts` про
+     * `activeUserIds`), а вернувшийся экспорт вызывающего не получил.
+     * Прежний подсчёт видел два упоминания против одного объявления и
+     * молчал — ровно на том случае, ради которого страж и написан.
+     */
+    const withMemorial = [
+      {
+        path: 'src/modules/пример/repo.ts',
+        text: [
+          '/* `failedOf` убрана ревизией четвёртого этапа. */',
+          'export async function failedOf(): Promise<void> {}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/modules/пример/service.ts',
+        text: '// Про failedOf здесь сказано словом, а не вызовом.\n',
+      },
+    ];
+
+    expect(orphansIn(withMemorial, ['src/modules/пример/repo.ts'])).toEqual([
+      'failedOf (src/modules/пример/repo.ts)',
+    ]);
+
+    /**
+     * И на живом коде страж молчит: вызывающий за комментарий не
+     * считается, но и вызов из-за резки комментариев не теряется.
+     * Крикливый страж хуже отсутствующего — его отключают.
+     */
+    const withCaller = [
+      {
+        path: 'src/modules/пример/repo.ts',
+        text: [
+          '/* `failedOf` живёт: её зовёт служба. */',
+          'export async function failedOf(): Promise<void> {}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/modules/пример/service.ts',
+        text: [
+          "import { failedOf } from './repo.js';",
+          '// Ссылка в комментарии: https://example.test/failedOf',
+          'export async function run(): Promise<void> {',
+          '  await failedOf();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ];
+
+    expect(orphansIn(withCaller, ['src/modules/пример/repo.ts'])).toEqual([]);
   });
 
   it('проверка смотрит на настоящее дерево', async () => {

@@ -19,6 +19,21 @@ import { SETTINGS, type SettingName } from './settings.repo.js';
  * Проверка идёт по исходникам, а не по вызову функций: связка — это
  * именно то, что теряется между модулями, и увидеть её потерю можно
  * только снаружи обоих. Тот же приём, что в `dump.wiring.test.ts`.
+ *
+ * **Сам страж спал на четырёх ценах** (ревизия панели, находка 7).
+ * Искалась строка «priceOf(» по всем исходникам, а `priceOf` там же и
+ * объявлена — `export async function priceOf(` находило само себя.
+ * Литералы четырёх цен лежат в её теле, в том же файле, поэтому и прямая
+ * проверка была зелёной. Пропади у `priceOf` все вызывающие — страж
+ * молчал бы ровно про те настройки, где §15 про деньги, то есть про
+ * дефект «читатель есть, живого пути нет», от которого он и написан.
+ *
+ * Отсюда три правила, и каждое закрывает свой способ соврать:
+ * 1. читатель ищется **вне файла, где он объявлен** (`homeOf`);
+ * 2. объявление `SETTINGS` вычитается из текста (`withoutDeclaration`) —
+ *    иначе список настроек доказывает читателя сам себе;
+ * 3. панель в читатели не годится (`productSources`) — она читает
+ *    настройку ради своих же чисел, а бот от этого не меняется.
  */
 
 /** Настройки, читаемые не по имени, а через сборщик. */
@@ -38,32 +53,138 @@ const THROUGH: Partial<Record<SettingName, string>> = {
   priceYearlyStars: 'priceOf',
 };
 
-async function productionSources(): Promise<readonly { path: string; text: string }[]> {
-  const found: { path: string; text: string }[] = [];
+interface Source {
+  readonly path: string;
+  readonly text: string;
+}
+
+/**
+ * Текст файла без объявления `SETTINGS`.
+ *
+ * В объявлении литерал имени есть у **каждой** настройки по построению.
+ * Не вычти его — и «сборщик правда читает эту настройку» доказывалось бы
+ * самим списком настроек, лежащим в том же файле; опечатка в тройном
+ * условии (`priceMonthlyStars` вместо годового дважды) осталась бы
+ * незамеченной.
+ */
+function withoutDeclaration(text: string): string {
+  const start = text.indexOf('export const SETTINGS = {');
+
+  if (start === -1) return text;
+
+  const end = text.indexOf('\n} as const;', start);
+
+  return end === -1 ? text : text.slice(0, start) + text.slice(end);
+}
+
+/** Все исходники продукта: без проверок и без объявления `SETTINGS`. */
+async function allSources(): Promise<readonly Source[]> {
+  const found: Source[] = [];
 
   for await (const entry of glob('src/**/*.ts')) {
     const path = entry.split(sep).join('/');
 
     if (path.includes('.test.')) continue;
-    if (path.endsWith('src/modules/settings/settings.repo.ts')) continue;
 
-    found.push({ path, text: await readFile(path, 'utf8') });
+    found.push({ path, text: withoutDeclaration(await readFile(path, 'utf8')) });
   }
 
   return found;
 }
 
+/**
+ * Где искать читателя настройки — и почему не везде.
+ *
+ * `settings.repo.ts` исключён целиком: кроме объявления там живут оба
+ * сборщика, и их тела — не читатели, а сами читатели, чьих вызывающих мы
+ * ищем отдельно.
+ *
+ * `http/admin` исключён потому, что **панель — не продукт**. Она читает
+ * настройку, чтобы показать её же число (пробный период в воронке),
+ * и настройка, которую читает только панель, не читается никем: бот от
+ * её правки не меняется, а человек видит «Сохранено» и ждёт обратного.
+ */
+function productSources(all: readonly Source[]): readonly Source[] {
+  return all.filter(
+    (one) =>
+      !one.path.endsWith('src/modules/settings/settings.repo.ts') &&
+      !one.path.startsWith('src/http/admin/'),
+  );
+}
+
+/**
+ * Файл, где сборщик **объявлен**. Его собственное тело — не вызывающий.
+ *
+ * Ровно на этом страж и спал: строка «priceOf(» находилась в
+ * `export async function priceOf(`.
+ */
+function homeOf(all: readonly Source[], collector: string): Source | undefined {
+  const declaration = new RegExp(String.raw`\bfunction\s+${collector}\s*\(`, 'u');
+
+  return all.find((one) => declaration.test(one.text));
+}
+
+/** Вызов, а не объявление и не хвост более длинного имени. */
+function isCall(text: string, at: number): boolean {
+  // Назад и недалеко: «export async function priceOf(» — девять знаков
+  // от «function» до имени.
+  const before = text.slice(Math.max(0, at - 16), at);
+
+  return !/\b(?:function|const|let|var)\s+$/u.test(before) && !/[A-Za-z0-9_$]$/u.test(before);
+}
+
+/** Файлы, где сборщик действительно зовут — вне файла его объявления. */
+function callersOf(
+  sources: readonly Source[],
+  collector: string,
+  home: string | undefined,
+): readonly string[] {
+  const needle = `${collector}(`;
+
+  return sources
+    .filter((one) => one.path !== home)
+    .filter((one) => {
+      for (let at = one.text.indexOf(needle); at !== -1; at = one.text.indexOf(needle, at + 1)) {
+        if (isCall(one.text, at)) return true;
+      }
+
+      return false;
+    })
+    .map((one) => one.path);
+}
+
+/** Сборщики без повторов: у `priceOf` четыре настройки, файл один. */
+function collectors(): readonly string[] {
+  return [...new Set(Object.values(THROUGH))];
+}
+
 describe('у каждой настройки есть читатель на живом пути', () => {
   it('имя настройки или её сборщик встречается в продуктовом коде', async () => {
-    const sources = await productionSources();
+    const all = await allSources();
+    const product = productSources(all);
     const orphans: string[] = [];
 
     for (const name of Object.keys(SETTINGS) as SettingName[]) {
       const through = THROUGH[name];
+      const home = through === undefined ? undefined : homeOf(all, through);
 
-      const direct = sources.some((one) => one.text.includes(`'${name}'`));
+      // Прямое чтение — вне файла, где объявлен сборщик: литералы
+      // четырёх цен лежат в теле самой `priceOf`.
+      const direct = product.some(
+        (one) => one.path !== home?.path && one.text.includes(`'${name}'`),
+      );
+
+      /**
+       * Через сборщик — **два** условия, а не одно: сборщик обязан и
+       * правда читать эту настройку, и иметь вызывающего вне своего
+       * файла. Одного первого хватало бы мёртвому сборщику, одного
+       * второго — сборщику, который эту настройку перестал читать.
+       */
       const viaCollector =
-        through !== undefined && sources.some((one) => one.text.includes(`${through}(`));
+        through !== undefined &&
+        home !== undefined &&
+        home.text.includes(`'${name}'`) &&
+        callersOf(product, through, home.path).length > 0;
 
       if (!direct && !viaCollector) orphans.push(name);
     }
@@ -85,13 +206,18 @@ describe('у каждой настройки есть читатель на жи
      * функцией `effectiveThresholds`, у которой не было ни одного
      * вызывающего: читатель есть, живого пути нет.
      */
-    const sources = await productionSources();
+    const all = await allSources();
+    const product = productSources(all);
     const dead: string[] = [];
 
-    for (const collector of new Set(Object.values(THROUGH))) {
-      const callers = sources.filter((one) => one.text.includes(`${collector}(`));
+    for (const collector of collectors()) {
+      const home = homeOf(all, collector);
 
-      if (callers.length === 0) dead.push(collector);
+      // Сборщика не нашли вовсе — это тоже «нет живого пути», а не
+      // повод пропустить проверку: переименуют, и страж уснёт.
+      if (home === undefined || callersOf(product, collector, home.path).length === 0) {
+        dead.push(collector);
+      }
     }
 
     expect(
@@ -178,13 +304,64 @@ describe('умолчания не набраны дважды', () => {
   });
 });
 
+describe('предел числа тем доезжает до опроса', () => {
+  /**
+   * Реестр настроек доезжает до обработчика опроса **пятым, необязательным
+   * аргументом** — и снять его можно молча (находка 6 ревизии панели):
+   * прямой поиск литерала `'maxTopics'` останется зелёным, потому что
+   * литерал лежит в самом обработчике, а проверки регистрируют его без
+   * настроек нарочно. Цена забытой строки: предел снова станет константой
+   * из кода, панель продолжит показывать число заказчицы, а бот будет
+   * жить по чужому.
+   *
+   * По исходнику `src/index.ts`, а не подъёмом сборки: поднять запуск —
+   * значит поднять базу, Redis, Telegram и модель. Тот же приём, что в
+   * `dump.wiring.test.ts`.
+   */
+  it('реестр настроек передан обработчику опроса в боевой сборке', async () => {
+    const index = await readFile('src/index.ts', 'utf8');
+    const at = index.indexOf('registerOnboardingHandlers(bot');
+
+    expect(at, 'сборки обработчика опроса в src/index.ts не найдено').toBeGreaterThan(-1);
+
+    const call = index.slice(at, index.indexOf(');', at));
+
+    expect(
+      call,
+      'в src/index.ts обработчику опроса не передан реестр настроек: предел числа тем молча станет константой из кода.',
+    ).toContain('settings');
+  });
+});
+
 describe('пути к папке проверок', () => {
   it('проверка смотрит на настоящее дерево, а не на пустоту', async () => {
     // Страж стража: сломайся сборка путей, и обе проверки выше стали бы
     // зелёными на пустом списке.
-    const sources = await productionSources();
+    const sources = productSources(await allSources());
 
     expect(sources.length).toBeGreaterThan(50);
-    expect(sources.some((one) => one.path.endsWith(join('src', 'index.ts').split(sep).join('/'))));
+
+    // Прежде эта строка стояла без матчера — то есть не утверждала
+    // ничего (находка 7 ревизии панели). Проверок на ней держалось две.
+    expect(
+      sources.some((one) => one.path.endsWith(join('src', 'index.ts').split(sep).join('/'))),
+      'боевой сборки src/index.ts в выборке нет — значит выборка собрана не оттуда',
+    ).toBe(true);
+  });
+
+  it('объявление SETTINGS вычтено — иначе оно доказывает читателя само себе', async () => {
+    const repo = (await allSources()).find((one) =>
+      one.path.endsWith('src/modules/settings/settings.repo.ts'),
+    );
+
+    expect(repo, 'settings.repo.ts в выборке не найден').toBeDefined();
+
+    // Ключи живут только в объявлении: остался хоть один — значит вычет
+    // не сработал (переименовали `SETTINGS` или сменили формат), и
+    // условие «сборщик читает настройку» станет зелёным от самого списка.
+    expect(repo?.text).not.toContain("key: 'topics.max'");
+
+    // А тела сборщиков вычетом задеть нельзя: по ним ищутся вызывающие.
+    expect(repo?.text).toContain('effectiveLimits');
   });
 });

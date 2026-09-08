@@ -11,11 +11,14 @@ import {
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import {
+  broadcastById,
   cancelDraft,
   claimDelivery,
+  countBroadcasts,
   recipientsOf,
   countsOf,
   createBroadcast,
+  finishBroadcast,
   listBroadcasts,
   nextPending,
   requestStop,
@@ -24,6 +27,7 @@ import {
   runningBroadcasts,
   settleStopRequests,
   startBroadcast,
+  stopRequested,
   TELEGRAM_MESSAGE_LIMIT,
 } from './broadcast.repo.js';
 import { sendChunk, type BroadcastClock, type BroadcastSender } from './broadcast.service.js';
@@ -1024,5 +1028,162 @@ describe('отмена черновика — выход из случайно �
     expect(await cancelDraft(testDb(), made.id)).toBe(true);
     // Второй раз отменять нечего — и это не поломка, а состояние.
     expect(await cancelDraft(testDb(), made.id)).toBe(false);
+  });
+});
+
+describe('просьба остановиться не переживает конец рассылки (ревизия панели)', () => {
+  /**
+   * **Кнопка, которая отказывает всегда.** Повтор неудачных требует
+   * пустой метки `stop_requested_at`, а снимали её только сам повтор и
+   * «Продолжить». Значит законченная рассылка с непустой меткой жила
+   * навсегда: `settleStopRequests` лечит одни `running`, панель рисовала
+   * «Повторить неудачные» по одним неудачным и состоянию, а сервер
+   * отвечал 409 на каждое нажатие.
+   *
+   * Оба пути в это состояние достижимы: просьба успевает прийти между
+   * последней отметкой и `finishBroadcast(..., 'done')`, и задание
+   * исчерпывает три попытки после просьбы.
+   */
+
+  it('у разосланной метка снимается, и повтор неудачных проходит', async () => {
+    await people(1);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    /**
+     * Гонка воспроизводится обстановкой боя, а не правкой поля.
+     *
+     * Просьба приходит **из самой отправки**: проверка перед ней уже
+     * прошла, письмо не дошло — значит повторять есть что, — а
+     * `finishBroadcast(..., 'done')` ещё не позвали. Поставь метку
+     * руками после захода, и `requestStop` её бы не принял: он требует
+     * состояния «идёт». То есть иначе это состояние и не получить.
+     */
+    const clock = fakeClock();
+    const sender: BroadcastSender = {
+      send: async () => {
+        await requestStop(testDb(), made.id);
+        throw new Error('сеть моргнула');
+      },
+    };
+
+    await sendChunk({ db: testDb(), sender, clock, perSecond: 20 }, made.id);
+
+    const row = await broadcastById(testDb(), made.id);
+
+    expect(row?.status).toBe('done');
+    expect(row?.stopRequestedAt).toBeNull();
+
+    // И повтор проходит: возвращает ровно одно неудачное письмо.
+    expect(await retryFailed(testDb(), made.id)).toEqual({ ok: true, back: 1 });
+  });
+
+  it('сорвавшееся задание не затирает просьбу, а объявляет рассылку остановленной', async () => {
+    /**
+     * Тот же случай, что лечит `settleStopRequests` при старте бота:
+     * просьба стоит, исполнить её было некому. Объяви такую рассылку
+     * «сорвавшейся» и сними метку — и повтор вернул бы в очередь **всех**
+     * недосланных, а человек просил остановиться. Поэтому она
+     * остановленная, и выход из неё — «Продолжить», решение человека.
+     */
+    await people(3);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+    await requestStop(testDb(), made.id);
+
+    // Задание исчерпало три попытки: так его закрывает index.ts.
+    // И ответ обязан назвать исход: по нему index.ts пишет слово в
+    // журнал, и «объявлена сорвавшейся» здесь было бы неправдой.
+    expect(await finishBroadcast(testDb(), made.id, 'failed')).toBe('stopped');
+
+    const row = await broadcastById(testDb(), made.id);
+
+    expect(row?.status).toBe('stopped');
+    expect(row?.stopRequestedAt).not.toBeNull();
+
+    // Повтор по-прежнему отказывает — досылать всем оставшимся нельзя.
+    expect((await retryFailed(testDb(), made.id)).ok).toBe(false);
+    // А выход есть, и он осознанный.
+    expect(await resumeBroadcast(testDb(), made.id)).toBe(true);
+  });
+
+  it('сорвавшееся задание без просьбы остаётся сорвавшимся', async () => {
+    // Обратная сторона: слово «сорвалась» в панели должно быть достижимо.
+    await people(1);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    expect(await finishBroadcast(testDb(), made.id, 'failed')).toBe('failed');
+    expect((await broadcastById(testDb(), made.id))?.status).toBe('failed');
+  });
+
+  it('остановленная держит метку: проснувшееся задание обязано её увидеть', async () => {
+    await people(2);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+    await requestStop(testDb(), made.id);
+    await finishBroadcast(testDb(), made.id, 'stopped');
+
+    const row = await broadcastById(testDb(), made.id);
+
+    expect(row?.status).toBe('stopped');
+    // Сними её здесь — и зависшее задание продолжит отправку.
+    expect(row?.stopRequestedAt).not.toBeNull();
+    expect(await stopRequested(testDb(), made.id)).toBe(true);
+  });
+});
+
+describe('«Прошлые рассылки» — последние двадцать, и об этом надо сказать числом', () => {
+  it('список обрезан двадцатью, а итог считает все', async () => {
+    /**
+     * **Двадцать строк без итога читаются как полный список** (ревизия
+     * панели). После двадцать первой рассылки предыдущие исчезали молча
+     * — вместе с единственным путём к «Повторить неудачные» и вместе с
+     * ответом на вопрос «а это письмо мы уже отправляли?».
+     *
+     * Людей нет нарочно: строки доставки здесь не нужны, а двадцать одна
+     * рассылка на пустой базе заводится быстро.
+     */
+    for (let index = 0; index < 21; index++) {
+      await createBroadcast(testDb(), {
+        text: `Письмо ${String(index)}.`,
+        segment: 'all',
+        by: 'аня',
+        trialLimit: 10,
+      });
+    }
+
+    const rows = await listBroadcasts(testDb());
+
+    expect(rows).toHaveLength(20);
+    expect(await countBroadcasts(testDb())).toBe(21);
   });
 });
