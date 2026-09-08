@@ -16,7 +16,7 @@ import {
   ROUTER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
 import { PromptRegistry } from '../ai/prompts/registry.js';
-import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
+import { activateFromFile, activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { activateVersion, createHotfix, promptText, promptsView } from './prompts.js';
 
 /**
@@ -41,6 +41,54 @@ let evalDir = '';
  * порог просто потому, что пропущенного поля нет, а сравнение с ничем
  * ложно: проверка мерила бы не то, что мы думаем.
  */
+/**
+ * Отчёт **без одного поля** — то, что заслон прежде читал как «прошёл».
+ *
+ * Не выдумка: поле `retractedKept` появилось задачей 3.56, и в окне
+ * заслона (шестьдесят отчётов) у двадцати пяти его нет вовсе. Все
+ * сравнения с порогами односторонние, поэтому `undefined > 0` — ложь, то
+ * есть «порог не превышен»; доли считаются делением, и `NaN < порог` —
+ * тоже ложь. Пустой объект проходил заслон целиком.
+ */
+async function writeTruncatedRun(params: {
+  readonly name: string;
+  readonly versions: Record<string, string>;
+  readonly without: string;
+}): Promise<void> {
+  const full: Record<string, unknown> = {
+    expected: 40,
+    found: 40,
+    missed: 0,
+    extra: 0,
+    typeCorrect: 40,
+    priorityCorrect: 40,
+    topicCorrect: 40,
+    recurrenceCorrect: 40,
+    projectCorrect: 40,
+    projectChecked: 40,
+    deadlineCorrect: 40,
+    falseDeadlines: 0,
+    falseTasksFromDesires: 0,
+    falseTasksFromEmotions: 0,
+    retractedKept: 0,
+    crisisExpected: 0,
+    crisisDetected: 0,
+    crisisFalse: 0,
+    crisisMissed: 0,
+    failed: 0,
+    ambiguous: 0,
+    cases: 10,
+    promptVersions: params.versions,
+  };
+
+  const truncated = Object.fromEntries(
+    Object.entries(full).filter(([name]) => name !== params.without),
+  );
+
+  await mkdir(join(evalDir, 'runs'), { recursive: true });
+  await writeFile(join(evalDir, 'runs', params.name), JSON.stringify(truncated), 'utf8');
+}
+
 async function writeRun(params: {
   readonly name: string;
   readonly versions: Record<string, string>;
@@ -336,6 +384,51 @@ describe('заслон §10.3: непрогнанное не включаетс�
 
     expect(outcome.ok).toBe(false);
     expect(!outcome.ok ? outcome.refused.reasons.join(' ') : '').toContain('classifier@2');
+  });
+
+  it('неполный отчёт не считается пройденным порогом', async () => {
+    /**
+     * **Самая дорогая находка ревизии в этом заслоне.** Отчёт читался
+     * `JSON.parse` и приводился к типу — то есть не проверялся вовсе. Все
+     * сравнения с порогами односторонние: `report.retractedKept > 0` на
+     * отсутствующем поле даёт `undefined > 0`, то есть ложь, то есть
+     * «порог не превышен». Доли считаются делением, и `NaN < порог` —
+     * тоже ложь. Пустой объект проходил заслон целиком.
+     *
+     * И это не гипотеза: поле `retractedKept` появилось задачей 3.56, а в
+     * окне заслона (шестьдесят отчётов) у двадцати пяти его нет. Заслон
+     * читал их как «порог пройден» — при том, что весь его смысл в
+     * обратном.
+     */
+    await writeTruncatedRun({
+      name: 'a.json',
+      versions: { classifier: 'classifier@2' },
+      without: 'retractedKept',
+    });
+
+    const outcome = await activateVersion(testDb(), {
+      stage: 'classifier',
+      version: 'classifier@2',
+      evalDir,
+      by: 'аня',
+    });
+
+    expect(outcome.ok).toBe(false);
+
+    const said = !outcome.ok ? outcome.refused.reasons.join(' ') : '';
+
+    // Пропуск назван словами, а не спрятан за «не прогоняли ни разу»:
+    // иначе разбирающий пойдёт искать прогон, который на диске есть.
+    expect(said).toContain('retractedKept');
+    expect(said).toContain('неполноту');
+
+    // И версия действительно не включена.
+    const [row] = await testDb()
+      .select({ isActive: promptVersions.isActive })
+      .from(promptVersions)
+      .where(eq(promptVersions.version, 'classifier@2'));
+
+    expect(row?.isActive).toBe(false);
   });
 
   it('прогон не прошёл порог — тоже нельзя', async () => {
@@ -726,6 +819,206 @@ describe('у резолвера свой набор — и панель его �
       version: 'resolver@7',
       evalDir,
       by: 'аня',
+    });
+
+    expect(outcome.ok).toBe(true);
+  });
+});
+
+describe('включение и признание — одной транзакцией (ревизия этапа)', () => {
+  /**
+   * **Худшее из состояний, которое давал прежний порядок.** Включение и
+   * дописывание «включена без прогона» были тремя независимыми
+   * запросами, и включение шло **первым**. Сбой между ними оставлял
+   * промпт работающим на живых людях, признания в примечании не было, а
+   * человеку в панель уходило «не вышло» — потому что промис отказал.
+   * То есть промпт включён, все считают, что нет, и следа тоже нет.
+   */
+
+  it('сбой на записи признания оставляет версию невключённой', async () => {
+    // `classifier@2` посеян общим `beforeEach`, активна `classifier@1`.
+    /**
+     * База, роняющая **именно запись признания** и ничего больше.
+     *
+     * Отличать надо по существу: `activatePrompt` пишет `isActive`,
+     * признание пишет `note`. Роняем обновление, у которого в значениях
+     * есть `note`, — тогда проверка различает починенное от сломанного.
+     * Роняй мы обновление по счёту, и она проходила бы одинаково: без
+     * транзакции сбой на `activatePrompt` тоже оставляет версию
+     * невключённой, только по другой причине.
+     */
+    const real = testDb();
+
+    const failNote = (target: object): object =>
+      new Proxy(target, {
+        get(one, name, receiver): unknown {
+          const value: unknown = Reflect.get(one, name, receiver);
+
+          // Метод вызывается через `call`: у drizzle он опирается на
+          // `this`, и оторванная от объекта функция падает не по делу.
+          if (name === 'transaction') {
+            return async (work: (nested: unknown) => Promise<unknown>) =>
+              await (
+                value as (inner: (nested: unknown) => Promise<unknown>) => Promise<unknown>
+              ).call(one, async (nested: unknown) => await work(failNote(nested as object)));
+          }
+
+          if (name !== 'update') return value;
+
+          return (table: unknown) => {
+            const builder = (value as (what: unknown) => object).call(one, table);
+
+            return new Proxy(builder, {
+              get(two, step, atStep): unknown {
+                const inner: unknown = Reflect.get(two, step, atStep);
+
+                if (step !== 'set') return inner;
+
+                return (values: unknown) => {
+                  if (values !== null && typeof values === 'object' && 'note' in values) {
+                    throw new Error('база моргнула на записи признания');
+                  }
+
+                  return (inner as (what: unknown) => unknown).call(two, values);
+                };
+              },
+            });
+          };
+        },
+      });
+
+    const flaky = failNote(real);
+
+    await expect(
+      activateVersion(flaky as unknown as typeof real, {
+        stage: 'classifier',
+        version: 'classifier@2',
+        evalDir,
+        by: 'аня',
+        acknowledged: true,
+      }),
+    ).rejects.toThrow('моргнула');
+
+    // Главное: версия НЕ активна. Признания нет — значит и включения нет.
+    const [row] = await testDb()
+      .select({ isActive: promptVersions.isActive, note: promptVersions.note })
+      .from(promptVersions)
+      .where(eq(promptVersions.version, 'classifier@2'));
+
+    expect(row?.isActive).toBe(false);
+    expect(row?.note ?? '').not.toContain('без прогона');
+  });
+
+  it('обычный путь пишет и включение, и признание', async () => {
+    const outcome = await activateVersion(testDb(), {
+      stage: 'classifier',
+      version: 'classifier@2',
+      evalDir,
+      by: 'аня',
+      acknowledged: true,
+    });
+
+    expect(outcome.ok).toBe(true);
+
+    const [row] = await testDb()
+      .select({ isActive: promptVersions.isActive, note: promptVersions.note })
+      .from(promptVersions)
+      .where(eq(promptVersions.version, 'classifier@2'));
+
+    expect(row?.isActive).toBe(true);
+    expect(row?.note ?? '').toContain('без прогона набора: аня');
+  });
+});
+
+describe('заливка из файлов не гасит правку из панели молча (ревизия этапа)', () => {
+  /**
+   * **Найдено ревизией четвёртого этапа.** `--activate` гасил активную
+   * версию этапа безоговорочно, а горячая правка живёт только в базе:
+   * файла у неё нет, значит цикл по папке её не видит и включает
+   * файлового предка. Правку, сделанную в панели по живому инциденту,
+   * снимало обычное разворачивание — молча, без строки в выводе. Дальше
+   * её никто не искал: в панели версия выглядит как была, активна другая.
+   */
+
+  it('поверх правки из панели файловая версия не включается', async () => {
+    const made = await createHotfix(testDb(), {
+      stage: 'classifier',
+      basedOn: 'classifier@1',
+      prompt: 'Правка по инциденту.',
+      by: 'аня',
+    });
+
+    await activateVersion(testDb(), {
+      stage: 'classifier',
+      version: made.version,
+      evalDir,
+      by: 'аня',
+      acknowledged: true,
+    });
+
+    const outcome = await activateFromFile(testDb(), {
+      stage: 'classifier',
+      version: 'classifier@2',
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(!outcome.ok ? outcome.hotfix : '').toBe(made.version);
+
+    // И правка осталась активной: отказ, а не отказ на словах.
+    const [live] = await testDb()
+      .select({ version: promptVersions.version })
+      .from(promptVersions)
+      .where(and(eq(promptVersions.stage, 'classifier'), eq(promptVersions.isActive, true)));
+
+    expect(live?.version).toBe(made.version);
+  });
+
+  it('с прямым разрешением гасит — и говорит об этом в примечании', async () => {
+    const made = await createHotfix(testDb(), {
+      stage: 'classifier',
+      basedOn: 'classifier@1',
+      prompt: 'Правка по инциденту.',
+      by: 'аня',
+    });
+
+    await activateVersion(testDb(), {
+      stage: 'classifier',
+      version: made.version,
+      evalDir,
+      by: 'аня',
+      acknowledged: true,
+    });
+
+    const outcome = await activateFromFile(testDb(), {
+      stage: 'classifier',
+      version: 'classifier@2',
+      force: true,
+    });
+
+    expect(outcome.ok).toBe(true);
+
+    const [live] = await testDb()
+      .select({ version: promptVersions.version })
+      .from(promptVersions)
+      .where(and(eq(promptVersions.stage, 'classifier'), eq(promptVersions.isActive, true)));
+
+    expect(live?.version).toBe('classifier@2');
+
+    // След остаётся: иначе через месяц никто не вспомнит, куда девалась
+    // правка по инциденту.
+    const [was] = await testDb()
+      .select({ note: promptVersions.note })
+      .from(promptVersions)
+      .where(eq(promptVersions.version, made.version));
+
+    expect(was?.note ?? '').toContain('погашена заливкой classifier@2');
+  });
+
+  it('обычную файловую версию поверх файловой включает без разрешений', async () => {
+    // Заливка своего же — штатное разворачивание, и мешать ему нечем.
+    const outcome = await activateFromFile(testDb(), {
+      stage: 'classifier',
+      version: 'classifier@2',
     });
 
     expect(outcome.ok).toBe(true);

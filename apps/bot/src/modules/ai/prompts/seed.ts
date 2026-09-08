@@ -104,3 +104,68 @@ export async function activatePrompt(db: Database, stage: AiStage, version: stri
     await tx.update(promptVersions).set({ isActive: true }).where(eq(promptVersions.id, target.id));
   });
 }
+
+/**
+ * Правка из панели узнаётся по имени версии.
+ *
+ * `prompt_versions` не хранит признака «правка из панели», а имя ей даёт
+ * `createHotfix`: `<предок>-hotfix-<время>`. То же имя — причина, по
+ * которой её не видит заливка из файлов: файла у неё нет.
+ */
+export function isHotfix(version: string): boolean {
+  return version.includes('-hotfix-');
+}
+
+/**
+ * Включить **файловую** версию, не погасив молча правку из панели.
+ *
+ * **Найдено ревизией четвёртого этапа.** `--activate` гасил активную
+ * версию этапа безоговорочно, а горячая правка живёт только в базе:
+ * файла у неё нет, значит цикл по папке её не видит и включает файлового
+ * предка. Правку, сделанную по живому инциденту, снимало обычное
+ * разворачивание — молча, без строки в выводе. Дальше её никто не искал:
+ * в панели версия выглядит как была, активна другая.
+ *
+ * Решение живёт здесь, а не в скрипте, чтобы его можно было проверить:
+ * скрипт — верхний уровень с побочными действиями, и проверка его не
+ * позовёт.
+ */
+export async function activateFromFile(
+  db: Database,
+  params: {
+    readonly stage: AiStage;
+    readonly version: string;
+    /**
+     * Погасить правку из панели — только если этого хотят прямо.
+     *
+     * В скрипте это `--over-hotfix`, а не `--force`: тем именем в
+     * `ops/seed-prompts.sh` уже названо другое разрешение — обойти
+     * заслон §10.3. Одно имя на два разрешения однажды даст не то, о чём
+     * просили.
+     */
+    readonly force?: boolean | undefined;
+  },
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly hotfix: string }> {
+  const [live] = await db
+    .select({ version: promptVersions.version })
+    .from(promptVersions)
+    .where(and(eq(promptVersions.stage, params.stage), eq(promptVersions.isActive, true)))
+    .limit(1);
+
+  const hotfix = live !== undefined && isHotfix(live.version) ? live.version : undefined;
+
+  if (hotfix !== undefined && params.force !== true) return { ok: false, hotfix };
+
+  if (hotfix !== undefined) {
+    // Погашенная правка остаётся названной в примечании: иначе через
+    // месяц никто не вспомнит, куда девалась правка по инциденту.
+    await db
+      .update(promptVersions)
+      .set({ note: `погашена заливкой ${params.version}` })
+      .where(and(eq(promptVersions.stage, params.stage), eq(promptVersions.version, hotfix)));
+  }
+
+  await activatePrompt(db, params.stage, params.version);
+
+  return { ok: true };
+}

@@ -96,6 +96,24 @@ export interface ResolverThresholdSpec {
   readonly wrongTarget: number;
   readonly wrongMode: number;
   readonly failed: number;
+  /**
+   * Слова человека, подменённые пересказом (§7.4, ревизия этапа).
+   *
+   * Набор это мерил и печатал, а порог на них не смотрел вовсе — то есть
+   * отчёт с двадцатью одной подменой возвращал «порог пройден» и
+   * разрешал включение промпта. Порог жёсткий: инвариант проекта прямо
+   * запрещает подменять сказанное пересказом, и «немного подменил»
+   * здесь не бывает.
+   */
+  readonly rewrittenText: number;
+  /**
+   * Не тот срок при верном решении (ревизия этапа).
+   *
+   * Тоже мерилось и не проверялось. Цена та же, что у выдуманного срока
+   * в разборе: фильтр выдачи ставит дела «на сегодня» впереди всех, и
+   * мелочь с чужой датой вытесняет важное без срока.
+   */
+  readonly wrongDeadline: number;
 }
 
 /**
@@ -119,6 +137,10 @@ export const RESOLVER_THRESHOLD: ResolverThresholdSpec = {
   wrongTarget: 0,
   wrongMode: 0,
   failed: 0,
+  // Добавлены ревизией этапа: набор их мерил и печатал, а порог на них
+  // не смотрел — отчёт с подменёнными словами человека проходил.
+  rewrittenText: 0,
+  wrongDeadline: 0,
 };
 
 export interface ResolverVerdict {
@@ -145,6 +167,18 @@ export function checkResolverThreshold(
   if (report.wrongMode > spec.wrongMode) {
     failures.push(
       `перепутано дополнение и замена в ${String(report.wrongMode)} случаях — при замене переписывается заголовок дела`,
+    );
+  }
+
+  if (report.rewrittenText > spec.rewrittenText) {
+    failures.push(
+      `слова человека подменены пересказом в ${String(report.rewrittenText)} случаях — дословность обязательна, «немного подменил» не бывает`,
+    );
+  }
+
+  if (report.wrongDeadline > spec.wrongDeadline) {
+    failures.push(
+      `не тот срок при верном решении в ${String(report.wrongDeadline)} случаях — чужая дата вытесняет важное без срока`,
     );
   }
 

@@ -4,6 +4,8 @@
 # Запускается с машины разработчика:
 #     ./ops/seed-prompts.sh              # залить, не переключая активную
 #     ./ops/seed-prompts.sh --activate   # залить и сделать активными
+#     ./ops/seed-prompts.sh --activate --over-hotfix
+#                                        # ...даже поверх правки из панели
 #
 # Зачем отдельный шаг, а не часть выкладки. Тексты промптов лежат в
 # docs/prompts, а эта папка намеренно не входит в репозиторий: он
@@ -47,10 +49,21 @@ sshx() {
 
 ACTIVATE=""
 FORCE=""
+# Разрешение погасить горячую правку из панели — отдельным флагом.
+#
+# Найдено ревизией четвёртого этапа: заливка гасила такую правку молча.
+# Правка из панели живёт только в базе (файла у неё нет), поэтому цикл по
+# docs/prompts её не видит и включает файлового предка — то есть обычное
+# разворачивание снимало правку по инциденту, ничего не сказав.
+#
+# Имя не --force нарочно: тем флагом здесь снимают заслон §10.3, и одно
+# имя на два разных разрешения однажды даст не то, о чём просили.
+OVER_HOTFIX=""
 for arg in "$@"; do
   case "$arg" in
     --activate) ACTIVATE="--activate" ;;
     --force) FORCE="1" ;;
+    --over-hotfix) OVER_HOTFIX="--over-hotfix" ;;
     *) fail "неизвестный флаг: $arg" ;;
   esac
 done
@@ -134,7 +147,7 @@ fi
 say "Заливаю в базу${ACTIVATE:+ и делаю активными}"
 sshx "cd $REMOTE_DIR && $COMPOSE run --rm -T \
   -v $REMOTE_DIR/prompts:/prompts:ro \
-  migrate node apps/bot/dist/scripts/seed-prompts.js /prompts $ACTIVATE"
+  migrate node apps/bot/dist/scripts/seed-prompts.js /prompts $ACTIVATE $OVER_HOTFIX"
 
 say "Готово"
 

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,12 +24,22 @@ import { fileURLToPath } from 'node:url';
  *    поднимает страж), и панель его не дублирует: два потолка в разных
  *    местах однажды разойдутся.
  *
- * **Состояние живёт в памяти процесса, и это названная цена.** Перезапуск
- * бота посреди прогона теряет его состояние: сам прогон продолжится
- * отдельным процессом, а панель об этом забудет и покажет «прогонов не
- * было». Таблица ради одной кнопки у одного администратора — дороже, чем
- * эта неточность; когда администраторов станет несколько, здесь появится
- * строка в базе.
+ * **Запрет второго прогона держится файлом-замком, а не памятью.**
+ * Ревизия четвёртого этапа: прежде «один прогон за раз» жил в замыкании,
+ * и цена была названа неверно — «панель забудет и покажет прогонов не
+ * было». Настоящая цена другая: перезапуск бота посреди прогона снимал
+ * запрет, и следующее нажатие платило **второй раз** за то же самое.
+ * Обещание «вторая кнопка не удваивает счёт» держалось на том, что бота
+ * не перезапускают, — а выкладки в этом проекте регулярно совпадают с
+ * часовым проходом.
+ *
+ * Замок — файл `runs/.running` рядом с отчётами: там же, где лежат
+ * результаты, и он переживает перезапуск. Внутри — pid, время старта и
+ * что меряем. Живость pid проверяется (`process.kill(pid, 0)`): замок
+ * от процесса, которого больше нет, снимается сам, иначе один упавший
+ * прогон запер бы кнопку навсегда. Строка в базе была бы точнее, но
+ * прогон запускается и без базы — из командной строки, — а замок нужен
+ * обоим путям.
  *
  * **Оболочка не используется, и это не мелочь.** Имя версии приходит из
  * панели, а `shell: true` склеивает аргументы в одну строку без
@@ -50,6 +61,16 @@ export type EvalRunState =
       readonly startedAt: Date;
       readonly finishedAt: Date;
       readonly ok: boolean;
+      /**
+       * Чем кончился прогон — по коду возврата (ревизия этапа).
+       *
+       * Прежде исход был булевым, и «прогон не начался, потому что
+       * кончились деньги» показывалось человеку как «порог не пройден».
+       * Это обвинение промпта в том, чего он не делал: правку начинают
+       * искать в промпте вместо потолка расхода. Скрипты различают
+       * случаи давно — кодами 0/1/2/3, — а панель их складывала в один.
+       */
+      readonly outcome: 'passed' | 'failed' | 'not-started' | 'bad-call' | 'broken';
       /** Хвост вывода: человеку нужен итог, а не весь журнал. */
       readonly tail: string;
       readonly measuring?: { readonly stage: string; readonly version: string } | undefined;
@@ -95,6 +116,28 @@ function nodeRunner(script: string): readonly string[] {
 /** Сколько знаков вывода показываем человеку. */
 const TAIL_LIMIT = 4_000;
 
+/**
+ * Дословные фрагменты речи людей из хвоста прогона (§16, ревизия этапа).
+ *
+ * `run-eval.ts` печатает промахи вместе с текстом единиц: «лишнее [id]
+ * „купить корм коту"». Хвост уезжает в раздел «Промпты», объявленный
+ * **не данными человека**, — а значит доступ к нему не журналируется
+ * вовсе. Набор живёт в `docs/eval`, и в нём настоящие расшифровки: они
+ * оттуда и приходят.
+ *
+ * Панели нужны вердикт, счёт и идентификаторы промахов — по ним случай
+ * находится в наборе. Само сказанное не нужно ни для чего.
+ *
+ * Помечать путь персональным не годится: у хвоста нет субъекта, и
+ * журнал «смотрели на кого-то» бесполезен. Правильное место — здесь, до
+ * того как хвост покинет процесс.
+ */
+const QUOTED = /«[^»]*»/gu;
+
+function withoutQuotes(text: string): string {
+  return text.replaceAll(QUOTED, '«…»');
+}
+
 /** Какую версию мерить. Без неё меряются активные. */
 export interface EvalTarget {
   readonly stage: string;
@@ -112,6 +155,23 @@ export interface EvalRunner {
    * не измерена, и не измерить, пока не включена.
    */
   readonly start: (target?: EvalTarget) => boolean;
+}
+
+/**
+ * Что означает код возврата прогона (ревизия этапа).
+ *
+ * Скрипты различают случаи давно: `run-eval.ts` выходит с 3, когда
+ * прогон **не начался** из-за потолка расхода, с 2 — при неверном
+ * вызове, с 1 — когда порог не пройден. Панель складывала всё в булево
+ * `ok`, и «денег не осталось» читалось как «промпт стал хуже» — то есть
+ * правку шли искать в промпте вместо потолка.
+ */
+function outcomeOf(code: number | null): 'passed' | 'failed' | 'not-started' | 'bad-call' {
+  if (code === 0) return 'passed';
+  if (code === 3) return 'not-started';
+  if (code === 2) return 'bad-call';
+
+  return 'failed';
 }
 
 export function createEvalRunner(deps: EvalRunnerDeps): EvalRunner {
@@ -144,23 +204,135 @@ export function createEvalRunner(deps: EvalRunnerDeps): EvalRunner {
 
   let state: EvalRunState = { kind: 'idle' };
 
+  /** Файл-замок: рядом с отчётами, чтобы переживал перезапуск бота. */
+  const lockPath = join(deps.evalDir, 'runs', '.running');
+
+  interface Held {
+    readonly pid: number;
+    readonly startedAt: string;
+    readonly measuring?: EvalTarget | undefined;
+  }
+
+  /**
+   * Чужой живой прогон, если он есть.
+   *
+   * `undefined` означает «замка нет либо он мёртв»: замок от процесса,
+   * которого больше нет, снимается — иначе один упавший прогон запер бы
+   * кнопку навсегда, и заслон §10.3 стало бы нечем обойти правильно.
+   */
+  const heldByOther = (): Held | undefined => {
+    let held: Held;
+
+    try {
+      held = JSON.parse(readFileSync(lockPath, 'utf8')) as Held;
+    } catch {
+      return undefined;
+    }
+
+    if (typeof held.pid !== 'number' || held.pid === process.pid) return undefined;
+
+    try {
+      // Сигнал 0 ничего не посылает, только спрашивает: жив ли.
+      process.kill(held.pid, 0);
+      return held;
+    } catch {
+      // Процесса нет — замок мёртв. Снимаем его сами.
+      try {
+        rmSync(lockPath, { force: true });
+      } catch (error) {
+        deps.onError?.(error);
+      }
+
+      return undefined;
+    }
+  };
+
+  const takeLock = (startedAt: Date, measuring: EvalTarget | undefined): void => {
+    /**
+     * Папка набора не создаётся на пустом месте.
+     *
+     * Замок живёт рядом с отчётами, и заводить под него папку там, где
+     * набора нет вовсе, значило бы насорить в чужом каталоге — а прогон
+     * без набора всё равно ничего не измерит. На боевом набора нет
+     * нарочно (§16), и кнопки прогона там тоже нет.
+     */
+    if (!existsSync(deps.evalDir)) return;
+
+    try {
+      mkdirSync(join(deps.evalDir, 'runs'), { recursive: true });
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: startedAt.toISOString(),
+          ...(measuring === undefined ? {} : { measuring }),
+        }),
+        'utf8',
+      );
+    } catch (error) {
+      // Замок не взялся — прогон всё равно идёт. Молчать нельзя: в этом
+      // состоянии второе нажатие после перезапуска заплатит второй раз.
+      deps.onError?.(error);
+    }
+  };
+
+  const freeLock = (): void => {
+    try {
+      rmSync(lockPath, { force: true });
+    } catch (error) {
+      deps.onError?.(error);
+    }
+  };
+
   return {
-    state: () => state,
+    state: () => {
+      /**
+       * Чужой живой прогон виден и после перезапуска бота.
+       *
+       * Иначе панель показала бы «прогонов не было», а нажатие заплатило
+       * бы второй раз за тот же набор.
+       */
+      if (state.kind === 'idle') {
+        const held = heldByOther();
+
+        if (held !== undefined) {
+          return {
+            kind: 'running',
+            startedAt: new Date(held.startedAt),
+            ...(held.measuring === undefined ? {} : { measuring: held.measuring }),
+          };
+        }
+      }
+
+      return state;
+    },
 
     start: (target?: EvalTarget) => {
       if (state.kind === 'running') return false;
 
+      // Прогон, начатый до перезапуска бота, — тоже прогон: платить за
+      // тот же набор второй раз нельзя.
+      if (heldByOther() !== undefined) return false;
+
       const startedAt = clock();
       const measuring = target === undefined ? undefined : { ...target };
       state = { kind: 'running', startedAt, measuring };
+      takeLock(startedAt, measuring);
 
       const [file, ...args] = commandFor(target);
-      if (file === undefined) return false;
+
+      if (file === undefined) {
+        freeLock();
+        state = { kind: 'idle' };
+        return false;
+      }
 
       let output = '';
 
       const keep = (chunk: Buffer): void => {
-        output = (output + chunk.toString('utf8')).slice(-TAIL_LIMIT);
+        // Вымарывание — здесь, а не при выдаче: хвост не должен покидать
+        // процесс со словами человека даже в памяти состояния (§16).
+        output = (output + withoutQuotes(chunk.toString('utf8'))).slice(-TAIL_LIMIT);
       };
 
       try {
@@ -184,12 +356,14 @@ export function createEvalRunner(deps: EvalRunnerDeps): EvalRunner {
         child.on('error', (error: unknown) => {
           broken = true;
           deps.onError?.(error);
+          freeLock();
           state = {
             kind: 'finished',
             startedAt,
             finishedAt: clock(),
             measuring,
             ok: false,
+            outcome: 'broken',
             tail: `не удалось запустить прогон: ${String(error)}`,
           };
         });
@@ -197,14 +371,19 @@ export function createEvalRunner(deps: EvalRunnerDeps): EvalRunner {
         child.on('close', (code) => {
           if (broken) return;
 
+          freeLock();
+
           // Код возврата — единственное, чему тут можно верить: прогон
-          // сам решает, прошёл порог или нет, и говорит это кодом.
+          // сам решает, прошёл порог или нет, и говорит это кодом. Коды
+          // назначены скриптами: 0 — порог пройден, 1 — не пройден,
+          // 2 — неверный вызов, 3 — прогон не начался (потолок расхода).
           state = {
             kind: 'finished',
             startedAt,
             finishedAt: clock(),
             measuring,
             ok: code === 0,
+            outcome: outcomeOf(code),
             tail: output.trim(),
           };
         });
@@ -212,12 +391,14 @@ export function createEvalRunner(deps: EvalRunnerDeps): EvalRunner {
         return true;
       } catch (error) {
         deps.onError?.(error);
+        freeLock();
         state = {
           kind: 'finished',
           startedAt,
           finishedAt: clock(),
           measuring,
           ok: false,
+          outcome: 'broken',
           tail: `не удалось запустить прогон: ${String(error)}`,
         };
 

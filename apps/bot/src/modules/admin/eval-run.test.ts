@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { createEvalRunner, type EvalRunner, type EvalRunState } from './eval-run.js';
 
@@ -170,5 +174,150 @@ describe('прогон по кнопке', () => {
 
     expect(argsOf(state)).toContain('--use');
     expect(argsOf(state)).toContain('resolver=resolver@8');
+  });
+});
+
+/** Настоящая папка набора: под замок нужна та, что существует. */
+function realDir(): string {
+  const path = mkdtempSync(join(tmpdir(), 'vydoh-eval-'));
+  made.push(path);
+  mkdirSync(join(path, 'runs'), { recursive: true });
+
+  return path;
+}
+
+const made: string[] = [];
+
+afterEach(() => {
+  for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+/** Команда, которая ничего не делает и выходит с нужным кодом. */
+function exits(code: number): readonly string[] {
+  return [process.execPath, '-e', `process.exit(${String(code)})`];
+}
+
+describe('запрет второго прогона переживает перезапуск бота (ревизия этапа)', () => {
+  /**
+   * **Ревизия нашла здесь неверно названную цену.** Запрет «один прогон
+   * за раз» жил в замыкании, а докстринг называл ценой перезапуска
+   * забывчивость панели. Настоящая цена другая: перезапуск снимал
+   * запрет, и следующее нажатие платило **второй раз** за тот же набор.
+   * Обещание «вторая кнопка не удваивает счёт» держалось на том, что
+   * бота не перезапускают, — а выкладки в этом проекте регулярно
+   * совпадают с часовым проходом.
+   */
+
+  it('чужой живой прогон виден новому процессу и второй раз не запускается', () => {
+    const evalDir = realDir();
+
+    // Замок от заведомо живого процесса — своего же родителя.
+    writeFileSync(
+      join(evalDir, 'runs', '.running'),
+      JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }),
+      'utf8',
+    );
+
+    const runner = createEvalRunner({ evalDir, command: ECHO });
+
+    expect(runner.state().kind).toBe('running');
+    expect(runner.start()).toBe(false);
+  });
+
+  it('замок мёртвого процесса снимается сам — иначе кнопка заперта навсегда', () => {
+    /**
+     * Один упавший прогон запер бы кнопку до правки руками, а рядом с
+     * кнопкой стоит заслон §10.3: обойти его правильно стало бы нечем.
+     */
+    const evalDir = realDir();
+
+    writeFileSync(
+      join(evalDir, 'runs', '.running'),
+      JSON.stringify({ pid: 2_147_483_647, startedAt: new Date().toISOString() }),
+      'utf8',
+    );
+
+    const runner = createEvalRunner({ evalDir, command: ECHO });
+
+    expect(runner.state().kind).toBe('idle');
+    expect(existsSync(join(evalDir, 'runs', '.running'))).toBe(false);
+  });
+
+  it('свой прогон ставит замок и снимает его в конце', async () => {
+    const evalDir = realDir();
+    const runner = createEvalRunner({ evalDir, command: ECHO });
+
+    expect(runner.start()).toBe(true);
+
+    const held = JSON.parse(readFileSync(join(evalDir, 'runs', '.running'), 'utf8')) as {
+      readonly pid: number;
+    };
+
+    expect(held.pid).toBe(process.pid);
+
+    await finished(runner);
+
+    expect(existsSync(join(evalDir, 'runs', '.running'))).toBe(false);
+  });
+
+  it('папка набора под замок не создаётся на пустом месте', () => {
+    // Прогон без набора всё равно ничего не измерит, а сорить в чужом
+    // каталоге ради замка неправильно.
+    const runner = createEvalRunner({ evalDir: 'нет-такой-папки-совсем', command: ECHO });
+
+    runner.start();
+
+    expect(existsSync('нет-такой-папки-совсем')).toBe(false);
+  });
+});
+
+describe('исход прогона различает случаи (ревизия этапа)', () => {
+  /**
+   * Скрипты различают их давно — кодами возврата, — а панель складывала
+   * в булево. «Кончились деньги» показывалось человеку как «порог не
+   * пройден», то есть обвинением промпта в том, чего он не делал: правку
+   * шли искать в промпте вместо потолка расхода.
+   */
+
+  it.each([
+    [0, 'passed'],
+    [1, 'failed'],
+    [2, 'bad-call'],
+    [3, 'not-started'],
+  ])('код %i означает %s', async (code, outcome) => {
+    const runner = createEvalRunner({ evalDir: realDir(), command: exits(code) });
+
+    runner.start();
+    const state = await finished(runner);
+
+    expect(state.kind === 'finished' ? state.outcome : undefined).toBe(outcome);
+  });
+});
+
+describe('хвост прогона не выносит слов человека (§16, ревизия этапа)', () => {
+  /**
+   * `run-eval.ts` печатает промахи вместе с текстом единиц: «лишнее [id]
+   * „купить корм коту"». Хвост уезжает в раздел «Промпты», объявленный
+   * **не данными человека**, — значит доступ к нему не журналируется
+   * вовсе. А набор живёт в `docs/eval`, и в нём настоящие расшифровки:
+   * они оттуда и приходят.
+   *
+   * Панели нужны вердикт, счёт и идентификаторы промахов — по ним случай
+   * находится в наборе. Само сказанное не нужно ни для чего.
+   */
+  it('содержимое кавычек заменяется многоточием, а счёт остаётся', async () => {
+    const say = 'лишнее [c-12] «купить корм коту»; промахов 3';
+    const runner = createEvalRunner({
+      evalDir: realDir(),
+      command: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(say)})`],
+    });
+
+    runner.start();
+    const state = await finished(runner);
+    const tail = state.kind === 'finished' ? state.tail : '';
+
+    expect(tail).not.toContain('корм коту');
+    expect(tail).toContain('[c-12]');
+    expect(tail).toContain('промахов 3');
   });
 });

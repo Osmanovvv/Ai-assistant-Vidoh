@@ -5,6 +5,7 @@ import {
   collectResolver,
   RESOLVER_THRESHOLD,
   type ResolverCaseOutcome,
+  type ResolverReport,
 } from './resolver-report.js';
 
 /**
@@ -142,5 +143,78 @@ describe('подмена слов человека считается ошибк
     const report = collectResolver([outcome()], 'resolver@test');
 
     expect(report.rewrittenText).toBe(0);
+  });
+});
+
+describe('порог смотрит на всё, что набор мерит (ревизия этапа)', () => {
+  /**
+   * **Набор мерил и печатал, а порог не смотрел.** Отчёт с двадцатью
+   * одной подменой слов человека возвращал `passed: true` — и разрешал
+   * включение промпта. Число из отчёта, на которое никто не смотрит, не
+   * доказательство: ровно то же было с процентом промаха по дате
+   * (задача 3.61).
+   */
+
+  function clean(): ResolverReport {
+    return {
+      cases: 16,
+      decisionCorrect: 16,
+      falseApplies: 0,
+      extraQuestions: 0,
+      missedPatches: 0,
+      wrongTarget: 0,
+      wrongDeadline: 0,
+      wrongMode: 0,
+      rewrittenText: 0,
+      failed: 0,
+      promptVersion: 'resolver@2',
+    };
+  }
+
+  it('чистый отчёт порог проходит', () => {
+    expect(checkResolverThreshold(clean()).passed).toBe(true);
+  });
+
+  it('подменённые слова человека порог не проходят', () => {
+    const verdict = checkResolverThreshold({ ...clean(), rewrittenText: 1 });
+
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('подменены пересказом');
+  });
+
+  it('не тот срок порог не проходит', () => {
+    const verdict = checkResolverThreshold({ ...clean(), wrongDeadline: 1 });
+
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('не тот срок');
+  });
+
+  it('каждое поле отчёта либо в пороге, либо названо исключением', () => {
+    /**
+     * **Страж от повторения находки.** Появится в отчёте новое число —
+     * и эта проверка покраснеет, пока его не внесут в порог или не
+     * запишут в исключения с причиной. Иначе оно опять окажется
+     * измеренным и непроверяемым.
+     */
+    const EXCEPTIONS = new Set([
+      // Не провал: §7.3 велит спрашивать чаще, чем угадывать.
+      'extraQuestions',
+      // Считается через долю верных решений, своего порога не имеет.
+      'decisionCorrect',
+      // Не провал сам по себе: новая запись вместо правки — мягкая
+      // ошибка, и порог по ней сузил бы «спрашивать чаще».
+      'missedPatches',
+      // Не измерения: состав прогона.
+      'cases',
+      'promptVersion',
+    ]);
+
+    const inThreshold = new Set(Object.keys(RESOLVER_THRESHOLD));
+
+    const unguarded = Object.keys(clean()).filter(
+      (name) => !inThreshold.has(name) && !EXCEPTIONS.has(name),
+    );
+
+    expect(unguarded, `Поля отчёта без порога и без причины: ${unguarded.join(', ')}`).toEqual([]);
   });
 });

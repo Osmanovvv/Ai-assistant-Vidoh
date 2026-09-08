@@ -5,7 +5,7 @@ import type { AiStage } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { createLogger } from '../infra/logger.js';
 import { SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
-import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
+import { activateFromFile, seedPrompt } from '../modules/ai/prompts/seed.js';
 
 /**
  * Заливка промптов из файлов в базу (задача 2.1).
@@ -27,12 +27,31 @@ const [, , directory, ...flags] = process.argv;
 if (directory === undefined) {
   process.stderr.write(
     'Использование: seed-prompts <папка-с-промптами> [--activate]\n' +
-      '  --activate — сделать залитые версии активными\n',
+      '  --activate — сделать залитые версии активными\n' +
+      '  --over-hotfix — включить файловую версию даже поверх правки из панели\n',
   );
   process.exit(2);
 }
 
 const activate = flags.includes('--activate');
+
+/**
+ * Позволить файловой версии погасить горячую правку из панели.
+ *
+ * **Найдено ревизией четвёртого этапа.** `--activate` гасил активную
+ * версию этапа безоговорочно, а горячая правка (`…-hotfix-…`) живёт
+ * только в базе: файла у неё нет, значит цикл по папке её не видит и
+ * включает файлового предка. Правку, сделанную в панели по живому
+ * инциденту, снимало обычное разворачивание — молча, без строки в
+ * выводе. Дальше её никто не искал: в панели версия выглядит как была,
+ * активна другая.
+ *
+ * **Имя не `--force` нарочно.** В `ops/seed-prompts.sh` этот флаг уже
+ * занят и означает другое — «обойти заслон §10.3». Одно имя на два
+ * разных разрешения однажды даст не то, о чём просили: человек, снявший
+ * заслон в аварию, заодно и молча погасил бы правку.
+ */
+const overHotfix = flags.includes('--over-hotfix');
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.
 const logger = createLogger({ level: 'info', pretty: process.stdout.isTTY });
@@ -82,7 +101,16 @@ try {
     );
 
     if (activate) {
-      await activatePrompt(db, stage, version);
+      const outcome = await activateFromFile(db, { stage, version, force: overHotfix });
+
+      if (!outcome.ok) {
+        logger.error(
+          { stage, active: outcome.hotfix, file: version },
+          'Активна правка из панели — файловую версию не включаю. Нужно именно это? Повторите с --force',
+        );
+        continue;
+      }
+
       logger.info({ stage, version }, 'Версия сделана активной');
     }
   }

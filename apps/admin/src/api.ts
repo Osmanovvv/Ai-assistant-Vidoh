@@ -346,6 +346,15 @@ export type EvalRun =
       readonly startedAt: string;
       readonly finishedAt: string;
       readonly ok: boolean;
+      /**
+       * Чем кончился прогон, а не только «удался ли».
+       *
+       * Прежде исход был булевым, и «прогон не начался, потому что
+       * кончились деньги» показывалось человеку как «порог не пройден» —
+       * то есть обвинением промпта в том, чего он не делал. Правку шли
+       * искать в промпте вместо потолка расхода.
+       */
+      readonly outcome: 'passed' | 'failed' | 'not-started' | 'bad-call' | 'broken';
       readonly tail: string;
       readonly measuring?: { readonly stage: string; readonly version: string } | undefined;
     };
