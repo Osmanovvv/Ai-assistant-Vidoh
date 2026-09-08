@@ -204,6 +204,14 @@ describe('без авторизации панель не отдаёт данн�
       settings: NEVER_TOUCHED as unknown as SettingsRegistry,
       enqueueBroadcast: NEVER_QUEUED,
       enqueueUser: NEVER_QUEUED,
+      /**
+       * Реестр промптов — тоже необязательная зависимость (ревизия этапа).
+       *
+       * Его забыли и здесь, и на стенде: сброс кэша после включения
+       * версии не проверялся ни одной проверкой, хотя без него правка
+       * доезжает до людей через минуту, а панель говорит «включено».
+       */
+      promptRegistry: { forget: () => undefined },
     } as const;
 
     const { routes } = createAdminRouter(withEverything);

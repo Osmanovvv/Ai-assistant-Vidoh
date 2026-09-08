@@ -24,6 +24,7 @@ import { markTrialSpent } from '../modules/billing/subscription.service.js';
 import { sendChunk, type BroadcastSender } from '../modules/broadcast/broadcast.service.js';
 import { CLASSIFIER_SCHEMA_NAME } from '../modules/ai/schemas/index.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
+import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { hashPassword } from '../http/admin/password.js';
 import { createServer } from '../http/server.js';
 import type { Database } from '../infra/db.js';
@@ -471,6 +472,15 @@ const app = createServer({
          */
         adminSettings: new SettingsRegistry({ db: seeded, ttlMs: 0 }),
         adminEvalDir: evalDir,
+        /**
+         * Реестр промптов — как в бою (ревизия четвёртого этапа).
+         *
+         * Стенд собирал сервер без него, и браузерная проверка «цикл
+         * целиком: создать, прогнать, включить, откатить» проходила
+         * композицию, в которой сброса кэша нет вовсе. Проверять
+         * композицию, отличающуюся от боевой, — это мерить не то.
+         */
+        adminPromptRegistry: new PromptRegistry(seeded, 0),
         ...(evalRunner === undefined ? {} : { adminEvalRunner: evalRunner }),
         adminEnqueueBroadcast: runBroadcast,
         /**

@@ -1,14 +1,9 @@
 import { readdir } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 
-import {
-  evalFreshness,
-  MEASURED_STAGES,
-  newestResolverRun,
-  newestRun,
-  RESOLVER_STAGE,
-} from '../eval/freshness.js';
-import { shares } from '../eval/report.js';
+import { evalFreshness, reportByName } from '../eval/freshness.js';
+import { shares, type EvalReport } from '../eval/report.js';
+import type { ResolverReport } from '../eval/resolver-report.js';
 
 /**
  * Заслон перед заливкой промптов (§10.3 ТЗ).
@@ -86,32 +81,49 @@ if (!verdict.ok) {
 }
 
 /**
- * Печать итога.
+ * Печать итога — по **зачтённым** отчётам, а не по самым свежим.
  *
  * Сверку делает `evalFreshness`, здесь только числа для человека: какой
  * отчёт зачли и что в нём получилось. Проверять что-либо ещё раз тут
  * нельзя — две проверки одного правила разойдутся.
+ *
+ * **Ревизия четвёртого этапа нашла здесь неправду.** Печатался самый
+ * свежий отчёт вообще, со словами «порог пройден», — а заслон мог зачесть
+ * другой: на откате ищется прогон этого сочетания версий, а не последний
+ * по времени. Человек читал числа одного прогона под вердиктом о другом.
+ * Имя зачтённого лежало рядом, в `verdict.runs`, и не использовалось.
  */
 
-const run = await newestRun(evalDir);
+for (const name of verdict.runs) {
+  const main = (await reportByName(join(evalDir, 'runs'), name, 'eval')) as EvalReport | undefined;
 
-if (run !== undefined && MEASURED_STAGES.some((stage) => activating.has(stage))) {
-  const found = shares(run.report);
+  if (main !== undefined) {
+    const found = shares(main);
 
-  process.stdout.write(
-    `Прогон ${run.name}: найдено ${(found.recall * 100).toFixed(1)}%, ` +
-      `точность типа ${(found.type * 100).toFixed(1)}% — порог пройден.\n`,
-  );
-}
+    process.stdout.write(
+      `Зачтён прогон ${name}: найдено ${(found.recall * 100).toFixed(1)}%, ` +
+        `точность типа ${(found.type * 100).toFixed(1)}%.\n`,
+    );
 
-const resolverVersion = activating.get(RESOLVER_STAGE);
-const resolverRun = resolverVersion === undefined ? undefined : await newestResolverRun(evalDir);
+    continue;
+  }
 
-if (resolverVersion !== undefined && resolverRun !== undefined) {
-  process.stdout.write(
-    `Резолвер ${resolverVersion}: ${String(resolverRun.report.decisionCorrect)} из ` +
-      `${String(resolverRun.report.cases)} решений верны, ложных применений нет.\n`,
-  );
+  const resolver = (await reportByName(join(evalDir, 'resolver', 'runs'), name, 'resolver')) as
+    ResolverReport | undefined;
+
+  if (resolver !== undefined) {
+    process.stdout.write(
+      `Зачтён прогон резолвера ${name}: ${String(resolver.decisionCorrect)} из ` +
+        `${String(resolver.cases)} решений верны, ложных применений ` +
+        `${String(resolver.falseApplies)}, подмен слов ${String(resolver.rewrittenText)}.\n`,
+    );
+
+    continue;
+  }
+
+  // Отчёт зачли, а прочитать не смогли — сказать об этом надо: молчание
+  // здесь читалось бы как «числа сошлись».
+  process.stdout.write(`Зачтён прогон ${name}, но прочитать его не удалось.\n`);
 }
 
 if (verdict.unmeasured.length > 0) {

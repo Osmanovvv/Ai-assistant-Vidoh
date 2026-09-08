@@ -252,13 +252,28 @@ export async function activateVersion(
     return { ok: false, refused: freshness };
   }
 
-  await activatePrompt(db, params.stage, params.version);
+  /**
+   * Включение и признание — **одной транзакцией** (ревизия этапа).
+   *
+   * Прежде это были три независимых запроса, и порядок был обратным
+   * нужному: сперва включаем, потом дописываем «включена без прогона».
+   * Сбой между ними давал худшее из состояний — версия работает на
+   * живых людях, признания в примечании нет, а человеку в панель
+   * уходит «не вышло» (`res.status(400)`), потому что промис отказал.
+   * То есть промпт включён, все считают, что нет, и следа тоже нет.
+   *
+   * Транзакция снимает вопрос порядка: либо и включение, и признание,
+   * либо ни того ни другого.
+   */
+  await db.transaction(async (tx) => {
+    await activatePrompt(tx, params.stage, params.version);
 
-  if (!freshness.ok) {
+    if (freshness.ok) return;
+
     const at = (params.now ?? new Date()).toISOString().slice(0, 10);
     const mark = `включена ${at} без прогона набора: ${params.by}`;
 
-    const [row] = await db
+    const [row] = await tx
       .select({ note: promptVersions.note })
       .from(promptVersions)
       .where(
@@ -269,19 +284,19 @@ export async function activateVersion(
     // Откатились и включили обратно тем же днём — пометка та же, и
     // дописывать её второй раз незачем: примечание должно оставаться
     // читаемым, иначе его перестанут читать.
-    if (row?.note?.includes(mark) !== true) {
-      await db
-        .update(promptVersions)
-        .set({
-          note: [row?.note, mark]
-            .filter((one) => one !== null && one !== undefined && one !== '')
-            .join('; '),
-        })
-        .where(
-          and(eq(promptVersions.stage, params.stage), eq(promptVersions.version, params.version)),
-        );
-    }
-  }
+    if (row?.note?.includes(mark) === true) return;
+
+    await tx
+      .update(promptVersions)
+      .set({
+        note: [row?.note, mark]
+          .filter((one) => one !== null && one !== undefined && one !== '')
+          .join('; '),
+      })
+      .where(
+        and(eq(promptVersions.stage, params.stage), eq(promptVersions.version, params.version)),
+      );
+  });
 
   return { ok: true, freshness };
 }
