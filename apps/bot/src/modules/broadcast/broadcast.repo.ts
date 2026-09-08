@@ -1,4 +1,4 @@
-import { and, count, desc, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 
 import {
   broadcastDeliveries,
@@ -220,6 +220,17 @@ export async function stopRequested(db: Executor, id: string): Promise<boolean> 
 
 export interface BroadcastCounts {
   readonly pending: number;
+  /**
+   * Взятые, но ещё не отмеченные (ревизия четвёртого этапа).
+   *
+   * **Прежде эти строки не попадали ни в одну колонку** — только в
+   * `total`. Воркер, умерший между взятием и отметкой, оставлял строку в
+   * `sending`, счёт видел «неотправленных ноль», и рассылка объявлялась
+   * «разослана». Человек не получал письма, и узнать об этом было
+   * неоткуда: перезахват возможен лишь через пять минут, а заход к тому
+   * времени уже закрыт.
+   */
+  readonly sending: number;
   readonly sent: number;
   readonly skipped: number;
   readonly failed: number;
@@ -238,6 +249,7 @@ export async function countsOf(db: Executor, id: string): Promise<BroadcastCount
 
   return {
     pending: pick('pending'),
+    sending: pick('sending'),
     sent: pick('sent'),
     skipped: pick('skipped'),
     failed: pick('failed'),
@@ -413,19 +425,20 @@ export async function listBroadcasts(
   return out;
 }
 
-/** Неудачные отправки одной рассылки — для журнала ошибок. */
-export async function failedOf(
-  db: Executor,
-  id: string,
-  howMany = 50,
-): Promise<readonly BroadcastDelivery[]> {
-  return await db
-    .select()
-    .from(broadcastDeliveries)
-    .where(and(eq(broadcastDeliveries.broadcastId, id), eq(broadcastDeliveries.status, 'failed')))
-    .orderBy(desc(broadcastDeliveries.at))
-    .limit(howMany);
-}
+/*
+  `failedOf` убрана ревизией четвёртого этапа.
+
+  Её комментарий обещал «неудачные отправки одной рассылки — для журнала
+  ошибок», а вызывающих у неё не было ни одного, включая тесты. Журнал
+  ошибок обращается к строкам доставки сам и без разреза по рассылке.
+  Функция, которую никто не звал, хранила ещё и устаревшее знание: про
+  состояние `sending` она не знала.
+
+  Написанное и никем не вызванное — не «задел на будущее», а третье
+  место, где живёт правда про доставку. Понадобится разрез по рассылке —
+  он появится вместе со своим читателем и своей проверкой. Связку теперь
+  стережёт `exports.test.ts`.
+*/
 
 /**
  * Вернуть неудачные в очередь — «повторный запуск» из §15.
@@ -434,21 +447,90 @@ export async function failedOf(
  * человек заблокировал бота, и повтор — это ещё один запрос из общего
  * лимита за тем же самым 403.
  */
-export async function retryFailed(db: Executor, id: string): Promise<number> {
+export async function retryFailed(
+  db: Executor,
+  id: string,
+): Promise<{ readonly ok: boolean; readonly back: number; readonly why?: string }> {
+  /**
+   * **Повторять можно только законченную рассылку** (ревизия этапа 4).
+   *
+   * Прежде второй запрос шёл `where(eq(broadcasts.id, id))` — без условия
+   * на состояние — и ставил `status: 'running', stopRequestedAt: null`.
+   * То есть кнопка «Повторить неудачные» **снимала просьбу
+   * остановиться**: у остановленной рассылки в `pending` оставались все
+   * недосланные, и воркер досылал их всех. Человек нажимал «Остановить»,
+   * потом «Повторить неудачные» у трёх адресов — и письмо уходило
+   * восьмистам.
+   *
+   * Условие на статус стоит **в самом запросе**, а не в проверке перед
+   * ним: между чтением и записью успевает вклиниться воркер, и «сначала
+   * посмотрели, потом обновили» здесь означало бы ту же рассылку всем.
+   */
+  const raised = await db
+    .update(broadcasts)
+    .set({ status: 'running', stopRequestedAt: null, finishedAt: null })
+    .where(
+      and(
+        eq(broadcasts.id, id),
+        inArray(broadcasts.status, ['done', 'failed']),
+        isNull(broadcasts.stopRequestedAt),
+      ),
+    )
+    .returning({ id: broadcasts.id });
+
+  if (raised.length === 0) {
+    return { ok: false, back: 0, why: 'повторять можно только законченную рассылку' };
+  }
+
   const back = await db
     .update(broadcastDeliveries)
     .set({ status: 'pending', error: null, at: null })
     .where(and(eq(broadcastDeliveries.broadcastId, id), eq(broadcastDeliveries.status, 'failed')))
     .returning({ id: broadcastDeliveries.id });
 
-  if (back.length > 0) {
+  if (back.length === 0) {
+    /**
+     * Повторять оказалось нечего — возвращаем состояние как было.
+     *
+     * Иначе законченная рассылка осталась бы «идущей» навсегда: заход
+     * закрывает её только по пустому `pending`, а он и был пуст.
+     */
     await db
       .update(broadcasts)
-      .set({ status: 'running', stopRequestedAt: null, finishedAt: null })
+      .set({ status: 'done', finishedAt: new Date() })
       .where(eq(broadcasts.id, id));
+
+    return { ok: false, back: 0, why: 'неудачных писем нет' };
   }
 
-  return back.length;
+  return { ok: true, back: back.length };
+}
+
+/**
+ * Привести намерение остановиться в состояние — при старте бота.
+ *
+ * **Найдено ревизией четвёртого этапа: тупик, из которого не было
+ * выхода.** Просьбу остановиться исполняет воркер, а метку ставит
+ * панель. Умри воркер между этими двумя (выкладка посреди рассылки —
+ * штатное дело), и рассылка остаётся `running` с непустой меткой:
+ *  - подхват при старте её пропускает (он берёт только `running` без
+ *    метки);
+ *  - «Остановить» в панели заблокировано — метка уже стоит;
+ *  - «Продолжить» не показывается — статус не `stopped`;
+ *  - «Повторить неудачные» — только при неудачных.
+ *
+ * Панель показывала «останавливаю» навсегда. Теперь намерение
+ * исполняется при старте: рассылка становится остановленной, и кнопка
+ * «Продолжить» работает.
+ */
+export async function settleStopRequests(db: Executor): Promise<readonly string[]> {
+  const settled = await db
+    .update(broadcasts)
+    .set({ status: 'stopped', finishedAt: new Date() })
+    .where(and(eq(broadcasts.status, 'running'), isNotNull(broadcasts.stopRequestedAt)))
+    .returning({ id: broadcasts.id });
+
+  return settled.map((row) => row.id);
 }
 
 /**

@@ -1,6 +1,13 @@
 import { and, count, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 
-import { aiCalls, batches, billingInvoices, broadcastDeliveries, users } from '../../db/schema.js';
+import {
+  aiCalls,
+  batches,
+  billingInvoices,
+  broadcastDeliveries,
+  reminders,
+  users,
+} from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 
 /**
@@ -94,16 +101,44 @@ export interface FailedSend {
   readonly at: string | null;
 }
 
+/**
+ * Сорвавшееся напоминание (§18, ревизия четвёртого этапа).
+ *
+ * Пятый источник сбоев, которого в журнале не было вовсе, и о его
+ * отсутствии не было сказано словами. Напоминание, исчерпавшее попытки,
+ * помечается `skipped_reason = 'failed'`, и эту колонку читал только сам
+ * планировщик: человек не получил утреннего письма, а в панели — тишина.
+ */
+export interface FailedReminder {
+  readonly id: string;
+  readonly userId: string;
+  readonly firstName: string | null;
+  readonly tgId: number | null;
+  /** Какое именно: утреннее, вечернее, по делу. */
+  readonly kind: string;
+  readonly at: string | null;
+}
+
 export interface ErrorsView {
   readonly days: number;
   readonly batches: readonly FailedBatch[];
   readonly calls: readonly FailedCall[];
   readonly sends: readonly FailedSend[];
   readonly payments: readonly FailedPayment[];
+  readonly reminders: readonly FailedReminder[];
   /** Всего сорвавшихся выгрузок за период — список ограничен. */
   readonly batchesTotal: number;
   readonly callsTotal: number;
   readonly paymentsTotal: number;
+  /**
+   * Всего не дошедших писем рассылки за период.
+   *
+   * Ревизия этапа: список был обрезан пятьюдесятью **без итога** и не
+   * подчинялся выбранному периоду — пятьдесят строк читались как полный
+   * список, а строка месячной давности была видна при выборе «сутки».
+   */
+  readonly sendsTotal: number;
+  readonly remindersTotal: number;
   /** Чего в журнале нарочно нет — словами, а не пустыми колонками. */
   readonly missing: readonly string[];
 }
@@ -173,9 +208,62 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       at: broadcastDeliveries.at,
     })
     .from(broadcastDeliveries)
-    .where(and(eq(broadcastDeliveries.status, 'failed'), isNotNull(broadcastDeliveries.at)))
+    /**
+     * Период — как у трёх соседних источников (ревизия этапа 4).
+     *
+     * Прежде границы не было вовсе: при выборе «сутки» в списке стояли
+     * письма месячной давности, а пятьдесят строк без итога читались как
+     * полный список. Три соседних источника фильтруются по периоду и
+     * печатают своё число — этот один молчал.
+     */
+    .where(
+      and(
+        eq(broadcastDeliveries.status, 'failed'),
+        isNotNull(broadcastDeliveries.at),
+        gte(broadcastDeliveries.at, from),
+      ),
+    )
     .orderBy(desc(broadcastDeliveries.at))
     .limit(LIMIT);
+
+  const [sendsCount] = await db
+    .select({ total: count() })
+    .from(broadcastDeliveries)
+    .where(
+      and(
+        eq(broadcastDeliveries.status, 'failed'),
+        isNotNull(broadcastDeliveries.at),
+        gte(broadcastDeliveries.at, from),
+      ),
+    );
+
+  /**
+   * Сорвавшиеся напоминания — пятый источник (§18, ревизия этапа 4).
+   *
+   * Прежде их не было в журнале вовсе, и о их отсутствии не было сказано
+   * словами. Напоминание, исчерпавшее попытки, помечается
+   * `skipped_reason = 'failed'` — колонку читал только планировщик.
+   * Человек не получал утреннего письма, а панель молчала.
+   */
+  const failedReminders = await db
+    .select({
+      id: reminders.id,
+      userId: reminders.userId,
+      firstName: users.firstName,
+      tgId: users.tgId,
+      kind: reminders.kind,
+      at: reminders.dueAt,
+    })
+    .from(reminders)
+    .leftJoin(users, eq(users.id, reminders.userId))
+    .where(and(eq(reminders.skippedReason, 'failed'), gte(reminders.dueAt, from)))
+    .orderBy(desc(reminders.dueAt))
+    .limit(LIMIT);
+
+  const [remindersCount] = await db
+    .select({ total: count() })
+    .from(reminders)
+    .where(and(eq(reminders.skippedReason, 'failed'), gte(reminders.dueAt, from)));
 
   /**
    * Неудачные платежи за период (задача 4.2).
@@ -260,13 +348,24 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       errorText: row.errorText,
       at: row.at.toISOString(),
     })),
+    reminders: failedReminders.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      firstName: row.firstName,
+      tgId: row.tgId,
+      kind: row.kind,
+      at: row.at.toISOString(),
+    })),
     batchesTotal: batchesCount?.total ?? 0,
     callsTotal: callsCount?.total ?? 0,
     paymentsTotal: paymentsCount?.total ?? 0,
+    sendsTotal: sendsCount?.total ?? 0,
+    remindersTotal: remindersCount?.total ?? 0,
     missing: [
       'Текстов расшифровок здесь нет нарочно: сказанное человеком — в его карточке, где доступ к нему журналируется (§16).',
       'Повторный запуск есть у выгрузок и у рассылки. Отдельный вызов модели повторить нельзя: он часть разбора, а не сам по себе.',
       'У неудачных платежей повтора нет и не будет: повторить списание — значит взять деньги второй раз. Недоплата и возврат разбираются руками, через обращение человека.',
+      'У сорвавшихся напоминаний повтора нет: время прошло, и вечернее письмо, присланное на следующий день, — не то напоминание, о котором просили. Планировщик поставит следующее в свой срок.',
     ],
   };
 }

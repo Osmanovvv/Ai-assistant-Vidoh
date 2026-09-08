@@ -35,7 +35,21 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
      */
     await signIn(page, 'Ошибки');
 
-    await expect(page.getByTestId('errors')).toBeVisible();
+    /**
+     * **Утверждение привязано к видимой строке** — правка ревизии
+     * четвёртого этапа.
+     *
+     * Прежде проверка читала весь раздел на отсутствие текста. Сорвавшийся
+     * разбор на стенде ровно один, и соседняя проверка перезапуска его
+     * съедает: на втором прогоне против того же стенда список пуст, и
+     * «текстов расшифровок нет» становится утверждением о пустоте. То
+     * есть проверка §16 переставала проверять §16, оставаясь зелёной.
+     */
+    const failed = page.locator('[data-testid^="failed-batch-"]').first();
+
+    await expect(failed).toBeVisible();
+    await expect(failed).toContainText('Оля');
+    await expect(failed).not.toContainText('корм коту');
     await expect(page.getByTestId('errors')).not.toContainText('корм коту');
 
     // И об этом сказано словами, а не оставлено на догадку.

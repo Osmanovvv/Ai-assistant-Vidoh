@@ -322,7 +322,16 @@ function Row({
       <td className="таблица__число">{row.counts.sent}</td>
       <td className="таблица__число">{row.counts.skipped}</td>
       <td className="таблица__число">{row.counts.failed}</td>
-      <td className="таблица__число">{row.counts.pending}</td>
+      {/*
+        «Осталось» считает и взятые строки — правка ревизии этапа.
+
+        Строка, взятая воркером и не дошедшая до отметки, лежит отдельно
+        и прежде не попадала ни в одну колонку: панель показывала
+        «осталось ноль» у рассылки, которая ещё не дошла до всех.
+      */}
+      <td className="таблица__число" data-testid={`broadcast-left-${row.id}`}>
+        {row.counts.pending + row.counts.sending}
+      </td>
       <td>
         {row.status === 'running' && (
           <button
@@ -337,7 +346,7 @@ function Row({
             {stopping ? 'Останавливаю…' : 'Остановить'}
           </button>
         )}{' '}
-        {row.status === 'stopped' && row.counts.pending > 0 && (
+        {row.status === 'stopped' && row.counts.pending + row.counts.sending > 0 && (
           <button
             type="button"
             className="период__кнопка"
@@ -349,7 +358,20 @@ function Row({
             Продолжить
           </button>
         )}{' '}
-        {row.counts.failed > 0 && (
+        {/*
+                      Кнопка только у **законченной** рассылки — правка
+                      ревизии четвёртого этапа.
+
+                      Прежде она рисовалась по одному признаку «есть
+                      неудачные», без оглядки на состояние, и у
+                      остановленной рассылки была активна. Нажатие
+                      снимало просьбу остановиться и досылало **всех**
+                      оставшихся: человек нажимал «Остановить», потом
+                      «Повторить неудачные» у трёх адресов — и письмо
+                      уходило восьмистам. Отказ теперь и на сервере, но
+                      кнопка, которая отказывает, учит не верить панели.
+                    */}
+        {row.counts.failed > 0 && (row.status === 'done' || row.status === 'failed') && (
           <button
             type="button"
             className="период__кнопка"

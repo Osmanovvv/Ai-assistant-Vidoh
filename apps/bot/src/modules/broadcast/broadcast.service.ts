@@ -5,6 +5,7 @@ import type { Executor } from '../../infra/db.js';
 import { isBlockedError } from '../users/blocked.js';
 import { markBlocked } from '../users/users.repo.js';
 import {
+  LEASE_MS,
   broadcastById,
   claimDelivery,
   countsOf,
@@ -88,10 +89,24 @@ export interface BroadcastStep {
   readonly sent: number;
   readonly skipped: number;
   readonly failed: number;
-  /** Осталось неотправленных. Ноль — рассылка кончилась. */
+  /**
+   * Осталось незаконченных: неотправленные **и взятые**. Ноль — конец.
+   *
+   * Взятые считаются с ревизии четвёртого этапа: строка, взятая и не
+   * дошедшая до отметки, в `pending` не попадает, и рассылка
+   * объявлялась «разослана», хотя человек письма не получил.
+   */
   readonly left: number;
   /** Надо ли заходить снова. */
   readonly more: boolean;
+  /**
+   * Через сколько заходить снова, если раньше нет смысла.
+   *
+   * Пусто — «можно сразу». Стоит там, где остались только взятые
+   * строки: перезахватить их получится лишь по истечении срока взятия,
+   * и заход раньше вернул бы пустую порцию.
+   */
+  readonly afterMs?: number | undefined;
   /** Встала по кнопке. */
   readonly stopped: boolean;
 }
@@ -174,7 +189,14 @@ export async function sendChunk(deps: BroadcastDeps, broadcastId: string): Promi
       await finishBroadcast(deps.db, broadcastId, 'stopped');
       const counts = await countsOf(deps.db, broadcastId);
 
-      return { sent, skipped, failed, left: counts.pending, more: false, stopped: true };
+      return {
+        sent,
+        skipped,
+        failed,
+        left: counts.pending + counts.sending,
+        more: false,
+        stopped: true,
+      };
     }
 
     // Выдержка темпа: интервал считается от **начала** прошлой отправки.
@@ -225,7 +247,14 @@ export async function sendChunk(deps: BroadcastDeps, broadcastId: string): Promi
 
         const counts = await countsOf(deps.db, broadcastId);
 
-        return { sent, skipped, failed, left: counts.pending, more: true, stopped: false };
+        return {
+          sent,
+          skipped,
+          failed,
+          left: counts.pending + counts.sending,
+          more: true,
+          stopped: false,
+        };
       }
 
       if (isBlockedError(error)) {
@@ -247,7 +276,22 @@ export async function sendChunk(deps: BroadcastDeps, broadcastId: string): Promi
 
   const counts = await countsOf(deps.db, broadcastId);
 
-  if (counts.pending === 0) {
+  /**
+   * **Взятая строка держит рассылку открытой** (ревизия четвёртого этапа).
+   *
+   * Прежде решение принималось по одному `pending`, а строка, взятая и
+   * не дошедшая до отметки (воркер умер между взятием и отправкой —
+   * выкладка посреди рассылки штатна), лежит в `sending` и в `pending`
+   * не считается. Рассылка объявлялась «разослана», человек письма не
+   * получал, и узнать об этом было неоткуда: перезахват возможен лишь
+   * через пять минут, а заход к тому времени уже закрыт.
+   *
+   * Теперь такая строка удерживает заход: `more: true`, и следующий
+   * заход её перезахватит, когда истечёт срок взятия.
+   */
+  const left = counts.pending + counts.sending;
+
+  if (left === 0) {
     await finishBroadcast(deps.db, broadcastId, 'done');
   }
 
@@ -255,8 +299,16 @@ export async function sendChunk(deps: BroadcastDeps, broadcastId: string): Promi
     sent,
     skipped,
     failed,
-    left: counts.pending,
-    more: counts.pending > 0,
+    left,
+    more: left > 0,
+    /**
+     * Сколько ждать до следующего захода.
+     *
+     * Пусто — «можно сразу»: есть неотправленные. Иначе остались только
+     * взятые строки, и брать их снова раньше срока бессмысленно —
+     * `nextPending` их не отдаст.
+     */
+    ...(counts.pending === 0 && counts.sending > 0 ? { afterMs: LEASE_MS } : {}),
     stopped: false,
   };
 }

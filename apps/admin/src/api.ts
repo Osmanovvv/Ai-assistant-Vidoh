@@ -484,6 +484,14 @@ export function runEval(params: {
 
 export interface BroadcastCounts {
   readonly pending: number;
+  /**
+   * Взятые, но ещё не отмеченные.
+   *
+   * Прежде эти строки не попадали ни в одну колонку: воркер, умерший
+   * между взятием и отправкой, оставлял строку в этом состоянии, счёт
+   * видел «неотправленных ноль», и рассылка объявлялась разосланной.
+   */
+  readonly sending: number;
   readonly sent: number;
   readonly skipped: number;
   readonly failed: number;
@@ -602,15 +610,29 @@ export interface FailedPayment {
   readonly at: string;
 }
 
+/** Сорвавшееся напоминание (§18): человек не получил письма. */
+export interface FailedReminder {
+  readonly id: string;
+  readonly userId: string;
+  readonly firstName: string | null;
+  readonly tgId: number | null;
+  readonly kind: string;
+  readonly at: string | null;
+}
+
 export interface ErrorsPage {
   readonly days: number;
   readonly batches: readonly FailedBatch[];
   readonly calls: readonly FailedCall[];
   readonly sends: readonly FailedSend[];
   readonly payments: readonly FailedPayment[];
+  readonly reminders: readonly FailedReminder[];
   readonly batchesTotal: number;
   readonly callsTotal: number;
   readonly paymentsTotal: number;
+  /** Всего не дошедших писем за период: список обрезан пятьюдесятью. */
+  readonly sendsTotal: number;
+  readonly remindersTotal: number;
   readonly missing: readonly string[];
 }
 

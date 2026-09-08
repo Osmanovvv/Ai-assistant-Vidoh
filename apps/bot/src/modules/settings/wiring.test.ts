@@ -89,8 +89,6 @@ describe('у каждой настройки есть читатель на жи
     const dead: string[] = [];
 
     for (const collector of new Set(Object.values(THROUGH))) {
-      if (collector === undefined) continue;
-
       const callers = sources.filter((one) => one.text.includes(`${collector}(`));
 
       if (callers.length === 0) dead.push(collector);
