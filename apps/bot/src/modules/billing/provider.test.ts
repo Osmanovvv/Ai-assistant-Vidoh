@@ -118,12 +118,34 @@ describe('интерфейс провайдера оплаты', () => {
     expect(oneOff.promisesRenewal).toBe(false);
   });
 
-  it('годовой тариф не обещает продления там, где его не бывает', async () => {
-    // Тридцатидневная подписка — единственная, какую разрешает Bot API,
-    // поэтому годовой у звёзд возможен только разовым платежом.
-    const yearly = await offerPayment(new MockPaymentProvider(), { ...asked, plan: 'yearly' });
+  it('продление обещает провайдер, а не наша догадка про тариф', async () => {
+    /**
+     * **Переписано ревизией четвёртого этапа.** Прежде проверка
+     * называлась «годовой тариф не обещает продления там, где его не
+     * бывает» и держалась на догадке **заглушки**: та отвечала
+     * `plan === 'monthly'`. Настоящие провайдеры так не отвечают — у
+     * звёзд годовой не продлевается вовсе, у Робокассы даже месячный
+     * работает лишь после согласования, — то есть проверка измеряла
+     * заглушку и не могла покраснеть ни от какой правки продукта.
+     *
+     * Проверяется то, что и должно: обещание продления приходит **от
+     * провайдера**. Кто продлевает и на каком тарифе — знание рельса, и
+     * у каждого рельса оно своё, проверенное своим набором.
+     */
+    const promises = await offerPayment(new MockPaymentProvider({ autoRenews: true }), asked);
+    const doesNot = await offerPayment(new MockPaymentProvider({ autoRenews: false }), asked);
 
-    expect(yearly.promisesRenewal).toBe(false);
+    expect(promises.promisesRenewal).toBe(true);
+    expect(doesNot.promisesRenewal).toBe(false);
+
+    // И разовый счёт не обещает продления даже у того, кто умеет: так
+    // уходит промо-счёт на любом рельсе.
+    const oneOff = await offerPayment(new MockPaymentProvider({ autoRenews: true }), {
+      ...asked,
+      renewable: false,
+    });
+
+    expect(oneOff.promisesRenewal).toBe(false);
   });
 
   it('счёт получает ровно то, что ему передали', async () => {

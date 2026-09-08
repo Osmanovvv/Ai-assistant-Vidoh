@@ -8,7 +8,7 @@ import {
   type BroadcastDelivery,
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { trialOverSql } from '../billing/subscription.service.js';
+import { paysNowSql, trialOverSql } from '../billing/subscription.service.js';
 
 /**
  * Рассылка: кому, что и чем кончилось (§15 ТЗ, задача 4.10).
@@ -87,7 +87,12 @@ export function isSegment(value: unknown): value is Segment {
 /** Кому уйдёт: незаблокированные, попадающие в сегмент. */
 export async function recipientsOf(
   db: Executor,
-  params: { readonly segment: Segment; readonly trialLimit: number },
+  params: {
+    readonly segment: Segment;
+    readonly trialLimit: number;
+    /** Момент, на который смотрим «платит ли»: в проверках он свой. */
+    readonly now?: Date | undefined;
+  },
 ): Promise<readonly { readonly userId: string; readonly tgId: number }[]> {
   const rows = await db
     .select({ userId: users.id, tgId: users.tgId })
@@ -104,7 +109,7 @@ export async function recipientsOf(
          * ближе к 429.
          */
         eq(users.isBlocked, false),
-        segmentWhere(params),
+        segmentWhere({ ...params, now: params.now ?? new Date() }),
       ),
     )
     .orderBy(users.createdAt, users.id);
@@ -126,14 +131,30 @@ export async function recipientsOf(
 function segmentWhere(params: {
   readonly segment: Segment;
   readonly trialLimit: number;
+  readonly now: Date;
 }): ReturnType<typeof sql> | undefined {
+  /**
+   * **Платящие в сегментах пробного периода не участвуют** (ревизия 4).
+   *
+   * Сегмент «у кого пробный период кончился» — это письмо «пробные
+   * разборы закончились, вот тарифы». Оно уходило и тому, кто **уже
+   * платит**: пробные выгрузки он потратил до подписки, а условие
+   * смотрело только на них. Человек, заплативший неделю назад, получал
+   * приглашение заплатить — и это ровно то письмо, после которого просят
+   * вернуть деньги.
+   *
+   * Симметрично в «пробный ещё идёт»: платящий пробный не тратит вовсе,
+   * и приглашать его «попробовать» незачем.
+   */
+  const pays = paysNowSql(users.id, params.now);
+
   switch (params.segment) {
     case 'all':
       return undefined;
     case 'trialLeft':
-      return sql`not ${trialOverSql(users.id, params.trialLimit)}`;
+      return sql`not ${trialOverSql(users.id, params.trialLimit)} and not ${pays}`;
     case 'trialSpent':
-      return trialOverSql(users.id, params.trialLimit);
+      return sql`${trialOverSql(users.id, params.trialLimit)} and not ${pays}`;
   }
 }
 
