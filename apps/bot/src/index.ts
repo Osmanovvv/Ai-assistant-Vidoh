@@ -22,7 +22,11 @@ import {
 } from './modules/broadcast/broadcast.repo.js';
 import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
 import { newestRun } from './eval/freshness.js';
-import { createPromoConsumer, registerBillingHandlers } from './bot/handlers/billing.js';
+import {
+  createPromoConsumer,
+  registerBillingHandlers,
+  registerPaySupportCommands,
+} from './bot/handlers/billing.js';
 import { createBillingRouter } from './http/billing.js';
 import { createRobokassaProvider } from './modules/billing/providers/robokassa.js';
 import { createStarsProvider } from './modules/billing/providers/stars.js';
@@ -583,6 +587,16 @@ async function main(): Promise<void> {
    */
   registerBillingHandlers(bot, { db, settings, logger, providers });
 
+  /**
+   * Команды `/paysupport`, `/terms` и `/support` — **после** приёма.
+   *
+   * Ревизия четвёртого этапа: они жили вместе с оплатой, а оплата
+   * регистрируется до приёма сообщений. Обращение человека по
+   * `/paysupport` из-за этого не попадало в базу вовсе — ответ уходил, а
+   * сообщения не оставалось. Регистрация вынесена ниже, к остальным
+   * командам: сперва сохраняем, потом отвечаем (инвариант 1).
+   */
+
   // Порядок важен: приём и сохранение идут до любых обработчиков.
   bot.use(
     incomingMiddleware({
@@ -633,6 +647,34 @@ async function main(): Promise<void> {
   registerMembershipHandlers(bot, db, logger);
   registerOnboardingHandlers(bot, db, logger, topicGateway, settings);
   registerMenuHandlers(bot, db, logger);
+
+  // Команды платёжной платформы — после приёма: сперва сохраняем
+  // обращение человека, потом отвечаем (ревизия четвёртого этапа).
+  registerPaySupportCommands(bot, {
+    db,
+    settings,
+    logger,
+    providers,
+    /**
+     * Обращение по оплате уходит оповещением (ревизия четвёртого этапа).
+     *
+     * Возврат денег делается руками и начинается с этого обращения. Без
+     * оповещения оно доходило только до базы — то есть до никого:
+     * реплика обещает «разберёмся и вернём деньги», а узнать о просьбе
+     * было неоткуда.
+     */
+    onSupport: async (who) => {
+      await monitor.alert({
+        key: `paysupport:${String(who.tgId)}`,
+        title: 'Обращение по оплате',
+        details: {
+          телеграм: who.tgId,
+          ...(who.userId === undefined ? {} : { человек: who.userId }),
+          где: 'карточка человека в панели: там его слова и его платежи',
+        },
+      });
+    },
+  });
   registerCardHandlers(bot, { db, logger, topics: topicGateway }, MENU_ACTION.root);
 
   // §7.3: откат любого автоматического решения — за один тап, и

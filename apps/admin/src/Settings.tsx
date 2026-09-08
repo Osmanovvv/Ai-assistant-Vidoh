@@ -367,10 +367,25 @@ function PromoBlock(): React.ReactElement {
                     {row.redeemed}
                     {row.maxRedemptions === null ? '' : ` из ${String(row.maxRedemptions)}`}
                   </td>
-                  <td className="таблица__число">
-                    {row.currency === 'XTR'
-                      ? `${String(row.discountMinor)} ⭐`
-                      : `${(row.discountMinor / 100).toFixed(2)} ₽`}
+                  {/*
+                    Недополученное — **по каждой валюте** (ревизия этапа).
+
+                    Прежде показывалась одна величина, рублёвая, а «Оплат»
+                    рядом считались по обеим: «2 применения, недополучено
+                    300 ₽», хотя второе было за звёзды и звёздная скидка
+                    нигде не появлялась. Складывать нельзя — курс звезды
+                    задаёт Telegram, — поэтому обе величины рядом.
+                  */}
+                  <td className="таблица__число" data-testid={`promo-lost-${row.code}`}>
+                    {row.discounts.length === 0
+                      ? '—'
+                      : row.discounts
+                          .map((one) =>
+                            one.currency === 'XTR'
+                              ? `${String(one.minor)} ⭐`
+                              : `${(one.minor / 100).toFixed(2)} ₽`,
+                          )
+                          .join(' · ')}
                   </td>
                   <td className="панель__кто">{row.note ?? ''}</td>
                   <td>

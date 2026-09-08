@@ -673,6 +673,13 @@ export interface PromoRow {
   readonly disabledAt: string | null;
   readonly redeemed: number;
   readonly discountMinor: number;
+  /**
+   * Недополученное по каждой валюте.
+   *
+   * Прежде отдавалась одна величина — рублёвая, — а «Оплат» рядом
+   * считались по обеим: панель показывала часть как целое.
+   */
+  readonly discounts: readonly { readonly currency: string; readonly minor: number }[];
   readonly currency: string;
 }
 

@@ -388,6 +388,68 @@ function everyRow(): { where: string; labels: string[] }[] {
     ]),
   );
 
+  /**
+   * **Экран подписки — правка ревизии четвёртого этапа.**
+   *
+   * Его строк здесь не было вовсе, и подпись промо-кнопки оказалась шире
+   * правила проекта: на телефоне она обрезается, а человек читает её,
+   * держа палец над кнопкой оплаты. Худший случай цены берётся нарочно:
+   * у длинных чисел подпись длиннее.
+   */
+  const worstPrice = '4 788.00 ₽';
+  const worstStars = '2 500 ⭐';
+
+  fromKeyboard(
+    'billing:plans',
+    fitKeyboard([
+      [
+        {
+          label: `${texts.billing.planButton(texts.billing.yearly, worstPrice)} · ${texts.billing.payByCard}`,
+          action: 'pay:b:r:yearly',
+        },
+      ],
+      [
+        {
+          label: `${texts.billing.planButton(texts.billing.yearly, worstStars)} · ${texts.billing.payByStars}`,
+          action: 'pay:b:s:yearly',
+        },
+      ],
+    ]),
+  );
+
+  fromKeyboard(
+    'billing:promo',
+    fitKeyboard([[{ label: texts.billing.buttonPromo, action: 'pay:promo' }]]),
+  );
+
+  fromKeyboard(
+    'billing:promoOffers',
+    fitKeyboard([
+      [
+        {
+          label: `${texts.billing.promoButton(texts.billing.yearly, worstPrice)} · ${texts.billing.payByCard}`,
+          action: 'pay:p:r:yearly:BLOGGER7',
+        },
+      ],
+      [
+        {
+          label: `${texts.billing.promoButton(texts.billing.yearly, worstStars)} · ${texts.billing.payByStars}`,
+          action: 'pay:p:s:yearly:BLOGGER7',
+        },
+      ],
+    ]),
+  );
+
+  fromKeyboard(
+    'billing:cancel',
+    fitKeyboard([[{ label: texts.billing.buttonCancel, action: 'pay:stop' }]]),
+  );
+
+  fromKeyboard(
+    'billing:pay',
+    fitKeyboard([[{ label: texts.billing.buttonPay, action: 'pay:open' }]]),
+  );
+
   return found;
 }
 
