@@ -5,6 +5,7 @@ import {
   batches,
   billingInvoices,
   broadcastDeliveries,
+  broadcasts,
   reminders,
   users,
 } from '../../db/schema.js';
@@ -59,7 +60,22 @@ export interface FailedCall {
   readonly error: string | null;
   readonly latencyMs: number;
   readonly at: string;
-  readonly batchId: string | null;
+  /**
+   * У кого сорвался вызов (ревизия панели).
+   *
+   * Жалоба приходит от конкретного человека и в конкретное время, а
+   * строка вызова не называла ни того, ни другого: связать «classifier
+   * упал в 9:15» с человеком было нечем, хотя `user_id` у вызова лежит
+   * и уже читается в разрезах расходов. У соседней таблицы сорвавшихся
+   * разборов «У кого» есть с самого начала.
+   *
+   * Имя, а не идентификатор выгрузки: `batch_id` прежде довозился сюда
+   * двумя слоями типов и не рисовался нигде — показывать в панели голый
+   * UUID некуда, потому что ни в одной таблице его нет, а выгрузка
+   * сорвавшегося вызова часто и не сорвана (её переподхватили). Имя
+   * ведёт к карточке человека, где выгрузки видны.
+   */
+  readonly who: string;
   /** Заплатили ли за этот неудачный вызов. */
   readonly paid: boolean;
 }
@@ -93,13 +109,42 @@ export interface FailedPayment {
   readonly at: string;
 }
 
+/**
+ * Не дошедшее письмо рассылки.
+ *
+ * **Подпись под таблицей велела идти к «нужной рассылке», а сказать,
+ * какая это, было нечем** (ревизия панели). `broadcastId` приезжал сюда
+ * и не рисовался нигде: раздел «Рассылка» идентификаторов не печатает,
+ * так что сопоставлять приходилось по времени — при том что журнал
+ * смотрит до 366 дней, а список рассылок обрезан двадцатью. Поэтому
+ * рядом с письмом едут время рассылки и начало её текста: по ним строку
+ * из журнала видно в разделе рассылки глазами.
+ *
+ * Имя получателя — по той же причине: сырой телеграмный номер в панели
+ * не ищется (поиск в «Пользователях» идёт по имени и @имени).
+ */
 export interface FailedSend {
   readonly id: string;
   readonly broadcastId: string;
   readonly tgId: number;
+  readonly who: string;
+  readonly broadcastAt: string;
+  /** Начало текста рассылки — столько, чтобы отличить одну от другой. */
+  readonly broadcastText: string;
   readonly error: string | null;
   readonly at: string | null;
 }
+
+/**
+ * Сколько знаков текста рассылки едет в панель.
+ *
+ * Не весь текст: рассылка бывает до 4096 знаков, а строк в списке до
+ * пятидесяти — это двести килобайт в браузер ради одной колонки.
+ * Обрезка здесь, а не в вёрстке: чего не показываем, того и не
+ * отправляем (ревизия четвёртого этапа нашла обратное у телеграмных
+ * номеров — они уезжали в браузер и не рисовались нигде).
+ */
+const BROADCAST_HINT = 80;
 
 /**
  * Сорвавшееся напоминание (§18, ревизия четвёртого этапа).
@@ -114,7 +159,14 @@ export interface FailedReminder {
   readonly userId: string;
   readonly firstName: string | null;
   readonly tgId: number | null;
-  /** Какое именно: утреннее, вечернее, по делу. */
+  /**
+   * Какое именно — код `reminder_kind` из базы, пять значений: morning,
+   * evening, deadline_eve, deadline_day, project.
+   *
+   * Человеческие слова к ним подбирает панель: перечисление здесь
+   * обещало «утреннее, вечернее, по делу», то есть три значения из пяти
+   * и одно несуществующее — по такому обещанию в панели и печатался код.
+   */
   readonly kind: string;
   readonly at: string | null;
 }
@@ -143,7 +195,15 @@ export interface ErrorsView {
   readonly missing: readonly string[];
 }
 
-/** Сколько строк отдаём в списке. Больше человек всё равно не прочтёт. */
+/**
+ * Сколько строк отдаём в списке. Больше человек всё равно не прочтёт.
+ *
+ * Рядом с каждым списком идёт итог за период (`*Total`), и он здесь не
+ * для красоты: пятьдесят строк без итога читаются как полный список.
+ * В сбое, породившем сотни срывов, разбирающий решил бы, что перезапустил
+ * всех, а перезапустил последних пятьдесят — поэтому панель обязана
+ * сказать словами, сколько строк не показано.
+ */
 const LIMIT = 50;
 
 function since(days: number): Date {
@@ -186,10 +246,18 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       error: aiCalls.error,
       latencyMs: aiCalls.latencyMs,
       at: aiCalls.createdAt,
-      batchId: aiCalls.batchId,
+      firstName: users.firstName,
+      username: users.username,
+      tgId: users.tgId,
       costMicros: aiCalls.costMicros,
     })
     .from(aiCalls)
+    /**
+     * Имя берётся связью, как у выгрузок: `user_id` у вызова пусто у
+     * ушедшего человека (`on delete set null`), и тогда `nameOf` скажет
+     * «данные удалены» вместо пустой клетки.
+     */
+    .leftJoin(users, eq(users.id, aiCalls.userId))
     .where(and(eq(aiCalls.ok, false), gte(aiCalls.createdAt, from)))
     .orderBy(desc(aiCalls.createdAt))
     .limit(LIMIT);
@@ -206,8 +274,23 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       tgId: broadcastDeliveries.tgId,
       error: broadcastDeliveries.error,
       at: broadcastDeliveries.at,
+      firstName: users.firstName,
+      username: users.username,
+      broadcastAt: broadcasts.createdAt,
+      broadcastText: broadcasts.text,
     })
     .from(broadcastDeliveries)
+    /**
+     * Рассылка и человек — связью (ревизия панели).
+     *
+     * Без них строка не отвечала ни на «какая это рассылка», ни на «кто
+     * этот номер», а подпись под таблицей велела идти к «нужной
+     * рассылке». Связь по человеку внешняя, потому что имя может быть
+     * снято при удалении данных, — тогда `nameOf` возьмёт номер из
+     * самой строки доставки, а не оставит пустую клетку.
+     */
+    .innerJoin(broadcasts, eq(broadcasts.id, broadcastDeliveries.broadcastId))
+    .leftJoin(users, eq(users.id, broadcastDeliveries.userId))
     /**
      * Период — как у трёх соседних источников (ревизия этапа 4).
      *
@@ -266,6 +349,32 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
     .where(and(eq(reminders.skippedReason, 'failed'), gte(reminders.dueAt, from)));
 
   /**
+   * Время отказа, а не дата счёта (ревизия панели).
+   *
+   * Недоплата приходит уведомлением провайдера тогда, когда человек
+   * соберётся заплатить, а счёт заведён в момент нажатия кнопки и живёт
+   * до `expires_at`. Поэтому счёт трёхдневной давности, недоплаченный
+   * сегодня, при выборе «сутки» в журнал не попадал вовсе, а в колонке
+   * «Когда» стояла дата счёта — не время разбираемого события.
+   *
+   * `coalesce` — из-за счетов, помеченных неудачными до появления
+   * колонки: времени отказа у них нет, и фильтр по одному `failed_at`
+   * выкинул бы их из журнала совсем. У таких берётся дата счёта, то есть
+   * прежнее поведение. Выражение одно на всё — фильтр, порядок, число за
+   * период и колонка, — чтобы «Когда» не разошлось с отбором.
+   */
+  const refusedAt = sql`coalesce(${billingInvoices.failedAt}, ${billingInvoices.createdAt})`
+    /**
+     * Разбор значения — тот же, что у столбца со временем.
+     *
+     * Драйвер отдаёт время строкой, а в дату её превращает разбор
+     * столбца; у своего выражения столбца нет, и без `mapWith` в ответ
+     * ушла бы сырая строка Postgres вместо даты — то есть журнал
+     * платежей падал бы на каждой строке.
+     */
+    .mapWith(billingInvoices.createdAt);
+
+  /**
    * Неудачные платежи за период (задача 4.2).
    *
    * Человек берётся связью со счётом, а не по имени в счёте: имени там
@@ -287,18 +396,18 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       received: billingInvoices.outSumReceived,
       errorCode: billingInvoices.errorCode,
       errorText: billingInvoices.errorText,
-      at: billingInvoices.createdAt,
+      at: refusedAt,
     })
     .from(billingInvoices)
     .leftJoin(users, eq(users.id, billingInvoices.userId))
-    .where(and(eq(billingInvoices.status, 'failed'), gte(billingInvoices.createdAt, from)))
-    .orderBy(desc(billingInvoices.createdAt))
+    .where(and(eq(billingInvoices.status, 'failed'), gte(refusedAt, from)))
+    .orderBy(desc(refusedAt))
     .limit(LIMIT);
 
   const [paymentsCount] = await db
     .select({ total: count() })
     .from(billingInvoices)
-    .where(and(eq(billingInvoices.status, 'failed'), gte(billingInvoices.createdAt, from)));
+    .where(and(eq(billingInvoices.status, 'failed'), gte(refusedAt, from)));
 
   return {
     days,
@@ -321,7 +430,7 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       error: row.error,
       latencyMs: row.latencyMs,
       at: row.at.toISOString(),
-      batchId: row.batchId,
+      who: nameOf(row),
       // За неудачный вызов иногда всё равно платят: отправка состоялась,
       // а ответа мы не дождались (задача 3.82).
       paid: (row.costMicros ?? 0) > 0,
@@ -330,6 +439,11 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       id: row.id,
       broadcastId: row.broadcastId,
       tgId: row.tgId,
+      // Номер берётся из самой строки доставки: он там копией, и у
+      // человека с удалёнными данными это единственное, чем его назвать.
+      who: nameOf({ firstName: row.firstName, username: row.username, tgId: row.tgId }),
+      broadcastAt: row.broadcastAt.toISOString(),
+      broadcastText: row.broadcastText.slice(0, BROADCAST_HINT),
       error: row.error,
       at: row.at?.toISOString() ?? null,
     })),

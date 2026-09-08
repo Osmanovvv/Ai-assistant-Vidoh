@@ -14,6 +14,7 @@ import {
 import type { Executor } from '../../infra/db.js';
 import { activePayersCount } from '../billing/billing.repo.js';
 import { funnelOf, type Funnel } from './funnel.js';
+import { RESTORABLE_FIELDS } from '../resolver/revisions.repo.js';
 import { unpricedCountSql, unpricedSql } from '../metering/unpriced.js';
 import type { Money } from '../metering/cost-breakdown.js';
 
@@ -53,6 +54,20 @@ export interface Overview {
   readonly newUsers: number;
   /** Разобранные выгрузки за период. */
   readonly dumps: number;
+  /**
+   * Сорвавшиеся выгрузки за период (ревизия панели).
+   *
+   * Про сбои на обзоре не было ни одного числа, а разбор жалобы «бот
+   * молчит» начинают именно с него: панель открывается на обзоре.
+   * Единственным следом поломки была оговорка про вызовы без цены — то
+   * есть страница говорила о сбое чужими словами и в неверном смысле, а
+   * после починки той оговорки (в неё больше не попадают отказы) не
+   * говорила о нём вовсе.
+   *
+   * Из того же множества и тем же запросом, что «разобрано»: второе
+   * определение «выгрузок за период» однажды разошлось бы с первым.
+   */
+  readonly failedDumps: number;
   /** Расход на модели за период, по валютам. */
   readonly spend: readonly Money[];
   /**
@@ -143,10 +158,22 @@ export async function overview(
     .from(messagesRaw)
     .where(gte(messagesRaw.receivedAt, since));
 
+  /**
+   * Разобранные и сорвавшиеся — двумя счётчиками одного запроса.
+   *
+   * Множество одно («выгрузки, открытые за период»), а вопросов к нему
+   * два. Спроси мы их порознь — получилось бы два определения периода и
+   * два условия на статус, и однажды они разошлись бы: тот самый случай,
+   * из-за которого «Пробных» в списке людей считалось четырьмя
+   * способами.
+   */
   const [parsed] = await db
-    .select({ total: count() })
+    .select({
+      total: sql<number>`count(*) filter (where ${batches.status} = 'done')::int`,
+      failed: sql<number>`count(*) filter (where ${batches.status} = 'failed')::int`,
+    })
     .from(batches)
-    .where(and(eq(batches.status, 'done'), gte(batches.openedAt, since)));
+    .where(gte(batches.openedAt, since));
 
   /**
    * Порядок валют задан **нами**, а не Postgres (ревизия этапа 4).
@@ -241,6 +268,8 @@ export async function overview(
     totalUsers: people?.total ?? 0,
     newUsers: fresh?.total ?? 0,
     dumps: parsed?.total ?? 0,
+    /** Сорвавшиеся: без них обзор молчал о поломке вовсе. */
+    failedDumps: parsed?.failed ?? 0,
     spend: spendRows
       .filter((row): row is { currency: 'rub' | 'usd'; total: string } => row.currency !== null)
       .map((row) => ({ currency: row.currency, micros: Number(row.total) })),
@@ -285,6 +314,21 @@ export interface PersonRow {
   readonly trialSpent: number;
   /** Расход на модели, по валютам. */
   readonly spend: readonly Money[];
+  /**
+   * Вызовов человека без известной цены (ревизия панели).
+   *
+   * Больше нуля — расход выше показанного: модели нет в прайс-листе,
+   * цена не записана, и вызов молча выпал из суммы. Число считалось и
+   * здесь, и раньше — но выбрасывалось в цикле сборки строки, поэтому
+   * обзор оговорку печатал, а расход человека показывался как факт: одно
+   * число, две правды.
+   *
+   * Тем же условием, что обзор и раздел расходов (`unpricedSql`), — и
+   * потому по всем валютам человека сразу: вызов без цены и валюты не
+   * имеет, он лежит в группе с пустой валютой, которую строка расхода
+   * пропускает.
+   */
+  readonly unpricedCalls: number;
   readonly blocked: boolean;
   /**
    * Подписка человека — или её отсутствие (§15, задача 4.2).
@@ -462,6 +506,10 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
        * выпадал из суммы. Расход человека показывался как факт, хотя был
        * нижней границей. Раздел расходов такую оговорку печатает, список
        * людей и обзор — нет.
+       *
+       * Ревизия панели: число доходит до строки человека. Прежде оно
+       * считалось здесь и выбрасывалось ниже, в сборке строки, — так что
+       * комментарий выше обещал оговорку, которой на экране не было.
        */
       unknownPrices: unpricedCountSql(),
     })
@@ -518,9 +566,23 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
 
   const dumpsBy = new Map(dumpCounts.map((row) => [row.userId, row]));
   const spendBy = new Map<string, Money[]>();
+  const unpricedBy = new Map<string, number>();
 
   for (const row of spendRows) {
-    if (row.userId === null || row.currency === null) continue;
+    if (row.userId === null) continue;
+
+    /**
+     * Вызовы без цены считаются **до** отбраковки пустой валюты.
+     *
+     * У вызова без цены нет и валюты: он лежит в группе `currency =
+     * null`, а строка расхода такую группу пропускает — печатать «— ₽»
+     * рядом с суммой было бы неправдой. Считай мы оговорку после этого
+     * `continue`, она вышла бы нулём всегда, то есть ровно тем молчанием,
+     * против которого её и завели.
+     */
+    unpricedBy.set(row.userId, (unpricedBy.get(row.userId) ?? 0) + row.unknownPrices);
+
+    if (row.currency === null) continue;
 
     const list = spendBy.get(row.userId) ?? [];
     list.push({ currency: row.currency, micros: Number(row.total) });
@@ -540,6 +602,8 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
     dumps: dumpsBy.get(row.id)?.total ?? 0,
     trialSpent: dumpsBy.get(row.id)?.trial ?? 0,
     spend: spendBy.get(row.id) ?? [],
+    /** Сумма — нижняя граница, если это число больше нуля. */
+    unpricedCalls: unpricedBy.get(row.id) ?? 0,
     blocked: row.isBlocked,
     ...(subscriptionBy.has(row.id) ? { subscription: subscriptionBy.get(row.id) } : {}),
   }));
@@ -582,13 +646,61 @@ export interface CardDump {
   readonly prompts: readonly { readonly stage: string; readonly version: string | null }[];
 }
 
+/**
+ * Одно поле записи «было → стало» (ревизия панели).
+ *
+ * Ключ поля, а не его человеческое имя: имена стадий и полей — дело
+ * панели, а из базы наружу ключи «не для глаз». Значения — строками:
+ * снимок пришёл из `jsonb`, в нём уже строки, числа и `null`, а не
+ * `Date`, и толковать их здесь значило бы решать за экран, как их
+ * показывать.
+ */
+export interface CardFieldChange {
+  readonly field: string;
+  readonly before: string | null;
+  readonly after: string | null;
+}
+
 export interface CardChange {
   readonly id: string;
   readonly at: Date;
   readonly changedBy: string;
   readonly reason: string | null;
   readonly reverted: boolean;
+  /**
+   * **Нынешний** текст записи, а не текст на момент правки.
+   *
+   * Берётся через `leftJoin` с записью, то есть это то, что в ней лежит
+   * сегодня. Если резолвер менял текст трижды, у всех трёх правок здесь
+   * встанет одна и та же сегодняшняя строка — поэтому в панели колонка и
+   * названа «Запись сейчас». Текст на момент правки лежит в `changed`.
+   */
   readonly itemText: string | null;
+  /**
+   * Что человек сказал, из-за чего случилась правка (ревизия панели).
+   *
+   * `reason` — это фраза **модели** (решение резолвера), и жалобу
+   * «почему бот это сделал» по ней не разобрать: она объясняет вывод
+   * теми же словами, которые и вызывают сомнение. Сообщение человека
+   * лежит в ревизии ссылкой (`source_message_id`) и прежде не читалось
+   * ни здесь, ни где-либо ещё в панели.
+   *
+   * Пусто — ссылки нет (правка не из сообщения) либо сообщение удалено.
+   */
+  readonly said: string | null;
+  /**
+   * Что именно изменилось (§15 «применённые изменения», ревизия панели).
+   *
+   * Таблица давала четыре колонки — когда, запись, кто, почему — и ни
+   * одной про содержание правки, хотя снимки «до» и «после» лежат в
+   * ревизии целиком. Жалобу «бот поставил не ту дату» из такой таблицы
+   * разобрать нельзя: видно, что правка была, а «с четверга на пятницу»
+   * — нет. Именно за этим 31.08.2026 ходили в боевую базу через ssh.
+   *
+   * Пустой список означает, что правка не тронула ни одного поля из
+   * восстановимых, — это не «нет данных», а факт.
+   */
+  readonly changed: readonly CardFieldChange[];
 }
 
 export interface CardQuestion {
@@ -627,7 +739,73 @@ export interface PersonCard {
   readonly orphansTotal: number;
   readonly dumps: readonly CardDump[];
   readonly changes: readonly CardChange[];
+  /**
+   * Сколько правок у человека всего (ревизия панели).
+   *
+   * Списки правок и вопросов обрезаны сотней, и об этом не было сказано
+   * ничего — ни числа, ни оговорки, тогда как у выгрузок и у сказанного
+   * вне выгрузок «показаны последние N из M» печатается. Разбирающий
+   * жалобу «бот испортил запись в июле» читал сотню свежих правок как
+   * полную историю и делал вывод «правок не было».
+   */
+  readonly changesTotal: number;
+  /** Сколько вопросов всего — по той же причине, что и правок. */
+  readonly questionsTotal: number;
   readonly questions: readonly CardQuestion[];
+}
+
+/**
+ * Сколько правок и вопросов показывает карточка.
+ *
+ * Числом рядом с обоими запросами, а не двумя литералами в двух местах:
+ * оговорка «показаны последние N из M» считается по длине списка, и
+ * разъехавшиеся пределы сделали бы её неправдой.
+ */
+const HISTORY_LIMIT = 100;
+
+/**
+ * Что изменилось — по полям снимков «до» и «после».
+ *
+ * **Перечень полей взят у отката, а не выписан здесь заново.**
+ * `RESTORABLE_FIELDS` — это ровно то, что резолвер умеет менять, и там
+ * же сказано, что новая колонка обязана пройти через этот список. Свой
+ * список в панели означал бы, что однажды правку по новому полю карточка
+ * покажет как «ничего не изменилось».
+ *
+ * Снимок — **целая строка записи**, поэтому печатать все его ключи
+ * нельзя: в нём и вектор из 256 чисел, и `updated_at`, который меняется
+ * всегда. Срок утонул бы в шуме, а вектор уехал бы в браузер.
+ *
+ * Сравнение — по строковому виду значения. Снимки лежат в `jsonb` и
+ * прошли один и тот же путь сериализации, так что порядок ключей внутри
+ * вложенного объекта у «до» и «после» один; на разнице в нём проверка
+ * ошиблась бы в сторону «изменилось», а не «нет».
+ */
+function changedFields(before: unknown, after: unknown): CardFieldChange[] {
+  const was = (before ?? {}) as Record<string, unknown>;
+  const now = (after ?? {}) as Record<string, unknown>;
+
+  const out: CardFieldChange[] = [];
+
+  for (const field of RESTORABLE_FIELDS) {
+    const from = asText(was[field]);
+    const to = asText(now[field]);
+
+    if (from === to) continue;
+
+    out.push({ field, before: from, after: to });
+  }
+
+  return out;
+}
+
+/** Значение снимка строкой. Пусто — `null`, а не «null» словом. */
+function asText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  return JSON.stringify(value);
 }
 
 /**
@@ -786,6 +964,14 @@ export async function personCard(
           .from(aiCalls)
           .where(inArray(aiCalls.batchId, dumpIds));
 
+  /**
+   * Правки — со снимками и со словами человека (ревизия панели).
+   *
+   * `before`/`after` лежали в базе с третьего этапа и не читались нигде,
+   * кроме отката; `source_message_id` — тоже. Панель показывала «правка
+   * была» и фразу модели, а «с четверга на пятницу» приходилось смотреть
+   * в базе руками.
+   */
   const changeRows = await db
     .select({
       id: itemRevisions.id,
@@ -794,19 +980,43 @@ export async function personCard(
       reason: itemRevisions.reason,
       revertedAt: itemRevisions.revertedAt,
       itemText: items.text,
+      before: itemRevisions.before,
+      after: itemRevisions.after,
+      said: messagesRaw.text,
     })
     .from(itemRevisions)
     .leftJoin(items, eq(items.id, itemRevisions.itemId))
+    // Сообщение, из-за которого правка: связь необязательная, поэтому
+    // слева — иначе правки без ссылки исчезли бы из истории целиком.
+    .leftJoin(messagesRaw, eq(messagesRaw.id, itemRevisions.sourceMessageId))
     .where(eq(itemRevisions.userId, params.userId))
     .orderBy(desc(itemRevisions.createdAt))
-    .limit(100);
+    .limit(HISTORY_LIMIT);
 
   const questionRows = await db
     .select()
     .from(pendingQuestions)
     .where(eq(pendingQuestions.userId, params.userId))
     .orderBy(desc(pendingQuestions.createdAt))
-    .limit(100);
+    .limit(HISTORY_LIMIT);
+
+  /**
+   * Сколько правок и вопросов всего (ревизия панели).
+   *
+   * Оба списка обрезаны сотней молча: разбирающий жалобу «бот испортил
+   * запись в июле» видел свежий хвост как полную историю. У выгрузок и у
+   * сказанного вне выгрузок оговорка «показаны последние N из M» уже
+   * есть — здесь её не было, хотя предел точно такой же.
+   */
+  const [changesAll] = await db
+    .select({ total: count() })
+    .from(itemRevisions)
+    .where(eq(itemRevisions.userId, params.userId));
+
+  const [questionsAll] = await db
+    .select({ total: count() })
+    .from(pendingQuestions)
+    .where(eq(pendingQuestions.userId, params.userId));
 
   return {
     person: page,
@@ -848,7 +1058,13 @@ export async function personCard(
       reason: row.reason,
       reverted: row.revertedAt !== null,
       itemText: row.itemText,
+      said: row.said,
+      /** Что именно поправили: без этого таблица говорила только «было». */
+      changed: changedFields(row.before, row.after),
     })),
+    /** Сотня — предел показа, а не вся история: это должно быть видно. */
+    changesTotal: changesAll?.total ?? 0,
+    questionsTotal: questionsAll?.total ?? 0,
     questions: questionRows.map((row) => ({
       id: row.id,
       at: row.createdAt,

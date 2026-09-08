@@ -337,12 +337,26 @@ export async function markInvoiceFailed(
      * счёта пусто, значило бы идти за ответом в чужую систему.
      */
     readonly outSumReceived?: string | undefined;
+    /**
+     * Момент отказа (ревизия панели).
+     *
+     * Без него журнал сбоев отбирал неудачные платежи по дате счёта, а
+     * счёт заведён в момент нажатия кнопки: недоплата по трёхдневному
+     * счёту не попадала в срез «сутки», и в колонке «Когда» стояло не
+     * время разбираемого события.
+     *
+     * Необязателен, чтобы у вызывающих со своим «сейчас» отказ, пометка
+     * подписки `past_due` и письмо человеку стояли одним временем; не
+     * передали — берётся время записи.
+     */
+    readonly now?: Date | undefined;
   },
 ): Promise<void> {
   await db
     .update(billingInvoices)
     .set({
       status: 'failed',
+      failedAt: params.now ?? new Date(),
       ...(params.errorCode === undefined ? {} : { errorCode: params.errorCode }),
       ...(params.errorText === undefined ? {} : { errorText: params.errorText }),
       ...(params.outSumReceived === undefined ? {} : { outSumReceived: params.outSumReceived }),

@@ -211,6 +211,14 @@ export interface Overview {
   readonly totalUsers: number;
   readonly newUsers: number;
   readonly dumps: number;
+  /**
+   * Сорвавшиеся выгрузки за период.
+   *
+   * Из того же множества, что `dumps`: разобрано — `done`, сорвалось —
+   * `failed`. Про сбои на обзоре не было ни одного числа, хотя разбор
+   * жалобы «бот молчит» начинают с него (ревизия панели).
+   */
+  readonly failedDumps: number;
   readonly spend: readonly Money[];
   /** Выручка по рельсам: рубли в копейках, звёзды штуками (задача 4.2). */
   readonly revenue: readonly Revenue[];
@@ -268,6 +276,15 @@ export interface PersonRow {
   readonly dumps: number;
   readonly trialSpent: number;
   readonly spend: readonly Money[];
+  /**
+   * Вызовов человека без известной цены.
+   *
+   * Больше нуля — расход выше показанного, то есть сумма рядом нижняя
+   * граница. Число считалось на сервере и выбрасывалось по дороге:
+   * обзор оговорку печатал, расход человека выдавался за факт (ревизия
+   * панели).
+   */
+  readonly unpricedCalls: number;
   readonly blocked: boolean;
   /** Подписка или её отсутствие (задача 4.2). */
   readonly subscription?: PersonSubscription | undefined;
@@ -329,8 +346,27 @@ export interface PersonCard {
     readonly changedBy: string;
     readonly reason: string | null;
     readonly reverted: boolean;
+    /** **Нынешний** текст записи, а не текст на момент правки. */
     readonly itemText: string | null;
+    /** Слова человека, из-за которых правка. Пусто — ссылки нет. */
+    readonly said: string | null;
+    /**
+     * Что именно изменилось: «было → стало» по полям записи.
+     *
+     * Ключи полей, как в базе; человеческие имена подставляет панель.
+     * Прежде таблица правок не показывала содержания правки вовсе, и
+     * жалобу «бот поставил не ту дату» приходилось разбирать в базе.
+     */
+    readonly changed: readonly {
+      readonly field: string;
+      readonly before: string | null;
+      readonly after: string | null;
+    }[];
   }[];
+  /** Сколько правок всего: список обрезан сотней. */
+  readonly changesTotal: number;
+  /** Сколько вопросов всего: список обрезан сотней. */
+  readonly questionsTotal: number;
   readonly questions: readonly {
     readonly id: string;
     readonly at: string;
@@ -356,8 +392,16 @@ export function peoplePage(params: {
   );
 }
 
-export function personCard(userId: string): Promise<PersonCard> {
-  return call<PersonCard>(`/people/${encodeURIComponent(userId)}`);
+/**
+ * Карточка человека. `dumps` — сколько выгрузок показать (до 50).
+ *
+ * Без него сервер даёт двадцать: столько же, сколько давал всегда, когда
+ * параметр был недостижим ниоткуда, кроме тестов.
+ */
+export function personCard(userId: string, dumps?: number): Promise<PersonCard> {
+  const depth = dumps === undefined ? '' : `?dumps=${String(dumps)}`;
+
+  return call<PersonCard>(`/people/${encodeURIComponent(userId)}${depth}`);
 }
 
 // ── Настройки (§15, задача 4.9) ──────────────────────────────────────
@@ -438,9 +482,25 @@ export interface PromptRow {
   readonly createdAt: string;
 }
 
+/**
+ * Причина отказа: готовая строка, а стадия — отдельным полем.
+ *
+ * Ключи стадий из базы («router», «presenter») не для глаз, и
+ * человеческие имена к ним знает только панель (`STAGES` в
+ * `Prompts.tsx`). Прежде сервер склеивал причину вместе с ключом —
+ * «router: включается X, а мерили Y», — и она уезжала человеку на экран
+ * как есть, рядом с таблицей, где та же стадия называется
+ * «Маршрутизатор». Переводить в такой строке было нечего.
+ */
+export type FreshnessReason = string | { readonly stage: string; readonly text: string };
+
 export type Freshness =
   | { readonly ok: true; readonly runs: readonly string[]; readonly unmeasured: readonly string[] }
-  | { readonly ok: false; readonly reasons: readonly string[]; readonly runs: readonly string[] };
+  | {
+      readonly ok: false;
+      readonly reasons: readonly FreshnessReason[];
+      readonly runs: readonly string[];
+    };
 
 export type EvalRun =
   | { readonly kind: 'idle' }
@@ -467,7 +527,8 @@ export type EvalRun =
       readonly measuring?: { readonly stage: string; readonly version: string } | undefined;
     };
 
-export interface PromptsPage {
+export interface PromptsOn {
+  readonly enabled: true;
   readonly versions: readonly PromptRow[];
   /** Прогнан ли набор на том, что включено сейчас. */
   readonly freshness: Freshness;
@@ -481,6 +542,26 @@ export interface PromptsPage {
    */
   readonly canRun: boolean;
 }
+
+/**
+ * Раздела нет — и сервер говорит это словами.
+ *
+ * Отчёты прогонов живут на сервере отдельно от кода (их кладёт
+ * `./ops/seed-prompts.sh`), и без них раздел судить о §10.3 не может.
+ * Прежде путей `/api/prompts*` в этом состоянии не объявлялось вовсе, и
+ * запрос ловила отдача файлов панели: приходил `index.html` с кодом 200,
+ * разбор JSON спотыкался, и человек читал «Не удалось прочитать
+ * промпты» — то есть про поломку там, где раздел выключен нарочно.
+ */
+export interface PromptsOff {
+  readonly enabled: false;
+  /** Почему раздела нет — словами сервера. */
+  readonly why: string;
+  /** Чем это лечится: команда из рантбука. */
+  readonly how: string;
+}
+
+export type PromptsPage = PromptsOn | PromptsOff;
 
 export function prompts(): Promise<PromptsPage> {
   return call<PromptsPage>('/prompts');
@@ -512,7 +593,7 @@ export function createHotfix(params: {
  * заставляет искать обход, а не прогонять набор.
  */
 export class NotMeasured extends Error {
-  constructor(readonly reasons: readonly string[]) {
+  constructor(readonly reasons: readonly FreshnessReason[]) {
     super('Набор на этой версии не прогнан');
     this.name = 'NotMeasured';
   }
@@ -536,7 +617,7 @@ export async function activatePrompt(params: {
   }
 
   if (response.status === 409) {
-    const body = (await response.json()) as { readonly reasons?: readonly string[] };
+    const body = (await response.json()) as { readonly reasons?: readonly FreshnessReason[] };
     throw new NotMeasured(body.reasons ?? []);
   }
 
@@ -588,6 +669,14 @@ export interface BroadcastsPage {
   readonly rows: readonly BroadcastRow[];
   /** Сегменты: ключ → человеческое название. */
   readonly segments: Readonly<Record<string, string>>;
+  /**
+   * Сколько рассылок всего. Список — последние двадцать.
+   *
+   * Ревизия панели: двадцать строк без итога читались как полный
+   * список, и после двадцать первой рассылки предыдущие исчезали молча
+   * — вместе с единственным путём к «Повторить неудачные».
+   */
+  readonly total: number;
 }
 
 export function broadcasts(): Promise<BroadcastsPage> {
@@ -658,7 +747,16 @@ export interface FailedCall {
   readonly error: string | null;
   readonly latencyMs: number;
   readonly at: string;
-  readonly batchId: string | null;
+  /**
+   * У кого сорвался вызов (ревизия панели).
+   *
+   * Жалоба приходит от конкретного человека, а строка вызова его не
+   * называла: связать её было не с чем. Прежде вместо имени здесь
+   * довозился `batchId`, который не рисовался нигде — голый UUID в
+   * панели не показан ни в одной таблице, так что связать по нему
+   * было нечего.
+   */
+  readonly who: string;
   /** Заплатили ли за этот неудачный вызов. */
   readonly paid: boolean;
 }
@@ -667,6 +765,22 @@ export interface FailedSend {
   readonly id: string;
   readonly broadcastId: string;
   readonly tgId: number;
+  /**
+   * Имя получателя рядом с номером (ревизия панели).
+   *
+   * В строке стоял сырой телеграмный номер, а найти по нему человека в
+   * панели нечем: поиск в «Пользователях» ищет по имени и @имени.
+   */
+  readonly who: string;
+  /**
+   * Из какой рассылки письмо — её время и начало текста.
+   *
+   * Подпись под таблицей велит идти к «нужной рассылке», а `broadcastId`
+   * приезжал и не рисовался: какая из двадцати, из строки было не
+   * узнать. Голый UUID не годится — раздел рассылки его не печатает.
+   */
+  readonly broadcastAt: string;
+  readonly broadcastText: string;
   readonly error: string | null;
   readonly at: string | null;
 }

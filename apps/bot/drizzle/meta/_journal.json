@@ -288,6 +288,13 @@
       "when": 1788821000003,
       "tag": "0040_text_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1788821000004,
+      "tag": "0041_invoice_failed_at",
+      "breakpoints": true
     }
   ]
 }

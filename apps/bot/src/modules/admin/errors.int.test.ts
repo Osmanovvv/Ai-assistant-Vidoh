@@ -75,6 +75,47 @@ async function underpaid(params: {
   });
 }
 
+/**
+ * Счёт, заведённый в один день и отвергнутый в другой.
+ *
+ * Так это и выглядит в бою: счёт заводится нажатием кнопки и живёт до
+ * `expires_at`, а недоплата приходит уведомлением провайдера тогда, когда
+ * человек соберётся заплатить. `refused: null` — счёт, помеченный
+ * неудачным до появления колонки `failed_at`: времени отказа у него нет.
+ */
+async function refused(params: {
+  readonly userId: string;
+  readonly ref: string;
+  readonly invoiced: Date;
+  readonly refused: Date | null;
+  readonly errorText: string;
+}): Promise<void> {
+  const invoice = await createInvoice(testDb(), {
+    provider: 'robokassa:smz',
+    userId: params.userId,
+    plan: 'monthly',
+    kind: 'initial',
+    amountMinor: 39_900,
+    currency: 'RUB',
+    ref: params.ref,
+    invId: await nextInvId(testDb()),
+  });
+
+  await markInvoiceFailed(testDb(), {
+    id: invoice.id,
+    errorText: params.errorText,
+    ...(params.refused === null ? {} : { now: params.refused }),
+  });
+
+  await testDb()
+    .update(billingInvoices)
+    .set({
+      createdAt: params.invoiced,
+      ...(params.refused === null ? { failedAt: null } : {}),
+    })
+    .where(eq(billingInvoices.id, invoice.id));
+}
+
 describe('неудачные платежи в журнале (задача 4.2)', () => {
   it('видны с обеими суммами: сколько ждали и сколько пришло', async () => {
     /**
@@ -142,14 +183,98 @@ describe('неудачные платежи в журнале (задача 4.2)
   });
 
   it('старые неудачи за границу периода не попадают', async () => {
-    await underpaid({ userId: anya, ref: 'старый', received: '1.00' });
-
-    await testDb()
-      .update(billingInvoices)
-      .set({ createdAt: new Date(Date.now() - 40 * 24 * 3_600_000) });
+    /**
+     * За границу уводится **время отказа**, а не только дата счёта:
+     * журнал отбирает по нему (ревизия панели). Прежде проверка сдвигала
+     * дату счёта, и после починки отбора она мерила бы не то — счёт
+     * сорокадневной давности, отвергнутый сегодня, в срезе за месяц
+     * обязан быть виден.
+     */
+    await refused({
+      userId: anya,
+      ref: 'старый',
+      invoiced: new Date(Date.now() - 41 * 24 * 3_600_000),
+      refused: new Date(Date.now() - 40 * 24 * 3_600_000),
+      errorText: 'давняя недоплата',
+    });
 
     expect((await errorsView(testDb(), 30)).payments).toEqual([]);
     expect((await errorsView(testDb(), 60)).payments).toHaveLength(1);
+  });
+
+  it('отбираются по времени отказа, а не по дате счёта', async () => {
+    /**
+     * Ревизия панели. Счёт заведён нажатием кнопки, а недоплата приходит
+     * уведомлением провайдера тогда, когда человек соберётся заплатить:
+     * счёт трёхдневной давности, недоплаченный сегодня, при выборе
+     * «сутки» в журнале не появлялся вовсе, — то есть самое дорогое
+     * событие журнала было не видно как раз в том срезе, с которого
+     * разбор и начинают.
+     *
+     * Обстановка боя нарочно: у одного счёта отказ пришёл через три дня
+     * после выставления, у другого — в тот же день. При отборе по дате
+     * счёта первый выпадает из суток, а порядок двух строк
+     * переворачивается.
+     */
+    const now = Date.now();
+
+    await refused({
+      userId: anya,
+      ref: 'заплатил-на-третий-день',
+      invoiced: new Date(now - 3 * 24 * 3_600_000),
+      refused: new Date(now - 3_600_000),
+      errorText: 'отказ час назад',
+    });
+
+    await refused({
+      userId: olya,
+      ref: 'заплатил-сразу',
+      invoiced: new Date(now - 2 * 24 * 3_600_000),
+      refused: new Date(now - 2 * 24 * 3_600_000),
+      errorText: 'отказ два дня назад',
+    });
+
+    const day = await errorsView(testDb(), 1);
+
+    expect(day.payments.map((one) => one.errorText)).toEqual(['отказ час назад']);
+    expect(day.paymentsTotal).toBe(1);
+
+    const week = await errorsView(testDb(), 7);
+
+    // Порядок — по времени отказа: по дате счёта он был бы обратным.
+    expect(week.payments.map((one) => one.errorText)).toEqual([
+      'отказ час назад',
+      'отказ два дня назад',
+    ]);
+
+    // И «Когда» в таблице — время отказа, а не дата счёта.
+    expect(week.payments[0]?.at).toBe(new Date(now - 3_600_000).toISOString());
+  });
+
+  it('счёт, помеченный до появления времени отказа, из журнала не пропадает', async () => {
+    /**
+     * У неудачных счетов боевой базы времени отказа нет: колонка
+     * появилась позже, а выдумывать им дату — значит записать догадку в
+     * данные. Отбор по одному `failed_at` спрятал бы такие строки
+     * совсем: починка отбора обошлась бы потерей прежних неудач, то есть
+     * ровно тех, из-за которых журнал и читают.
+     */
+    const now = Date.now();
+
+    await refused({
+      userId: anya,
+      ref: 'из-прежних',
+      invoiced: new Date(now - 2 * 24 * 3_600_000),
+      refused: null,
+      errorText: 'без времени отказа',
+    });
+
+    const week = await errorsView(testDb(), 7);
+
+    expect(week.payments.map((one) => one.errorText)).toEqual(['без времени отказа']);
+    expect(week.paymentsTotal).toBe(1);
+    // У таких «Когда» — дата счёта: прежнее поведение, лучшего нет.
+    expect(week.payments[0]?.at).toBe(new Date(now - 2 * 24 * 3_600_000).toISOString());
   });
 
   it('журнал говорит, что повтора у платежей нет', async () => {
@@ -220,6 +345,49 @@ describe('прочие источники журнала (задача 4.10)', (
 
     expect(view.calls).toHaveLength(2);
     expect(view.calls.filter((one) => one.paid)).toHaveLength(1);
+  });
+
+  it('у неуспешного вызова видно, у кого он сорвался', async () => {
+    /**
+     * Ревизия панели. Жалоба приходит от конкретного человека и в
+     * конкретное время, а строка вызова не называла ни имени, ни чего-то
+     * ещё, чем её связать: `user_id` в базе лежит и уже читается в
+     * разрезах расходов, но в выборку журнала не входил. У соседней
+     * таблицы сорвавшихся разборов «У кого» есть.
+     */
+    await testDb().insert(aiCalls).values({
+      userId: anya,
+      stage: 'classifier',
+      model: 'yandex:yandexgpt/latest',
+      latencyMs: 4_000,
+      ok: false,
+      error: '429 Too Many Requests',
+    });
+
+    const view = await errorsView(testDb(), 30);
+
+    expect(view.calls).toHaveLength(1);
+    expect(view.calls[0]?.who).toBe('Аня');
+  });
+
+  it('вызов ушедшего человека называет удаление словами', async () => {
+    /**
+     * `user_id` у вызова гасится при удалении данных (§16), и пустая
+     * клетка читалась бы как «неизвестно кто» — то есть как поломка
+     * учёта. Слова отличают удаление от промаха связи.
+     */
+    await testDb().insert(aiCalls).values({
+      userId: olya,
+      stage: 'router',
+      model: 'yandex:yandexgpt-lite/latest',
+      latencyMs: 100,
+      ok: false,
+      error: 'таймаут',
+    });
+
+    await testDb().delete(users);
+
+    expect((await errorsView(testDb(), 30)).calls[0]?.who).toBe('данные удалены');
   });
 
   it('удачный вызов в журнал не попадает', async () => {
@@ -311,6 +479,79 @@ describe('журнал сбоев: период и пятый источник (
     const quarter = await errorsView(testDb(), 90);
 
     expect(quarter.sendsTotal).toBe(2);
+  });
+
+  it('в строке не дошедшего письма названы рассылка и получатель', async () => {
+    /**
+     * **Подпись под таблицей велела идти к «нужной рассылке», а сказать,
+     * какая это, было нечем** (ревизия панели). `broadcastId` приезжал и
+     * не рисовался: раздел «Рассылка» идентификаторов не печатает, так
+     * что сопоставлять оставалось по времени — при том что журнал
+     * смотрит до 366 дней, а список рассылок обрезан двадцатью. И «Кому»
+     * было сырым телеграмным номером: поиск в «Пользователях» ищет по
+     * имени и @имени, найти по номеру человека нечем.
+     */
+    const person = await upsertUser(testDb(), { tgId: 8_301, firstName: 'Ася' });
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Пробные разборы кончились, вот тарифы.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await testDb()
+      .update(broadcastDeliveries)
+      .set({ status: 'failed', error: '403', at: new Date() })
+      .where(
+        and(
+          eq(broadcastDeliveries.broadcastId, made.id),
+          eq(broadcastDeliveries.userId, person.id),
+        ),
+      );
+
+    const [row] = (await errorsView(testDb(), 7)).sends;
+
+    expect(row?.who).toBe('Ася');
+    expect(row?.broadcastText).toContain('Пробные разборы кончились');
+    // Время рассылки, а не письма: по нему её и видно в разделе рассылки.
+    expect(Number.isNaN(Date.parse(row?.broadcastAt ?? ''))).toBe(false);
+  });
+
+  it('у человека без имени в клетке «Кому» остаётся его номер', async () => {
+    /**
+     * Удаление данных снимает имя, а строка доставки живёт своим
+     * номером-копией. Пустая клетка здесь читалась бы как «неизвестно
+     * кому» — а известно.
+     */
+    const person = await upsertUser(testDb(), { tgId: 8_302, firstName: 'Без имени' });
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await testDb()
+      .update(users)
+      .set({ firstName: null, username: null })
+      .where(eq(users.id, person.id));
+
+    await testDb()
+      .update(broadcastDeliveries)
+      .set({ status: 'failed', error: '403', at: new Date() })
+      .where(
+        and(
+          eq(broadcastDeliveries.broadcastId, made.id),
+          eq(broadcastDeliveries.userId, person.id),
+        ),
+      );
+
+    const rows = (await errorsView(testDb(), 7)).sends;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.who).toBe('id 8302');
   });
 
   it('сорвавшиеся напоминания видны — пятый источник', async () => {

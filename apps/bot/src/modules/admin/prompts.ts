@@ -9,7 +9,7 @@ import {
   type FreshnessVerdict,
 } from '../../eval/freshness.js';
 import { findSchema, toJsonSchema } from '../ai/schemas/index.js';
-import { activatePrompt } from '../ai/prompts/seed.js';
+import { activatePrompt, noteWith } from '../ai/prompts/seed.js';
 
 /**
  * Промпты в админ-панели (§15 ТЗ, задача 4.8).
@@ -286,13 +286,11 @@ export async function activateVersion(
     // читаемым, иначе его перестанут читать.
     if (row?.note?.includes(mark) === true) return;
 
+    // Дописыванием, общим помощником с заливкой из файлов: там та же
+    // пометка ставилась вместо примечания и уносила эту запись.
     await tx
       .update(promptVersions)
-      .set({
-        note: [row?.note, mark]
-          .filter((one) => one !== null && one !== undefined && one !== '')
-          .join('; '),
-      })
+      .set({ note: noteWith(row?.note, mark) })
       .where(
         and(eq(promptVersions.stage, params.stage), eq(promptVersions.version, params.version)),
       );

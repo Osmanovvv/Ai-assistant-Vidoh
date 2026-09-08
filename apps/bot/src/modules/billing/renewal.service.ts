@@ -310,6 +310,11 @@ async function giveUp(
   if (params.invoiceId !== undefined) {
     await markInvoiceFailed(deps.db, {
       id: params.invoiceId,
+      // Одно «сейчас» на весь отказ: та же метка уходит в `markPastDue`
+      // ниже и в письмо человеку. Два своих времени у одного события
+      // разошлись бы на длину прохода — и в журнале сбоев отказ стоял бы
+      // не тогда, когда подписка стала просроченной.
+      now: params.now,
       ...(params.errorText === undefined ? {} : { errorText: params.errorText }),
       ...(params.errorCode === undefined ? {} : { errorCode: params.errorCode }),
     });

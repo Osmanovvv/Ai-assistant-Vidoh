@@ -742,6 +742,10 @@ async function applyInside(
   if (event.currency !== invoice.currency || event.amount < invoice.amountMinor) {
     await markInvoiceFailed(db, {
       id: invoice.id,
+      // То же «сейчас», которым размечено всё событие уведомления:
+      // иначе время отказа в журнале сбоев разошлось бы со временем
+      // возврата и пометок подписки, размеченных выше.
+      now,
       errorText: `заплачено ${String(event.amount)} ${event.currency}, а в счёте ${String(invoice.amountMinor)} ${invoice.currency}`,
       ...(params.outSum === undefined ? {} : { outSumReceived: params.outSum }),
     });

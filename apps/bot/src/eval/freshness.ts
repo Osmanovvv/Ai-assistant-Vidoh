@@ -44,9 +44,25 @@ export interface FreshnessOk {
   readonly unmeasured: readonly string[];
 }
 
+/**
+ * Причина отказа — готовой строкой, а стадия, если она есть, отдельно.
+ *
+ * **Найдено ревизией панели.** Причина про стадию собиралась строкой
+ * вместе с ключом из базы — `router: включается X, а мерили Y`, — и
+ * уезжала человеку на экран как есть. Заказчица и проджект читают в
+ * одном месте «Маршрутизатор», а в другом «router», и должны догадаться,
+ * что это одно и то же. Ключи стадий не для глаз, но человеческие имена
+ * живут в панели: здесь их взять негде, а значит и склеивать причину
+ * здесь нельзя.
+ *
+ * Скриптам ключ как раз и нужен — таким, каким он в базе и в отчёте, —
+ * поэтому они склеивают строку сами (`scripts/check-eval-fresh.ts`).
+ */
+export type FreshnessReason = string | { readonly stage: string; readonly text: string };
+
 export interface FreshnessProblem {
   readonly ok: false;
-  readonly reasons: readonly string[];
+  readonly reasons: readonly FreshnessReason[];
   /** Отчёты, которые смотрели: пусто, если их не нашлось. */
   readonly runs: readonly string[];
 }
@@ -286,7 +302,7 @@ export async function evalFreshness(params: {
   readonly evalDir: string;
   readonly activating: ReadonlyMap<string, string>;
 }): Promise<FreshnessVerdict> {
-  const reasons: string[] = [];
+  const reasons: FreshnessReason[] = [];
   const runs: string[] = [];
 
   const touchesMain = MEASURED_STAGES.some((stage) => params.activating.has(stage));
@@ -331,7 +347,7 @@ async function checkMain(
   evalDir: string,
   activating: ReadonlyMap<string, string>,
   runs: string[],
-): Promise<readonly string[] | undefined> {
+): Promise<readonly FreshnessReason[] | undefined> {
   let newest: { readonly name: string; readonly report: EvalReport } | undefined;
 
   /**
@@ -379,11 +395,13 @@ async function checkMain(
   runs.push(newest.name);
 
   const measured = newest.report.promptVersions;
+  // Стадия — отдельным полем, а не внутри строки: имя для человека даёт
+  // панель, а ключ из базы на экране означает «догадайтесь сами».
   const mismatch = MEASURED_STAGES.flatMap((stage) => {
     const now = activating.get(stage);
     if (now === undefined || now === measured[stage]) return [];
 
-    return [`${stage}: включается ${now}, а мерили ${measured[stage] ?? 'ничего'}`];
+    return [{ stage, text: `включается ${now}, а мерили ${measured[stage] ?? 'ничего'}` }];
   });
 
   return [
@@ -419,7 +437,7 @@ async function checkResolver(
   evalDir: string,
   version: string,
   runs: string[],
-): Promise<readonly string[] | undefined> {
+): Promise<readonly FreshnessReason[] | undefined> {
   let newest: { readonly name: string; readonly report: ResolverReport } | undefined;
   const skipped: string[] = [];
 
