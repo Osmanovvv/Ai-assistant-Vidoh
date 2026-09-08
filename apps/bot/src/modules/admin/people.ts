@@ -14,6 +14,7 @@ import {
 import type { Executor } from '../../infra/db.js';
 import { activePayersCount } from '../billing/billing.repo.js';
 import { funnelOf, type Funnel } from './funnel.js';
+import { unpricedCountSql, unpricedSql } from '../metering/unpriced.js';
 import type { Money } from '../metering/cost-breakdown.js';
 
 /**
@@ -187,9 +188,9 @@ export async function overview(
    * два числа про одно и то же расходятся молча.
    */
   const [unpriced] = await db
-    .select({ total: count() })
+    .select({ total: sql<number>`count(*)::int` })
     .from(aiCalls)
-    .where(and(gte(aiCalls.createdAt, since), isNull(aiCalls.costMicros)));
+    .where(and(gte(aiCalls.createdAt, since), unpricedSql()));
 
   /**
    * Выручка — по **оплаченным** счетам, а не по выставленным.
@@ -330,6 +331,40 @@ export interface PeoplePage {
  * одну. Поймано проверкой постраничности на тысяче: сорок строк на двух
  * страницах дали тридцать девять разных.
  */
+/**
+ * Что искать в базе по тому, что человек набрал в панели.
+ *
+ * Панель подписывает поле «Имя или @имя» — и это обещание надо
+ * исполнять. Telegram отдаёт телеграмное имя **без собаки**
+ * (`update.from.username`), и мы пишем его как есть. Значит запрос
+ * «@аня» превращался в `ilike '%@аня%'` и не совпадал ни с чем никогда:
+ * панель отвечала «Никого не нашлось» на подсказку, которую сама же и
+ * дала, — про человека, который в базе есть.
+ *
+ * Второе: `%` и `_` в `ilike` — служебные знаки, а не буквы. Без
+ * экранирования «100%» искало «сто чего угодно», а одиночное `_` —
+ * любого человека вовсе. Панель не место, где вводят шаблоны: человек
+ * набирает имя.
+ *
+ * `undefined` означает «искать нечего» — тогда список показывается
+ * целиком. Пустая строка и строка из одних пробелов — тот же случай.
+ */
+function searchFor(query: string | undefined): string | undefined {
+  const said = query?.trim();
+
+  if (said === undefined || said === '') return undefined;
+
+  // Собака — часть обозначения, а не имени: срезается только ведущая.
+  const name = said.startsWith('@') ? said.slice(1) : said;
+
+  if (name === '') return undefined;
+
+  // Обратная косая — первой: иначе она сама себя и заэкранирует.
+  const safe = name.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+
+  return `%${safe}%`;
+}
+
 export async function people(
   db: Executor,
   params: {
@@ -338,12 +373,12 @@ export async function people(
     readonly query?: string | undefined;
   },
 ): Promise<PeoplePage> {
-  const search = params.query?.trim();
+  const search = searchFor(params.query);
 
   const where =
-    search === undefined || search === ''
+    search === undefined
       ? undefined
-      : or(ilike(users.firstName, `%${search}%`), ilike(users.username, `%${search}%`));
+      : or(ilike(users.firstName, search), ilike(users.username, search));
 
   const [totals] = await (where === undefined
     ? db.select({ total: count() }).from(users)
@@ -428,7 +463,7 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
        * нижней границей. Раздел расходов такую оговорку печатает, список
        * людей и обзор — нет.
        */
-      unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
+      unknownPrices: unpricedCountSql(),
     })
     .from(aiCalls)
     .where(inArray(aiCalls.userId, ids))

@@ -106,6 +106,22 @@ function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 /** Шаг первый. Панель ещё не открыта: дальше нужен код. */
+/**
+ * Что показать человеку по неудаче действия.
+ *
+ * Сообщение уже собрано выше — с причиной, названной сервером, — и
+ * выбрасывать его нельзя: «повторять можно только законченную рассылку»
+ * человек исправит, «не удалось повторить» не исправит ничего. Запасные
+ * слова нужны на случай, когда до сервера не дошли вовсе: тогда причины
+ * нет ни у кого.
+ *
+ * Один помощник на всю панель, потому что забывали в двух разделах
+ * независимо: семь обработчиков рассылки и перезапуск в «Ошибках».
+ */
+export function reasonOf(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message !== '' ? error.message : fallback;
+}
+
 export function signInWithPassword(login: string, password: string): Promise<{ next: string }> {
   return post<{ next: string }>('/auth/login', { login, password });
 }
@@ -559,6 +575,11 @@ export function createBroadcast(params: {
   readonly segment: string;
 }): Promise<{ readonly ok: boolean; readonly id: string; readonly recipients: number }> {
   return post('/broadcast', params);
+}
+
+/** Отмена черновика: единственный выход из случайно составленного. */
+export function cancelBroadcast(id: string): Promise<{ readonly ok: boolean }> {
+  return post(`/broadcast/${encodeURIComponent(id)}/cancel`, {});
 }
 
 export function startBroadcast(id: string): Promise<{ readonly ok: boolean }> {

@@ -4,6 +4,7 @@ import { aiCalls, type AiStage } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { callCost, type Currency, type ModelPricing, type UsageAmount } from './pricing.js';
 import type { SpendGuard } from './spend-guard.js';
+import { unpricedCountSql } from './unpriced.js';
 
 /**
  * Учёт обращений к моделям (задача 1.16).
@@ -158,7 +159,7 @@ export async function spendByUser(
       currency: aiCalls.costCurrency,
       calls: sql<number>`count(*)::int`,
       failed: sql<number>`count(*) filter (where ${aiCalls.ok} = false)::int`,
-      unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
+      unknownPrices: unpricedCountSql(),
       // bigint приходит из node-postgres строкой, а не числом: драйвер не
       // рискует потерять точность. Тип здесь честный, преобразование ниже.
       total: sql<string>`coalesce(sum(${aiCalls.costMicros}), 0)::bigint`,

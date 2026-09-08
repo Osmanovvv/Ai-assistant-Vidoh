@@ -185,4 +185,78 @@ test.describe('журнал доступа к персональным данн�
     await expect(page.getByTestId('access')).toBeVisible();
     await expect(page.getByTestId('access')).not.toContainText('Оля');
   });
+
+  test('отказ перезапуска назван словами сервера, а журнал остаётся на экране', async ({
+    page,
+  }) => {
+    /**
+     * Ревизия панели. Обработчик был написан как
+     * `.catch(() => setProblem('Не удалось перезапустить'))`: аргумент
+     * ошибки не принимался, хотя сервер называет три разные причины —
+     * «такой выгрузки нет», «выгрузка в состоянии done, а не failed» и
+     * «выгрузку уже перезапустили». Последняя показывалась как
+     * «Не удалось перезапустить», то есть панель говорила неправду о
+     * том, что сама же и сделала.
+     *
+     * Хуже второе: `problem` возвращался **вместо всего раздела** — с
+     * экрана уходили и сорвавшиеся разборы, и журнал доступа §16, до
+     * перезагрузки страницы.
+     *
+     * Отказ подменяется нарочно: проверяется поведение панели, а не
+     * сервера — у того свои проверки, и добиться от него 409 на стенде
+     * можно только вторым нажатием, когда кнопки уже нет.
+     */
+    /**
+     * Сорвавшаяся выгрузка **досеивается в ответ**, а не берётся со
+     * стенда: единственную посеянную забирает соседняя проверка
+     * («перезапуск возвращает разбор в очередь»), и тест, опирающийся на
+     * её остаток, краснел бы от порядка запуска, а не от поломки. Форма
+     * ответа при этом настоящая — своя строка добавляется к тому, что
+     * отдал сервер.
+     */
+    await page.route('**/admin/api/errors?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as { batches?: unknown[]; batchesTotal?: number };
+      const batches = [
+        ...(body.batches ?? []),
+        {
+          id: '00000000-0000-4000-8000-000000000042',
+          userId: null,
+          who: 'Проверочный',
+          tgId: null,
+          status: 'failed',
+          attempts: 3,
+          error: 'модель не ответила',
+          openedAt: new Date(0).toISOString(),
+          length: 12,
+        },
+      ];
+
+      await route.fulfill({
+        json: { ...body, batches, batchesTotal: batches.length },
+      });
+    });
+
+    await page.route('**/admin/api/errors/batch/*/restart', async (route) => {
+      await route.fulfill({
+        status: 409,
+        json: { error: 'выгрузку уже перезапустили' },
+      });
+    });
+
+    await signIn(page, 'Ошибки');
+
+    const restart = page.getByTestId('restart-00000000-0000-4000-8000-000000000042');
+    await expect(restart).toBeVisible();
+    await restart.click();
+
+    const refused = page.getByTestId('batch-refused');
+
+    await expect(refused).toBeVisible();
+    await expect(refused).toContainText('уже перезапустили');
+
+    // Раздел на месте целиком: и журнал сбоев, и журнал доступа.
+    await expect(page.getByTestId('errors')).toBeVisible();
+    await expect(page.getByTestId('access')).toBeVisible();
+  });
 });

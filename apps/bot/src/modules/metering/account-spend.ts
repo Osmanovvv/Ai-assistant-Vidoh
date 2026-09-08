@@ -3,6 +3,7 @@ import { and, gte, lt, sql } from 'drizzle-orm';
 import { aiCalls } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { Currency } from './pricing.js';
+import { unpricedCountSql } from './unpriced.js';
 
 /**
  * Потолок расхода по счёту, а не по человеку (задача 3.79).
@@ -107,7 +108,7 @@ export async function accountSpend(
        * Тот же фильтр стоит в `scripts/spend.ts`; здесь он сперва был
        * забыт, и одно и то же число считалось двумя разными способами.
        */
-      unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null and ${aiCalls.ok})::int`,
+      unknownPrices: unpricedCountSql(),
       // bigint приходит из node-postgres строкой: драйвер не рискует
       // точностью. Преобразование ниже, тип здесь честный.
       total: sql<string>`coalesce(sum(${aiCalls.costMicros}), 0)::bigint`,

@@ -152,4 +152,76 @@ test.describe('остановленная рассылка не тупик', () 
     expect(sentAfter).toBeGreaterThan(sentBefore);
     expect(left).toBe(0);
   });
+
+  test('черновик не тупик: его видно в списке, можно отправить и можно отменить', async ({
+    page,
+  }) => {
+    /**
+     * Ревизия панели. «Составить» заводит и рассылку, и до тысячи строк
+     * доставки, а кнопка «Отправить» жила только в состоянии React: уход
+     * в другой раздел или обновление страницы стирали её, и у строки со
+     * статусом «черновик» не оставалось ни одного действия. Отменить его
+     * было нечем вовсе — значит единственным выходом из ошибочного
+     * черновика была отправка всем.
+     *
+     * Проверка нарочно **уходит и возвращается**: без этого блок
+     * подтверждения остался бы на экране и дефекта не было бы видно.
+     */
+    await openBroadcast(page);
+
+    await page.getByTestId('broadcast-text').fill('Черновик, который я передумал отправлять.');
+    await page.getByTestId('broadcast-preview').click();
+    await page.getByTestId('broadcast-make').click();
+    await expect(page.getByTestId('broadcast-confirm')).toBeVisible();
+
+    // Уходим в другой раздел и возвращаемся: блок подтверждения пропал.
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await page.getByRole('button', { name: 'Рассылка' }).click();
+    await expect(page.getByTestId('broadcast-confirm')).toHaveCount(0);
+
+    // Строка черновика на месте, и у неё есть оба действия.
+    const draft = page
+      .locator('tr')
+      .filter({ hasText: 'Черновик, который я передумал отправлять.' });
+
+    await expect(draft).toHaveCount(1);
+    await expect(draft.getByRole('button', { name: 'Отправить' })).toBeVisible();
+
+    await draft.getByRole('button', { name: 'Отменить' }).click();
+
+    // Отменённый черновик уходит из списка вместе со своими доставками.
+    await expect(
+      page.locator('tr').filter({ hasText: 'Черновик, который я передумал отправлять.' }),
+    ).toHaveCount(0);
+  });
+
+  test('названную сервером причину отказа панель показывает, а раздел не гасит', async ({
+    page,
+  }) => {
+    /**
+     * Ревизия панели. Все семь обработчиков раздела были написаны как
+     * `.catch(() => setProblem('…'))`: объект ошибки не принимался, и
+     * названная сервером причина — «слишком длинно: N знаков, Telegram
+     * принимает 4096» — превращалась в «Не удалось составить рассылку».
+     * Первое человек исправит, второе не исправит ничего.
+     *
+     * Хуже второе: `problem` возвращался **вместо всего раздела**, и
+     * набранный текст исчезал с экрана вместе со списком рассылок.
+     */
+    await openBroadcast(page);
+
+    // 4200 знаков: предел Telegram — 4096, и сервер называет оба числа.
+    await page.getByTestId('broadcast-text').fill('я'.repeat(4_200));
+    await page.getByTestId('broadcast-preview').click();
+    await page.getByTestId('broadcast-make').click();
+
+    const refused = page.getByTestId('broadcast-refused');
+
+    await expect(refused).toBeVisible();
+    await expect(refused).toContainText('4096');
+
+    // Раздел на месте: и поле с набранным текстом, и список рассылок.
+    await expect(page.getByTestId('broadcast')).toBeVisible();
+    await expect(page.getByTestId('broadcast-text')).toHaveValue('я'.repeat(4_200));
+  });
 });

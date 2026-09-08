@@ -3,6 +3,7 @@ import { and, gte, inArray, sql } from 'drizzle-orm';
 import { aiCalls, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { Currency } from './pricing.js';
+import { unpricedCountSql } from './unpriced.js';
 
 /**
  * Расход в разрезах для админ-панели (§15 ТЗ, задача 4.7).
@@ -214,7 +215,7 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
   const counters = {
     calls: sql<number>`count(*)::int`,
     failed: sql<number>`count(*) filter (where ${aiCalls.ok} = false)::int`,
-    unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
+    unknownPrices: unpricedCountSql(),
     // bigint приходит строкой: драйвер не рискует точностью.
     total: sql<string>`coalesce(sum(${aiCalls.costMicros}), 0)::bigint`,
   };
@@ -295,7 +296,7 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
       dumps: sql<number>`count(distinct ${aiCalls.batchId})::int`,
       people: sql<number>`count(distinct ${aiCalls.userId})::int`,
       calls: sql<number>`count(*)::int`,
-      unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
+      unknownPrices: unpricedCountSql(),
     })
     .from(aiCalls)
     .where(where);

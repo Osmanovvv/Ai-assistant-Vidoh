@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { access, errors, restartBatch, type AccessView, type ErrorsPage } from './api.js';
+import { access, errors, reasonOf, restartBatch, type AccessView, type ErrorsPage } from './api.js';
 
 /**
  * Журнал сбоев (§15 ТЗ, задача 4.10).
@@ -42,7 +42,17 @@ function when(iso: string | null): string {
 export function ErrorsPanel(): React.ReactElement {
   const [days, setDays] = useState<number>(7);
   const [page, setPage] = useState<ErrorsPage | undefined>(undefined);
+  /**
+   * Два отказа — два состояния, и это исправление настоящего дефекта.
+   *
+   * `problem` — не смогли **прочитать** журнал: показывать нечего, и
+   * ранний возврат уместен. `refused` — сервер отказал **действию**:
+   * журнал при этом на месте, и гасить его нельзя. Прежде состояние
+   * было одно, и отказ перезапуска уносил с экрана и сорвавшиеся
+   * разборы, и журнал доступа — до перезагрузки страницы.
+   */
   const [problem, setProblem] = useState<string | undefined>(undefined);
+  const [refused, setRefused] = useState<string | undefined>(undefined);
   const [said, setSaid] = useState<string | undefined>(undefined);
   const [seen, setSeen] = useState<AccessView | undefined>(undefined);
 
@@ -81,14 +91,28 @@ export function ErrorsPanel(): React.ReactElement {
 
   const restart = (id: string): void => {
     setSaid(undefined);
+    setRefused(undefined);
 
     void restartBatch(id)
       .then(() => {
         setSaid('Разбор поставлен в очередь заново.');
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось перезапустить');
+      .catch((error: unknown) => {
+        /**
+         * Причину называет сервер, и она у него разная.
+         *
+         * «Выгрузку уже перезапустили» — не отказ, а сообщение о том,
+         * что разбор уже в очереди; «выгрузка в состоянии done, а не
+         * failed» — подсказка, что перезапускать нечего. Прежде и то, и
+         * другое превращалось в «Не удалось перезапустить», то есть
+         * панель говорила неправду о том, что сама же и сделала.
+         *
+         * Журнал перечитывается: чаще всего отказ означает, что строка
+         * на экране устарела.
+         */
+        setRefused(reasonOf(error, 'Не удалось перезапустить'));
+        load();
       });
   };
 
@@ -112,6 +136,12 @@ export function ErrorsPanel(): React.ReactElement {
       {said !== undefined && (
         <p className="оговорка" data-testid="restart-done" role="status">
           {said}
+        </p>
+      )}
+
+      {refused !== undefined && (
+        <p className="отказ" data-testid="batch-refused" role="alert">
+          {refused}
         </p>
       )}
 
