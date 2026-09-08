@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { PermanentError, TransientError } from '../../../infra/failures.js';
-import {
-  chargeRecurring,
-  createRobokassaProvider,
-  errorCodeOfPage,
-  errorTextOf,
-} from './robokassa.js';
+import { chargeRecurring, createRobokassaProvider, errorTextOf } from './robokassa.js';
 import { resultSignature } from './robokassa-signature.js';
 
 /**
@@ -468,15 +463,13 @@ describe('состояние операции', () => {
 });
 
 describe('ответ Робокассы не равен успеху', () => {
-  it('код ошибки достаётся из страницы, а не из статуса HTTP', () => {
-    /**
-     * HTTP 200 у Робокассы не означает успех: ошибка приезжает внутри
-     * HTML. Без этого разбора «оплата не открылась» выглядела бы
-     * успешным ответом.
-     */
-    expect(errorCodeOfPage('<script>RoboxContext.error.code = 29;</script>')).toBe(29);
-    expect(errorCodeOfPage('<html>всё хорошо</html>')).toBeUndefined();
-  });
+  /*
+    Проверка разбора страницы оплаты убрана вместе с `errorCodeOfPage`
+    (ревизия четвёртого этапа): страницу открывает браузер человека, а не
+    бот, и разбирать её HTML некому. Настоящий смысл находки закрыт
+    иначе — `Recurring=true` больше не просится у несогласованного
+    магазина.
+  */
 
   it('у знакомых кодов есть человеческое объяснение для журнала', () => {
     expect(errorTextOf(29)).toContain('подпись');

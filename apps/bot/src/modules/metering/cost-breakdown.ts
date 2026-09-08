@@ -154,7 +154,18 @@ function fold(rows: readonly Grouped[]): CostRow[] {
         calls: seen.calls,
         failed: seen.failed,
         unknownPrices: seen.unknown,
-        money: [...seen.money.entries()].map(([currency, micros]) => ({ currency, micros })),
+        /**
+         * Валюты внутри строки — по имени валюты (ревизия этапа 4).
+         *
+         * `Map` хранит порядок появления, а появлялись валюты в порядке
+         * строк запроса без `order by` — то есть в том, какой выбрал план.
+         * Заказчица видела «₽, $» и «$, ₽» на одной и той же странице при
+         * разных обновлениях. Тот же дефект нашёлся в расходе человека,
+         * где он ронял проверку через раз.
+         */
+        money: [...seen.money.entries()]
+          .map(([currency, micros]) => ({ currency, micros }))
+          .sort((first, second) => first.currency.localeCompare(second.currency)),
       }))
       /**
        * Довесок по ключу при равных вызовах — иначе порядок не задан.

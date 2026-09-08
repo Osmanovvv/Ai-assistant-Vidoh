@@ -426,7 +426,23 @@ export async function chargeRecurring(
     readonly ref: string;
     readonly description: string;
   },
-): Promise<{ readonly created: boolean; readonly answer: string }> {
+): Promise<{
+  readonly created: boolean;
+  readonly answer: string;
+  /**
+   * Разобранный код ошибки и его объяснение (ревизия четвёртого этапа).
+   *
+   * Прежде наружу уходил только сырой ответ, а `error_code` у неудачного
+   * счёта оставался **вечно пустым**: разбор кода существовал
+   * (`errorTextOf`), но вызывающих у него не было ни одного вне
+   * проверок. В панели неудачное продление выглядело как «что-то не
+   * так», хотя код 34 («услуга не подключена») и код 29 («недостаточно
+   * средств») требуют разного: первое чинит владелец магазина, второе —
+   * человек.
+   */
+  readonly code?: number | undefined;
+  readonly reason?: string | undefined;
+}> {
   const outSum = outSumOf(params.amountMinor);
   const userParams = marksOf({ ref: params.ref, kind: 'renewal' });
 
@@ -472,30 +488,46 @@ export async function chargeRecurring(
   if (/^OK\d+$/u.test(answer)) return { created: true, answer };
 
   const code = Number(/(\d+)/u.exec(answer)?.[1] ?? 'н');
-  const known = Number.isInteger(code) ? ERRORS[code] : undefined;
+  // Через `errorTextOf`, а не прямым обращением к таблице: у объяснения
+  // кода должен быть один читатель, и он же — вызывающий (ревизия 4).
+  const known = Number.isInteger(code) ? errorTextOf(code) : undefined;
 
   deps.logger?.error(
     { answer, code: Number.isInteger(code) ? code : undefined, known },
     'Дочернее списание Робокассы не создано',
   );
 
-  return { created: false, answer };
+  return {
+    created: false,
+    answer,
+    ...(Number.isInteger(code) ? { code } : {}),
+    ...(known === undefined ? {} : { reason: known }),
+  };
 }
 
-/** Человеческое объяснение кода ошибки — для журнала, не для человека. */
+/**
+ * Человеческое объяснение кода ошибки — для журнала, не для человека.
+ *
+ * Зовётся из `chargeRecurring`: разобранный код и его объяснение уходят
+ * в счёт, чтобы `error_code` перестал быть вечно пустым (ревизия 4).
+ */
 export function errorTextOf(code: number): string | undefined {
   return ERRORS[code];
 }
 
-/**
- * Код ошибки со страницы Робокассы.
- *
- * HTTP 200 у неё не означает успех: ошибка приезжает внутри HTML, в
- * `RoboxContext.error.code`. Без этого разбора «оплата не открылась»
- * выглядела бы как успешный ответ.
- */
-export function errorCodeOfPage(html: string): number | undefined {
-  const found = /RoboxContext\.error\.code\s*=\s*(\d+)/u.exec(html)?.[1];
+/*
+  `errorCodeOfPage` убрана ревизией четвёртого этапа.
 
-  return found === undefined ? undefined : Number(found);
-}
+  Она разбирала код ошибки из HTML страницы оплаты — и была недостижима
+  по устройству: страницу открывает **браузер человека**, а не бот.
+  Вызывающих у неё не было ни одного вне проверок, а её проверки мерили
+  разбор HTML, который никогда не приезжает.
+
+  Настоящий смысл находки был другим: ошибка 34 («услуга не подключена»)
+  приходила человеку **внутри страницы**, и мы о ней не узнавали. Это
+  закрыто по-другому — `Recurring=true` больше не просится у
+  несогласованного магазина, — а разбор чужой страницы для этого не нужен.
+
+  Понадобится читать её ответ (например если появится серверный вызов
+  создания счёта) — функция вернётся вместе со своим вызывающим.
+*/

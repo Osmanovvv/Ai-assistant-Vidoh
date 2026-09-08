@@ -638,6 +638,18 @@ describe('карточка: разбор жалобы «бот неправил�
     // прошло бы на пустом месте.
     expect(fromCard?.trialSpent).toBeGreaterThan(0);
     expect(fromCard?.spend).toHaveLength(2);
+
+    /**
+     * Порядок валют назван, а не «как получилось» (ревизия этапа 4).
+     *
+     * Сравнение выше чувствительно к порядку — и потому краснело **через
+     * раз**: у `group by` без `order by` порядок групп выбирает план, а
+     * планы у карточки (один человек) и списка (двадцать) разные. Без
+     * этой строки проверка снова стала бы лотереей: два случайных
+     * порядка иногда совпадают.
+     */
+    expect(fromCard?.spend.map((money) => money.currency)).toEqual(['rub', 'usd']);
+    expect(fromList?.spend.map((money) => money.currency)).toEqual(['rub', 'usd']);
   });
 });
 

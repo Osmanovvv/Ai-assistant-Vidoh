@@ -29,7 +29,8 @@ import {
   stopAllRenewals,
   trialSpent,
 } from './subscription.service.js';
-import { periodEndAfter, priceOf, renewFrom, tariffsOf } from './tariffs.js';
+import { periodEndAfter, priceOf, renewFrom } from './tariffs.js';
+import { sellable } from './checkout.service.js';
 
 /**
  * Подписка и оплата (§14 ТЗ, задача 4.2).
@@ -894,7 +895,7 @@ describe('цены задаются в админке — §14', () => {
      * выдуманные деньги, а узнали бы мы об этом по чужой жалобе.
      */
     expect(await priceOf(settings, { plan: 'monthly', rail: RAIL })).toBeUndefined();
-    expect(await tariffsOf(settings, RAIL)).toEqual([]);
+    expect(await sellable(settings, [RAIL])).toEqual([]);
   });
 
   it('заданная цена доходит до тарифа — без выкладки', async () => {
@@ -911,8 +912,17 @@ describe('цены задаются в админке — §14', () => {
       currency: 'XTR',
     });
 
-    // На рублёвом рельсе задан только месяц — годового тарифа там нет.
-    expect((await tariffsOf(settings, RAIL)).map((one) => one.plan)).toEqual(['monthly']);
+    /**
+     * На рублёвом рельсе задан только месяц — годового тарифа там нет.
+     *
+     * Спрашивается через `sellable` (ревизия четвёртого этапа): прежняя
+     * `tariffsOf` была вторым способом ответить на тот же вопрос и не
+     * имела вызывающих вне проверок. Два способа расходятся молча —
+     * добавь рельс, и один из них о нём не узнает.
+     */
+    const onRuble = (await sellable(settings, [RAIL])).map((one) => one.plan);
+
+    expect(onRuble).toEqual(['monthly']);
   });
 });
 

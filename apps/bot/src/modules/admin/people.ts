@@ -147,6 +147,27 @@ export async function overview(
     .from(batches)
     .where(and(eq(batches.status, 'done'), gte(batches.openedAt, since)));
 
+  /**
+   * Порядок валют задан **нами**, а не Postgres (ревизия этапа 4).
+   *
+   * У `group by` без `order by` порядок групп решает план запроса, и он
+   * разный у разных запросов: карточка спрашивает про одного человека,
+   * список — про двадцать, планы выходят разные, и один и тот же расход
+   * приезжал то `[рубли, доллары]`, то `[доллары, рубли]`.
+   *
+   * Цена была не в красной проверке, а в том, что она краснела **через
+   * раз**: пара «карточка и список» расходилась случайно, а случайное
+   * расхождение чинят месяцами. И заказчица видела валюты в разном
+   * порядке при каждом обновлении страницы.
+   *
+   * Порядок — по **тексту** валюты, а не по самому столбцу: `currency`
+   * это перечисление Postgres, объявленное как `('usd', 'rub')`, и
+   * сортировка по столбцу идёт по порядку объявления. Значит «по
+   * возрастанию» дало бы `[доллары, рубли]`, а дописанная в конец
+   * перечисления валюта встала бы последней независимо от имени.
+   * Текстовый порядок предсказуем читающему и совпадает с разделом
+   * расходов, где валюты внутри строки сортируются по имени.
+   */
   const spendRows = await db
     .select({
       currency: aiCalls.costCurrency,
@@ -154,7 +175,8 @@ export async function overview(
     })
     .from(aiCalls)
     .where(gte(aiCalls.createdAt, since))
-    .groupBy(aiCalls.costCurrency);
+    .groupBy(aiCalls.costCurrency)
+    .orderBy(sql`${aiCalls.costCurrency}::text`);
 
   /**
    * Вызовы без цены — числом (ревизия четвёртого этапа).
@@ -184,7 +206,9 @@ export async function overview(
     })
     .from(billingInvoices)
     .where(and(eq(billingInvoices.status, 'paid'), gte(billingInvoices.paidAt, since)))
-    .groupBy(billingInvoices.currency);
+    .groupBy(billingInvoices.currency)
+    // Порядок валют задан нами, по тексту — причина у расхода выше.
+    .orderBy(sql`${billingInvoices.currency}::text`);
 
   const refundedRows = await db
     .select({
@@ -194,7 +218,9 @@ export async function overview(
     })
     .from(billingInvoices)
     .where(and(eq(billingInvoices.status, 'refunded'), gte(billingInvoices.refundedAt, since)))
-    .groupBy(billingInvoices.currency);
+    .groupBy(billingInvoices.currency)
+    // Порядок валют задан нами, по тексту — причина у расхода выше.
+    .orderBy(sql`${billingInvoices.currency}::text`);
 
   const payers = await activePayersCount(db, now);
 
@@ -406,7 +432,24 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
     })
     .from(aiCalls)
     .where(inArray(aiCalls.userId, ids))
-    .groupBy(aiCalls.userId, aiCalls.costCurrency);
+    .groupBy(aiCalls.userId, aiCalls.costCurrency)
+    /**
+     * Порядок валют задан нами, а не планом запроса (ревизия этапа 4).
+     *
+     * Этот запрос зовут **оба** пути: карточка через `peopleById` с одним
+     * человеком, список — с двадцатью. Один и тот же код, разные планы, и
+     * расход приезжал в разном порядке — проверка «числа в карточке те же,
+     * что в списке» краснела через раз.
+     *
+     * Порядок — по **тексту** валюты, а не по самому столбцу: `currency`
+     * это перечисление Postgres, объявленное как `('usd', 'rub')`, и
+     * сортировка по столбцу идёт по порядку объявления. Значит «по
+     * возрастанию» дало бы `[доллары, рубли]`, а дописанная в конец
+     * перечисления валюта встала бы последней независимо от имени.
+     * Текстовый порядок предсказуем читающему и совпадает с разделом
+     * расходов, где валюты внутри строки сортируются по имени.
+     */
+    .orderBy(aiCalls.userId, sql`${aiCalls.costCurrency}::text`);
 
   /**
    * Подписки — одним запросом на страницу, как и остальные числа.

@@ -169,11 +169,7 @@ export function missingIn(report: unknown, kind: RunShape): readonly string[] {
  * Форма проверяется тем же разбором, что и при чтении истории: неполный
  * отчёт сюда не пройдёт.
  */
-export async function reportByName(
-  runs: string,
-  name: string,
-  kind: RunShape,
-): Promise<unknown> {
+export async function reportByName(runs: string, name: string, kind: RunShape): Promise<unknown> {
   let report: unknown;
 
   try {

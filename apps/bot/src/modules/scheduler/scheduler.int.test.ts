@@ -756,3 +756,49 @@ describe('напоминание не приглашает того, кому б
     expect(sent?.buttons).toEqual([]);
   });
 });
+
+describe('раскладка доходит до всех, а не до первых пятисот (ревизия этапа)', () => {
+  /**
+   * **Начиная с пятьсот первого человека напоминания не приходили
+   * вовсе** — и узнать об этом было неоткуда: ни числа, ни строки в
+   * журнале. Порядок строк при этом задавал Postgres, то есть «первые
+   * пятьсот» каждый проход могли быть разными.
+   *
+   * Проверка берёт 501 человека: на сотне дефект не видно, и именно
+   * поэтому его не поймал ни один прежний прогон.
+   */
+  it('пятьсот первому человеку напоминание тоже поставлено', async () => {
+    const many: string[] = [];
+
+    for (let index = 0; index < 501; index++) {
+      const person = await upsertUser(testDb(), {
+        tgId: 600_000 + index,
+        firstName: `Человек ${String(index)}`,
+      });
+
+      await setMorning(testDb(), person.id, '08:30');
+      many.push(person.id);
+    }
+
+    await planReminders(deps(), { now: NOW });
+
+    const [row] = await testDb()
+      .select({ total: sql<number>`count(distinct ${reminders.userId})::int` })
+      .from(reminders)
+      .where(eq(reminders.kind, 'morning'));
+
+    // Все, кому положено: посеянный в общем `beforeEach` плюс эти 501.
+    expect(row?.total ?? 0).toBeGreaterThanOrEqual(501);
+
+    // И конкретно последний по порядку — не «первые пятьсот».
+    const sorted = [...many].sort((one, two) => one.localeCompare(two));
+    const last = sorted[sorted.length - 1] ?? '';
+
+    const [tail] = await testDb()
+      .select({ total: sql<number>`count(*)::int` })
+      .from(reminders)
+      .where(and(eq(reminders.userId, last), eq(reminders.kind, 'morning')));
+
+    expect(tail?.total ?? 0).toBe(1);
+  }, 120_000);
+});

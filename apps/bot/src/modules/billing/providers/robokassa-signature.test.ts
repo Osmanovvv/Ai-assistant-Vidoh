@@ -10,7 +10,6 @@ import {
   outSumOf,
   recurringSignature,
   resultSignature,
-  successSignature,
   userParamsPart,
 } from './robokassa-signature.js';
 
@@ -259,8 +258,14 @@ describe('подпись уведомления — пароль №2 и дру�
 
     expect(byTwo).not.toBe(byOne);
 
-    // А SuccessURL — наоборот, первым паролем при той же базе.
-    expect(successSignature({ outSum: '399.00', invId: '1001', password1: P1 })).toBe(byOne);
+    /*
+      Строка про SuccessURL убрана вместе с `successSignature` (ревизия
+      четвёртого этапа): подпись возврата с страницы оплаты проверять
+      негде — SuccessURL ведёт в чат бота, а не на наш сервер, и решение
+      о продлении принимает уведомление. Формула у неё совпадала с
+      формулой уведомления, и две одинаковые формулы в двух местах
+      однажды разъезжаются.
+    */
   });
 
   it('сумма берётся сырой строкой, как пришла', () => {

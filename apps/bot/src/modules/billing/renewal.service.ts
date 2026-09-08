@@ -247,7 +247,18 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
       subscription,
       invoiceId: claimed.id,
       now,
-      ...(answer.answer === '' ? {} : { errorText: answer.answer }),
+      /**
+       * Текст — объяснение кода, если оно известно, иначе сырой ответ.
+       *
+       * «Услуга не подключена магазину» разбирающему говорит всё, а
+       * «ERROR: 34» — ничего, пока он не откроет документацию.
+       */
+      ...(answer.reason === undefined
+        ? answer.answer === ''
+          ? {}
+          : { errorText: answer.answer }
+        : { errorText: `${answer.reason} (${answer.answer})` }),
+      ...(answer.code === undefined ? {} : { errorCode: answer.code }),
     });
 
     failed += 1;
@@ -283,6 +294,16 @@ async function giveUp(
     /** Счёт продления, если он успел завестись. */
     readonly invoiceId?: string | undefined;
     readonly errorText?: string | undefined;
+    /**
+     * Код ошибки провайдера (ревизия четвёртого этапа).
+     *
+     * Прежде столбец `error_code` у неудачного счёта оставался **вечно
+     * пустым**: разбор кода существовал, а вызывающих у него не было ни
+     * одного вне проверок. В панели неудачное продление выглядело как
+     * «что-то не так», хотя код 34 («услуга не подключена») чинит
+     * владелец магазина, а код 29 («недостаточно средств») — человек.
+     */
+    readonly errorCode?: number | undefined;
     readonly now: Date;
   },
 ): Promise<void> {
@@ -290,6 +311,7 @@ async function giveUp(
     await markInvoiceFailed(deps.db, {
       id: params.invoiceId,
       ...(params.errorText === undefined ? {} : { errorText: params.errorText }),
+      ...(params.errorCode === undefined ? {} : { errorCode: params.errorCode }),
     });
   }
 
