@@ -38,6 +38,8 @@ import {
   type SettingName,
   type SettingsRegistry,
 } from '../../modules/settings/settings.repo.js';
+import { saveText, textsView } from '../../modules/admin/texts.js';
+import { TextsRegistry } from '../../texts/registry.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
 import { accessView, checkParam, noteSubjects, recordAccess, type Exposure } from './audit.js';
@@ -113,6 +115,14 @@ export interface AdminDeps {
    * «через минуту, если повезёт».
    */
   readonly settings?: SettingsRegistry | undefined;
+  /**
+   * Реестр реплик (§13.9, задача 4.13).
+   *
+   * Нужен ровно для одного: перечитать правки сразу после записи. Без
+   * него «меняются без выкладки» превратилось бы в «меняются в течение
+   * минуты», а человек, нажавший «Сохранить», проверяет бота сразу.
+   */
+  readonly texts?: TextsRegistry | undefined;
   /**
    * Откуда отдавать собранную панель. Без него отдаётся только API.
    *
@@ -677,6 +687,103 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
             res.status(500).json({ error: 'не удалось собрать карточку' });
           },
         );
+      },
+    );
+  }
+
+  /**
+   * Реплики бота правятся из панели (§13.9, задача 4.13).
+   *
+   * **Свой блок, а не внутри настроек.** Сперва эти два пути попали в
+   * блок `deps.settings && deps.db` — и молча потребовали реестр
+   * настроек, которым не пользуются вовсе. Собранная без него панель
+   * отвечала бы на них 404, а проверка нашла бы это только там, где
+   * стенд случайно передал настройки. Ровно та забытая зависимость,
+   * из-за которой в проекте появился общий сборщик роутера.
+   */
+  if (deps.db !== undefined) {
+    const db = deps.db;
+
+    /**
+     * Реплики бота (§13.9, задача 4.13).
+     *
+     * §13.9 требует менять тексты **без выкладки новой версии**. Словарь
+     * лежал в коде, и правился только выкладкой; план обещал источник из
+     * базы «на четвёртом этапе» — вот его половина со стороны панели.
+     *
+     * Персональных данных здесь нет: это слова бота, одни для всех.
+     */
+    closed(
+      'get',
+      '/api/texts',
+      { personal: false, why: 'слова бота, одни для всех, без имён и текста человека' },
+      (_req: Request, res: Response) => {
+        void textsView(db).then(
+          (view) => {
+            res.json(view);
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать реплики' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Правка реплики — или возврат к словам из кода.
+     *
+     * **Проверка §13 стоит до записи, и это главное в этом маршруте.**
+     * Пока реплики правились выкладкой, их смотрел прогон и чужой взгляд;
+     * теперь правка попадает людям сразу. Отказ называет правило и то,
+     * что его нарушило: «в реплике не бывает двух вопросов, а здесь их
+     * два» человек исправит, «не удалось сохранить» — не исправит ничего.
+     *
+     * После записи реестр перечитывает правки сразу — иначе «без
+     * выкладки» означало бы «в течение минуты», а человек проверяет бота
+     * тут же.
+     */
+    closed(
+      'post',
+      '/api/texts',
+      { personal: false, why: 'правка слов бота, данных человека здесь нет' },
+      (req: Request, res: Response) => {
+        // Через `??`: тело может не разобраться вовсе, и падать на этом
+        // панель не должна.
+        const body = (req.body ?? {}) as { path?: unknown; said?: unknown };
+        const path = typeof body.path === 'string' ? body.path : '';
+        const said = typeof body.said === 'string' ? body.said : '';
+
+        if (path === '') {
+          res.status(400).json({ error: 'не сказано, какую реплику править' });
+          return;
+        }
+
+        void saveText(db, { path, said, by: req.admin?.login ?? 'неизвестно' })
+          .then(async (outcome) => {
+            if (!outcome.ok) return outcome;
+
+            // Перечитываем сразу: правка обязана действовать с этой
+            // секунды, а не с истечения окна.
+            await deps.texts?.refresh();
+
+            return outcome;
+          })
+          .then(
+            (outcome) => {
+              if (outcome.ok) {
+                res.json({ ok: true, reset: outcome.reset });
+                return;
+              }
+
+              // 400: запрос понят, но текст не годится боту в реплику.
+              res.status(400).json({ error: outcome.why });
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(500).json({ error: 'не удалось сохранить реплику' });
+            },
+          );
       },
     );
   }

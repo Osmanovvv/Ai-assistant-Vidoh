@@ -2,6 +2,7 @@ import { join } from 'node:path';
 
 import { createAdminRouter, type AdminAuthConfig, type AdminDeps } from './index.js';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
+import { TextsRegistry } from '../../texts/registry.js';
 import type { Database } from '../../infra/db.js';
 
 /**
@@ -36,6 +37,9 @@ export function fullAdminRouter(params: {
     config: params.config,
     db: params.db,
     settings: params.settings,
+    // Реестр реплик: без него правка из панели ждала бы окна, и
+    // «без выкладки» превратилось бы в «через минуту».
+    texts: new TextsRegistry({ db: params.db }),
     staticDir: join(import.meta.dirname, '../../../../admin/dist'),
     evalDir: join(import.meta.dirname, 'нет-такой-папки'),
     evalRunner: { state: () => ({ kind: 'idle' }), start: () => false },

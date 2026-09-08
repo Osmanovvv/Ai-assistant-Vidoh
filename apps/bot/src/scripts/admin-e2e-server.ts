@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   aiCalls,
   appSettings,
+  textOverrides,
   batches,
   billingEvents,
   billingInvoices,
@@ -28,6 +29,7 @@ import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { hashPassword } from '../http/admin/password.js';
 import { createServer } from '../http/server.js';
+import { TextsRegistry } from '../texts/registry.js';
 import type { Database } from '../infra/db.js';
 import { SettingsRegistry } from '../modules/settings/settings.repo.js';
 import { setupTestDatabase } from '../test/db.js';
@@ -85,6 +87,9 @@ if (seedUrl !== undefined) {
   seeded = await setupTestDatabase();
 
   await seeded.delete(appSettings);
+  // Правки реплик — тоже состояние стенда: остаться от прошлого прогона
+  // им нельзя, иначе снимок внешнего вида менялся бы от чужой правки.
+  await seeded.delete(textOverrides);
   await seeded.delete(broadcastDeliveries);
   await seeded.delete(broadcasts);
   await seeded.delete(aiCalls);
@@ -496,6 +501,12 @@ const app = createServer({
          * после записи, и это проверено интеграционным тестом.
          */
         adminSettings: new SettingsRegistry({ db: seeded, ttlMs: 0 }),
+        /**
+         * Реестр реплик: без него правка из редактора легла бы в
+         * таблицу, а бот стенда продолжал бы говорить прежними словами —
+         * и браузерная проверка «правка действует сразу» мерила бы не то.
+         */
+        adminTexts: new TextsRegistry({ db: seeded }),
         adminEvalDir: evalDir,
         /**
          * Реестр промптов — как в бою (ревизия четвёртого этапа).

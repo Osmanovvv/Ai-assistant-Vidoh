@@ -1,102 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
-import { forbiddenPhraseIn } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from './index.js';
-
-/** Одна реплика словаря: путь до неё и слова, которые прочтёт человек. */
-interface Reply {
-  readonly path: string;
-  readonly said: string;
-  readonly kind: 'строка' | 'функция';
-}
+import { forbiddenPhraseIn, repliesOf, saidBy, type Reply } from './rules.js';
 
 /**
- * Слова параметризованной реплики — из её же исходника.
+ * Обход словаря и добыча слов живут в `rules.ts` — вместе с правилами.
  *
- * **Почему не вызовом.** Таких реплик в словаре пятьдесят одна, у каждой
- * свои аргументы; звать их наугад значит либо уронить проверку, либо
- * подсунуть выдумку вместо текста. А правила §13 — про наши слова, и
- * слова эти лежат в литерале.
- *
- * Подставляемое (`${…}`) выбрасывается нарочно: там данные человека, а
- * не наш текст. Заодно это снимает ложную тревогу от тернарника внутри
- * подстановки — его «?» не вопрос, а код.
- *
- * **Раскодирование — страховка от сборщика, и она снята с опыта.** Под
- * vitest исходник функции отдаёт кириллицу как есть; под `tsx` тот же
- * вызов даёт «\u0414\u043E\u0431…» вместо «Добавила» — сборка
- * экранирует неанглийские знаки. Проверка не должна зависеть от того,
- * кто именно собирает: иначе однажды она ослепнет на всех пятидесяти
- * одной параметризованной реплике и останется при этом зелёной.
- *
- * Проверено, а не предположено: первая версия писалась под `tsx`, где
- * экранирование видно глазами, и там оно есть. Ниже стоит страж,
- * который поймает ослепление при любом сборщике.
+ * Здесь их копии быть не должно: правило §13 проверяется и на записи из
+ * панели, и на словаре целиком, и если обходов станет два, они разойдутся
+ * молча — ровно тот случай, против которого написан инвариант проекта.
  */
-function saidBy(source: string): string {
-  // Обратная кавычка через код: вставить её литералом внутрь шаблонной
-  // строки нельзя, а regex обязан ловить и шаблоны, и обычные строки —
-  // составные реплики собираются из одиночных кавычек.
-  const tick = String.fromCharCode(96);
-  const literal = new RegExp(`${tick}[^${tick}]*${tick}|'[^']*'|"[^"]*"`, 'gsu');
-
-  return (source.match(literal) ?? [])
-    .map((one) => one.slice(1, -1))
-    .join(' ')
-    .replaceAll(/\$\{[^}]*\}/gu, ' ')
-    .replaceAll(/\\u([0-9a-fA-F]{4})/gu, (_whole, code: string) =>
-      String.fromCharCode(Number.parseInt(code, 16)),
-    )
-    .replaceAll(/\\x([0-9a-fA-F]{2})/gu, (_whole, code: string) =>
-      String.fromCharCode(Number.parseInt(code, 16)),
-    );
-}
-
-/** Весь словарь одним списком: и простые реплики, и параметризованные. */
-function replies(): readonly Reply[] {
-  const found: Reply[] = [];
-
-  const walk = (value: unknown, path: string): void => {
-    if (typeof value === 'string') {
-      found.push({ path, said: value, kind: 'строка' });
-      return;
-    }
-
-    if (typeof value === 'function') {
-      found.push({ path, said: saidBy(String(value)), kind: 'функция' });
-      return;
-    }
-
-    if (typeof value === 'object' && value !== null) {
-      for (const [key, nested] of Object.entries(value)) {
-        walk(nested, path === '' ? key : `${path}.${key}`);
-      }
-    }
-  };
-
-  walk(defaultTexts, '');
-
-  return found;
-}
 
 /** Кто нарушил правило — путём и словами, чтобы правка была очевидна. */
 function blame(broken: readonly Reply[]): readonly string[] {
   return broken.map(
-    (one) => `${one.path} [${one.kind}]: ${one.said.replaceAll(String.fromCharCode(10), ' / ')}`,
+    (one) =>
+      `${one.path} [${one.places > 0 ? 'с подстановкой' : 'простая'}]: ${one.said.replaceAll(String.fromCharCode(10), ' / ')}`,
   );
 }
 
-/**
- * Свойства реплик, которые нельзя проверить глазами (задачи 2.11 и 2.12).
- *
- * Тексты правит человек — иногда заказчица, иногда мы по её замечанию. Тест
- * не судит формулировку: он следит за требованиями ТЗ, которые формулировка
- * обязана соблюдать, как бы её ни переписали.
- *
- * Длину кризисной реплики и отсутствие в ней вопроса проверяет
- * `safety/crisis.test.ts` — там же, где проверяется сам контур. Здесь то,
- * чего там нет.
- */
+const replies = (): readonly Reply[] => repliesOf(defaultTexts);
 
 describe('реплика на острый кризис (§17, задача 2.12)', () => {
   const crisis = defaultTexts.safety.crisis;
@@ -129,7 +52,7 @@ describe('словарь целиком', () => {
     // Правило про пустоту — только для простых реплик: у
     // параметризованной законно почти нет своих слов («— ${title}»), и
     // требовать их значило бы краснеть на верном коде.
-    const empty = replies().filter((one) => one.kind === 'строка' && one.said.trim() === '');
+    const empty = replies().filter((one) => one.places === 0 && one.said.trim() === '');
 
     expect(blame(empty)).toEqual([]);
   });
@@ -159,7 +82,7 @@ describe('запрещённые шаблоны словаря (§13, задач
      * найтись настоящие русские слова.
      */
     const all = replies();
-    const parameterized = all.filter((one) => one.kind === 'функция');
+    const parameterized = all.filter((one) => one.places > 0);
 
     expect(all.length).toBeGreaterThan(200);
     expect(parameterized.length).toBeGreaterThan(40);

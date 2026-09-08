@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { desc, sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -1290,6 +1290,40 @@ export const appSettings = pgTable('app_settings', {
    */
   updatedBy: text('updated_by'),
 });
+
+/**
+ * Реплики, изменённые из панели (§13.9, задача 4.13).
+ *
+ * **Переопределения, а не копия словаря.** Пусто означает «как в коде»:
+ * неправленая реплика продолжает следовать за кодом, и наша будущая
+ * починка формулировки её догонит. Скопируй мы словарь целиком — каждая
+ * из 232 строк оказалась бы «уже правленой человеком», и починки
+ * обходили бы их стороной.
+ */
+export const textOverrides = pgTable(
+  'text_overrides',
+  {
+    /** Путь реплики в словаре, например `answer.acknowledgement`. */
+    path: text('path').primaryKey(),
+
+    /**
+     * Что говорить вместо словарного.
+     *
+     * Подстановки — числами в фигурных скобках: `{1}` — первое значение,
+     * `{2}` — второе. Проверяется при записи: потерянная подстановка
+     * означает обрубок вместо названия дела или даты.
+     */
+    value: text('value').notNull(),
+
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /** Кто поменял: об этом спросят, когда бот скажет что-то не то. */
+    updatedBy: text('updated_by'),
+  },
+  (table) => [index('text_overrides_updated_idx').on(desc(table.updatedAt))],
+);
+
+export type TextOverride = typeof textOverrides.$inferSelect;
 
 /**
  * Журнал доступа к персональным данным (§16 ТЗ, задача 4.11).

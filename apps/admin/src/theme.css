@@ -417,3 +417,81 @@ textarea.поле__ввод {
   line-height: 1.5;
   resize: vertical;
 }
+
+/*
+  Редактор реплик (§13.9, задача 4.13).
+
+  Реплика — не строка таблицы: её читают целиком и правят словами, а
+  таблица приучает скользить глазами по колонкам. Поэтому карточка с
+  полем на всю ширину, а адрес и пометки — мелким сверху.
+*/
+.реплика {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--поле, #fff);
+  border: 1px solid var(--граница, #e6e0da);
+  border-radius: 10px;
+}
+
+.реплика__путь {
+  margin-bottom: 6px;
+  color: var(--текст-тихий);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* Подстановки — предупреждение, а не украшение: их нельзя терять. */
+.реплика__подстановка {
+  color: var(--акцент, #6b4a3f);
+  font-family: inherit;
+}
+
+.реплика__правлена {
+  color: var(--успех, #1e6b34);
+  font-family: inherit;
+  font-weight: 600;
+}
+
+textarea.реплика__поле {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border: 1px solid var(--граница, #e6e0da);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+/*
+  Слова из кода — рядом с полем, а не вместо него.
+
+  Человек, правящий реплику, должен видеть, что заменяет и к чему
+  вернуться: пустое поле возвращает эти самые слова.
+*/
+.реплика__код {
+  margin: 6px 0 8px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.поиск {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.поиск__имя {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.поиск input {
+  width: 100%;
+  max-width: 420px;
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--граница, #e6e0da);
+  border-radius: 8px;
+}

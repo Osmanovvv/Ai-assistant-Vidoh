@@ -281,6 +281,13 @@
       "when": 1788821000002,
       "tag": "0039_invoice_ref_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788821000003,
+      "tag": "0040_text_overrides",
+      "breakpoints": true
     }
   ]
 }
