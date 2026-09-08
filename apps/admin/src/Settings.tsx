@@ -97,6 +97,8 @@ export function SettingsPanel(): React.ReactElement {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState<string | undefined>(undefined);
   const [problem, setProblem] = useState<string | undefined>(undefined);
+  /** Отказ чтения: без значений раздела нет вовсе. Отказ записи — рядом. */
+  const [unread, setUnread] = useState<string | undefined>(undefined);
 
   const load = useCallback(() => {
     void settings()
@@ -105,16 +107,26 @@ export function SettingsPanel(): React.ReactElement {
         setDrafts({});
       })
       .catch(() => {
-        setProblem('Не удалось прочитать настройки');
+        setUnread('Не удалось прочитать настройки');
       });
   }, []);
 
   useEffect(load, [load]);
 
-  if (problem !== undefined) {
+  /**
+   * Отказ **чтения** подменяет раздел, отказ **записи** — нет.
+   *
+   * Ревизия четвёртого этапа. Прежде состояние было одно: неудачная
+   * запись убирала со экрана всю таблицу вместе с полями ввода. Человек
+   * читал причину («допустимо от 1 до 1000») и не видел поля, которое
+   * надо поправить, — а вернуть таблицу можно было только перезагрузкой
+   * страницы. Ровно та же правка, что в разделе расходов: ожидание и
+   * отказ не должны подменять собой страницу.
+   */
+  if (unread !== undefined) {
     return (
       <p className="отказ" role="alert">
-        {problem}
+        {unread}
       </p>
     );
   }
@@ -130,14 +142,22 @@ export function SettingsPanel(): React.ReactElement {
         setSaved(name);
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось сохранить');
+      .catch((error: unknown) => {
+        // Причину называет сервер: «допустимо от 1 до 1000» человек
+        // исправит, «не удалось сохранить» — нет (ревизия этапа).
+        setProblem(error instanceof Error ? error.message : 'Не удалось сохранить');
       });
   };
 
   return (
     <div data-testid="settings">
       <p className="оговорка">Значения применяются сразу, без выкладки и без перезапуска бота.</p>
+
+      {problem !== undefined && (
+        <p className="отказ" role="alert">
+          {problem}
+        </p>
+      )}
 
       <div className="таблица-обёртка">
         <table className="таблица">
@@ -277,18 +297,26 @@ function PromoBlock(): React.ReactElement {
         setDraft(empty);
         load();
       })
-      .catch(() => {
-        setProblem(
-          'Код не подошёл: латиница, цифры и дефис, от 4 до 24 знаков; цены больше нуля; такого кода ещё не должно быть',
-        );
+      .catch((error: unknown) => {
+        /**
+         * **Причина показывается названной, а не склеенной.**
+         *
+         * Ревизия четвёртого этапа: здесь стояла одна строка про все три
+         * причины сразу, и её же человек видел на сбое сервера. То есть
+         * отказ базы предъявлялся как ошибка ввода, и заказчица правила
+         * то, что было верным.
+         */
+        setProblem(error instanceof Error ? error.message : 'Не получилось завести код');
       });
   };
 
   const switchOne = (code: string, enabled: boolean): void => {
     void switchPromoCode(code, enabled)
       .then(load)
-      .catch(() => {
-        setProblem('Не удалось изменить код');
+      .catch((error: unknown) => {
+        // Причина названа сервером — доносим её, а не пересказываем
+        // одним словом «не удалось» (та же правка, что у заведения).
+        setProblem(error instanceof Error ? error.message : 'Не удалось изменить код');
       });
   };
 

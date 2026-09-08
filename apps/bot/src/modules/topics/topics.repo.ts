@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { SETTINGS } from '../settings/settings.repo.js';
 
 import { items, topics, type Topic } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -181,7 +182,7 @@ async function linkOrphanItems(
  * красоты: столько ветвей человек ещё различает в списке чата, а дальше
  * структура сама становится тем хаосом, который продукт должен убирать.
  */
-export const MAX_TOPICS = 8;
+export const MAX_TOPICS = SETTINGS.maxTopics.fallback;
 
 export interface AppendResult {
   readonly added: readonly string[];
@@ -204,6 +205,19 @@ export async function appendTopics(
   db: Executor,
   userId: string,
   names: readonly string[],
+  /**
+   * Предел числа тем — из настроек (§15, ревизия четвёртого этапа).
+   *
+   * Настройка «Сколько тем» была объявлена в панели и **не читалась
+   * никем**: предел оставался константой в коде. Человек менял число,
+   * видел «Сохранено» и ждал, что что-то изменится, — а не менялось
+   * ничего. Настройка, которую никто не читает, хуже отсутствующей.
+   *
+   * Параметром, а не чтением реестра внутри: это запись в базу, и
+   * второй читатель настроек мимо реестра разошёлся бы с первым на
+   * разборе мусора и на умолчании.
+   */
+  maxTopics?: number,
 ): Promise<AppendResult> {
   const existing = await listTopics(db, userId);
   const taken = new Set(existing.map((topic) => normalizeTopicName(topic.name)));
@@ -211,7 +225,7 @@ export async function appendTopics(
   const fresh = names.filter((name) => !taken.has(normalizeTopicName(name)));
   if (fresh.length === 0) return { added: [], limited: false };
 
-  const room = Math.max(0, MAX_TOPICS - existing.length);
+  const room = Math.max(0, (maxTopics ?? MAX_TOPICS) - existing.length);
   const allowed = fresh.slice(0, room);
 
   if (allowed.length === 0) return { added: [], limited: true };

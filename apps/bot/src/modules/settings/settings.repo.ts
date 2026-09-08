@@ -44,6 +44,23 @@ const DEFAULT_TTL_MS = 60_000;
  * способ молча уронить качество. Тот же принцип, что у задачи 4.8 с
  * непрогнанным набором.
  */
+/**
+ * **`min` и `max` — пределы, проверяемые на записи (ревизия этапа).**
+ *
+ * Прежде маршрут записи не проверял значение вовсе: мусор превращался в
+ * пустую строку, ноль принимался с «Сохранено», верхнего предела не было
+ * ни у одной настройки. Ноль в суточном потолке выключал разбор всем
+ * людям сразу — молча, потому что панель показывала бы умолчание без
+ * пометки «(из кода)». Строгий разбор жил только на чтении и умел одно:
+ * пожаловаться в журнал и взять умолчание.
+ *
+ * **`readBy` — кто это значение читает.** Строкой, а не признаком:
+ * панель обязана уметь сказать, какие настройки ещё никем не читаются
+ * (§15), а прежде она утверждала литералом `missing: []`, что таких нет.
+ * Их было четыре. Правдивость этих строк держит страж связки: для
+ * каждого названного читателя он ищет настоящего вызывающего в
+ * исходниках.
+ */
 export const SETTINGS = {
   /**
    * Размер пробного периода — в **выгрузках**, а не в днях (§14).
@@ -52,7 +69,16 @@ export const SETTINGS = {
    * таблице значений разбора ТЗ и ждёт подтверждения. Код работает на
    * любом числе, включая ноль: ноль означает «пробного периода нет».
    */
-  trialDumps: { key: 'trial.dumps', fallback: 10, measured: false },
+  trialDumps: {
+    key: 'trial.dumps',
+    fallback: 10,
+    measured: false,
+    // Ноль законен: «пробного периода нет». Тысяча — заведомо
+    // опечатка, а не решение.
+    min: 0,
+    max: 1_000,
+    readBy: 'приём сообщений: пускать ли выгрузку',
+  },
 
   /**
    * Окно ожидания тишины, миллисекунды (§9.1, §15).
@@ -61,13 +87,47 @@ export const SETTINGS = {
    * админки применяется **без перезапуска**. Поэтому значение читается
    * в момент, когда нужно, а не запоминается при старте.
    */
-  silenceWindowMs: { key: 'limits.silence_window_ms', fallback: 30_000, measured: true },
+  silenceWindowMs: {
+    key: 'limits.silence_window_ms',
+    fallback: 30_000,
+    measured: true,
+    /**
+     * Не меньше секунды: ноль закрывал бы выгрузку на первом же
+     * слове, и «сказала три мысли подряд» превратилось бы в три
+     * разбора вместо одного — то есть в тройной счёт.
+     *
+     * Не больше десяти минут: дольше человек ждёт ответа молча и
+     * решает, что бот сломался.
+     */
+    min: 1_000,
+    max: 600_000,
+    readBy: 'приём сообщений, закрытие выгрузки и досмотр',
+  },
 
   /** Потолок выгрузок в сутки на человека (§10.5). */
-  dumpsPerDay: { key: 'limits.dumps_per_day', fallback: 30, measured: false },
+  dumpsPerDay: {
+    key: 'limits.dumps_per_day',
+    fallback: 30,
+    measured: false,
+    // **Ноль запрещён.** Он означал бы «никому ничего не
+    // разбираем»: потолок сверяется на каждом сообщении каждого
+    // человека, и ноль молча выключил бы продукт целиком.
+    min: 1,
+    max: 1_000,
+    readBy: 'приём сообщений: суточный потолок',
+  },
 
   /** Сколько тем бот заводит человеку (§8, §15). */
-  maxTopics: { key: 'topics.max', fallback: 8, measured: false },
+  maxTopics: {
+    key: 'topics.max',
+    fallback: 8,
+    measured: false,
+    // Ноль означал бы «ни одной ветки»: §8 обещает человеку
+    // разложенное по сферам, и пустая раскладка — не настройка.
+    min: 1,
+    max: 64,
+    readBy: 'разбор: сколько ветвей заводить человеку',
+  },
 
   /**
    * Пороги уверенности резолвера — в сотых долях (§7, §15).
@@ -82,9 +142,32 @@ export const SETTINGS = {
    * ломает то, что проверено, — панель обязана сказать это, прежде чем
    * даст поле для ввода.
    */
-  resolverApply: { key: 'resolver.apply_pct', fallback: 80, measured: true },
-  resolverCreate: { key: 'resolver.create_pct', fallback: 45, measured: true },
-  resolverSimilarity: { key: 'resolver.similarity_pct', fallback: 50, measured: true },
+  resolverApply: {
+    key: 'resolver.apply_pct',
+    fallback: 80,
+    measured: true,
+    // Ноль применял бы правку к чему угодно без вопроса — самое
+    // дорогое, что резолвер умеет сделать неправильно.
+    min: 1,
+    max: 100,
+    readBy: 'резолвер: порог применения правки',
+  },
+  resolverCreate: {
+    key: 'resolver.create_pct',
+    fallback: 45,
+    measured: true,
+    min: 1,
+    max: 100,
+    readBy: 'резолвер: порог новой записи',
+  },
+  resolverSimilarity: {
+    key: 'resolver.similarity_pct',
+    fallback: 50,
+    measured: true,
+    min: 1,
+    max: 100,
+    readBy: 'резолвер: порог схожести записей',
+  },
 
   /**
    * Темп рассылки: сообщений в секунду (§15, задача 4.10).
@@ -97,7 +180,16 @@ export const SETTINGS = {
    * точно и меняется, а рассылка на тысячу адресов — не то место, где
    * хочется выкладывать новую версию, чтобы сбавить темп.
    */
-  broadcastPerSecond: { key: 'broadcast.per_second', fallback: 20, measured: false },
+  broadcastPerSecond: {
+    key: 'broadcast.per_second',
+    fallback: 20,
+    measured: false,
+    // Тридцать — весь бюджет бота у Telegram, включая ответы живым
+    // людям. Ноль остановил бы рассылку навсегда, не сказав.
+    min: 1,
+    max: 30,
+    readBy: 'рассылка: темп отправки',
+  },
 
   /**
    * Стоимость тарифов (§14, задача 4.2).
@@ -113,8 +205,24 @@ export const SETTINGS = {
    * Рубли в копейках, звёзды штуками: и то и другое целое, дробная
    * арифметика в деньгах однажды даёт 398,99999.
    */
-  priceMonthlyRub: { key: 'price.monthly_rub_minor', fallback: 0, measured: false },
-  priceYearlyRub: { key: 'price.yearly_rub_minor', fallback: 0, measured: false },
+  priceMonthlyRub: {
+    key: 'price.monthly_rub_minor',
+    fallback: 0,
+    measured: false,
+    // Ноль законен и означает «не продаётся». Верхний предел —
+    // миллион рублей: выше это опечатка, а не тариф.
+    min: 0,
+    max: 100_000_000,
+    readBy: 'экран подписки и продление',
+  },
+  priceYearlyRub: {
+    key: 'price.yearly_rub_minor',
+    fallback: 0,
+    measured: false,
+    min: 0,
+    max: 100_000_000,
+    readBy: 'экран подписки и продление',
+  },
 
   /**
    * Цена в звёздах — отдельными числами, а не пересчётом из рублей.
@@ -124,11 +232,99 @@ export const SETTINGS = {
    * требует, чтобы тарифы были на обоих рельсах, но не требует, чтобы
    * цифры совпадали до копейки.
    */
-  priceMonthlyStars: { key: 'price.monthly_stars', fallback: 0, measured: false },
-  priceYearlyStars: { key: 'price.yearly_stars', fallback: 0, measured: false },
+  priceMonthlyStars: {
+    key: 'price.monthly_stars',
+    fallback: 0,
+    measured: false,
+    // Подписка за звёзды у Telegram ограничена сверху, и запас
+    // здесь шире его предела нарочно: свой предел проверяет рельс.
+    min: 0,
+    max: 1_000_000,
+    readBy: 'экран подписки',
+  },
+  priceYearlyStars: {
+    key: 'price.yearly_stars',
+    fallback: 0,
+    measured: false,
+    min: 0,
+    max: 1_000_000,
+    readBy: 'экран подписки',
+  },
 } as const;
 
 export type SettingName = keyof typeof SETTINGS;
+
+/**
+ * Годится ли значение для записи (ревизия четвёртого этапа).
+ *
+ * **Прежде маршрут записи не проверял ничего.** Нестроковое значение
+ * молча превращалось в пустую строку, ноль принимался с «Сохранено», а
+ * верхнего предела не было ни у одной настройки. Следствия были не
+ * теоретические: ноль в суточном потолке выключает разбор **всем** людям
+ * (потолок сверяется на каждом сообщении), и увидеть это в панели было
+ * нечем — она показала бы умолчание без пометки «(из кода)», потому что
+ * строка-то в базе есть.
+ *
+ * Проверка живёт здесь, рядом с пределами, а не в маршруте: у неё должен
+ * быть один текст на всех, кто пишет, и одно место, где его читают.
+ */
+export function checkValue(
+  name: SettingName,
+  value: unknown,
+): { readonly ok: true; readonly value: string } | { readonly ok: false; readonly why: string } {
+  if (typeof value !== 'string') {
+    return { ok: false, why: 'значение должно быть строкой из цифр' };
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^\d+$/u.test(trimmed)) {
+    // То же правило, что на чтении: цифры, и всё. «1e3» — опечатка, а не
+    // осознанная тысяча.
+    return { ok: false, why: 'только цифры: без пробелов, знаков и точки' };
+  }
+
+  const parsed = Number(trimmed);
+  const setting = SETTINGS[name];
+
+  if (parsed < setting.min || parsed > setting.max) {
+    return {
+      ok: false,
+      why: `допустимо от ${String(setting.min)} до ${String(setting.max)}`,
+    };
+  }
+
+  return { ok: true, value: trimmed };
+}
+
+/**
+ * Настройки, которых пока никто не читает.
+ *
+ * Панель обязана уметь это сказать (§15), и прежде она утверждала
+ * литералом `missing: []`, что таких нет. Их было четыре: «сколько тем»
+ * и три порога резолвера, чей единственный читатель сам никем не
+ * вызывался. Пустая клетка читается как факт — здесь она читалась как
+ * «всё в порядке».
+ *
+ * Правдивость `readBy` держит страж связки: для каждого названного
+ * читателя он ищет настоящего вызывающего в исходниках.
+ */
+export function settingsWithoutReader(): readonly string[] {
+  /**
+   * Расширение типа здесь нарочно.
+   *
+   * Сегодня читатель объявлен у **каждой** настройки, и тип это знает:
+   * без расширения проверка «читателя нет» стала бы заведомо ложной, а
+   * механизм — мёртвым до первой правки типа. Следующая настройка может
+   * появиться без `readBy`, и тогда она обязана попасть в этот список, а
+   * не молча раствориться.
+   */
+  const all = SETTINGS as Record<string, { readonly readBy?: string }>;
+
+  return Object.entries(all)
+    .filter(([, setting]) => setting.readBy === undefined)
+    .map(([name]) => name);
+}
 
 interface Cached {
   readonly value: string | undefined;
@@ -188,6 +384,29 @@ export class SettingsRegistry {
       this.deps.logger?.warn(
         { key: setting.key, raw, fallback: setting.fallback },
         'Значение настройки не похоже на целое неотрицательное число, беру умолчание из кода',
+      );
+
+      return setting.fallback;
+    }
+
+    /**
+     * Предел проверяется и **на чтении** — не только на записи.
+     *
+     * Запись проверяет маршрут панели, но в таблицу можно попасть и
+     * мимо него: рукой в SQL на боевом, миграцией, переносом базы. Ноль
+     * в суточном потолке выключил бы разбор всем людям сразу, и тишина
+     * в этом месте — худшее, что может случиться с продуктом.
+     */
+    if (parsed < setting.min || parsed > setting.max) {
+      this.deps.logger?.warn(
+        {
+          key: setting.key,
+          raw,
+          min: setting.min,
+          max: setting.max,
+          fallback: setting.fallback,
+        },
+        'Значение настройки вне допустимых пределов, беру умолчание из кода',
       );
 
       return setting.fallback;

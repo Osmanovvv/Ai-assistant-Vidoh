@@ -973,6 +973,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
           ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
           ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+          // Пороги резолвера правятся в панели без выкладки (§15), и
+          // до ревизии четвёртого этапа этот проброс отсутствовал: поля
+          // в панели были, читателя не было.
+          ...(deps.settings === undefined ? {} : { settings: deps.settings }),
         },
         {
           userId: batch.userId,

@@ -1,5 +1,6 @@
 import type { ResolverAction, ResolverAnswer } from '../ai/schemas/index.js';
 import type { Candidate } from './candidates.js';
+import { SETTINGS } from '../settings/settings.repo.js';
 
 /**
  * Пороговая логика резолвера (§7.3 ТЗ, задача 3.2).
@@ -89,14 +90,27 @@ export interface ResolverThresholds {
 /**
  * Значения по умолчанию.
  *
- * §3.2 требует, чтобы пороги настраивались из админки, — она четвёртый
- * этап. До неё значения живут здесь, одним объектом: пороги, разбросанные
- * по коду, невозможно ни обсудить, ни поменять разом.
+ * §3.2 требует, чтобы пороги настраивались из админки, и они настраиваются
+ * — задача 4.9 и ревизия четвёртого этапа, которая нашла, что мост от
+ * настроек до решателя не был построен вовсе.
+ *
+ * **Три умолчания берутся из таблицы настроек, а не набраны здесь.**
+ * Прежде одно и то же число стояло дважды — в `SETTINGS.fallback` и
+ * здесь — и ничем не связано: столбец «По умолчанию» в панели разошёлся
+ * бы с поведением от правки одного из двух мест.
+ *
+ * Сотые доли переводятся в доли единицы здесь: настройки хранятся целыми
+ * (человек правит «80», а не «0.8»), а решатель считает в долях.
+ *
+ * `similarityDone`, `similarityGap` и `freshMinutes` настройкой не
+ * объявлены и живут только здесь — второго экземпляра у них нет.
+ * `similarityDone` получен замером 30.08.2026 и от него зависит §21 п.8:
+ * прежде чем давать его в панель, нужен способ мерить вред от правки.
  */
 export const DEFAULT_THRESHOLDS: ResolverThresholds = {
-  create: 0.45,
-  apply: 0.8,
-  similarity: 0.5,
+  create: SETTINGS.resolverCreate.fallback / 100,
+  apply: SETTINGS.resolverApply.fallback / 100,
+  similarity: SETTINGS.resolverSimilarity.fallback / 100,
   similarityDone: 0.35,
   similarityGap: 0.1,
   freshMinutes: 15,

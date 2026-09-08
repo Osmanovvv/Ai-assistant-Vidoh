@@ -24,9 +24,21 @@ test.describe('настройки (§15; задача 4.9)', () => {
 
     await expect(page.getByTestId('settings')).toBeVisible();
 
-    // Пробный период: пока не задан, работает умолчание из кода.
+    // Пробный период: показано действующее значение.
     await expect(page.getByTestId('now-trialDumps')).toContainText('10');
-    await expect(page.getByTestId('now-trialDumps')).toContainText('из кода');
+
+    /**
+     * Пометка «(из кода)» проверяется на настройке, которую **не пишет
+     * ни одна проверка** (ревизия четвёртого этапа).
+     *
+     * Прежде она проверялась на пробном периоде — том самом, куда
+     * соседняя проверка пишет семёрку. Вернуть состояние «из кода» через
+     * панель нечем: у настроек есть чтение и запись, сброса нет. Значит
+     * на втором прогоне против того же стенда эта проверка краснела —
+     * то есть держалась на том, что стенд поднимают заново.
+     */
+    await expect(page.getByTestId('now-maxTopics')).toContainText('8');
+    await expect(page.getByTestId('now-maxTopics')).toContainText('из кода');
 
     /**
      * И предупреждение у измеренных значений — до поля ввода, а не
@@ -59,7 +71,12 @@ test.describe('настройки (§15; задача 4.9)', () => {
     await expect(page.getByTestId('now-trialDumps')).toContainText('7');
     await expect(page.getByTestId('now-trialDumps')).not.toContainText('из кода');
 
-    // Возвращаем как было: стенд общий на все проверки файла.
+    /**
+     * Возвращаем значение, но не состояние: строка в базе остаётся, и
+     * пометка «(из кода)» к пробному периоду больше не вернётся —
+     * сброса настроек в панели нет. Поэтому проверка пометки живёт на
+     * `maxTopics`, которую никто не пишет.
+     */
     await field.fill('10');
     await row.getByRole('button', { name: /Сохран/u }).click();
     await expect(page.getByTestId('now-trialDumps')).toContainText('10');
@@ -99,6 +116,63 @@ test.describe('настройки (§15; задача 4.9)', () => {
     expect(response.status()).toBe(401);
   });
 
+  test('отказ называет причину: занятый код и наша поломка выглядят по-разному', async ({
+    page,
+  }) => {
+    /**
+     * **Ревизия четвёртого этапа.** Панель не читала тело ответа, и на
+     * все отказы показывала одну склеенную строку — включая пятисотые.
+     * Отказ базы предъявлялся заказчице как ошибка её ввода.
+     */
+    await signIn(page, 'Настройки');
+
+    // Засеянный код BLOGGER7 уже есть — заводим его же.
+    await page.locator('input[name="promoCode"]').fill('BLOGGER7');
+    await page.locator('input[name="promoRub"]').fill('9900');
+    await page.locator('input[name="promoStars"]').fill('40');
+    await page.locator('button[name="promoSave"]').click();
+
+    await expect(page.getByRole('alert')).toContainText('Такой код уже есть');
+
+    // Наша поломка — своими словами, а не «код не подошёл».
+    await page.route('**/admin/api/promo', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'не удалось завести код' }),
+      });
+    });
+
+    await page.locator('input[name="promoCode"]').fill('WINTER-2027');
+    await page.locator('button[name="promoSave"]').click();
+
+    await expect(page.getByRole('alert')).toContainText('на нашей стороне');
+  });
+
+  test('ноль в суточном потолке панель не принимает', async ({ page }) => {
+    /**
+     * Он выключил бы разбор **всем** людям: потолок сверяется на каждом
+     * сообщении. Прежде значение не проверялось вовсе — «Сохранено», и
+     * бот молча перестаёт работать.
+     */
+    await signIn(page, 'Настройки');
+
+    const row = page.locator('tr', { has: page.locator('input[name="dumpsPerDay"]') });
+
+    await row.locator('input[name="dumpsPerDay"]').fill('0');
+    await row.getByRole('button', { name: 'Сохранить' }).click();
+
+    await expect(page.getByRole('alert')).toContainText('допустимо от 1');
+
+    // И значение не изменилось: отказ, а не отказ на словах.
+    await expect(page.getByTestId('now-dumpsPerDay')).toContainText('30');
+  });
+
   test('промокоды: код заводится, виден и выключается — задача 4.4', async ({ page }) => {
     /**
      * §14: «Поддержка кода на первый период. Нужны для запуска через
@@ -129,20 +203,44 @@ test.describe('настройки (§15; задача 4.9)', () => {
     await page.locator('input[name="promoStars"]').fill('60');
     await page.locator('button[name="promoSave"]').click();
 
-    // Код приведён к единому виду: кириллица не проходит, и панель
-    // говорит об этом, а не молчит.
-    await expect(page.getByRole('alert')).toContainText('латиница');
+    /**
+     * Кириллица не проходит, и панель говорит **названную сервером**
+     * причину, а не склеенную строку про все ошибки сразу.
+     *
+     * Ревизия четвёртого этапа: тело ответа панель не читала вовсе, и
+     * «такой код уже есть», «цены больше нуля» и сбой сервера выглядели
+     * одинаково — ошибкой ввода. Заказчица правила то, что было верным.
+     */
+    await expect(page.getByRole('alert')).toContainText('латиница, цифры и дефис');
 
-    await page.locator('input[name="promoCode"]').fill('AUTUMN-2026');
+    /**
+     * Код свой на каждый прогон (ревизия четвёртого этапа).
+     *
+     * Прежде он был жёстко зашит — `AUTUMN-2026`, — и второй прогон
+     * против того же стенда проходил **по чужой строке**: заведение
+     * отвергалось («такой код уже есть»), а проверка видимости
+     * срабатывала на строке, оставшейся с прошлого раза. Дальше она
+     * искала кнопку «Выключить» у уже выключенного кода и падала по
+     * таймауту. Выключить код через панель можно, удалить — нет.
+     */
+    const code = `AUTUMN-${String(Date.now())}`;
+
+    await page.locator('input[name="promoCode"]').fill(code);
     await page.locator('button[name="promoSave"]').click();
 
-    await expect(page.getByTestId('promo-AUTUMN-2026')).toBeVisible();
+    // Строка, а не клетка: цена лежит в соседней клетке той же строки.
+    const fresh = page.locator('tr', { has: page.getByTestId(`promo-${code}`) });
+
+    // Заведение подтверждается **ценой в своей строке**, а не одной
+    // видимостью: видимость обеспечила бы и чужая строка.
+    await expect(fresh).toBeVisible();
+    await expect(fresh).toContainText('149.00 ₽');
+    await expect(page.getByRole('alert')).toHaveCount(0);
 
     // Выключение, а не удаление: по коду считается недополученное.
-    const fresh = page.getByRole('row', { name: /AUTUMN-2026/u });
-
     await fresh.getByRole('button', { name: 'Выключить' }).click();
 
-    await expect(page.getByTestId('promo-AUTUMN-2026')).toContainText('выключен');
+    await expect(fresh).toContainText('выключен');
+    await expect(fresh.getByRole('button', { name: 'Включить' })).toBeVisible();
   });
 });

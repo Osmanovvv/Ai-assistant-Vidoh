@@ -1,4 +1,5 @@
 import { and, asc, eq, gte, sql } from 'drizzle-orm';
+import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
 import { batches, messagesRaw, type Batch } from '../../db/schema.js';
@@ -30,13 +31,25 @@ export interface BufferLimits {
   readonly maxDumpsPerDay: number;
 }
 
+/**
+ * Умолчания буфера.
+ *
+ * **Два значения берутся из таблицы настроек, а не набраны здесь заново**
+ * (ревизия четвёртого этапа). Прежде одно и то же число было записано
+ * дважды — в `SETTINGS.fallback` и здесь — и ничем не связано: столбец
+ * «По умолчанию» в панели разошёлся бы с поведением от любой правки
+ * одного из двух мест, и заметить это было бы нечем.
+ *
+ * Остальные три настройкой не объявлены (§15 их не просит) и живут
+ * здесь: у них нет второго экземпляра, значит и расходиться нечему.
+ */
 export const DEFAULT_LIMITS: BufferLimits = {
-  silenceWindowMs: 30_000,
+  silenceWindowMs: SETTINGS.silenceWindowMs.fallback,
   maxBatchAgeMs: 5 * 60_000,
   // Втрое дольше обычного разбора и короче потолка открытой выгрузки.
   maxProcessingMs: 3 * 60_000,
   maxMessagesPerBatch: 15,
-  maxDumpsPerDay: 30,
+  maxDumpsPerDay: SETTINGS.dumpsPerDay.fallback,
 };
 
 export type CloseReason = 'silence' | 'message_limit' | 'age_limit';

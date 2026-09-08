@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { effectiveThresholds, type SettingsRegistry } from '../settings/settings.repo.js';
 
 import type { Database } from '../../infra/db.js';
 import type { AiClientDeps } from '../ai/client.js';
@@ -51,6 +52,20 @@ export interface ResolveDeps {
   readonly embedder?: EmbeddingProvider | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Реестр настроек — ради порогов резолвера (§15, ревизия этапа 4).
+   *
+   * **Мост от панели до решателя не был построен вовсе.** Три порога
+   * объявлены в панели, у каждого поле ввода и страшное предупреждение
+   * «значение получено замером», а читателя не было ни одного:
+   * `effectiveThresholds` не имел вызывающих, и решатель всегда работал
+   * на константах из кода. То есть человека пугали ценой правки, которая
+   * ни на что не влияет.
+   *
+   * Необязателен: без него действуют умолчания из кода — и они те же
+   * самые, потому что берутся из `SETTINGS.fallback`.
+   */
+  readonly settings?: SettingsRegistry | undefined;
 }
 
 export interface ResolveSegmentParams {
@@ -185,6 +200,14 @@ export async function resolvePatchSegment(
     };
   }
 
+  /**
+   * Пороги читаются здесь — в момент решения, а не при старте.
+   *
+   * §15 обещает правку без выкладки: значение, запомненное при подъёме
+   * бота, этого обещания не исполняет.
+   */
+  const thresholds = await effectiveThresholds(deps.settings);
+
   const resolved = await resolveSegment(deps.ai, {
     segment: params.text,
     candidates,
@@ -192,6 +215,7 @@ export async function resolvePatchSegment(
     now,
     userId: params.userId,
     batchId: params.batchId,
+    ...(thresholds === undefined ? {} : { thresholds }),
   });
 
   const decision = resolved.decision;
