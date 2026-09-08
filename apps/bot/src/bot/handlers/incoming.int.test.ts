@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import type { Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
@@ -5,6 +7,8 @@ import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, messagesRaw } from '../../db/schema.js';
+import { registerPaySupportCommands } from './billing.js';
+import { createLogger } from '../../infra/logger.js';
 import type { Context } from 'grammy';
 import type { StatusSender } from '../../modules/presenter/status.service.js';
 import { SettingsRegistry, putSetting } from '../../modules/settings/settings.repo.js';
@@ -646,5 +650,71 @@ describe('настройка применяется на лету — услов
     await bot.handleUpdate(textUpdate('купить продукты'));
 
     expect(calls.map((call) => call.payload['text'])).toContain(defaultTexts.limits.tooManyDumps);
+  });
+});
+
+describe('обращение по /paysupport попадает в базу (ревизия четвёртого этапа)', () => {
+  /**
+   * **Порядок регистрации стоил обращения человека.** Команды платёжной
+   * платформы жили вместе с оплатой, а оплата регистрируется **до**
+   * приёма сообщений: служебное сообщение о платеже иначе уехало бы в
+   * буфер выгрузки. Из-за этого `/paysupport` отвечал, а сообщения не
+   * оставалось — ни в выгрузке, ни в `messages_raw`.
+   *
+   * Цена: реплика `/paysupport` обещает «напишите сюда же словами,
+   * разберёмся и вернём деньги, если списалось лишнее», а обращение,
+   * которым человек воспользовался этим приглашением, не сохранялось.
+   */
+  it('сообщение с командой сохраняется, а ответ уходит', async () => {
+    const { bot, calls } = createTestBot();
+
+    registerPaySupportCommands(bot, {
+      db: testDb(),
+      settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+      logger: createLogger({ level: 'silent' }),
+      providers: {},
+    });
+
+    await bot.init();
+    // Через `commandUpdate`: без разметки сущности grammY считает это
+    // обычным текстом, и `bot.command` до обработчика не доходит.
+    await bot.handleUpdate(commandUpdate('/paysupport'));
+
+    // Ответ ушёл: правила Telegram требуют отвечать.
+    const said = calls
+      .filter((one) => one.method === 'sendMessage')
+      .map((one) => String(one.payload['text']));
+
+    expect(said.join('\n')).toContain('оплат');
+
+    // И само обращение — в базе: инвариант «сначала сохраняем».
+    const saved = await testDb().select().from(messagesRaw);
+
+    expect(saved.map((one) => one.text)).toContain('/paysupport');
+  });
+
+  it('в сборке бота команды платёжной платформы стоят после приёма', async () => {
+    /**
+     * **Страж порядка, а не поведения.** Проверка выше подключает приём
+     * сама и потому пройдёт при любом порядке в `index.ts` — а дефект
+     * был именно там: команды регистрировались внутри оплаты, то есть до
+     * приёма. Здесь читается сборка.
+     */
+    const source = await readFile('src/index.ts', 'utf8');
+
+    const intake = source.indexOf('incomingMiddleware(');
+    const commands = source.indexOf('registerPaySupportCommands(');
+
+    expect(intake, 'приём не найден в сборке').toBeGreaterThan(0);
+    expect(commands, 'команды платёжной платформы не найдены в сборке').toBeGreaterThan(0);
+
+    expect(
+      commands,
+      [
+        'Команды /paysupport, /terms и /support зарегистрированы ДО приёма сообщений.',
+        'Тогда обращение человека не попадёт в базу: ответ уйдёт, а сообщения не останется.',
+        'Реплика при этом обещает «напишите сюда же словами, разберёмся и вернём деньги».',
+      ].join('\n'),
+    ).toBeGreaterThan(intake);
   });
 });

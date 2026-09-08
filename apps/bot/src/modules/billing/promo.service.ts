@@ -189,6 +189,17 @@ export interface PromoRow {
   /** Сколько недополучено: разница полной цены и цены по коду. */
   readonly discountMinor: number;
   readonly currency: string;
+  /**
+   * Недополученное **по каждой валюте** (ревизия четвёртого этапа).
+   *
+   * Прежде отдавалась одна величина — рублёвая, если платили и тем и
+   * другим, — а «Оплат» рядом считались по обеим. Панель показывала «2
+   * применения, недополучено 300 ₽», хотя второе применение было за
+   * звёзды и звёздная скидка нигде не появлялась. Складывать их нельзя
+   * (курс звезды задаёт Telegram), а молчать о второй валюте —
+   * значит показывать неполное число как полное.
+   */
+  readonly discounts: readonly { readonly currency: string; readonly minor: number }[];
 }
 
 /**
@@ -247,6 +258,21 @@ export async function promoRows(db: Executor): Promise<readonly PromoRow[]> {
       redeemed: mine.reduce((sum, row) => sum + row.redeemed, 0),
       discountMinor: Number(first?.discount ?? 0),
       currency: first?.currency ?? 'RUB',
+      /**
+       * Все валюты — чтобы панель не показывала часть как целое.
+       *
+       * Порядок задан: рубли первыми, дальше по имени валюты. Без
+       * порядка снимок панели дрожал бы от порядка строк Postgres.
+       */
+      discounts: [...mine]
+        .sort((one, two) =>
+          one.currency === 'RUB'
+            ? -1
+            : two.currency === 'RUB'
+              ? 1
+              : one.currency.localeCompare(two.currency),
+        )
+        .map((row) => ({ currency: row.currency, minor: Number(row.discount) })),
     };
   });
 }

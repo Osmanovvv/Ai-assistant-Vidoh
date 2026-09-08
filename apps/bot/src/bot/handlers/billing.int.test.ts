@@ -26,7 +26,12 @@ import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
 import { awaitingOf } from '../../modules/onboarding/awaiting.js';
-import { BILLING_ACTION, createPromoConsumer, registerBillingHandlers } from './billing.js';
+import {
+  BILLING_ACTION,
+  createPromoConsumer,
+  registerBillingHandlers,
+  registerPaySupportCommands,
+} from './billing.js';
 
 /**
  * Экран подписки и приём звёздной оплаты (§14 ТЗ, задача 4.2).
@@ -124,6 +129,16 @@ function createTestBot(providers: Partial<Record<Rail, PaymentProvider>>): {
   });
 
   registerBillingHandlers(bot, { db: testDb(), settings, logger, providers });
+
+  /**
+   * Команды платёжной платформы регистрируются отдельно (ревизия этапа).
+   *
+   * В бою они стоят **после** приёма сообщений: обращение человека по
+   * `/paysupport` обязано попасть в базу до того, как бот ответит.
+   * Здесь приёма нет, и порядок ни на что не влияет — но собрать бота
+   * без них значило бы проверять не того бота.
+   */
+  registerPaySupportCommands(bot, { db: testDb(), settings, logger, providers });
 
   return { bot, calls };
 }
