@@ -11,11 +11,12 @@ import {
   batches,
   billingEvents,
   billingInvoices,
-  promoCodes,
   billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
   items,
+  messagesRaw,
+  promoCodes,
   promptVersions,
   users,
 } from '../db/schema.js';
@@ -281,12 +282,36 @@ if (seedUrl !== undefined) {
     errorText: 'заплачено 100 RUB, а в счёте 39900 RUB',
   });
 
-  await seeded.insert(batches).values({
+  /**
+   * Сорвавшаяся выгрузка сеется **без склейки** — правка ревизии этапа.
+   *
+   * Так это и выглядит в бою: `combined_text` пишется в начале разбора, и
+   * у выгрузки, сорвавшейся до него, поле пусто. Прежде стенд сеял её со
+   * склейкой — то есть проверял обстановку, которой у сорвавшихся не
+   * бывает, и находка «карточка теряет слова именно у сорвавшихся» на
+   * стенде была не видна.
+   *
+   * Слова человека при этом на месте: они сохраняются до всякого разбора
+   * (инвариант 1), и карточка поднимает их сама.
+   */
+  const [unluckyBatch] = await seeded
+    .insert(batches)
+    .values({
+      userId: unlucky.id,
+      status: 'failed',
+      attempts: 3,
+      error: 'TransientSpeechError: распознавание не ответило',
+    })
+    .returning({ id: batches.id });
+
+  await seeded.insert(messagesRaw).values({
     userId: unlucky.id,
-    status: 'failed',
-    attempts: 3,
-    error: 'TransientSpeechError: распознавание не ответило',
-    combinedText: 'надо купить корм коту',
+    updateId: 910_001,
+    tgChatId: 4_003,
+    tgMessageId: 1,
+    batchId: unluckyBatch?.id ?? null,
+    kind: 'text',
+    text: 'надо купить корм коту',
   });
 
   /**

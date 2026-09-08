@@ -59,6 +59,17 @@ export interface FunnelRow {
   readonly paidWithoutTrialOver: number;
   /** У кого пробный период ещё идёт: он не «не купил», он не выбирал. */
   readonly trialStillRunning: number;
+  /**
+   * Предел исчерпан, а момента нет (ревизия четвёртого этапа).
+   *
+   * Бот таким уже отказывает, но сказать, **когда** кончился пробный,
+   * нечем: моменты ведутся с выкладки 4.4 и задним числом не
+   * досыпаются, а предел правится из панели — снижение мгновенно
+   * переводит человека за границу. Прежде они молча стояли в «ещё
+   * выбирает», и заказчица читала «двадцать человек думают» там, где
+   * двадцать упёрлись в отказ.
+   */
+  readonly trialOverUnrecorded: number;
 }
 
 export interface Funnel {
@@ -98,10 +109,23 @@ export interface Funnel {
  */
 async function rowsOf(
   db: Executor,
-  params: { readonly since?: Date | undefined; readonly until?: Date | undefined },
+  params: {
+    readonly since?: Date | undefined;
+    readonly until?: Date | undefined;
+    /**
+     * Нынешний предел пробного периода (ревизия четвёртого этапа).
+     *
+     * Нужен, чтобы «пробный ещё идёт» считалось тем же правилом, по
+     * которому решает гейт. Значением, а не чтением реестра здесь: этот
+     * модуль — запросы к базе, и второй читатель настроек мимо реестра
+     * разошёлся бы с первым на разборе мусора и на умолчании.
+     */
+    readonly trialLimit: number;
+  },
 ): Promise<readonly FunnelRow[]> {
   const since = params.since;
   const until = params.until;
+  const trialLimit = params.trialLimit;
 
   const result = await db.execute<{
     source: string | null;
@@ -111,6 +135,7 @@ async function rowsOf(
     paid_after_trial: number;
     paid_without_trial_over: number;
     trial_still_running: number;
+    trial_over_unrecorded: number;
   }>(sql`
     with own as (
       select
@@ -145,8 +170,32 @@ async function rowsOf(
       count(*) filter (where over_at is not null)::int as trial_over,
       count(*) filter (where over_at is not null and paid > 0)::int as paid_after_trial,
       count(*) filter (where over_at is null and paid > 0)::int as paid_without_trial_over,
-      count(*) filter (where over_at is null and trial > 0 and paid = 0)::int
-        as trial_still_running
+      /*
+        «Пробный ещё идёт» — по тому же правилу, по которому пускает гейт
+        (ревизия четвёртого этапа).
+
+        Прежде условие было «момента нет, трата есть, не платил», и в это
+        число попадали люди, которым бот уже отказывает: момент конца
+        пробного пишется с выкладки 4.4 и задним числом не досыпается, а
+        предел правится из панели — снизь его с десяти до пяти, и человек
+        с семью тратами мгновенно оказывается за границей, оставаясь в
+        колонке «ещё выбирает». Заказчица читала «двадцать человек ещё
+        думают» там, где двадцать человек упёрлись в отказ.
+
+        Предел берётся нынешний — тот, по которому гейт решает **сейчас**.
+      */
+      count(*) filter (where over_at is null and trial > 0 and trial < ${sql.raw(String(trialLimit))} and paid = 0)::int
+        as trial_still_running,
+      /*
+        Отдельным названным числом: предел исчерпан, а момента нет.
+
+        Это не «ещё выбирает» и не «дошёл до границы»: бот таким уже
+        отказывает, но сказать, когда именно кончился пробный, нечем.
+        Молча приписать их к любой из двух колонок значило бы соврать в
+        обе стороны.
+      */
+      count(*) filter (where over_at is null and trial >= ${sql.raw(String(trialLimit))} and paid = 0)::int
+        as trial_over_unrecorded
     from own
     group by source
   `);
@@ -165,6 +214,7 @@ async function rowsOf(
     paidAfterTrial: row.paid_after_trial,
     paidWithoutTrialOver: row.paid_without_trial_over,
     trialStillRunning: row.trial_still_running,
+    trialOverUnrecorded: row.trial_over_unrecorded,
   }));
 }
 
@@ -178,12 +228,14 @@ function sumRows(rows: readonly FunnelRow[]): FunnelRow {
       paidAfterTrial: all.paidAfterTrial + row.paidAfterTrial,
       paidWithoutTrialOver: all.paidWithoutTrialOver + row.paidWithoutTrialOver,
       trialStillRunning: all.trialStillRunning + row.trialStillRunning,
+      trialOverUnrecorded: all.trialOverUnrecorded + row.trialOverUnrecorded,
     }),
     {
       source: null,
       registered: 0,
       firstDump: 0,
       trialOver: 0,
+      trialOverUnrecorded: 0,
       paidAfterTrial: 0,
       paidWithoutTrialOver: 0,
       trialStillRunning: 0,
@@ -213,9 +265,32 @@ function mergeSame(rows: readonly FunnelRow[]): FunnelRow[] {
 
 export async function funnelOf(
   db: Executor,
-  params: { readonly since?: Date | undefined; readonly until?: Date | undefined } = {},
+  params: {
+    readonly since?: Date | undefined;
+    readonly until?: Date | undefined;
+    /**
+     * Предел пробного периода, действующий **сейчас**.
+     *
+     * Без него воронка называет «ещё выбирает» тех, кому бот уже
+     * отказывает: моменты конца пробного ведутся с выкладки 4.4, задним
+     * числом не досыпаются, а снижение предела мгновенно переводит
+     * человека за границу.
+     *
+     * Необязателен: без него это число не считается вовсе и честно
+     * говорится в оговорках — так собраны проверки, писавшиеся до
+     * ревизии.
+     */
+    readonly trialLimit?: number | undefined;
+  } = {},
 ): Promise<Funnel> {
-  const bySource = mergeSame(await rowsOf(db, params));
+  const bySource = mergeSame(
+    await rowsOf(db, {
+      ...params,
+      // Ноль означает «предел не назван»: тогда условие `trial < 0`
+      // ложно у всех, и колонка «ещё выбирает» честно пуста.
+      trialLimit: params.trialLimit ?? 0,
+    }),
+  );
   const total = sumRows(bySource);
 
   /**
@@ -257,6 +332,21 @@ export async function funnelOf(
     missing.push(
       'Моментов конца пробного периода пока нет ни одного: они пишутся с выкладки задачи 4.4 ' +
         'и задним числом не досыпаются. Ноль на третьем шаге означает «записей нет», а не «никто не дошёл».',
+    );
+  }
+
+  /**
+   * Предел не назван — колонка «ещё выбирает» не считается вовсе.
+   *
+   * Пустая колонка читается как факт: «никто не выбирает» вместо «мы не
+   * знаем, кто». Поэтому вместо нуля — строка словами. Так собраны
+   * проверки и вызовы, писавшиеся до ревизии четвёртого этапа; в панели
+   * предел передаётся всегда.
+   */
+  if (params.trialLimit === undefined) {
+    missing.push(
+      'Колонка «ещё выбирает» не посчитана: не передан нынешний размер пробного периода. ' +
+        'Ноль в ней означает «не считали», а не «никто не выбирает».',
     );
   }
 
