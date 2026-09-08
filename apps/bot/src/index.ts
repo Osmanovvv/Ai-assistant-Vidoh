@@ -27,7 +27,8 @@ import { createPaymentNotifier } from './modules/billing/notify.js';
 import type { PaymentProvider } from './modules/billing/provider.js';
 import type { Rail } from './modules/billing/tariffs.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
-import { SettingsRegistry } from './modules/settings/settings.repo.js';
+import { effectiveLimits, SettingsRegistry } from './modules/settings/settings.repo.js';
+import { runCloseBatchJob } from './modules/pipeline/close-job.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
@@ -53,12 +54,13 @@ import {
   createWorker,
   enqueueBroadcast,
   enqueueUserProcessing,
+  scheduleBatchClose,
   type BroadcastJob,
   type PipelineJob,
 } from './infra/queue.js';
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
 import { createServer } from './http/server.js';
-import { DEFAULT_LIMITS, closeBatchOnSilence } from './modules/buffer/buffer.service.js';
+import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
 import { modelsWithoutPrice } from './modules/metering/pricing.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { startScheduler } from './modules/scheduler/scheduler.service.js';
@@ -393,13 +395,28 @@ async function main(): Promise<void> {
     const data: PipelineJob = job.data;
 
     if (data.kind === 'close-batch') {
-      const closed = await closeBatchOnSilence(db, data.batchId, {
-        silenceWindowMs: DEFAULT_LIMITS.silenceWindowMs,
-      });
-      // Не закрылась — значит человек дописал, и стоит новое задание.
-      if (closed) {
-        await enqueueUserProcessing(queue, data.userId);
-      }
+      /**
+       * Решение живёт в `close-job.ts`, а не здесь.
+       *
+       * Воркер поднимается вместе с ботом, очередью и Redis, и проверку
+       * на него не написать. Ровно поэтому здесь и жил дефект ревизии
+       * четвёртого этапа: окно ожидания тишины бралось константой из
+       * кода, хотя задание ставилось значением из панели.
+       */
+      await runCloseBatchJob(
+        {
+          db,
+          settings,
+          reschedule: async (again) => {
+            await scheduleBatchClose(queue, again);
+          },
+          process: async (userId) => {
+            await enqueueUserProcessing(queue, userId);
+          },
+        },
+        { batchId: data.batchId, userId: data.userId },
+      );
+
       return;
     }
 
@@ -469,6 +486,8 @@ async function main(): Promise<void> {
   const stopSweep = startRecoverySweep({
     db,
     logger,
+    // Окно — получателем: правка из панели действует без перезапуска.
+    limits: async () => await effectiveLimits(settings, DEFAULT_LIMITS),
     process: (userId) => processUserBatches({ db, lock, handleBatch, onFailure }, userId),
   });
 
@@ -558,7 +577,7 @@ async function main(): Promise<void> {
     providers,
   });
   registerMembershipHandlers(bot, db, logger);
-  registerOnboardingHandlers(bot, db, logger, topicGateway);
+  registerOnboardingHandlers(bot, db, logger, topicGateway, settings);
   registerMenuHandlers(bot, db, logger);
   registerCardHandlers(bot, { db, logger, topics: topicGateway }, MENU_ACTION.root);
 

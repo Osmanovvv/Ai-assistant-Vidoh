@@ -1,5 +1,6 @@
 import { InlineKeyboard, type Bot, type CallbackQueryContext, type Context } from 'grammy';
 import type { Logger } from 'pino';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 
 import type { Database } from '../../infra/db.js';
 import { moveItemsToOwnTopics, recalcDeadlines } from '../../modules/onboarding/backfill.js';
@@ -90,6 +91,17 @@ export function registerOnboardingHandlers(
    * плоский режим §8.2.
    */
   gateway?: TopicGateway,
+  /**
+   * Реестр настроек — ради предела числа тем (§15, ревизия этапа).
+   *
+   * Настройка «Сколько тем» была объявлена в панели и не читалась никем:
+   * предел оставался константой в коде, человек менял число и видел
+   * «Сохранено», а не менялось ничего.
+   *
+   * Необязателен: без него работает умолчание из кода, и это законное
+   * состояние — так собран, например, стенд проверок.
+   */
+  settings?: SettingsRegistry,
 ): void {
   async function show(
     ctx: CallbackQueryContext<Context>,
@@ -491,7 +503,9 @@ export function registerOnboardingHandlers(
     const context = await outputContextOf(db, user.id);
     const texts = textsFor(context.textProfile);
 
-    const { added, limited } = await appendTopics(db, user.id, names);
+    const maxTopics = await settings?.number('maxTopics');
+
+    const { added, limited } = await appendTopics(db, user.id, names, maxTopics);
 
     if (added.length === 0) {
       await ctx.editMessageText(

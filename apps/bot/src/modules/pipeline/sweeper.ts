@@ -34,7 +34,19 @@ export interface SweepDeps {
   readonly logger: Logger;
   /** Что делать с пользователем, у которого нашлась забытая выгрузка. */
   readonly process: (userId: string) => Promise<unknown>;
-  readonly limits?: BufferLimits | undefined;
+  /**
+   * Пределы — **получателем**, а не значением (ревизия четвёртого этапа).
+   *
+   * Окно ожидания тишины правится в панели, и §15 обещает, что правка
+   * действует без перезапуска. Снимок, взятый при подъёме бота, этого
+   * обещания не исполняет: досмотр закрывал бы выгрузки по числу,
+   * которое было верным месяц назад.
+   *
+   * Функция, а не значение, ещё и потому, что чтение идёт к базе: делать
+   * его на каждом проходе можно (проход раз в минуту), а на каждой
+   * выгрузке — незачем.
+   */
+  readonly limits?: (() => Promise<BufferLimits> | BufferLimits) | undefined;
   readonly now?: (() => Date) | undefined;
 }
 
@@ -64,9 +76,13 @@ async function usersAwaitingWork(db: Database): Promise<readonly string[]> {
 
 /** Один проход досмотра. Вынесен отдельно, чтобы тест не ждал таймера. */
 export async function sweepOnce(deps: SweepDeps): Promise<SweepResult> {
+  // Окно читается на каждом проходе: правка из панели обязана
+  // действовать без перезапуска (§15).
+  const limits = deps.limits === undefined ? undefined : await deps.limits();
+
   const report = await recoverStuckBatches(deps.db, {
     ...(deps.now === undefined ? {} : { now: deps.now() }),
-    ...(deps.limits === undefined ? {} : { limits: deps.limits }),
+    ...(limits === undefined ? {} : { limits }),
   });
 
   const userIds = [...new Set([...report.userIds, ...(await usersAwaitingWork(deps.db))])];

@@ -44,6 +44,23 @@ function announceSignedOut(): void {
   window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
 }
 
+/**
+ * Причина отказа из тела ответа, если сервер её назвал.
+ *
+ * Тело может не разобраться (например отдал прокси, а не мы) — тогда
+ * `undefined`, и вызывающий скажет своими словами. Молча проглотить и
+ * то и другое было бы возвращением к прежнему: «Панель ответила 400».
+ */
+async function refusalOf(response: Response): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as { readonly error?: unknown };
+
+    return typeof body.error === 'string' && body.error !== '' ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${ROOT}${path}`, {
     credentials: 'same-origin',
@@ -56,7 +73,25 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new Error(`Панель ответила ${String(response.status)}`);
+    /**
+     * **Названную причину отказа панель обязана донести до человека.**
+     *
+     * Ревизия четвёртого этапа: тело ответа здесь не читалось вовсе, и
+     * «такой код уже есть» выглядело так же, как сбой сервера, — одной
+     * склеенной строкой про все возможные ошибки ввода. Заказчица читала
+     * отказ базы как свою ошибку и правила то, что было верным.
+     *
+     * Сервер причину называет: у отказов ввода это 400 с полем `error`.
+     * Пятисотые — наша поломка, и говорить о ней надо своими словами: их
+     * текст человеку ничего не объясняет и починить ничего не поможет.
+     */
+    const said = await refusalOf(response);
+
+    throw new Error(
+      response.status >= 500
+        ? `Не получилось — это на нашей стороне${said === undefined ? '' : `: ${said}`}`
+        : (said ?? `Панель ответила ${String(response.status)}`),
+    );
   }
 
   return (await response.json()) as T;
