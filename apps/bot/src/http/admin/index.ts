@@ -165,6 +165,32 @@ export interface AdminDeps {
   readonly promptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
 }
 
+/** Вид нашего кода человека. Не тот вид — не «сбой», а «не найдено». */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+/**
+ * Отказ базы означает «такого человека нет», а не «мы сломались».
+ *
+ * Внешний ключ журнала доступа (23503) не пускает запись про того, кого
+ * нет; 22P02 — это «код не разобрался как uuid», и до базы такое теперь
+ * не доходит, но ловим и его: путь может появиться новый.
+ */
+function isMissingSubject(error: unknown): boolean {
+  /**
+   * Код ищется и во вложенной причине.
+   *
+   * Drizzle оборачивает отказ базы в свою ошибку, и код Postgres лежит
+   * в `cause`. Смотреть только наверх значило бы не увидеть его вовсе —
+   * и снова обвинить себя в чужом действии.
+   */
+  const codes = [
+    (error as { readonly code?: unknown } | null)?.code,
+    (error as { readonly cause?: { readonly code?: unknown } } | null)?.cause?.code,
+  ];
+
+  return codes.some((code) => code === '23503' || code === '22P02');
+}
+
 /**
  * Число снаружи — с потолком и полом.
  *
@@ -254,8 +280,30 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
 
     routes.push({ method, path, exposure });
 
-    if (!exposure.personal || deps.db === undefined) {
+    if (!exposure.personal) {
       router[method](path, handler);
+      return;
+    }
+
+    /**
+     * **Персональный путь без базы не отдаёт данных вовсе** (ревизия 4).
+     *
+     * Прежде здесь стояло одно условие на двоих: «не персональный **или**
+     * базы нет» — и путь с персональными данными при незаданной базе
+     * отдавался как открытый, без журнала и без звука. §16 требует
+     * журналировать доступ; путь, который отдаёт данные и не пишет
+     * следа, — нарушение, а не «щадящий режим».
+     *
+     * Собранный без базы роутер таких путей и не объявляет (они все
+     * внутри `if (deps.db !== undefined)`), поэтому сюда попасть можно
+     * только новой ошибкой сборки — и тогда лучше отказ, чем тишина.
+     */
+    if (deps.db === undefined) {
+      router[method](path, (_req: Request, res: Response) => {
+        deps.onError?.(new Error(`Персональный путь ${path} объявлен без базы: журнала нет`));
+        res.status(503).json({ error: 'журнал доступа недоступен, данные не отданы' });
+      });
+
       return;
     }
 
@@ -281,6 +329,24 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
        */
       const raw = exposure.subjects === 'one' ? req.params[exposure.param] : undefined;
       const subject = typeof raw === 'string' ? raw : undefined;
+
+      /**
+       * Кода не того вида — это «не найдено», а не сбой (ревизия 4).
+       *
+       * Прежде такой код уезжал прямо в журнал, где стоит внешний ключ на
+       * людей: Postgres отвечал ошибкой, и панель говорила «доступ не
+       * записан в журнал, данные не отданы» — 503, то есть **наша
+       * поломка**. Ветка 404 внутри обработчика была недостижима вовсе, а
+       * доля ошибок §18 росла от чужой опечатки в адресе и поднимала
+       * ложную тревогу.
+       *
+       * Проверяется вид, а не существование: «нет такого человека»
+       * решает сам обработчик, и решение это не про журнал.
+       */
+      if (subject !== undefined && !UUID.test(subject)) {
+        res.status(404).json({ error: 'не найдено' });
+        return;
+      }
 
       void recordAccess(db, {
         login,
@@ -339,6 +405,20 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           handler(req, res, next);
         },
         (error: unknown) => {
+          /**
+           * Ссылка на несуществующего человека — «не найдено».
+           *
+           * Внешний ключ журнала не пускает запись про того, кого нет:
+           * человек мог удалить данные между открытием списка и нажатием
+           * на строку. Это не сбой — это 404, и обвинять в нём себя (503
+           * плюс рост доли ошибок §18) значило бы поднимать тревогу от
+           * чужого действия.
+           */
+          if (isMissingSubject(error)) {
+            res.status(404).json({ error: 'не найдено' });
+            return;
+          }
+
           deps.onError?.(error);
           res.status(503).json({ error: 'доступ не записан в журнал, данные не отданы' });
         },

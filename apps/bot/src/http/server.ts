@@ -58,6 +58,20 @@ export interface ServerDeps {
   /** Кэш промптов бота: включение версии сбрасывает его (§15). */
   readonly adminPromptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
   /**
+   * Куда сообщать о сбоях **разделов панели** (ревизия этапа 4).
+   *
+   * Отдельно от `onError`, потому что вопросы разные. `onError` в бою
+   * считает долю неудачных обработок апдейтов (§18) и по ней посылает
+   * оповещение: «бот перестал отвечать людям». Сбой запроса в панели —
+   * не то: люди при этом получают ответы как обычно, а тревога уходит
+   * та же самая. Прежде сюда шёл один приёмник на всё, и открытая
+   * заказчицей страница с упавшим запросом двигала окно §18.
+   *
+   * Не задан — сбои панели идут в общий `onError`, как раньше: так
+   * собраны проверки, и терять их след нельзя.
+   */
+  readonly adminOnError?: ((error: unknown) => void) | undefined;
+  /**
    * Приём уведомлений об оплате (§14, задача 4.2).
    *
    * Без него рублёвый рельс не работает вовсе: Робокасса стучит на
@@ -200,7 +214,17 @@ export function createServer(deps: ServerDeps): Express {
         ...(deps.adminPromptRegistry === undefined
           ? {}
           : { promptRegistry: deps.adminPromptRegistry }),
-        ...(deps.onError === undefined ? {} : { onError: deps.onError }),
+        /**
+         * Панели — **свой** приёмник сбоев (ревизия этапа 4).
+         *
+         * Прежде здесь шёл общий: сбой запроса в разделе панели считался
+         * провалом обработки апдейта, поднимал долю ошибок §18 и двигал
+         * окно оповещений. Люди при этом получали ответы как обычно, а
+         * тревога уходила про них.
+         */
+        ...((deps.adminOnError ?? deps.onError) === undefined
+          ? {}
+          : { onError: deps.adminOnError ?? deps.onError }),
       }).router,
     );
   }
@@ -233,7 +257,20 @@ export function createServer(deps: ServerDeps): Express {
    * дедуплицируется по update_id, поэтому повтор безопасен.
    */
   app.use(((error, _req, res, next) => {
-    deps.onError?.(error);
+    /**
+     * **Чужая ошибка не считается нашим сбоем** (ревизия этапа 4).
+     *
+     * Прежде `onError` звался здесь первой строкой — то есть до
+     * разбирательства, чья это ошибка. А `onError` в бою поднимает долю
+     * ошибок §18 и однажды посылает оповещение: любой запрос с битым
+     * JSON снаружи (сканер, чужой бот, опечатка в адресе) поднимал
+     * тревогу про нас. Клиентские отказы отделены ниже; наверх идут
+     * только пятисотые.
+     */
+    const status = (error as { readonly status?: unknown }).status;
+    const clientFault = typeof status === 'number' && status >= 400 && status < 500;
+
+    if (!clientFault) deps.onError?.(error);
 
     // Заголовки уже ушли — вмешиваться поздно, доводит express.
     if (res.headersSent) {
@@ -254,9 +291,6 @@ export function createServer(deps: ServerDeps): Express {
      * (в нём бывают наши внутренности), а пятисотые остаются пятисотыми,
      * чтобы своя поломка не выглядела чужой ошибкой.
      */
-    const status = (error as { readonly status?: unknown }).status;
-    const clientFault = typeof status === 'number' && status >= 400 && status < 500;
-
     res.status(clientFault ? status : 500).json({ ok: false });
   }) as ErrorRequestHandler);
 

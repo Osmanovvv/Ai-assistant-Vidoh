@@ -251,6 +251,78 @@ export function requireAdmin(config: AdminAuthConfig) {
  */
 export const AUTH_ROUTES: readonly string[] = ['/login', '/code', '/logout'];
 
+/**
+ * Сколько сверок пароля считается **одновременно** (ревизия этапа 4).
+ *
+ * `scrypt` здесь настроен на 128 МиБ памяти и сотню миллисекунд — так и
+ * задумано, это защита от подбора. Но считался он **до всякой проверки**
+ * и на каждый запрос: сорок одновременных запросов на вход — пять
+ * гигабайт памяти и заваленный процессор, то есть бот перестаёт отвечать
+ * живым людям. Задержка за превышение попыток от этого не спасает: она
+ * стоит **после** сверки, а память тратится до неё.
+ *
+ * Двое одновременно — это администратор и его вторая вкладка. Больше не
+ * нужно никому: панель одна и у неё один хозяин.
+ */
+const PASSWORD_LANES = 2;
+
+/**
+ * Сколько ждущих очереди терпим. Дальше — отказ, а не ожидание.
+ *
+ * Отказ приходит **до** чтения логина и пароля и выглядит как обычный
+ * отказ входа: по нему нельзя понять, есть ли такой логин. Ждать
+ * бесконечно значило бы держать память под каждым ждущим — тот же обвал,
+ * только медленнее.
+ */
+const PASSWORD_QUEUE = 8;
+
+/** Очередь на сверку пароля: пропускает по двое, лишних отсекает. */
+function passwordGate(): {
+  readonly enter: () => Promise<boolean>;
+  readonly leave: () => void;
+} {
+  let busy = 0;
+  let waiting = 0;
+  const queue: (() => void)[] = [];
+
+  return {
+    enter: async () => {
+      if (busy < PASSWORD_LANES) {
+        busy += 1;
+        return true;
+      }
+
+      if (waiting >= PASSWORD_QUEUE) return false;
+
+      waiting += 1;
+
+      await new Promise<void>((resolve) => {
+        queue.push(resolve);
+      });
+
+      waiting -= 1;
+      busy += 1;
+
+      return true;
+    },
+    leave: () => {
+      busy -= 1;
+      const next = queue.shift();
+      if (next !== undefined) next();
+    },
+  };
+}
+
+/**
+ * Сколько неверных кодов терпит **один** пропуск первого шага.
+ *
+ * Годных кодов у второго шага три (предыдущее окно, нынешнее и
+ * следующее — так требует стандарт), пропуск живёт две минуты, а предела
+ * попыток на сам пропуск не было. Пять промахов — и пропуск негоден:
+ * человек, ошибшийся дважды, дойдёт, а подбирающий — нет.
+ */
+const CODE_MISSES = 5;
+
 export function createAuthRouter(
   config: AdminAuthConfig,
   onError?: (error: unknown) => void,
@@ -258,6 +330,17 @@ export function createAuthRouter(
   const router = Router();
   const attempts = new Map<string, Attempts>();
   const clock = (): Date => config.now?.() ?? new Date();
+
+  /** Очередь на сверку пароля: без неё вход — способ уронить бота. */
+  const passwords = passwordGate();
+
+  /**
+   * Промахи по коду — на **пропуск**, а не на адрес.
+   *
+   * Адрес подбирающий меняет, а пропуск у него один: он получен по
+   * паролю (или украден из сетевого журнала), и погасить надо именно его.
+   */
+  const misses = new Map<string, number>();
 
   /**
    * Обёртка обработчика входа: отказ не должен уносить процесс.
@@ -296,6 +379,25 @@ export function createAuthRouter(
   router.post('/login', (req: Request, res: Response) => {
     handle(res, async () => {
       const now = clock();
+
+      /**
+       * Очередь на сверку пароля — **до** чтения логина и пароля.
+       *
+       * `scrypt` здесь настроен на 128 МиБ и сотню миллисекунд, и
+       * считался он на каждый запрос до всякой проверки: сорок
+       * одновременных запросов — пять гигабайт памяти и заваленный
+       * процессор, то есть бот перестаёт отвечать живым людям. Задержка
+       * за превышение попыток от этого не спасала: она стоит **после**
+       * сверки, а память тратится до неё.
+       *
+       * Отказ выглядит как обычный отказ входа: по нему нельзя понять,
+       * есть ли такой логин, — тела мы даже не читали.
+       */
+      if (!(await passwords.enter())) {
+        refuse(res);
+        return;
+      }
+
       const body = (req.body ?? {}) as { login?: unknown; password?: unknown };
       const login = typeof body.login === 'string' ? body.login : '';
       const password = typeof body.password === 'string' ? body.password : '';
@@ -311,7 +413,16 @@ export function createAuthRouter(
        * существующий — через сто миллисекунд scrypt, и логин можно было
        * бы угадать по времени ответа.
        */
-      const matches = await passwordMatches(password, config.passwordHash);
+      let matches: boolean;
+
+      try {
+        matches = await passwordMatches(password, config.passwordHash);
+      } finally {
+        // Место в очереди освобождается и на отказе: иначе первая же
+        // ошибка сверки заперла бы вход навсегда.
+        passwords.leave();
+      }
+
       const ok = matches && login === config.login;
 
       if (!ok) {
@@ -351,11 +462,39 @@ export function createAuthRouter(
           ? undefined
           : readPass({ secret: config.sessionSecret, pass: ticket, kind: 'firstStep', now });
 
-      if (first === undefined || !codeMatches({ secret: config.totpSecret, code, now })) {
+      /**
+       * Пропуск гасится после нескольких промахов (ревизия этапа 4).
+       *
+       * Годных кодов у второго шага три — предыдущее окно, нынешнее и
+       * следующее, так требует стандарт, — пропуск живёт две минуты, а
+       * предела попыток на сам пропуск не было. Кто украл пропуск из
+       * сетевого журнала (или получил, зная пароль), мог перебирать коды
+       * до истечения. Задержка от подбора не защищает: она задерживает.
+       *
+       * Считается на **пропуск**, а не на адрес: адрес подбирающий
+       * меняет, а пропуск у него один.
+       */
+      const spent = first === undefined ? 0 : (misses.get(first.nonce) ?? 0);
+
+      if (first === undefined || spent >= CODE_MISSES) {
         noteAttempt(attempts, who, now.getTime());
         refuse(res);
         return;
       }
+
+      if (!codeMatches({ secret: config.totpSecret, code, now })) {
+        // Память не бесконечна, а меток набегает по одной на вход:
+        // чистим, когда их становится слишком много.
+        if (misses.size >= ATTEMPT_JAR_LIMIT) misses.clear();
+
+        misses.set(first.nonce, spent + 1);
+        noteAttempt(attempts, who, now.getTime());
+        refuse(res);
+        return;
+      }
+
+      // Код сошёлся: метка больше не нужна.
+      misses.delete(first.nonce);
 
       const session = issuePass({
         secret: config.sessionSecret,

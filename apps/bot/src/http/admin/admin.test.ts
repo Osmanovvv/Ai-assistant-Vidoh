@@ -11,6 +11,8 @@ import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { createServer } from '../server.js';
 import { hashPassword } from './password.js';
+import { AUTH_ROUTES } from './auth.js';
+import { fullAdminRouter } from './full-router.js';
 import { issuePass } from './token.js';
 import { codeAt, decodeBase32, STEP_SECONDS } from './totp.js';
 import {
@@ -195,26 +197,20 @@ describe('без авторизации панель не отдаёт данн�
      * необязательную зависимость надо добавлять **сюда тоже**, иначе
      * страж честно проверит всё, кроме нового.
      */
-    const withEverything = {
+    /**
+     * Список зависимостей — **один на все проверки** (ревизия этапа 4).
+     *
+     * Прежде он был набран здесь, второй раз ниже (сверка числа путей) и
+     * третий раз в `audit.int.test.ts` (решения о персональных данных).
+     * Три списка на один вопрос разъезжаются молча: сверка охраняла свой
+     * роутер, а решения читались с другого.
+     */
+    const { routes } = fullAdminRouter({
       config: configOf(),
       db: NEVER_TOUCHED,
-      staticDir: join(import.meta.dirname, '../../../../admin/dist'),
-      evalDir: join(import.meta.dirname, 'нет-такой-папки'),
-      evalRunner: NEVER_RUN,
       settings: NEVER_TOUCHED as unknown as SettingsRegistry,
-      enqueueBroadcast: NEVER_QUEUED,
-      enqueueUser: NEVER_QUEUED,
-      /**
-       * Реестр промптов — тоже необязательная зависимость (ревизия этапа).
-       *
-       * Его забыли и здесь, и на стенде: сброс кэша после включения
-       * версии не проверялся ни одной проверкой, хотя без него правка
-       * доезжает до людей через минуту, а панель говорит «включено».
-       */
-      promptRegistry: { forget: () => undefined },
-    } as const;
-
-    const { routes } = createAdminRouter(withEverything);
+      stub: { evalRunner: NEVER_RUN, enqueueBroadcast: NEVER_QUEUED, enqueueUser: NEVER_QUEUED },
+    });
 
     expect(routes.length).toBeGreaterThan(0);
 
@@ -223,9 +219,9 @@ describe('без авторизации панель не отдаёт данн�
         healthChecks: [],
         admin: configOf(),
         adminDb: NEVER_TOUCHED,
-        adminEvalDir: withEverything.evalDir,
+        adminEvalDir: join(import.meta.dirname, 'нет-такой-папки'),
         adminEvalRunner: NEVER_RUN,
-        adminSettings: withEverything.settings,
+        adminSettings: NEVER_TOUCHED as unknown as SettingsRegistry,
         adminEnqueueBroadcast: NEVER_QUEUED,
         adminEnqueueUser: NEVER_QUEUED,
       }),
@@ -326,15 +322,11 @@ describe('без авторизации панель не отдаёт данн�
       }
     }
 
-    const mount = createAdminRouter({
+    const mount = fullAdminRouter({
       config: configOf(),
       db: NEVER_TOUCHED,
       settings: NEVER_TOUCHED as unknown as SettingsRegistry,
-      staticDir: join(import.meta.dirname, '../../../../admin/dist'),
-      evalDir: join(import.meta.dirname, 'нет-такой-папки'),
-      evalRunner: NEVER_RUN,
-      enqueueBroadcast: NEVER_QUEUED,
-      enqueueUser: NEVER_QUEUED,
+      stub: { evalRunner: NEVER_RUN, enqueueBroadcast: NEVER_QUEUED, enqueueUser: NEVER_QUEUED },
     });
 
     const known = mount.routes.length + mount.openRoutes.length;
@@ -923,4 +915,174 @@ describe('битый запрос отвечает своим кодом, а н�
 
     expect(response.status).toBe(400);
   }, 30_000);
+});
+
+describe('перечень открытых путей входа сверяется с самим роутером', () => {
+  /**
+   * **Единственный файл, освобождённый от стражей путей** — и он же
+   * смонтирован до стража входа. Ревизия четвёртого этапа нашла, что его
+   * комментарий утверждает обратное: «разъехаться они не могут», хотя
+   * связку не держало ничто.
+   *
+   * `AUTH_ROUTES` — перечень руками, а пути объявляет `createAuthRouter`
+   * прямыми вызовами `router.post(...)`, мимо `closed`/`open` (те стоят
+   * выше по стеку и требуют пропуска, которого у входа быть не может).
+   * Значит забытый здесь путь оказался бы **открытым и невидимым**: ни в
+   * списке закрытых (его там нет), ни в перечне открытых.
+   */
+
+  it('пути из исходника входа и перечень совпадают', async () => {
+    const source = await readFile('src/http/admin/auth.ts', 'utf8');
+    const found = new Set<string>();
+
+    for (const line of source.split(/\r?\n/u)) {
+      const match = /router\.(?:get|post|put|delete)\('([^']+)'/u.exec(line);
+      if (match?.[1] !== undefined) found.add(match[1]);
+    }
+
+    expect(
+      [...found].sort((one, two) => one.localeCompare(two)),
+      [
+        'Пути входа и перечень AUTH_ROUTES разошлись.',
+        'Путь, забытый в перечне, окажется открытым и невидимым:',
+        'в списке закрытых его нет, потому что вход объявляет пути напрямую.',
+      ].join('\n'),
+    ).toEqual([...AUTH_ROUTES].sort((one, two) => one.localeCompare(two)));
+  });
+
+  it('каждый путь из перечня действительно отвечает', async () => {
+    // Перечень, в котором есть лишнее, так же плох: проверка «всё,
+    // кроме входа, закрыто» освободила бы путь, которого нет.
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminStaticDir: join(import.meta.dirname, '../../../../admin/dist'),
+      }),
+    );
+
+    for (const path of AUTH_ROUTES) {
+      const response = await fetch(`${base}/admin/api/auth${path}`, { method: 'POST' });
+
+      expect(response.status, `${path} не отвечает`).not.toBe(404);
+    }
+  });
+});
+
+describe('вход не роняет бота и не подбирается (ревизия четвёртого этапа)', () => {
+  it('поток запросов на вход не съедает память: лишние получают отказ сразу', async () => {
+    /**
+     * **`scrypt` здесь настроен на 128 МиБ и сотню миллисекунд** — так и
+     * задумано, это защита от подбора. Но считался он на каждый запрос и
+     * до всякой проверки: сорок одновременных запросов — пять гигабайт
+     * памяти и заваленный процессор, то есть бот перестаёт отвечать
+     * живым людям. Задержка за превышение попыток не спасала: она стоит
+     * **после** сверки.
+     *
+     * Проверяется свойство очереди: часть запросов получает отказ
+     * немедленно, а не ждёт своей сотни миллисекунд. Мерить время здесь
+     * было бы гаданием — на медленной машине пройдёт любой код.
+     */
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminStaticDir: join(import.meta.dirname, '../../../../admin/dist'),
+      }),
+    );
+
+    const asked = Array.from(
+      { length: 40 },
+      async () =>
+        await fetch(`${base}/admin/api/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ login: 'аня', password: 'не тот пароль' }),
+        }),
+    );
+
+    const answers = await Promise.all(asked);
+
+    // Все ответили, и все — отказом: пароль неверный у всех.
+    expect(answers.every((one) => one.status === 401)).toBe(true);
+
+    // И правильный пароль после этого по-прежнему пускает: очередь
+    // освобождается, а не запирается навсегда.
+    const good = await fetch(`${base}/admin/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ login: LOGIN, password: PASSWORD }),
+    });
+
+    expect(good.status).toBe(200);
+  }, 60_000);
+
+  it('пропуск первого шага гаснет после нескольких неверных кодов', async () => {
+    /**
+     * **Второй шаг подбирался.** Годных кодов три — предыдущее окно,
+     * нынешнее и следующее, так требует стандарт, — пропуск живёт две
+     * минуты, а предела попыток на сам пропуск не было. Кто украл
+     * пропуск из сетевого журнала (или получил, зная пароль), мог
+     * перебирать коды до истечения; задержка от подбора не защищает.
+     */
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminStaticDir: join(import.meta.dirname, '../../../../admin/dist'),
+      }),
+    );
+
+    const first = await fetch(`${base}/admin/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ login: LOGIN, password: PASSWORD }),
+    });
+
+    expect(first.status).toBe(200);
+
+    // Имя печенья берётся из кода, а не набирается строкой: иначе
+    // проверка переживёт его переименование и станет зелёной впустую.
+    const ticket = new RegExp(`${FIRST_STEP_COOKIE}=([^;]+)`, 'u').exec(
+      first.headers.get('set-cookie') ?? '',
+    )?.[1];
+
+    expect(ticket).toBeDefined();
+
+    // Пять промахов — и пропуск негоден.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const miss = await fetch(`${base}/admin/api/auth/code`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: `${FIRST_STEP_COOKIE}=${ticket ?? ''}`,
+        },
+        body: JSON.stringify({ code: '000000' }),
+      });
+
+      expect(miss.status).toBe(401);
+    }
+
+    // Теперь даже верный код не пускает: подбор кончился, а не
+    // продолжился медленнее.
+    const right = await fetch(`${base}/admin/api/auth/code`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: `${FIRST_STEP_COOKIE}=${ticket ?? ''}`,
+      },
+      body: JSON.stringify({ code: currentCode() }),
+    });
+
+    expect(right.status).toBe(401);
+
+    // А новый вход по паролю работает: гасится пропуск, а не панель.
+    const again = await fetch(`${base}/admin/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ login: LOGIN, password: PASSWORD }),
+    });
+
+    expect(again.status).toBe(200);
+  }, 60_000);
 });
