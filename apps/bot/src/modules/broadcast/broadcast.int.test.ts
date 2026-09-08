@@ -11,6 +11,7 @@ import {
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import {
+  cancelDraft,
   claimDelivery,
   recipientsOf,
   countsOf,
@@ -953,5 +954,75 @@ describe('сегменты пробного периода не задевают
     const spent = await recipientsOf(testDb(), { segment: 'trialSpent', trialLimit: 1 });
 
     expect(spent.map((one) => one.tgId)).toContain(was);
+  });
+});
+
+describe('отмена черновика — выход из случайно составленного (ревизия панели)', () => {
+  /**
+   * **Дефект, который это закрывает.** «Составить» заводит и рассылку, и
+   * до тысячи строк доставки, а кнопка «Отправить» жила только в памяти
+   * браузера: уход в другой раздел или обновление страницы стирали её, и
+   * у строки со статусом «черновик» не оставалось ни одного действия.
+   * Отменить его было нечем вовсе — значит единственным выходом из
+   * ошибочного черновика была **отправка всем**.
+   */
+
+  it('черновик уходит вместе со своими строками доставки', async () => {
+    await people(3);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Составил по ошибке.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    expect((await countsOf(testDb(), made.id)).total).toBe(3);
+    expect(await cancelDraft(testDb(), made.id)).toBe(true);
+
+    // Ни рассылки, ни её доставок: у `broadcast_id` стоит каскад, и
+    // проверяется он здесь, а не предполагается по схеме.
+    expect(await listBroadcasts(testDb(), 20)).toEqual([]);
+    expect((await countsOf(testDb(), made.id)).total).toBe(0);
+  });
+
+  it('запущенную рассылку отмена не трогает — и говорит об этом отказом', async () => {
+    /**
+     * Условие «только черновик» живёт в самом запросе, а не в проверке
+     * перед ним: между «прочитали статус» и «удалили» помещается нажатие
+     * «Отправить» в другой вкладке. Удали мы тогда идущую рассылку — и
+     * потеряли бы её историю вместе с уже отправленными письмами.
+     */
+    await people(2);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Уже пошла.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    expect(await startBroadcast(testDb(), made.id)).toBe(true);
+
+    expect(await cancelDraft(testDb(), made.id)).toBe(false);
+
+    // Рассылка на месте, и доставки тоже: отказ ничего не удалил.
+    expect(await listBroadcasts(testDb(), 20)).toHaveLength(1);
+    expect((await countsOf(testDb(), made.id)).total).toBe(2);
+  });
+
+  it('повторная отмена не ломается и говорит правду', async () => {
+    await people(1);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Дважды отменяю.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    expect(await cancelDraft(testDb(), made.id)).toBe(true);
+    // Второй раз отменять нечего — и это не поломка, а состояние.
+    expect(await cancelDraft(testDb(), made.id)).toBe(false);
   });
 });

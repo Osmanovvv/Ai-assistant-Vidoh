@@ -24,6 +24,7 @@ import { markTrialSpent, trialSpent } from '../billing/subscription.service.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import { overview, people, personCard } from './people.js';
+import { costBreakdown } from '../metering/cost-breakdown.js';
 
 /**
  * Обзор, список и карточка (§15 ТЗ, задача 4.6).
@@ -393,6 +394,48 @@ describe('список людей (§15)', () => {
     expect((await people(testDb(), { limit: 20, offset: 0, query: 'Ан' })).rows).toHaveLength(1);
     expect((await people(testDb(), { limit: 20, offset: 0, query: 'anya' })).rows).toHaveLength(1);
     expect((await people(testDb(), { limit: 20, offset: 0, query: 'никого' })).rows).toEqual([]);
+  });
+
+  it('находит и с собакой: панель обещает «@имя», значит обещание надо исполнять', async () => {
+    /**
+     * Ревизия панели. Поле подписано «Имя или @имя», а Telegram отдаёт
+     * телеграмное имя **без** собаки — мы пишем его как есть. Значит
+     * «@anya» превращалось в `ilike '%@anya%'` и не совпадало ни с чем
+     * никогда: панель отвечала «Никого не нашлось» на свою же подсказку,
+     * про человека, который в базе есть.
+     */
+    expect((await people(testDb(), { limit: 20, offset: 0, query: '@anya' })).rows).toHaveLength(1);
+
+    // Собака внутри строки — не обозначение, а знак: срезается только
+    // ведущая, иначе поиск по почте нашёл бы не то.
+    expect((await people(testDb(), { limit: 20, offset: 0, query: 'an@ya' })).rows).toEqual([]);
+
+    // Одна собака означает «искать нечего», а не «найти всех подряд».
+    expect(
+      (await people(testDb(), { limit: 20, offset: 0, query: '@' })).rows.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('знаки шаблона ищутся как буквы, а не как «кто угодно»', async () => {
+    /**
+     * Ревизия панели. В `ilike` знаки `%` и `_` служебные. Без
+     * экранирования запрос «%» находил **всех**, а «_» — любого
+     * человека с непустым именем: панель отвечала списком на запрос,
+     * которого ни у кого в имени нет. Для разбирающего жалобу это
+     * «поиск сломан», а для §16 — лишние строки в журнале доступа.
+     *
+     * Панель не место, где вводят шаблоны: человек набирает имя.
+     */
+    await upsertUser(testDb(), { tgId: 9_401, firstName: '100% Ася' });
+
+    // Ищем буквально: находится ровно тот, у кого этот знак в имени.
+    const percent = await people(testDb(), { limit: 20, offset: 0, query: '100%' });
+
+    expect(percent.rows).toHaveLength(1);
+    expect(percent.rows[0]?.title).toBe('100% Ася');
+
+    // Одинокий знак шаблона не находит никого: он ищется как буква.
+    expect((await people(testDb(), { limit: 20, offset: 0, query: '_' })).rows).toEqual([]);
   });
 
   it('человек без имени назван кодом, а не пустой ячейкой', async () => {
@@ -847,5 +890,71 @@ describe('ревизия четвёртого этапа: числа людей 
     const report = await overview(testDb(), 30);
 
     expect(report.unpricedCalls).toBe(1);
+  });
+
+  it('сорвавшийся вызов в «без цены» не попадает — ни в обзоре, ни в строке человека', async () => {
+    /**
+     * Ревизия панели. У отказа цены нет и быть не может: 403, таймаут и
+     * обрыв не тарифицируются, и `callCost` возвращает `null`, когда в
+     * ответе нет ни токенов, ни секунд. Считать их вместе с «модели нет
+     * в прайс-листе» — значит зажечь оговорку «расход не меньше
+     * показанного» после **любого** сбоя модели: она перестаёт значить
+     * что-либо, а настоящий случай от неё уже не отличить.
+     *
+     * Обстановка нарочно содержит **оба** вида вызова без цены. Прежняя
+     * проверка сеяла только удавшийся (`ok: true` у обоих), поэтому
+     * фильтр по успеху можно было добавить или убрать, не тронув ни
+     * одной проверки, — и его действительно забыли в пяти местах из
+     * шести.
+     *
+     * Сорвавшийся вызов при этом остаётся видимым: он считается своим
+     * числом (`failed`) в разделе расходов, и терять его никто не
+     * предлагает.
+     */
+    const person = await upsertUser(testDb(), { tgId: 9_306, firstName: 'Вера' });
+
+    await testDb()
+      .insert(aiCalls)
+      .values([
+        {
+          userId: person.id,
+          stage: 'classifier',
+          model: 'модель-без-цены',
+          promptVersion: 'classifier@7',
+          latencyMs: 120,
+          ok: true,
+          costMicros: null,
+        },
+        {
+          userId: person.id,
+          stage: 'router',
+          model: 'yandex:yandexgpt-lite/latest',
+          promptVersion: 'router@2',
+          latencyMs: 30_000,
+          ok: false,
+          error: 'таймаут',
+          costMicros: null,
+        },
+      ]);
+
+    const report = await overview(testDb(), 30);
+
+    // Один, а не два: сорвавшийся не считается.
+    expect(report.unpricedCalls).toBe(1);
+
+    /**
+     * Раздел расходов считает то же число тем же условием — и два числа
+     * не пересекаются: сорвавшийся вызов виден в «сбоев» у своего этапа,
+     * а в «без цены» его нет. Прежде он попадал в оба разом.
+     */
+    const costs = await costBreakdown(testDb(), { since: new Date(Date.now() - 30 * 86_400_000) });
+    const classifier = costs.byStage.find((one) => one.key === 'classifier');
+    const router = costs.byStage.find((one) => one.key === 'router');
+
+    expect(classifier?.unknownPrices).toBe(1);
+    expect(classifier?.failed).toBe(0);
+
+    expect(router?.unknownPrices).toBe(0);
+    expect(router?.failed).toBe(1);
   });
 });

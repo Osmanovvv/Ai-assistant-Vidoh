@@ -13,6 +13,7 @@ import { errorsView, restartBatch } from '../../modules/admin/errors.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
 import { promoRows, savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
 import {
+  cancelDraft,
   createBroadcast,
   isSegment,
   listBroadcasts,
@@ -1146,6 +1147,53 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
      * рассылка могла быть запущена прошлой выкладкой и идти прямо
      * сейчас. Отказать здесь значило бы держать её насильно.
      */
+    /**
+     * Отменить черновик (ревизия панели).
+     *
+     * Закрывает тупик: «Составить» заводит рассылку и до тысячи строк
+     * доставки, а кнопка «Отправить» жила в памяти браузера — уход в
+     * другой раздел стирал её, и у черновика не оставалось ни одного
+     * действия. Единственным выходом из ошибочного черновика была
+     * отправка всем.
+     *
+     * `post`, а не `delete`, нарочно: роутер панели объявляет пути двумя
+     * методами, и сплошной страж «без пропуска ни один путь не отдаёт
+     * данные» обходит их тем же перечислением. Расширять контракт
+     * роутера ради буквы метода значило бы трогать заслон авторизации.
+     */
+    closed(
+      'post',
+      '/api/broadcast/:id/cancel',
+      { personal: true, subjects: 'many' },
+      (req: Request, res: Response) => {
+        const id = req.params['id'];
+
+        if (typeof id !== 'string') {
+          res.status(404).json({ error: 'не найдено' });
+          return;
+        }
+
+        void cancelDraft(db, id).then(
+          (dropped) => {
+            // 409, а не 404: рассылка есть, но она уже не черновик — и
+            // сказать надо именно это, иначе человек решит, что панель
+            // потеряла его письмо.
+            res
+              .status(dropped ? 200 : 409)
+              .json(
+                dropped
+                  ? { ok: true }
+                  : { error: 'отменить можно только черновик: эта рассылка уже запущена' },
+              );
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось отменить' });
+          },
+        );
+      },
+    );
+
     closed(
       'post',
       '/api/broadcast/:id/stop',

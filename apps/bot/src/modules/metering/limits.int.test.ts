@@ -22,6 +22,8 @@ async function record(options: {
   readonly micros?: number | undefined;
   readonly currency?: 'rub' | 'usd' | undefined;
   readonly at?: Date | undefined;
+  /** Сорвавшийся вызов: у него цены нет и быть не может. */
+  readonly ok?: boolean | undefined;
 }): Promise<void> {
   await testDb()
     .insert(aiCalls)
@@ -30,7 +32,7 @@ async function record(options: {
       stage: 'classifier',
       model: 'модель',
       latencyMs: 10,
-      ok: true,
+      ok: options.ok ?? true,
       ...(options.micros === undefined
         ? {}
         : { costMicros: options.micros, costCurrency: options.currency ?? 'rub' }),
@@ -90,6 +92,36 @@ describe('когда лимит работать не может', () => {
     // ударила бы по человеку за нашу недоделку.
     expect(verdict.blind).toBe(true);
     expect(verdict.exceeded).toBe(false);
+  });
+
+  it('а сорвавшийся вызов лимит слепым НЕ делает — иначе один таймаут выключал бы §10.5', async () => {
+    /**
+     * Ревизия панели, и находка оказалась дороже, чем выглядела.
+     *
+     * `blind` включается, когда цена **модели** неизвестна: тогда сумма —
+     * нижняя оценка, и признать превышение нельзя. Но считалось это как
+     * «цены нет», без условия на успех, а у отказа цены нет и быть не
+     * может: 403, таймаут и обрыв не тарифицируются, `callCost` на пустом
+     * ответе возвращает `null`.
+     *
+     * Следствие было не косметическим. `blind` запрещает `exceeded`
+     * (см. `checkSpend`), значит **один сорвавшийся вызов выключал
+     * суточный лимит расхода этому человеку на весь период** — а сбои
+     * модели случаются штатно, ради них и написаны повторы. Лимит §10.5
+     * молча не работал именно тогда, когда он нужнее всего: в день,
+     * когда модель отвечает плохо.
+     */
+    const now = new Date('2026-08-26T18:00:00.000Z');
+
+    // Потрачено больше лимита — и всё это известной ценой.
+    await record({ micros: 12_000_000, at: new Date('2026-08-10T10:00:00.000Z') });
+    // Плюс сбой: он не стоил ничего и знания о расходе не отнимает.
+    await record({ ok: false, at: new Date('2026-08-11T10:00:00.000Z') });
+
+    const verdict = await checkSpend(testDb(), { userId, now, limit: LIMIT });
+
+    expect(verdict.blind).toBe(false);
+    expect(verdict.exceeded).toBe(true);
   });
 
   it('расход в другой валюте тоже делает лимит слепым', async () => {

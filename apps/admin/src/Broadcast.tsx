@@ -3,7 +3,9 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   broadcastPreview,
   broadcasts,
+  cancelBroadcast,
   createBroadcast,
+  reasonOf,
   resumeBroadcast,
   retryBroadcast,
   startBroadcast,
@@ -48,7 +50,17 @@ function when(iso: string | null): string {
 
 export function BroadcastPanel(): React.ReactElement {
   const [page, setPage] = useState<BroadcastsPage | undefined>(undefined);
+  /**
+   * Два отказа — два состояния (ревизия панели).
+   *
+   * `problem` — не смогли **прочитать** рассылки: показывать нечего.
+   * `refused` — сервер отказал **действию**: список на месте, набранный
+   * текст на месте, и гасить раздел нельзя. Прежде состояние было одно,
+   * и «слишком длинно» уносило с экрана и список, и поле ввода — вместе
+   * с самим текстом, который человек только что набрал.
+   */
   const [problem, setProblem] = useState<string | undefined>(undefined);
+  const [refused, setRefused] = useState<string | undefined>(undefined);
 
   const [text, setText] = useState('');
   const [segment, setSegment] = useState('all');
@@ -98,6 +110,7 @@ export function BroadcastPanel(): React.ReactElement {
   if (page === undefined) return <p className="разрез__пусто">Читаю…</p>;
 
   const look = (): void => {
+    setRefused(undefined);
     setPreview(undefined);
     setDraft(undefined);
 
@@ -105,23 +118,30 @@ export function BroadcastPanel(): React.ReactElement {
       .then((found) => {
         setPreview({ recipients: found.recipients, title: found.title });
       })
-      .catch(() => {
-        setProblem('Не удалось посчитать получателей');
+      .catch((error: unknown) => {
+        setRefused(reasonOf(error, 'Не удалось посчитать получателей'));
       });
   };
 
   const make = (): void => {
+    setRefused(undefined);
     void createBroadcast({ text, segment })
       .then((made) => {
         setDraft({ id: made.id, recipients: made.recipients });
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось составить рассылку');
+      .catch((error: unknown) => {
+        /**
+         * Сервер называет причину, и она поправимая: «слишком длинно:
+         * 4200 знаков, Telegram принимает 4096». Человек это исправит, а
+         * «не удалось составить рассылку» — нет.
+         */
+        setRefused(reasonOf(error, 'Не удалось составить рассылку'));
       });
   };
 
   const send = (id: string): void => {
+    setRefused(undefined);
     void startBroadcast(id)
       .then(() => {
         setDraft(undefined);
@@ -129,37 +149,73 @@ export function BroadcastPanel(): React.ReactElement {
         setPreview(undefined);
         load();
       })
-      .catch(() => {
-        setProblem('Не удалось запустить рассылку');
+      .catch((error: unknown) => {
+        setRefused(reasonOf(error, 'Не удалось запустить рассылку'));
       });
   };
 
   const stop = (id: string): void => {
+    setRefused(undefined);
     void stopBroadcast(id)
       .then(load)
-      .catch(() => {
-        setProblem('Не удалось остановить');
+      .catch((error: unknown) => {
+        setRefused(reasonOf(error, 'Не удалось остановить'));
       });
   };
 
   const resume = (id: string): void => {
+    setRefused(undefined);
     void resumeBroadcast(id)
       .then(load)
-      .catch(() => {
-        setProblem('Не удалось продолжить');
+      .catch((error: unknown) => {
+        setRefused(reasonOf(error, 'Не удалось продолжить'));
+      });
+  };
+
+  /**
+   * Отмена черновика — выход из случайно составленного.
+   *
+   * Без неё единственным выходом была отправка всем: строка со статусом
+   * «черновик» не имела ни одного действия, а «Отправить» жила в памяти
+   * браузера и стиралась уходом в другой раздел.
+   */
+  const drop = (id: string): void => {
+    setRefused(undefined);
+
+    void cancelBroadcast(id)
+      .then(() => {
+        setDraft(undefined);
+        load();
+      })
+      .catch((error: unknown) => {
+        setRefused(reasonOf(error, 'Не удалось отменить'));
+        // Перечитываем: отказ чаще всего значит, что строка устарела.
+        load();
       });
   };
 
   const again = (id: string): void => {
+    setRefused(undefined);
     void retryBroadcast(id)
       .then(load)
-      .catch(() => {
-        setProblem('Не удалось повторить');
+      .catch((error: unknown) => {
+        /**
+         * «Повторять можно только законченную рассылку» — это состояние,
+         * а не поломка: человек нажал у идущей. Прежде он читал
+         * «не удалось повторить» и шёл искать причину в коде.
+         */
+        setRefused(reasonOf(error, 'Не удалось повторить'));
       });
   };
 
   return (
     <div data-testid="broadcast">
+      {refused !== undefined && (
+        <p className="отказ" data-testid="broadcast-refused" role="alert">
+          {refused}
+        </p>
+      )}
+
       <p className="оговорка">
         Отправленное не отзывается. Сначала предпросмотр — сколько человек получит письмо, — потом
         подтверждение. Заблокировавшие бота пропускаются, темп держится под лимитом Telegram.
@@ -285,6 +341,8 @@ export function BroadcastPanel(): React.ReactElement {
                     onStop={stop}
                     onResume={resume}
                     onRetry={again}
+                    onSend={send}
+                    onDrop={drop}
                   />
                 ))}
               </tbody>
@@ -302,12 +360,16 @@ function Row({
   onStop,
   onResume,
   onRetry,
+  onSend,
+  onDrop,
 }: {
   readonly row: BroadcastRow;
   readonly segments: Readonly<Record<string, string>>;
   readonly onStop: (id: string) => void;
   readonly onResume: (id: string) => void;
   readonly onRetry: (id: string) => void;
+  readonly onSend: (id: string) => void;
+  readonly onDrop: (id: string) => void;
 }): React.ReactElement {
   const stopping = row.status === 'running' && row.stopRequestedAt !== null;
 
@@ -333,6 +395,39 @@ function Row({
         {row.counts.pending + row.counts.sending}
       </td>
       <td>
+        {/*
+          Черновик — не тупик (ревизия панели).
+
+          Прежде у строки со статусом «черновик» не рисовалось ни одной
+          кнопки: «Отправить» жила в памяти браузера и стиралась уходом в
+          другой раздел или обновлением страницы. Строка при этом уже
+          существовала вместе с тысячей строк доставки, и выйти из
+          ошибочного черновика можно было только отправкой всем.
+        */}
+        {row.status === 'draft' && (
+          <>
+            <button
+              type="button"
+              className="период__кнопка"
+              data-testid={`broadcast-send-${row.id}`}
+              onClick={() => {
+                onSend(row.id);
+              }}
+            >
+              Отправить
+            </button>{' '}
+            <button
+              type="button"
+              className="период__кнопка"
+              data-testid={`broadcast-cancel-${row.id}`}
+              onClick={() => {
+                onDrop(row.id);
+              }}
+            >
+              Отменить
+            </button>
+          </>
+        )}{' '}
         {row.status === 'running' && (
           <button
             type="button"

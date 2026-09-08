@@ -219,10 +219,42 @@ describe('spendByUser', () => {
 
     expect(summary.calls).toBe(1);
     expect(summary.failed).toBe(1);
-    // Хотя бы одна неизвестная цена делает итог нижней оценкой,
-    // а не расходом.
-    expect(summary.complete).toBe(false);
     expect(summary.totals).toEqual({});
+
+    /**
+     * **Ожидание исправлено ревизией панели: оно закрепляло дефект.**
+     *
+     * Стояло `complete === false`. Но `complete` означает «цена
+     * **модели** неизвестна, значит итог — нижняя оценка» (так и написано
+     * у поля), а у отказа цены нет и быть не может: он не тарифицируется.
+     * Сумма от сбоя нижней оценкой не становится.
+     *
+     * Цена прежнего ожидания: `complete === false` делает лимит расхода
+     * слепым, а слепой лимит никогда не срабатывает. То есть один
+     * сорвавшийся вызов выключал §10.5 этому человеку на весь период —
+     * и проверка это поведение охраняла.
+     */
+    expect(summary.complete).toBe(true);
+  });
+
+  it('а вот удавшийся вызов без цены делает итог нижней оценкой', async () => {
+    /**
+     * Обратная сторона: настоящий случай, ради которого `complete` и
+     * заведён, — модели нет в прайс-листе. Тогда деньги потрачены, а
+     * сколько, мы не знаем, и признавать превышение нельзя.
+     */
+    await recordAiCall(testDb(), {
+      context: { stage: 'classifier', model: 'модель-без-цены', userId },
+      usage: { tokensIn: 100, tokensOut: 10 },
+      latencyMs: 100,
+      ok: true,
+      pricing: {},
+    });
+
+    const summary = await spendByUser(testDb(), userId, since);
+
+    expect(summary.failed).toBe(0);
+    expect(summary.complete).toBe(false);
   });
 
   it('не учитывает вызовы старше границы', async () => {
