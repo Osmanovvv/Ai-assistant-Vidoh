@@ -56,7 +56,21 @@ export class MockPaymentProvider implements PaymentProvider {
 
     return Promise.resolve({
       url: this.options.url ?? `https://оплата.тест/${params.ref}`,
-      autoRenews: this.options.autoRenews ?? params.plan === 'monthly',
+      /**
+       * **Заглушка слушает контракт, а не догадывается** (ревизия 4).
+       *
+       * Прежде здесь стояло `?? params.plan === 'monthly'` — догадка про
+       * тариф, которой настоящие провайдеры не делают: у звёзд годовой
+       * тариф не продлевается вовсе, у Робокассы даже месячное продление
+       * работает лишь после согласования. На этой догадке стояла
+       * проверка «годовой тариф не обещает продления» — и она не могла
+       * покраснеть от правки продукта: она измеряла заглушку.
+       *
+       * Теперь заглушка отвечает то, о чём просили: `renewable: false`
+       * означает разовый платёж на любом рельсе, а `autoRenews` задаёт
+       * тот, кто её создал.
+       */
+      autoRenews: (this.options.autoRenews ?? true) && params.renewable !== false,
     });
   }
 
@@ -72,7 +86,14 @@ export class MockPaymentProvider implements PaymentProvider {
     return Promise.resolve();
   }
 
-  statusOf(): Promise<ProviderStatus> {
-    return Promise.resolve(this.options.status ?? { active: true, autoRenews: true });
+  statusOf(): Promise<ProviderStatus | undefined> {
+    /**
+     * `undefined` отдаётся как есть — так же, как у звёзд.
+     *
+     * Прежде заглушка подставляла «активна, продлевается», и «провайдер
+     * не знает» изобразить ею было нельзя. А это законный ответ: у
+     * звёзд состояния подписки нет ни в одном методе Bot API.
+     */
+    return Promise.resolve(this.options.status);
   }
 }

@@ -2,10 +2,17 @@ import { eq } from 'drizzle-orm';
 import { GrammyError } from 'grammy';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, broadcastDeliveries, broadcasts, users } from '../../db/schema.js';
+import {
+  batches,
+  billingSubscriptions,
+  broadcastDeliveries,
+  broadcasts,
+  users,
+} from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import {
   claimDelivery,
+  recipientsOf,
   countsOf,
   createBroadcast,
   listBroadcasts,
@@ -846,5 +853,105 @@ describe('ревизия четвёртого этапа: рассылка не 
 
     expect(outcome).toEqual({ ok: true, back: 1 });
     expect((await listBroadcasts(testDb()))[0]?.status).toBe('running');
+  });
+});
+
+describe('сегменты пробного периода не задевают платящих (ревизия этапа)', () => {
+  /**
+   * Сегмент «у кого пробный период кончился» — это письмо «пробные
+   * разборы закончились, вот тарифы». Оно уходило и тому, кто **уже
+   * платит**: пробные выгрузки он потратил до подписки, а условие
+   * смотрело только на них. Человек, заплативший неделю назад, получал
+   * приглашение заплатить — то самое письмо, после которого просят
+   * вернуть деньги.
+   */
+
+  it('платящий не попадает в «пробный кончился»', async () => {
+    const ids = await people(2);
+    const payer = ids[0] ?? 0;
+
+    const [who] = await testDb().select({ id: users.id }).from(users).where(eq(users.tgId, payer));
+
+    // Обоим пробный период исчерпан.
+    for (const tgId of ids) {
+      const [person] = await testDb()
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.tgId, tgId));
+
+      await testDb()
+        .insert(batches)
+        .values({
+          userId: person?.id ?? '',
+          status: 'done',
+          trialCountedAt: new Date(),
+        });
+    }
+
+    // А один из них платит.
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: who?.id ?? '',
+        plan: 'monthly',
+        autoRenew: true,
+        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
+      });
+
+    const spent = await recipientsOf(testDb(), { segment: 'trialSpent', trialLimit: 1 });
+
+    expect(spent.map((one) => one.tgId)).not.toContain(payer);
+    expect(spent).toHaveLength(1);
+  });
+
+  it('платящий не попадает и в «пробный ещё идёт»', async () => {
+    // Платящий пробный не тратит вовсе, и приглашать его «попробовать»
+    // незачем.
+    const ids = await people(2);
+    const payer = ids[0] ?? 0;
+
+    const [who] = await testDb().select({ id: users.id }).from(users).where(eq(users.tgId, payer));
+
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: who?.id ?? '',
+        plan: 'monthly',
+        autoRenew: true,
+        currentPeriodEnd: new Date(Date.now() + 20 * 24 * 3_600_000),
+      });
+
+    const left = await recipientsOf(testDb(), { segment: 'trialLeft', trialLimit: 10 });
+
+    expect(left.map((one) => one.tgId)).not.toContain(payer);
+  });
+
+  it('кончившаяся подписка снова делает человека получателем', async () => {
+    // «Платит сейчас» — про сейчас: у кого период кончился, письмо про
+    // тарифы уместно.
+    const ids = await people(1);
+    const was = ids[0] ?? 0;
+
+    const [who] = await testDb().select({ id: users.id }).from(users).where(eq(users.tgId, was));
+
+    await testDb()
+      .insert(batches)
+      .values({ userId: who?.id ?? '', status: 'done', trialCountedAt: new Date() });
+
+    await testDb()
+      .insert(billingSubscriptions)
+      .values({
+        provider: 'robokassa:smz',
+        userId: who?.id ?? '',
+        plan: 'monthly',
+        autoRenew: false,
+        currentPeriodEnd: new Date(Date.now() - 24 * 3_600_000),
+      });
+
+    const spent = await recipientsOf(testDb(), { segment: 'trialSpent', trialLimit: 1 });
+
+    expect(spent.map((one) => one.tgId)).toContain(was);
   });
 });

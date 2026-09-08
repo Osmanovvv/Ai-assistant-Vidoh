@@ -54,12 +54,31 @@ async function chatOf(db: Executor, userId: string): Promise<number | undefined>
   return row?.blockedAt == null ? row?.tgId : undefined;
 }
 
+/**
+ * Действие «открыть экран подписки» — строкой, а не импортом.
+ *
+ * Обработчики кнопок живут в `bot/handlers/billing.ts`, а этот модуль —
+ * в `modules/billing`: импорт оттуда сюда развернул бы зависимость
+ * наоборот (обработчики зависят от служб, не наоборот). Значение
+ * сверяется проверкой, чтобы строка не разошлась с обработчиком.
+ */
+const BILLING_ACTION_OPEN = 'pay:open';
+
 export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
   /** Отправка одной репликой: чат, профиль текста, отказ. */
   const say = async (
     userId: string,
     pick: (texts: TextProfile, until: string) => string,
     until: Date,
+    /**
+     * Показать кнопку оплаты (ревизия четвёртого этапа).
+     *
+     * План обещал «сообщение с кнопкой оплаты», а кнопки не было ни в
+     * одном из двух путей: человек читал «продление не прошло» и должен
+     * был сам вспомнить про `/menu`. Обещание либо исполняется, либо
+     * снимается — здесь исполняется.
+     */
+    withPayButton = false,
   ) => {
     const chatId = await chatOf(deps.db, userId);
     if (chatId === undefined) return;
@@ -67,8 +86,18 @@ export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
     const context = await outputContextOf(deps.db, userId);
     const texts = textsFor(context.textProfile);
 
+    const markup = withPayButton
+      ? {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: texts.billing.buttonPay, callback_data: BILLING_ACTION_OPEN }],
+            ],
+          },
+        }
+      : {};
+
     try {
-      await deps.api.sendMessage(chatId, pick(texts, untilText(until)));
+      await deps.api.sendMessage(chatId, pick(texts, untilText(until)), markup);
     } catch (error) {
       if (isBlockedError(error)) {
         deps.logger.info({ userId }, 'Оплативший заблокировал бота, помечаю');
@@ -90,6 +119,9 @@ export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
         params.userId,
         (texts, until) => texts.billing.renewalFailed(until),
         params.paidUntil,
+        // С кнопкой оплаты — как обещает план: человеку надо заплатить,
+        // а не искать, где это сделать.
+        true,
       );
     },
   };

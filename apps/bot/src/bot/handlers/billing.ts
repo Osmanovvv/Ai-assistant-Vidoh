@@ -637,6 +637,14 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
     raw: unknown,
     tgId: number,
     say: (text: string) => Promise<unknown>,
+    /**
+     * Сказать с кнопкой оплаты — там, где человеку надо заплатить.
+     *
+     * План обещал «сообщение с кнопкой оплаты» у неудачного продления, а
+     * кнопки не было ни в одном из двух путей: человек читал «продление
+     * не прошло» и должен был сам вспомнить про `/menu`.
+     */
+    sayWithPay: (text: string) => Promise<unknown> = say,
   ): Promise<void> => {
     /**
      * **Выключенный рельс больше не глотает оплату.**
@@ -690,6 +698,25 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
       return;
     }
 
+    if (applied.kind === 'promoSpent') {
+      /**
+       * Та же промо-ссылка оплачена второй раз.
+       *
+       * Периода по цене со скидкой не выдаём — она на первый период, —
+       * но и молчать нельзя: деньги у человека списаны. Отвечаем тем же,
+       * чем при недоплате: разбираться будем руками, через /paysupport.
+       */
+      deps.logger.error(
+        { tgId, code: applied.code, paidBefore: applied.paidBefore },
+        'Оплачена промо-ссылка повторно: право на скидку израсходовано, разбирать руками',
+      );
+
+      // Той же репликой, что при недоплате: разбираться будем руками,
+      // через /paysupport — обещание платёжной платформы Telegram.
+      await say((await textsOf(deps, undefined)).billing.checkoutFailed);
+      return;
+    }
+
     if (applied.kind === 'underpaid') {
       /**
        * Пришло не столько звёзд, сколько в счёте.
@@ -728,11 +755,12 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
           ? undefined
           : liveOne(await subscriptionsOf(deps.db, user.id), Date.now());
 
-      await say(
-        live === undefined
-          ? texts.billing.nothingToCancel
-          : texts.billing.renewalFailed(untilText(live.currentPeriodEnd)),
-      );
+      if (live === undefined) {
+        await say(texts.billing.nothingToCancel);
+        return;
+      }
+
+      await sayWithPay(texts.billing.renewalFailed(untilText(live.currentPeriodEnd)));
     }
   };
 
@@ -763,8 +791,27 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
    * А вот про неудачное продление сказать надо — о нём он не знает.
    */
   bot.on('subscription', async (ctx) => {
-    await applyStars({ subscription: ctx.subscription }, ctx.subscription.user.id, (text) =>
-      ctx.api.sendMessage(ctx.subscription.user.id, text),
+    const who = ctx.subscription.user.id;
+
+    await applyStars(
+      { subscription: ctx.subscription },
+      who,
+      async (text) => await ctx.api.sendMessage(who, text),
+      // Продление не прошло — человеку надо заплатить, и кнопка стоит
+      // рядом с новостью, а не в меню, куда он должен догадаться пойти.
+      async (text) =>
+        await ctx.api.sendMessage(who, text, {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: (await textsOf(deps, undefined)).billing.buttonPay,
+                  callback_data: BILLING_ACTION.open,
+                },
+              ],
+            ],
+          },
+        }),
     );
   });
 

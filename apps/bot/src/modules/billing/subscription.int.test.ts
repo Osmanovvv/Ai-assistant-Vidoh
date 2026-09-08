@@ -10,6 +10,7 @@ import {
   users,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
+import { savePromo } from './promo.service.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
@@ -89,12 +90,14 @@ function paid(params: {
   readonly ref: string;
   readonly externalId: string;
   readonly renewal?: boolean;
+  /** Сумма — когда счёт не на полную цену (например промо-счёт). */
+  readonly amount?: number;
 }): Extract<PaymentEvent, { kind: 'paid' }> {
   return {
     kind: 'paid',
     externalId: params.externalId,
     ref: params.ref,
-    amount: 39_900,
+    amount: params.amount ?? 39_900,
     currency: 'RUB',
     renewal: params.renewal ?? false,
   };
@@ -1378,5 +1381,145 @@ describe('личное из тела события не доходит до б�
     expect(written).not.toContain('anya_v');
     expect(written).not.toContain('4001');
     expect(written).toContain('150');
+  });
+});
+
+describe('ревизия четвёртого этапа: скидка, момент и второе «не прошло»', () => {
+  it('вторая оплата той же промо-ссылки не даёт второго периода по скидке', async () => {
+    /**
+     * **Промокод даётся на первый период**, и проверялось это только при
+     * выставлении счёта. Уникальный индекс закрыл «двенадцать промо-счётов
+     * одному человеку», но ссылка живёт вечно: та же промо-ссылка,
+     * оплаченная второй раз, приносила второй период по цене со скидкой
+     * — год за 1188 ₽ вместо 4788 ₽.
+     *
+     * Деньги при этом не теряются: платёж записан, счёт помечен
+     * оплаченным, разбирается руками — как недоплата.
+     */
+    // Код заводится по-настоящему: на `promo_code` стоит внешний ключ.
+    await savePromo(testDb(), {
+      code: 'BLOGGER7',
+      plan: 'monthly',
+      priceRubMinor: 9_900,
+      priceStars: 40,
+    });
+
+    await testDb().insert(billingInvoices).values({
+      provider: RAIL,
+      userId,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 9_900,
+      amountFullMinor: 39_900,
+      currency: 'RUB',
+      ref: 'промо-ссылка',
+      promoCode: 'BLOGGER7',
+      status: 'created',
+    });
+
+    const first = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'промо-ссылка', externalId: '5001', amount: 9_900 }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    expect(first.kind).toBe('applied');
+
+    const after = await subscriptionOf(testDb(), { userId, provider: RAIL });
+    const wasUntil = after?.currentPeriodEnd.toISOString();
+
+    // Вторая оплата той же ссылки — другим идентификатором платежа.
+    const second = await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'промо-ссылка', externalId: '5002', amount: 9_900 }),
+      now: new Date('2026-09-08T10:00:00.000Z'),
+    });
+
+    expect(second.kind).toBe('promoSpent');
+
+    // Срок не сдвинулся: второго периода по скидке нет.
+    expect(
+      (await subscriptionOf(testDb(), { userId, provider: RAIL }))?.currentPeriodEnd.toISOString(),
+    ).toBe(wasUntil);
+
+    // А деньги видны: счёт оплачен, событие записано.
+    const invoices = await testDb().select().from(billingInvoices);
+
+    expect(invoices.filter((one) => one.status === 'paid').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('второе «продление не прошло» в новом периоде доходит, а не съедается', async () => {
+    /**
+     * Ключ идемпотентности был однократен **на всю жизнь подписки**:
+     * второе «не прошло» через месяц съедалось, и тогда ни `past_due` не
+     * ставился, ни человек не узнавал. А это ровно тот случай, о котором
+     * надо сказать: карта не работает второй месяц подряд.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'п-1' });
+
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'п-1', externalId: '6001' }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    const failed = { kind: 'renewalFailed', ref: 'п-1' } as const;
+
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event: failed })).kind).toBe(
+      'failed',
+    );
+
+    // Повтор доставки того же события в том же периоде — по-прежнему
+    // повтор: за это индекс и стоит.
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event: failed })).kind).toBe(
+      'duplicate',
+    );
+
+    // Человек заплатил снова, период сдвинулся.
+    await invoiceFor({ plan: 'monthly', kind: 'renewal', ref: 'п-2' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'п-2', externalId: '6002', renewal: true }),
+      now: new Date('2026-10-07T10:00:00.000Z'),
+    });
+
+    // И новое «не прошло» — уже не повтор: это новость про новый период.
+    expect((await applyPaymentEvent(testDb(), { provider: RAIL, event: failed })).kind).toBe(
+      'failed',
+    );
+  });
+
+  it('момент конца пробного пишется, даже если отметку поставил не этот вызов', async () => {
+    /**
+     * Прежде запись момента стояла за «отметку поставил именно этот
+     * вызов»: упади процесс между двумя записями — и момент терялся
+     * навсегда, потому что повторная обработка видит отметку уже
+     * стоящей. Третий шаг воронки — единственное, что нельзя
+     * восстановить из рабочих таблиц.
+     */
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done' })
+      .returning({ id: batches.id });
+
+    const batchId = batch?.id ?? '';
+
+    // Первый вызов ставит отметку, но предела не знает — момента нет.
+    expect(await markTrialSpent(testDb(), { batchId })).toBe(true);
+
+    const [before] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+
+    expect(before?.trialCountedAt).not.toBeNull();
+    expect(before?.trialOverAt).toBeNull();
+
+    // Второй вызов — тот, что после перезапуска: отметка уже стоит.
+    expect(await markTrialSpent(testDb(), { batchId, trialLimit: 1 })).toBe(false);
+
+    const [after] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+
+    // Момент всё равно записан: он не зависит от того, кто поставил
+    // отметку.
+    expect(after?.trialOverAt).not.toBeNull();
+    expect(after?.trialLimit).toBe(1);
   });
 });

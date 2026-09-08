@@ -12,6 +12,7 @@ import {
   markInvoicePaid,
   markInvoiceRefunded,
   markPastDue,
+  paidInvoicesCount,
   recordEvent,
   stopAutoRenew,
   subscriptionOf,
@@ -160,9 +161,21 @@ export async function hasPaidAccess(
   params: { readonly userId: string; readonly now?: Date | undefined },
 ): Promise<boolean> {
   const now = params.now ?? new Date();
-  const paid = await subscriptionsOf(db, params.userId);
 
-  return paid.some((one) => one.currentPeriodEnd.getTime() > now.getTime());
+  /**
+   * Считает **тем же** условием, что отдаёт `paysNowSql`.
+   *
+   * Прежде здесь был свой способ: подписки собирались в память и
+   * сравнивались по сроку. Четвёртый способ ответить на один вопрос —
+   * и, по находке ревизии, вызывающих у него не было ни одного, включая
+   * проверки. Оставлен затем, что «платит ли» спрашивают и вне SQL:
+   * реплики, напоминания, кнопочные ответы.
+   */
+  const result = await db.execute<{ pays: boolean }>(
+    sql`select ${paysNowSql(sql`${params.userId}::uuid`, now)} as pays`,
+  );
+
+  return result.rows[0]?.pays === true;
 }
 
 /**
@@ -184,6 +197,29 @@ export function trialSpentSql(who: SQL | AnyColumn | string): SQL {
 }
 
 /** Исчерпан ли пробный период — тем же условием. */
+/**
+ * Платит ли человек прямо сейчас — **условием SQL** (ревизия этапа 4).
+ *
+ * Одно определение на всех, кто про это спрашивает: гейт доступа,
+ * отметка пробного, сегмент рассылки. Прежде их было три:
+ *  - `accessOf` собирала подписки в память и искала самый долгий срок;
+ *  - `markTrialSpent` держала свой `not exists` прямо в запросе;
+ *  - `hasPaidAccess` — четвёртый способ, у которого не было ни одного
+ *    вызывающего, включая проверки, а докстринг приписывал ей решение,
+ *    принимаемое внутри `markTrialSpent`.
+ *
+ * Три способа ответить на один вопрос расходятся молча, и расходятся
+ * именно там, где это стоит денег: человек, у которого подписка
+ * кончилась вчера, для одного из них ещё платящий.
+ */
+export function paysNowSql(who: SQL | AnyColumn | string, now: Date): SQL {
+  return sql`exists (
+    select 1 from ${billingSubscriptions}
+    where ${billingSubscriptions.userId} = ${who}
+      and ${billingSubscriptions.currentPeriodEnd} > ${now}
+  )`;
+}
+
 export function trialOverSql(who: SQL | AnyColumn | string, limit: number): SQL {
   return sql`${trialSpentSql(who)} >= ${limit}`;
 }
@@ -220,6 +256,23 @@ export async function trialSpent(db: Executor, userId: string): Promise<number> 
  *
  * Возвращает `true`, если отметка поставлена именно этим вызовом.
  */
+/**
+ * Чей это разбор — когда отметку поставил не этот вызов.
+ *
+ * Нужен записи момента конца пробного периода: она больше не зависит от
+ * того, кто поставил отметку (ревизия четвёртого этапа), а человека для
+ * условия «момента у него ещё нет» знать надо.
+ */
+async function ownerOf(db: Executor, batchId: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ userId: batches.userId })
+    .from(batches)
+    .where(eq(batches.id, batchId))
+    .limit(1);
+
+  return row?.userId;
+}
+
 export async function markTrialSpent(
   db: Executor,
   params: {
@@ -248,18 +301,32 @@ export async function markTrialSpent(
       and(
         eq(batches.id, params.batchId),
         isNull(batches.trialCountedAt),
-        sql`not exists (
-          select 1 from ${billingSubscriptions}
-          where ${billingSubscriptions.userId} = ${batches.userId}
-            and ${billingSubscriptions.currentPeriodEnd} > ${now}
-        )`,
+        // Тем же условием, что и гейт: «платящий пробный не тратит»
+        // должно значить одно и то же в обоих местах.
+        sql`not ${paysNowSql(batches.userId, now)}`,
       ),
     )
     .returning({ id: batches.id, userId: batches.userId });
 
   const marked = updated[0];
 
-  if (marked === undefined) return false;
+  /**
+   * **Момент пишется и без своей отметки** (ревизия четвёртого этапа).
+   *
+   * Прежде запись момента стояла за `if (marked === undefined) return`,
+   * то есть за «отметку поставил именно этот вызов». Упади процесс между
+   * двумя записями — и момент терялся навсегда: повторная обработка той
+   * же выгрузки видит отметку уже стоящей, выходит и до записи момента
+   * не доходит. Третий шаг воронки — единственное, что нельзя
+   * восстановить из рабочих таблиц.
+   *
+   * Теперь отметка и момент независимы: момент пишется, если предел
+   * добит и момента у человека ещё нет. Однократность держит уникальный
+   * индекс, а не порядок вызовов.
+   */
+  const who = marked?.userId ?? (await ownerOf(db, params.batchId));
+
+  if (who === undefined) return false;
 
   /**
    * Последняя капля — момент конца пробного периода (4.4).
@@ -270,27 +337,40 @@ export async function markTrialSpent(
    * повторную запись, а гонку двух процессов отобьёт индекс, и его отказ
    * означал бы настоящую ошибку.
    */
-  if (params.trialLimit === undefined || params.trialLimit <= 0) return true;
+  if (params.trialLimit === undefined || params.trialLimit <= 0) return marked !== undefined;
 
-  const spent = await trialSpent(db, marked.userId);
+  const spent = await trialSpent(db, who);
 
-  if (spent < params.trialLimit) return true;
+  if (spent < params.trialLimit) return marked !== undefined;
 
-  await db
-    .update(batches)
-    .set({ trialOverAt: now, trialLimit: params.trialLimit })
-    .where(
-      and(
-        eq(batches.id, params.batchId),
-        isNull(batches.trialOverAt),
-        sql`not exists (
-          select 1 from ${batches} as already
-          where already.user_id = ${marked.userId} and already.trial_over_at is not null
-        )`,
-      ),
-    );
+  /**
+   * Отказ уникального индекса здесь — не ошибка, а «уже записано».
+   *
+   * Два процесса могут дойти до этой строки одновременно: индекс
+   * «один момент на человека» отобьёт второго, и ронять этим оплаченный
+   * разбор нельзя — момент нужен воронке, а разбор нужен человеку.
+   */
+  try {
+    await db
+      .update(batches)
+      .set({ trialOverAt: now, trialLimit: params.trialLimit })
+      .where(
+        and(
+          eq(batches.id, params.batchId),
+          isNull(batches.trialOverAt),
+          sql`not exists (
+            select 1 from ${batches} as already
+            where already.user_id = ${who} and already.trial_over_at is not null
+          )`,
+        ),
+      );
+  } catch (error) {
+    const code = (error as { readonly cause?: { readonly code?: unknown } } | null)?.cause?.code;
 
-  return true;
+    if (code !== '23505') throw error;
+  }
+
+  return marked !== undefined;
 }
 
 /**
@@ -384,6 +464,23 @@ export type AppliedEvent =
       readonly expected: number;
       readonly got: number;
       readonly currency: string;
+    }
+  /**
+   * Оплачена промо-ссылка, а право на скидку уже израсходовано.
+   *
+   * **Ревизия четвёртого этапа.** Промокод даётся на первый период, и
+   * проверялось это только при выставлении счёта. Ссылка живёт вечно —
+   * значит та же промо-ссылка, оплаченная второй раз, приносила второй
+   * период по цене со скидкой: год за 1188 ₽ вместо 4788 ₽.
+   *
+   * Периода не выдаём, деньги не теряем: платёж записан, счёт помечен
+   * оплаченным, разбирается руками — как недоплата.
+   */
+  | {
+      readonly kind: 'promoSpent';
+      readonly code: string;
+      /** Сколько оплаченных счётов было **до** этого платежа. */
+      readonly paidBefore: number;
     }
   /** Событие не про нас: метки нет в счетах. */
   | { readonly kind: 'unknown'; readonly why: string };
@@ -505,8 +602,29 @@ async function applyInside(
    * У денежных событий это идентификатор платежа: он уникален и у
    * продлений тоже. У «человек отключил продление» такого ключа нет и не
    * нужно: выставить признак дважды — то же, что один раз.
+   *
+   * **Но у «продление не прошло» — нужен, и это находка ревизии.**
+   * Ключ `renewalFailed:<метка>` однократен **на всю жизнь подписки**:
+   * второе «не прошло» через месяц съедалось идемпотентностью, и тогда
+   * ни `past_due` не ставился, ни человек не узнавал. А это ровно тот
+   * случай, о котором надо сказать: карта не работает второй месяц
+   * подряд.
+   *
+   * Ключ дополняется концом оплаченного периода: однократно **на
+   * период**, а не навсегда. Повтор доставки того же события в том же
+   * периоде по-прежнему отбивается — за это индекс и стоит.
    */
-  const externalId = 'externalId' in event ? event.externalId : `${event.kind}:${event.ref}`;
+  // Обезличенный счёт до этой строки не доходит: он отбит выше.
+  const live =
+    event.kind === 'renewalFailed'
+      ? await subscriptionOf(db, { userId: invoice.userId, provider: params.provider })
+      : undefined;
+
+  const periodKey =
+    event.kind === 'renewalFailed' ? `:${String(live?.currentPeriodEnd.getTime() ?? 0)}` : '';
+
+  const externalId =
+    'externalId' in event ? event.externalId : `${event.kind}:${event.ref}${periodKey}`;
 
   const noted = await recordEvent(db, {
     provider: params.provider,
@@ -692,6 +810,44 @@ async function applyInside(
           autoRenew: event.renewal,
         })
       : invoice;
+
+  /**
+   * **Право на промо-цену перепроверяется в момент оплаты** (ревизия 4).
+   *
+   * Промокод даётся на **первый период**, и проверялось это только при
+   * выставлении счёта. Уникальный индекс закрыл «двенадцать промо-счётов
+   * одному человеку», но одну дыру оставил: ссылка живёт вечно, и **та
+   * же** промо-ссылка, оплаченная второй раз, приносила второй период по
+   * цене со скидкой — год за 1188 ₽ вместо 4788 ₽.
+   *
+   * Здесь это и отбивается: если оплачивается счёт со скидкой, а
+   * оплаченные счёта у человека уже есть, период по промо-цене не
+   * выдаётся. Деньги при этом **не пропадают**: платёж записан, счёт
+   * помечен оплаченным, а разбирается он руками — как недоплата.
+   */
+  // Обезличенный счёт до этой строки не доходит: он отбит выше.
+  if (invoice.promoCode !== null) {
+    const already = await paidInvoicesCount(db, invoice.userId);
+
+    if (already > 0) {
+      await markInvoicePaid(db, {
+        id: paying.id,
+        ...(providerInvId === undefined || !Number.isSafeInteger(providerInvId)
+          ? {}
+          : { providerInvId }),
+        ...(params.outSum === undefined ? {} : { outSumReceived: params.outSum }),
+        now,
+      });
+
+      await finish();
+
+      return {
+        kind: 'promoSpent',
+        code: invoice.promoCode,
+        paidBefore: already,
+      };
+    }
+  }
 
   await markInvoicePaid(db, {
     id: paying.id,
