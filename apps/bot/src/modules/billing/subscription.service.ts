@@ -93,6 +93,21 @@ export interface AccessState {
   readonly limit: number;
   /** Сколько осталось. Ноль — пробный период исчерпан. */
   readonly left: number;
+  /**
+   * **Почему не пускаем** — если не пускаем (ревизия четвёртого этапа).
+   *
+   * Прежде отказ был один на все случаи, и реплика тоже: человек, у
+   * которого кончилась **оплаченная** подписка, читал «пробные разборы
+   * закончились» — про пробный период, которого он не касался. То же
+   * получал тот, кому вернули деньги, и тот, у кого не прошло
+   * продление. Для платившего это не мелкая неточность: он решает, что
+   * бот забыл его оплату.
+   *
+   *  - `trial` — пробные выгрузки исчерпаны, платежей не было;
+   *  - `expired` — оплаченный период кончился;
+   *  - `renewalFailed` — продление не прошло, период кончился.
+   */
+  readonly why?: 'trial' | 'expired' | 'renewalFailed' | undefined;
 }
 
 /**
@@ -140,13 +155,25 @@ export async function accessOf(
     return { allowed: true, source: 'subscription', paidUntil, spent, limit, left };
   }
 
-  return {
-    allowed: spent < limit,
-    source: spent < limit ? 'trial' : 'none',
-    spent,
-    limit,
-    left,
-  };
+  if (spent < limit) {
+    return { allowed: true, source: 'trial', spent, limit, left };
+  }
+
+  /**
+   * Причина отказа берётся из истории подписок, а не угадывается.
+   *
+   * Платил ли человек когда-нибудь — видно по строкам подписок: они
+   * остаются и после конца периода (`past_due`, `canceled`, просто
+   * истёкшая). Не было ни одной — значит и правда исчерпан пробный.
+   */
+  const why =
+    paid.length === 0
+      ? 'trial'
+      : paid.some((one) => one.status === 'past_due')
+        ? 'renewalFailed'
+        : 'expired';
+
+  return { allowed: false, source: 'none', spent, limit, left, why };
 }
 
 /**

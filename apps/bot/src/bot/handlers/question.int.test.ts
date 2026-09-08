@@ -3,7 +3,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, items, type Item } from '../../db/schema.js';
+import { aiCalls, batches, items, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import type { AiClientDeps } from '../../modules/ai/client.js';
 import { SpendCeilingError } from '../../infra/failures.js';
@@ -13,6 +13,7 @@ import { activatePrompt, seedPrompt } from '../../modules/ai/prompts/seed.js';
 import { CLASSIFIER_SCHEMA_NAME } from '../../modules/ai/schemas/index.js';
 import { askQuestion } from '../../modules/resolver/questions.repo.js';
 import { testDb } from '../../test/db.js';
+import { putSetting, SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
 import { toShortId } from '../../modules/shared/short-id.js';
@@ -69,7 +70,11 @@ function classifierSaying(text: string): AiClientDeps {
   };
 }
 
-function createTestBot(ai: AiClientDeps): { bot: Bot; calls: ApiCall[] } {
+function createTestBot(
+  ai: AiClientDeps,
+  /** Реестр настроек: без него доступ считается открытым, как раньше. */
+  settings?: SettingsRegistry,
+): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -91,7 +96,13 @@ function createTestBot(ai: AiClientDeps): { bot: Bot; calls: ApiCall[] } {
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerQuestionHandlers(bot, { db: testDb(), ai, logger });
+  registerQuestionHandlers(bot, {
+    db: testDb(),
+    ai,
+    logger,
+    ...(settings === undefined ? {} : { settings }),
+  });
+
   return { bot, calls };
 }
 
@@ -519,5 +530,58 @@ describe('«Это новое»', () => {
 
     // И человеку сказано, что не вышло, а не «завела отдельно».
     expect(edits(calls)).toEqual([defaultTexts.errors.generic]);
+  });
+});
+
+describe('кнопка «это новое» не платит за того, кому гейт отказывает (ревизия этапа)', () => {
+  /**
+   * Нажатие ведёт к настоящему разбору — классификатору, то есть к
+   * деньгам. Проверки доступа здесь не было вовсе, а комментарий в
+   * приёме сообщений объявлял кнопки безусловно бесплатными — на этом
+   * дыра и держалась: человек с исчерпанным пробным периодом нажимал
+   * кнопку под старым вопросом и получал платный разбор.
+   *
+   * Отрезок при этом не пропадает: он уходит в черновик тем же путём,
+   * что при «не разобралось» (§9.1).
+   */
+
+  it('у человека без доступа разбора нет, а слова сохранены черновиком', async () => {
+    await putSetting(testDb(), { name: 'trialDumps', value: '1' });
+
+    // Пробная выгрузка потрачена: бот такому откажет.
+    await testDb().insert(batches).values({ userId, status: 'done', trialCountedAt: new Date() });
+
+    const questionId = await ask();
+
+    const { bot } = createTestBot(
+      classifierSaying('неважно'),
+      new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+    );
+
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.separate}${toShortId(questionId)}`));
+
+    // Ни одного обращения к модели: отказ стоит до неё.
+    expect(await testDb().select().from(aiCalls)).toEqual([]);
+
+    // А слова человека сохранены черновиком, а не потеряны.
+    const kept = await testDb().select().from(items).where(eq(items.isDraft, true));
+
+    expect(kept.length).toBeGreaterThan(0);
+  });
+
+  it('у человека с доступом кнопка работает как прежде', async () => {
+    const questionId = await ask();
+
+    const { bot } = createTestBot(
+      classifierSaying('неважно'),
+      new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+    );
+
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.separate}${toShortId(questionId)}`));
+
+    // Разбор случился: обращение к модели есть.
+    expect((await testDb().select().from(aiCalls)).length).toBeGreaterThan(0);
   });
 });

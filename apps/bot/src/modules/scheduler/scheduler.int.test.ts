@@ -4,6 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import pino from 'pino';
 
 import {
+  batches,
   items,
   messagesRaw,
   recurrenceSuggestions,
@@ -12,6 +13,7 @@ import {
   users,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
+import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
@@ -707,5 +709,50 @@ describe('выбранное время вступает в силу сразу 
       .where(and(eq(reminders.userId, userId), sql`sent_at is not null`));
 
     expect(sentAfter.length).toBe(sentBefore.length);
+  });
+});
+
+describe('напоминание не приглашает того, кому бот откажет (ревизия этапа)', () => {
+  /**
+   * **Приглашение, которое бот сам не исполнит, хуже молчания.** «Наговори,
+   * разложу» уходило каждое утро и тому, у кого пробные разборы кончились
+   * — а на наговорённое приходит отказ. Каждый день.
+   *
+   * Дела на сегодня при этом остаются: §14 велит держать бэклог
+   * доступным на чтение, и напоминание о делах — чтение.
+   */
+
+  /** Те же зависимости, что у остальных проверок, плюс реестр настроек. */
+  const withSettings = () => ({
+    ...deps(),
+    settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+  });
+
+  it('у человека без доступа утреннее письмо приглашает оплатить, а не выгружать', async () => {
+    await putSetting(testDb(), { name: 'trialDumps', value: '1' });
+
+    // Пробная выгрузка потрачена: бот такому откажет.
+    await testDb().insert(batches).values({ userId, status: 'done', trialCountedAt: new Date() });
+
+    await planReminders(withSettings(), { now: NOW });
+    await dispatchReminders(withSettings(), { now: new Date('2026-08-30T05:30:00.000Z') });
+
+    const sent = outbox.at(-1);
+
+    expect(sent?.text).toContain(defaultTexts.reminders.needsPay);
+    expect(sent?.text).not.toContain(defaultTexts.reminders.morningInvite);
+
+    // И кнопка оплаты рядом: искать её в меню человек не должен.
+    expect(sent?.buttons).toEqual([defaultTexts.menu.buttonSubscription]);
+  });
+
+  it('у человека с доступом всё как было', async () => {
+    await planReminders(withSettings(), { now: NOW });
+    await dispatchReminders(withSettings(), { now: new Date('2026-08-30T05:30:00.000Z') });
+
+    const sent = outbox.at(-1);
+
+    expect(sent?.text).toContain(defaultTexts.reminders.morningInvite);
+    expect(sent?.buttons).toEqual([]);
   });
 });

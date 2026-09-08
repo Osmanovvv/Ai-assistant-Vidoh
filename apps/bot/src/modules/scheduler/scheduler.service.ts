@@ -11,6 +11,8 @@ import {
   type Reminder,
 } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
+import { accessOf } from '../billing/subscription.service.js';
+import type { SettingsRegistry } from '../settings/settings.repo.js';
 import { textsFor } from '../../texts/index.js';
 import type { TextProfile } from '../../texts/types.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
@@ -67,6 +69,17 @@ export interface SchedulerDeps {
    * калибровки на живых данных.
    */
   readonly suggestRecurrence?: boolean | undefined;
+  /**
+   * Реестр настроек — чтобы спросить доступ (ревизия четвёртого этапа).
+   *
+   * Утреннее и вечернее напоминания приглашали выгружать того, кому бот
+   * в ответ откажет: «наговори, разложу» — а на наговорённое приходит
+   * «пробные разборы закончились». Приглашение, которое бот сам не
+   * исполнит, повторялось ежедневно.
+   *
+   * Необязателен: без него доступ считается открытым, как и раньше.
+   */
+  readonly settings?: SettingsRegistry | undefined;
 }
 
 /**
@@ -378,6 +391,31 @@ interface ComposedReminder {
  * том, что он уже сделал, — это не безобидная мелочь: продукт показывает,
  * что не заметил сделанного.
  */
+/**
+ * Пустит ли бот новую выгрузку прямо сейчас (ревизия четвёртого этапа).
+ *
+ * Спрашивается **при сборке напоминания**, а не при раскладке: между
+ * раскладкой и отправкой проходят часы, и человек за это время мог
+ * заплатить. Реестр настроек необязателен — без него доступ считается
+ * открытым, как и раньше: так собраны проверки, писавшиеся до ревизии.
+ */
+async function mayDumpNow(
+  deps: { readonly db: Database; readonly settings?: SettingsRegistry | undefined },
+  userId: string,
+  now: Date,
+): Promise<boolean> {
+  if (deps.settings === undefined) return true;
+
+  const access = await accessOf(deps.db, { userId, settings: deps.settings, now });
+
+  return access.allowed;
+}
+
+/** Кнопка оплаты рядом с приглашением заплатить. */
+function payButtons(texts: TextProfile): readonly { label: string; action: string }[] {
+  return [{ label: texts.menu.buttonSubscription, action: 'pay:open' }];
+}
+
 async function composeOne(
   deps: SchedulerDeps,
   reminder: Reminder,
@@ -412,13 +450,26 @@ async function composeOne(
         to: new Date(dayStart.getTime() + DAY_MS),
       });
 
+      /**
+       * Приглашение выгружать — только тому, кого бот пустит.
+       *
+       * Ревизия четвёртого этапа: «наговори, разложу» уходило каждое
+       * утро и тому, кому бот в ответ откажет. Приглашение, которое бот
+       * сам не исполнит, хуже молчания: оно повторяется ежедневно.
+       *
+       * Дела на сегодня остаются: §14 велит держать бэклог доступным на
+       * чтение, и напоминание о делах — чтение.
+       */
+      const mayDump = await mayDumpNow(deps, reminder.userId, now);
+
       return {
         text: morningText(
           texts,
           today.filter((item) => !covered.has(item.id)),
           { now, timeZone: context.timeZone },
+          mayDump,
         ),
-        buttons: [],
+        buttons: mayDump ? [] : payButtons(texts),
       };
     }
 
@@ -443,7 +494,14 @@ async function composeOne(
             )
           : undefined;
 
-      if (found === undefined) return { text: eveningText(texts, closed), buttons: [] };
+      const mayDump = await mayDumpNow(deps, reminder.userId, now);
+
+      if (found === undefined) {
+        return {
+          text: eveningText(texts, closed, undefined, mayDump),
+          buttons: mayDump ? [] : payButtons(texts),
+        };
+      }
 
       return {
         text: eveningText(
@@ -454,6 +512,7 @@ async function composeOne(
             datesInWords(found.dates, context.timeZone),
             rhythmInWords(found.rhythm),
           ),
+          mayDump,
         ),
         buttons: suggestButtons(found.suggestionId, texts),
       };

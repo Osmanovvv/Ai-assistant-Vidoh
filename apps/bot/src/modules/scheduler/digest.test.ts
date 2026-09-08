@@ -214,9 +214,14 @@ describe('§13.6: просроченное не провал', () => {
      * `day` появился в задаче 3.78 и несёт ровно две вещи — «сейчас» и
      * пояс, — что и написано в его типе. Подставить в него просроченное
      * нельзя, а новое имя в этом списке потребует объяснения здесь.
+     *
+     * `mayDump` добавлен ревизией четвёртого этапа: он булев и отвечает
+     * на один вопрос — пустит ли бот новую выгрузку. Приглашение
+     * выгружать уходило каждое утро и тому, кому бот в ответ откажет;
+     * просроченное в булев не подставить.
      */
-    expect(paramsOf(morningText)).toEqual(['texts', 'actions', 'day']);
-    expect(paramsOf(eveningText)).toEqual(['texts', 'closedToday', 'suggestion']);
+    expect(paramsOf(morningText)).toEqual(['texts', 'actions', 'day', 'mayDump']);
+    expect(paramsOf(eveningText)).toEqual(['texts', 'closedToday', 'suggestion', 'mayDump']);
   });
 });
 

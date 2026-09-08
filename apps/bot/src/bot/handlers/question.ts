@@ -2,6 +2,8 @@ import type { InlineKeyboard, Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
+import { accessOf } from '../../modules/billing/subscription.service.js';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import type { AiClientDeps } from '../../modules/ai/client.js';
 import type { ResolverAnswer } from '../../modules/ai/schemas/index.js';
 import { classifyUnits } from '../../modules/classifier/classifier.service.js';
@@ -44,6 +46,18 @@ export interface QuestionDeps {
   readonly db: Database;
   readonly ai: AiClientDeps;
   readonly logger: Logger;
+  /**
+   * Реестр настроек — чтобы спросить доступ перед платным разбором.
+   *
+   * Ревизия четвёртого этапа: нажатие «это новое» ведёт к настоящему
+   * разбору, то есть к деньгам, а проверки доступа здесь не было вовсе —
+   * человек, которому гейт уже отказывает, получал платный разбор по
+   * кнопке под старым вопросом.
+   *
+   * Необязателен: без него доступ считается открытым — так собраны
+   * проверки, писавшиеся до ревизии.
+   */
+  readonly settings?: SettingsRegistry | undefined;
 }
 
 /** Вопрос с двумя кнопками. Заголовок записи — в тексте, как требует §7.3. */
@@ -241,6 +255,25 @@ async function createFromSegment(
 
     return false;
   };
+
+  /**
+   * **Доступ спрашивается до обращения к модели** (ревизия этапа 4).
+   *
+   * Нажатие «это новое» ведёт к настоящему разбору — классификатор, то
+   * есть деньги. Прежде здесь проверки не было вовсе: человек, которому
+   * гейт уже отказывает, нажимал кнопку под старым вопросом и получал
+   * платный разбор. Комментарий в приёме сообщений при этом объявлял
+   * кнопки безусловно бесплатными — на этом и держалась дыра.
+   *
+   * Отрезок не пропадает: он уходит в черновик тем же путём, что при
+   * «не разобралось». §9.1 — сохранить сказанное — исполнен, деньги не
+   * потрачены.
+   */
+  if (deps.settings !== undefined) {
+    const access = await accessOf(deps.db, { userId: params.userId, settings: deps.settings });
+
+    if (!access.allowed) return await keep('доступа нет: пробный период кончился или не оплачен');
+  }
 
   let classified;
 
