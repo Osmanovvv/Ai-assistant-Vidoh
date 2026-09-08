@@ -651,6 +651,9 @@ async function main(): Promise<void> {
     db,
     ai: { db, provider: llm, prompts, logger, spendGuard },
     logger,
+    // Чтобы кнопка «это новое» не платила модели за человека,
+    // которому гейт уже отказывает (ревизия четвёртого этапа).
+    settings,
   });
 
   bot.catch(({ error }) => {
@@ -835,6 +838,9 @@ async function main(): Promise<void> {
         sender: questions,
         logger,
         suggestRecurrence: env.RECURRENCE_SUGGESTIONS,
+        // Чтобы напоминание не приглашало выгружать того, кому бот в
+        // ответ откажет (ревизия четвёртого этапа).
+        settings,
       })
     : () => undefined;
 

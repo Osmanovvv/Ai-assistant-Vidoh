@@ -42,8 +42,20 @@ export function morningText(
   texts: TextProfile,
   actions: readonly Item[],
   day: { readonly now: Date; readonly timeZone: string },
+  /**
+   * Есть ли у человека доступ к новым разборам (ревизия этапа 4).
+   *
+   * Прежде приглашение «наговори, разложу» уходило каждое утро и тому,
+   * кому бот в ответ откажет. Приглашение, которое бот сам не исполнит,
+   * хуже молчания: оно повторяется ежедневно, и человек либо перестаёт
+   * верить боту, либо каждый день натыкается на отказ.
+   *
+   * Дела на сегодня при этом остаются: §14 велит держать бэклог
+   * доступным на чтение, и напоминание о делах — чтение.
+   */
+  mayDump = true,
 ): string {
-  const lines = [texts.reminders.morningInvite];
+  const lines = [mayDump ? texts.reminders.morningInvite : texts.reminders.needsPay];
 
   const shown = actions.slice(0, MORNING_ACTIONS_LIMIT);
   if (shown.length > 0) {
@@ -68,11 +80,17 @@ export function morningText(
  * место единственного вопроса, и §13.9 не нарушается: приглашение выше —
  * не вопрос, а приглашение.
  */
-export function eveningText(texts: TextProfile, closedToday: number, suggestion?: string): string {
+export function eveningText(
+  texts: TextProfile,
+  closedToday: number,
+  suggestion?: string,
+  /** Есть ли доступ к новым разборам. См. `morningText`. */
+  mayDump = true,
+): string {
   const summary =
     closedToday > 0 ? texts.reminders.eveningClosed(closedToday) : texts.reminders.eveningQuiet;
 
-  const lines = [summary, texts.reminders.eveningInvite];
+  const lines = [summary, mayDump ? texts.reminders.eveningInvite : texts.reminders.needsPay];
   if (suggestion !== undefined && suggestion.length > 0) lines.push('', suggestion);
 
   return lines.join('\n');
