@@ -29,6 +29,7 @@ const SECTIONS = [
   { title: 'Пользователи', spec: 'people.spec.ts' },
   { title: 'Карточка пользователя', spec: 'people.spec.ts' },
   { title: 'Расходы', spec: 'costs.spec.ts' },
+  { title: 'Реплики', spec: 'texts.spec.ts' },
   { title: 'Настройки', spec: 'settings.spec.ts' },
   { title: 'Промпты', spec: 'prompts.spec.ts' },
   { title: 'Рассылка', spec: 'broadcast.spec.ts' },

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Item } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
-import { forbiddenPhraseIn } from '../presenter/presenter.service.js';
+import { forbiddenPhraseIn } from '../../texts/rules.js';
 import {
   deadlineText,
   eveningText,

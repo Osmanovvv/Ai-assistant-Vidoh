@@ -7,6 +7,7 @@ import { Costs } from './Costs.js';
 import { OverviewPanel, PeoplePanel } from './People.js';
 import { PromptsPanel } from './Prompts.js';
 import { SettingsPanel } from './Settings.js';
+import { TextsPanel } from './Texts.js';
 import { SignIn } from './SignIn.js';
 
 /**
@@ -42,6 +43,7 @@ const TABS = [
   { key: 'prompts', title: 'Промпты' },
   { key: 'broadcast', title: 'Рассылка' },
   { key: 'errors', title: 'Ошибки' },
+  { key: 'texts', title: 'Реплики' },
   { key: 'settings', title: 'Настройки' },
 ] as const;
 
@@ -127,6 +129,7 @@ export function App(): React.ReactElement {
       {tab === 'prompts' && <PromptsPanel />}
       {tab === 'broadcast' && <BroadcastPanel />}
       {tab === 'errors' && <ErrorsPanel />}
+      {tab === 'texts' && <TextsPanel />}
       {tab === 'settings' && <SettingsPanel />}
     </div>
   );

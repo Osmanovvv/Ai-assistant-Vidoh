@@ -383,6 +383,39 @@ export function settings(): Promise<SettingsPage> {
   return call<SettingsPage>('/settings');
 }
 
+/** Одна реплика бота в редакторе (§13.9, задача 4.13). */
+export interface TextRow {
+  readonly path: string;
+  /** Как бот говорит сейчас: правка, если она есть, иначе слова из кода. */
+  readonly said: string;
+  readonly fromCode: string;
+  readonly edited: boolean;
+  /** Сколько значений подставляется: их нельзя терять при правке. */
+  readonly places: number;
+  readonly updatedAt?: string;
+  readonly updatedBy?: string;
+}
+
+export interface TextsPage {
+  readonly rows: readonly TextRow[];
+  /** Реплики, которых редактор не показывает, — с причиной у каждой. */
+  readonly hidden: readonly { readonly path: string; readonly why: string }[];
+}
+
+export function texts(): Promise<TextsPage> {
+  return call<TextsPage>('/texts');
+}
+
+/**
+ * Сохранить правку реплики. Пустая строка возвращает слова из кода.
+ *
+ * Отказ приходит с причиной от сервера — её печатает раздел: правило §13
+ * человек исправит, «не удалось сохранить» не исправит ничего.
+ */
+export function saveText(path: string, said: string): Promise<{ ok: boolean; reset: boolean }> {
+  return post<{ ok: boolean; reset: boolean }>('/texts', { path, said });
+}
+
 export function putSetting(name: string, value: string): Promise<{ ok: boolean }> {
   return post<{ ok: boolean }>('/settings', { name, value });
 }

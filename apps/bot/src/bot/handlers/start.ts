@@ -12,7 +12,7 @@ import {
 } from '../../modules/onboarding/onboarding.service.js';
 import type { QuestionSender } from '../../modules/presenter/telegram-sender.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
-import { defaultTexts } from '../../texts/index.js';
+import { textsFor } from '../../texts/index.js';
 
 /**
  * Экран первого запуска (задача 1.10).
@@ -83,7 +83,7 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
     if (state.step !== 0) return undefined;
 
     const step = firstStep(state.name);
-    const question = questionFor(step, { texts: defaultTexts, name: state.name, opening: true });
+    const question = questionFor(step, { texts: textsFor(), name: state.name, opening: true });
     if (!question) return undefined;
 
     await setStep(db, user.id, step);
@@ -94,7 +94,13 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
 
   // Профиль по умолчанию, а не выбранный человеком: этот экран
   // показывается до регистрации, и выбирать ещё некому (§13.1).
-  const texts = defaultTexts;
+  /**
+   * Через `textsFor()`, а не константой из кода: §13.9 требует менять
+   * тексты без выкладки, и первый экран — то самое место, где человек
+   * видит бота впервые. Застывшее значение означало бы «без выкладки,
+   * кроме приветствия».
+   */
+  const texts = textsFor();
 
   const keyboard = fitKeyboard([
     [

@@ -36,6 +36,7 @@ import type { PaymentProvider } from './modules/billing/provider.js';
 import type { Rail } from './modules/billing/tariffs.js';
 import { registerCardHandlers } from './bot/handlers/card.js';
 import { effectiveLimits, SettingsRegistry } from './modules/settings/settings.repo.js';
+import { TextsRegistry } from './texts/registry.js';
 import { runCloseBatchJob } from './modules/pipeline/close-job.js';
 import { registerProjectHandlers } from './bot/handlers/project.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
@@ -246,6 +247,28 @@ async function main(): Promise<void> {
    * отдельный реестр свёл бы кэш к нулю.
    */
   const settings = new SettingsRegistry({ db, logger });
+
+  /**
+   * Реплики из базы поверх реплик из кода (§13.9, задача 4.13).
+   *
+   * §13.9 требует менять тексты без выкладки новой версии. Читается один
+   * раз на старте и потом в фоне: `textsFor()` осталась синхронной, её
+   * зовут из мест, где `await` взять негде.
+   *
+   * Отказ чтения не оставляет бота без слов — действуют реплики из кода.
+   * Промолчать в ответ человеку было бы хуже, чем сказать прежними
+   * словами, и об отказе есть строка в журнале.
+   */
+  const texts = new TextsRegistry({ db, logger });
+
+  const editedReplies = await texts.refresh();
+
+  logger.info(
+    { edited: editedReplies < 0 ? 'не прочитаны' : editedReplies },
+    'Правки реплик применены',
+  );
+
+  texts.start();
 
   /**
    * Рельсы оплаты (§14 ТЗ, задача 4.2).
@@ -810,6 +833,7 @@ async function main(): Promise<void> {
           adminStaticDir: adminDist,
           adminDb: db,
           adminSettings: settings,
+          adminTexts: texts,
           adminPromptRegistry: prompts,
           adminEnqueueBroadcast: async (broadcastId: string) => {
             await enqueueBroadcast(broadcastQueue, broadcastId);

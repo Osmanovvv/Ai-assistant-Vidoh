@@ -1,5 +1,6 @@
 import type { Executor } from '../infra/db.js';
 import type { SettingsRegistry } from '../modules/settings/settings.repo.js';
+import type { TextsRegistry } from '../texts/registry.js';
 import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
 import type { AiStage } from '../db/schema.js';
 import type { EvalRunner } from '../modules/admin/eval-run.js';
@@ -42,6 +43,15 @@ export interface ServerDeps {
   readonly adminDb?: Executor | undefined;
   /** Реестр значений: раздел настроек правит его и сбрасывает кэш (4.9). */
   readonly adminSettings?: SettingsRegistry | undefined;
+
+  /**
+   * Реестр реплик (§13.9, задача 4.13).
+   *
+   * Нужен, чтобы правка из панели действовала с этой секунды, а не с
+   * истечения окна: человек, нажавший «Сохранить», идёт проверять бота
+   * сразу.
+   */
+  readonly adminTexts?: TextsRegistry | undefined;
   /**
    * Папка контрольного набора (§10.3, задача 4.8).
    *
@@ -205,6 +215,7 @@ export function createServer(deps: ServerDeps): Express {
         ...(deps.adminStaticDir === undefined ? {} : { staticDir: deps.adminStaticDir }),
         ...(deps.adminDb === undefined ? {} : { db: deps.adminDb }),
         ...(deps.adminSettings === undefined ? {} : { settings: deps.adminSettings }),
+        ...(deps.adminTexts === undefined ? {} : { texts: deps.adminTexts }),
         ...(deps.adminEvalDir === undefined ? {} : { evalDir: deps.adminEvalDir }),
         ...(deps.adminEnqueueBroadcast === undefined
           ? {}
