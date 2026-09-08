@@ -1011,13 +1011,27 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
           }
 
           void retryFailed(db, id)
-            .then(async (back) => {
-              if (back > 0) await enqueue(id);
-              return back;
+            .then(async (outcome) => {
+              if (outcome.ok) await enqueue(id);
+              return outcome;
             })
             .then(
-              (back) => {
-                res.json({ ok: true, back });
+              (outcome) => {
+                if (!outcome.ok) {
+                  /**
+                   * 409, а не 400: запрос понят и правилен, но состояние
+                   * рассылки его не позволяет.
+                   *
+                   * Ревизия четвёртого этапа: прежде повтор поднимал
+                   * **любую** рассылку, включая остановленную, и снимал
+                   * просьбу остановиться — то есть досылал всех
+                   * оставшихся, а не только неудачных.
+                   */
+                  res.status(409).json({ error: outcome.why ?? 'повторить нельзя' });
+                  return;
+                }
+
+                res.json({ ok: true, back: outcome.back });
               },
               (error: unknown) => {
                 deps.onError?.(error);

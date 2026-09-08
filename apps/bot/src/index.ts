@@ -15,7 +15,11 @@ import { incomingMiddleware } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { adminConfigFrom } from './http/admin/index.js';
 import { createEvalRunner } from './modules/admin/eval-run.js';
-import { runningBroadcasts } from './modules/broadcast/broadcast.repo.js';
+import {
+  finishBroadcast,
+  runningBroadcasts,
+  settleStopRequests,
+} from './modules/broadcast/broadcast.repo.js';
 import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
 import { newestRun } from './eval/freshness.js';
 import { createPromoConsumer, registerBillingHandlers } from './bot/handlers/billing.js';
@@ -459,12 +463,62 @@ async function main(): Promise<void> {
 
     logger.info({ broadcastId: job.data.broadcastId, ...step }, 'Порция рассылки отправлена');
 
-    if (step.more) await enqueueBroadcast(broadcastQueue, job.data.broadcastId);
+    // Задержка — там, где остались только взятые строки: раньше срока
+    // взятия их не перезахватить, и заход вернул бы пустую порцию.
+    if (step.more) {
+      await enqueueBroadcast(broadcastQueue, job.data.broadcastId, step.afterMs ?? 0);
+    }
   });
 
   broadcastWorker.on('failed', (job, error) => {
     logger.error({ jobId: job?.id, err: error }, 'Заход рассылки не удался');
+
+    /**
+     * **Исчерпавшая попытки рассылка перестаёт числиться идущей.**
+     *
+     * Найдено ревизией четвёртого этапа: статус `failed` не ставил никто
+     * — ни одной строкой кода, — и рассылка, чьё задание сгорело за три
+     * попытки, вечно показывалась в панели как «идёт». Остановить её
+     * нельзя (нечего останавливать), продолжить нельзя (не остановлена),
+     * повторить неудачные нельзя (неудачных нет). Словарь панели слово
+     * «сорвалась» держал, а получить его было нечем.
+     *
+     * Различаем последнюю попытку от промежуточной: после первой из трёх
+     * задание вернётся само, и объявлять рассылку сорвавшейся рано.
+     */
+    const attempts = job?.opts.attempts ?? 1;
+    const made = job?.attemptsMade ?? 0;
+    const broadcastId = job?.data.broadcastId;
+
+    if (broadcastId === undefined || made < attempts) return;
+
+    void finishBroadcast(db, broadcastId, 'failed').then(
+      () => {
+        logger.error({ broadcastId }, 'Рассылка объявлена сорвавшейся: попытки исчерпаны');
+      },
+      (problem: unknown) => {
+        logger.error({ err: problem, broadcastId }, 'Не удалось отметить рассылку сорвавшейся');
+      },
+    );
   });
+
+  /**
+   * Просьба остановиться исполняется при старте (ревизия этапа 4).
+   *
+   * Метку ставит панель, исполняет воркер. Умри воркер между ними —
+   * выкладка посреди рассылки штатное дело, — и рассылка остаётся
+   * «идущей» с непустой меткой: подхват её пропускает, «Остановить»
+   * заблокировано, «Продолжить» не показывается. Панель показывала
+   * «останавливаю» навсегда.
+   */
+  const settled = await settleStopRequests(db);
+
+  if (settled.length > 0) {
+    logger.warn(
+      { broadcasts: settled.length },
+      'Рассылки с непрочитанной просьбой остановиться объявлены остановленными',
+    );
+  }
 
   /**
    * Рассылка, застрявшая на перезапуске, продолжается сама.

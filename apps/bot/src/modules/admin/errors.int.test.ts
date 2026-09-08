@@ -1,3 +1,5 @@
+import { and, eq } from 'drizzle-orm';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -8,10 +10,12 @@ import {
   billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
+  reminders,
   users,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { createInvoice, markInvoiceFailed, nextInvId } from '../billing/billing.repo.js';
+import { createBroadcast } from '../broadcast/broadcast.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import { errorsView, restartBatch } from './errors.js';
 
@@ -256,5 +260,98 @@ describe('перезапуск сорвавшейся выгрузки', () => {
       .returning({ id: batches.id });
 
     expect((await restartBatch(testDb(), batch?.id ?? '')).ok).toBe(false);
+  });
+});
+
+describe('журнал сбоев: период и пятый источник (ревизия четвёртого этапа)', () => {
+  it('не дошедшие письма подчиняются периоду и имеют итог', async () => {
+    /**
+     * Прежде границы периода у этого источника не было вовсе: при выборе
+     * «сутки» в списке стояли письма месячной давности. А пятьдесят
+     * строк без итога читались как полный список — три соседних
+     * источника фильтруются по периоду и печатают своё число, этот один
+     * молчал.
+     */
+    // Двум людям, а не одному дважды: на пару «рассылка и человек»
+    // стоит уникальность — второе письмо тому же человеку не завести.
+    const anya = await upsertUser(testDb(), { tgId: 8_101, firstName: 'Аня' });
+    const olya = await upsertUser(testDb(), { tgId: 8_102, firstName: 'Оля' });
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    /**
+     * Строки доставки правятся, а не заводятся: `createBroadcast` уже
+     * завёл их всем людям сегмента, и на пару «рассылка и человек»
+     * стоит уникальность.
+     */
+    await testDb()
+      .update(broadcastDeliveries)
+      .set({ status: 'failed', error: 'вчера', at: new Date(Date.now() - 24 * 3_600_000) })
+      .where(
+        and(eq(broadcastDeliveries.broadcastId, made.id), eq(broadcastDeliveries.userId, anya.id)),
+      );
+
+    await testDb()
+      .update(broadcastDeliveries)
+      .set({ status: 'failed', error: 'давно', at: new Date(Date.now() - 40 * 24 * 3_600_000) })
+      .where(
+        and(eq(broadcastDeliveries.broadcastId, made.id), eq(broadcastDeliveries.userId, olya.id)),
+      );
+
+    const week = await errorsView(testDb(), 7);
+
+    expect(week.sends.map((one) => one.error)).toEqual(['вчера']);
+    expect(week.sendsTotal).toBe(1);
+
+    const quarter = await errorsView(testDb(), 90);
+
+    expect(quarter.sendsTotal).toBe(2);
+  });
+
+  it('сорвавшиеся напоминания видны — пятый источник', async () => {
+    /**
+     * Прежде их не было в журнале вовсе, и о их отсутствии не было
+     * сказано словами: человек не получал утреннего письма, а панель
+     * молчала. Колонку `skipped_reason` читал только сам планировщик.
+     */
+    const person = await upsertUser(testDb(), { tgId: 8_103, firstName: 'Оля' });
+
+    await testDb()
+      .insert(reminders)
+      .values([
+        {
+          userId: person.id,
+          kind: 'morning',
+          dueAt: new Date(Date.now() - 2 * 3_600_000),
+          dedupeKey: 'у-которого-сорвалось',
+          skippedReason: 'failed',
+        },
+        {
+          userId: person.id,
+          kind: 'evening',
+          dueAt: new Date(Date.now() - 3 * 3_600_000),
+          dedupeKey: 'пропущенное-по-тишине',
+          skippedReason: 'quiet',
+        },
+      ]);
+
+    const view = await errorsView(testDb(), 7);
+
+    // Только сорвавшееся: пропуск по тишине — не сбой, а решение.
+    expect(view.reminders).toHaveLength(1);
+    expect(view.reminders[0]?.kind).toBe('morning');
+    expect(view.reminders[0]?.firstName).toBe('Оля');
+    expect(view.remindersTotal).toBe(1);
+  });
+
+  it('у напоминаний в списке оговорок есть своя строка', async () => {
+    const view = await errorsView(testDb(), 7);
+
+    expect(view.missing.join(' ')).toContain('напоминаний повтора нет');
   });
 });

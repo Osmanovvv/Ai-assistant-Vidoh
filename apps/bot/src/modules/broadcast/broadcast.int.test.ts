@@ -5,10 +5,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { batches, broadcastDeliveries, broadcasts, users } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import {
+  claimDelivery,
   countsOf,
   createBroadcast,
+  listBroadcasts,
+  nextPending,
   requestStop,
+  resumeBroadcast,
   retryFailed,
+  runningBroadcasts,
+  settleStopRequests,
   startBroadcast,
   TELEGRAM_MESSAGE_LIMIT,
 } from './broadcast.repo.js';
@@ -503,7 +509,7 @@ describe('что делать с отказами', () => {
     const first = throttledSender({ clock, limitPerSecond: 30, broken: new Set([broken]) });
     await sendChunk({ db: testDb(), sender: first, clock, perSecond: 20 }, made.id);
 
-    expect(await retryFailed(testDb(), made.id)).toBe(1);
+    expect(await retryFailed(testDb(), made.id)).toEqual({ ok: true, back: 1 });
 
     const second = throttledSender({ clock, limitPerSecond: 30 });
     await sendChunk({ db: testDb(), sender: second, clock, perSecond: 20 }, made.id);
@@ -535,7 +541,13 @@ describe('что делать с отказами', () => {
     const sender = throttledSender({ clock, limitPerSecond: 30, blocked: new Set([blocked]) });
     await sendChunk({ db: testDb(), sender, clock, perSecond: 20 }, made.id);
 
-    expect(await retryFailed(testDb(), made.id)).toBe(0);
+    // Повторять нечего, и это отказ с названной причиной, а не ноль:
+    // «ноль» читался бы как «повторили ноль писем» (ревизия этапа).
+    expect(await retryFailed(testDb(), made.id)).toEqual({
+      ok: false,
+      back: 0,
+      why: 'неудачных писем нет',
+    });
     expect((await countsOf(testDb(), made.id)).skipped).toBe(1);
   });
 });
@@ -658,5 +670,181 @@ describe('пределы, о которых лучше узнать до отп�
     });
 
     expect(made.recipients).toBe(1);
+  });
+});
+
+describe('ревизия четвёртого этапа: рассылка не досылает лишнего и не врёт о себе', () => {
+  it('повтор неудачных у остановленной рассылки отвергается', async () => {
+    /**
+     * **Самая дорогая находка ревизии в рассылке.** Второй запрос
+     * `retryFailed` шёл без условия на состояние и ставил
+     * `status: 'running', stopRequestedAt: null` — то есть кнопка
+     * «Повторить неудачные» **снимала просьбу остановиться**. У
+     * остановленной рассылки в `pending` остаются все недосланные, и
+     * воркер досылал их всех: человек нажимал «Остановить», потом
+     * «Повторить» у трёх адресов — и письмо уходило восьмистам.
+     *
+     * Прежняя проверка покраснеть не могла: она прогоняла заход до
+     * конца, и к моменту повтора `pending` был пуст.
+     */
+    const ids = await people(5);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    /**
+     * Порция из двух, и оба письма не доходят: получается рассылка с
+     * неудачными **и** с недосланными — то самое состояние, в котором
+     * прежний повтор досылал всех. Кому именно не дошло, значения не
+     * имеет: порядок строк задаёт база, и привязываться к нему нельзя.
+     */
+    const clock = fakeClock();
+    const first = throttledSender({ clock, limitPerSecond: 30, broken: new Set(ids) });
+
+    await sendChunk({ db: testDb(), sender: first, clock, perSecond: 20, chunk: 2 }, made.id);
+
+    // Человек нажал «Остановить», и воркер это увидел.
+    await requestStop(testDb(), made.id);
+    await sendChunk({ db: testDb(), sender: first, clock, perSecond: 20 }, made.id);
+
+    const stopped = await countsOf(testDb(), made.id);
+
+    expect(stopped.failed).toBeGreaterThan(0);
+    expect(stopped.pending).toBeGreaterThan(0);
+
+    // И теперь повтор неудачных — отказ, а не досылка всем оставшимся.
+    const outcome = await retryFailed(testDb(), made.id);
+
+    expect(outcome.ok).toBe(false);
+
+    const second = throttledSender({ clock, limitPerSecond: 30 });
+    await sendChunk({ db: testDb(), sender: second, clock, perSecond: 20 }, made.id);
+
+    // Ни одного письма: рассылка остановлена, и повтор её не поднял.
+    expect(second.delivered()).toEqual([]);
+  });
+
+  it('взятая строка держит рассылку открытой, а не объявляет разосланной', async () => {
+    /**
+     * Строка, взятая воркером и не дошедшая до отметки (воркер умер
+     * между взятием и отправкой — выкладка посреди рассылки штатна),
+     * лежит в `sending` и в `pending` не считается. Прежде рассылка
+     * объявлялась «разослана», человек письма не получал, и узнать об
+     * этом было неоткуда: перезахват возможен лишь через пять минут, а
+     * заход к тому времени закрыт.
+     */
+    const ids = await people(2);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    // Одну строку берём себе и «умираем»: отметки не будет.
+    const [taken] = await nextPending(testDb(), made.id, 1);
+
+    expect(taken).toBeDefined();
+    expect(await claimDelivery(testDb(), taken?.id ?? '')).toBe(true);
+
+    // Остальное отправляется как обычно.
+    const clock = fakeClock();
+    const sender = throttledSender({ clock, limitPerSecond: 30 });
+    const step = await sendChunk({ db: testDb(), sender, clock, perSecond: 20 }, made.id);
+
+    expect(sender.delivered()).toHaveLength(ids.length - 1);
+
+    // Рассылка НЕ закончена: взятая строка держит её открытой.
+    expect(step.left).toBe(1);
+    expect(step.more).toBe(true);
+    expect(step.afterMs).toBeGreaterThan(0);
+
+    const counts = await countsOf(testDb(), made.id);
+
+    expect(counts.sending).toBe(1);
+    expect((await listBroadcasts(testDb()))[0]?.status).toBe('running');
+  });
+
+  it('непрочитанная просьба остановиться исполняется при старте', async () => {
+    /**
+     * **Тупик, из которого не было выхода.** Метку ставит панель,
+     * исполняет воркер. Умри воркер между ними — и рассылка остаётся
+     * «идущей» с непустой меткой: подхват её пропускает, «Остановить»
+     * заблокировано (метка уже стоит), «Продолжить» не показывается (не
+     * остановлена). Панель показывала «останавливаю» навсегда.
+     */
+    await people(2);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+    await requestStop(testDb(), made.id);
+
+    // Воркер её не увидел: подхват при старте таких не берёт.
+    expect(await runningBroadcasts(testDb())).toEqual([]);
+
+    const settled = await settleStopRequests(testDb());
+
+    expect(settled).toEqual([made.id]);
+    expect((await listBroadcasts(testDb()))[0]?.status).toBe('stopped');
+
+    // И «Продолжить» снова работает — выход из тупика есть.
+    expect(await resumeBroadcast(testDb(), made.id)).toBe(true);
+  });
+
+  it('исполнение просьбы не трогает рассылку без метки', async () => {
+    await people(1);
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    expect(await settleStopRequests(testDb())).toEqual([]);
+    expect((await listBroadcasts(testDb()))[0]?.status).toBe('running');
+  });
+
+  it('повтор законченной рассылки поднимает её и досылает только неудачным', async () => {
+    // Обратная сторона отказа: законный путь обязан работать.
+    const ids = await people(3);
+    const broken = ids[2] ?? 0;
+
+    const made = await createBroadcast(testDb(), {
+      text: 'Привет.',
+      segment: 'all',
+      by: 'аня',
+      trialLimit: 10,
+    });
+
+    await startBroadcast(testDb(), made.id);
+
+    const clock = fakeClock();
+    const first = throttledSender({ clock, limitPerSecond: 30, broken: new Set([broken]) });
+    await sendChunk({ db: testDb(), sender: first, clock, perSecond: 20 }, made.id);
+
+    expect((await listBroadcasts(testDb()))[0]?.status).toBe('done');
+
+    const outcome = await retryFailed(testDb(), made.id);
+
+    expect(outcome).toEqual({ ok: true, back: 1 });
+    expect((await listBroadcasts(testDb()))[0]?.status).toBe('running');
   });
 });
