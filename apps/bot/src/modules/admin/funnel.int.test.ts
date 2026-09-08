@@ -177,11 +177,49 @@ describe('четыре шага', () => {
     // Он не «не купил», он не дошёл до вопроса.
     await markTrialSpent(testDb(), { batchId: await dump({ userId: anya }), trialLimit: 10 });
 
-    const funnel = await funnelOf(testDb());
+    // Предел передаётся: «ещё выбирает» считается тем же правилом, по
+    // которому пускает гейт (ревизия четвёртого этапа).
+    const funnel = await funnelOf(testDb(), { trialLimit: 10 });
 
     expect(funnel.total.trialOver).toBe(0);
     expect(funnel.total.trialStillRunning).toBe(1);
+    expect(funnel.total.trialOverUnrecorded).toBe(0);
     expect(funnel.missing.some((note) => note.includes('пробный период ещё идёт'))).toBe(true);
+  });
+
+  it('снижение предела переводит человека из «ещё выбирает» в «отказ без момента»', async () => {
+    /**
+     * **Ровно та неправда, которую нашла ревизия.** Момент конца пробного
+     * пишется с выкладки 4.4 и задним числом не досыпается, а предел
+     * правится из панели: снизь его с десяти до пяти, и человек с семью
+     * тратами мгновенно оказывается за границей — бот ему отказывает.
+     * Прежде он оставался в колонке «ещё выбирает», и заказчица читала
+     * «человек думает» там, где человек упёрся в отказ.
+     */
+    for (let spent = 0; spent < 7; spent++) {
+      await markTrialSpent(testDb(), { batchId: await dump({ userId: anya }) });
+    }
+
+    const before = await funnelOf(testDb(), { trialLimit: 10 });
+
+    expect(before.total.trialStillRunning).toBe(1);
+    expect(before.total.trialOverUnrecorded).toBe(0);
+
+    const after = await funnelOf(testDb(), { trialLimit: 5 });
+
+    expect(after.total.trialStillRunning).toBe(0);
+    expect(after.total.trialOverUnrecorded).toBe(1);
+  });
+
+  it('без предела колонка не считается — и об этом сказано словами', async () => {
+    // Пустая колонка читается как факт: «никто не выбирает» вместо «не
+    // считали». Поэтому вместо нуля — строка.
+    await markTrialSpent(testDb(), { batchId: await dump({ userId: anya }), trialLimit: 10 });
+
+    const funnel = await funnelOf(testDb());
+
+    expect(funnel.total.trialStillRunning).toBe(0);
+    expect(funnel.missing.some((note) => note.includes('не посчитана'))).toBe(true);
   });
 
   it('ряд убывает: оплата ⊆ конец пробного ⊆ первая выгрузка ⊆ регистрация', async () => {

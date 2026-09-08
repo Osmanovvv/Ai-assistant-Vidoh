@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import {
   aiCalls,
@@ -55,6 +55,15 @@ export interface Overview {
   /** Расход на модели за период, по валютам. */
   readonly spend: readonly Money[];
   /**
+   * Вызовов за период без известной цены (ревизия четвёртого этапа).
+   *
+   * Больше нуля означает, что расход выше — сумма ниже настоящей на
+   * стоимость этих вызовов. Прежде они молча выпадали, и расход
+   * показывался как факт: раздел расходов такую оговорку печатает, обзор
+   * молчал, и два числа про одно и то же расходились.
+   */
+  readonly unpricedCalls: number;
+  /**
    * Выручка за период — по рельсам, а не одним числом.
    *
    * Рубли в копейках, звёзды штуками. Складывать нельзя: курс звезды
@@ -103,7 +112,21 @@ export interface Revenue {
   readonly payments: number;
 }
 
-export async function overview(db: Executor, days: number): Promise<Overview> {
+export async function overview(
+  db: Executor,
+  days: number,
+  /**
+   * Нынешний предел пробного периода — для воронки (ревизия этапа 4).
+   *
+   * Без него воронка называет «пробный ещё идёт» тех, кому бот уже
+   * отказывает. Значением, а не реестром: этот модуль — запросы, и
+   * второй читатель настроек мимо реестра разошёлся бы с первым.
+   *
+   * Необязателен: без него колонка честно пуста, и это сказано в
+   * оговорках воронки.
+   */
+  trialLimit?: number,
+): Promise<Overview> {
   const since = new Date(Date.now() - days * 24 * 3_600_000);
   const now = new Date();
 
@@ -132,6 +155,19 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
     .from(aiCalls)
     .where(gte(aiCalls.createdAt, since))
     .groupBy(aiCalls.costCurrency);
+
+  /**
+   * Вызовы без цены — числом (ревизия четвёртого этапа).
+   *
+   * Модели нет в прайс-листе — цена не записана, и вызов молча выпадает
+   * из суммы. Расход в обзоре показывался как факт, хотя был нижней
+   * границей. Раздел расходов такую оговорку печатает, обзор — нет, и
+   * два числа про одно и то же расходятся молча.
+   */
+  const [unpriced] = await db
+    .select({ total: count() })
+    .from(aiCalls)
+    .where(and(gte(aiCalls.createdAt, since), isNull(aiCalls.costMicros)));
 
   /**
    * Выручка — по **оплаченным** счетам, а не по выставленным.
@@ -170,7 +206,7 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
    * получили бы нынешний предел вместо тогдашнего, то есть ровно ту
    * неправду, ради которой момент и пишется.
    */
-  const funnel = await funnelOf(db);
+  const funnel = await funnelOf(db, trialLimit === undefined ? {} : { trialLimit });
 
   return {
     days,
@@ -192,6 +228,8 @@ export async function overview(db: Executor, days: number): Promise<Overview> {
       payments: row.payments,
     })),
     payers,
+    /** Сколько вызовов за период без известной цены: сумма — нижняя граница. */
+    unpricedCalls: unpriced?.total ?? 0,
     funnel,
     /**
      * Оговорки берутся у воронки: они про её же числа.
@@ -324,14 +362,31 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
 
   const ids = profiles.map((row) => row.id);
 
+  /**
+   * **Разобранные и пробные считаются по разным множествам** — правка
+   * ревизии четвёртого этапа.
+   *
+   * Прежде оба числа брались из одного запроса с условием
+   * `status = 'done'`, и «Пробных» получалось **четвёртым** способом:
+   * гейт доступа считает по отметке без всякого условия на статус,
+   * карточка — по своему запросу, сегмент рассылки — по общему
+   * выражению. Расхождение не гипотетическое: отметка ставится в конце
+   * разбора, а конвейер может вернуть выгрузку в очередь **после** неё
+   * при сбое отправки ответа — тогда отметка есть, а статус не `done`.
+   * Панель показывала бы «потрачено 4», гейт блокировал бы на пятой.
+   *
+   * Теперь «Пробных» считается тем же выражением, что отдаёт
+   * `trialSpentSql` для гейта, воронки и сегмента: одно определение на
+   * всех, кто про это спрашивает.
+   */
   const dumpCounts = await db
     .select({
       userId: batches.userId,
-      total: count(),
+      total: sql<number>`count(*) filter (where ${batches.status} = 'done')::int`,
       trial: sql<number>`count(*) filter (where ${batches.trialCountedAt} is not null)::int`,
     })
     .from(batches)
-    .where(and(inArray(batches.userId, ids), eq(batches.status, 'done')))
+    .where(inArray(batches.userId, ids))
     .groupBy(batches.userId);
 
   const spendRows = await db
@@ -339,6 +394,15 @@ async function withNumbers(db: Executor, profiles: readonly Profile[]): Promise<
       userId: aiCalls.userId,
       currency: aiCalls.costCurrency,
       total: sql<string>`coalesce(sum(${aiCalls.costMicros}), 0)::bigint`,
+      /**
+       * Вызовы без цены — числом, а не молчанием (ревизия этапа 4).
+       *
+       * Модели нет в прайс-листе — цена не записана, и вызов молча
+       * выпадал из суммы. Расход человека показывался как факт, хотя был
+       * нижней границей. Раздел расходов такую оговорку печатает, список
+       * людей и обзор — нет.
+       */
+      unknownPrices: sql<number>`count(*) filter (where ${aiCalls.costMicros} is null)::int`,
     })
     .from(aiCalls)
     .where(inArray(aiCalls.userId, ids))
@@ -409,7 +473,14 @@ export interface CardDump {
   readonly id: string;
   readonly openedAt: Date;
   readonly status: string;
-  /** Что человек сказал: расшифровки и текст, как их склеил буфер. */
+  /**
+   * Что человек сказал: расшифровки и текст, как их склеил буфер.
+   *
+   * Пусто **только** если сообщений нет вовсе. Прежде здесь было пусто и
+   * у выгрузок, сорвавшихся до склейки, и карточка печатала «(текста
+   * нет)» как факт — у той самой выгрузки, из-за которой человек и
+   * написал жалобу. Теперь склейки нет — поднимаются сами сообщения.
+   */
   readonly said: string | null;
   /** Потратила ли пробный период. */
   readonly trialCounted: boolean;
@@ -455,6 +526,27 @@ export interface CardQuestion {
 
 export interface PersonCard {
   readonly person: PersonRow;
+  /**
+   * Сколько выгрузок у человека всего (ревизия четвёртого этапа).
+   *
+   * Список обрезан двадцатью, и прежде об этом не было сказано ничего:
+   * разбирающий жалобу читал его как полный.
+   */
+  readonly dumpsTotal: number;
+  /**
+   * Сказанное вне выгрузок (ревизия четвёртого этапа).
+   *
+   * Сообщение после отказа гейта сохраняется и не попадает ни в
+   * выгрузку, ни в записи: прежде его не видел никто — ни человек, ни
+   * разбирающий жалобу «куда девались мои слова».
+   */
+  readonly orphans: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly text: string | null;
+    readonly at: Date;
+  }[];
+  readonly orphansTotal: number;
   readonly dumps: readonly CardDump[];
   readonly changes: readonly CardChange[];
   readonly questions: readonly CardQuestion[];
@@ -483,7 +575,110 @@ export async function personCard(
     .orderBy(desc(batches.openedAt))
     .limit(limit);
 
+  /**
+   * Сказанное **вне выгрузок** — правка ревизии четвёртого этапа.
+   *
+   * Сообщение, пришедшее после отказа гейта, сохраняется (инвариант 1:
+   * сохранить до всякого разбора) и не попадает ни в выгрузку, ни в
+   * записи. Прежде его не видел никто: `/menu` показывает записи,
+   * карточка — выгрузки. Человек, которому реплика обещала «всё
+   * сказанное на месте», шёл проверять и не находил своих слов, а
+   * разбирающий жалобу не мог даже подтвердить, что слова дошли.
+   *
+   * Показываются последние: их может накопиться много, а нужны свежие —
+   * те, из-за которых человек и написал.
+   */
+  const orphanRows = await db
+    .select({
+      id: messagesRaw.id,
+      kind: messagesRaw.kind,
+      text: messagesRaw.text,
+      at: messagesRaw.receivedAt,
+    })
+    .from(messagesRaw)
+    .where(and(eq(messagesRaw.userId, params.userId), isNull(messagesRaw.batchId)))
+    .orderBy(desc(messagesRaw.receivedAt))
+    .limit(20);
+
+  const [orphansAll] = await db
+    .select({ total: count() })
+    .from(messagesRaw)
+    .where(and(eq(messagesRaw.userId, params.userId), isNull(messagesRaw.batchId)));
+
+  /**
+   * Сколько выгрузок у человека **всего** (ревизия четвёртого этапа).
+   *
+   * Карточка молча обрезана двадцатью, и разбирающий жалобу читал список
+   * как полный: «сказала три раза за месяц» вместо «двадцать первый раз
+   * не показан». Число выше списка снимает эту неправду; кнопки «ещё»
+   * пока нет, и это названо словами в панели.
+   */
+  const [dumpsAll] = await db
+    .select({ total: count() })
+    .from(batches)
+    .where(eq(batches.userId, params.userId));
+
   const dumpIds = dumpRows.map((row) => row.id);
+
+  /**
+   * Сказанное человеком — из сообщений, если склейки ещё нет.
+   *
+   * **Ревизия четвёртого этапа: карточка теряла слова именно там, где
+   * они нужнее всего.** `combined_text` пишется в начале разбора; у
+   * выгрузки, сорвавшейся до него (или ещё не начатой), поле пусто — и
+   * карточка печатала «(текста нет)» **как факт**. Разбирающий жалобу
+   * «бот меня не понял» видел пустоту у той самой выгрузки, из-за
+   * которой человек и написал.
+   *
+   * Сообщения при этом на месте: инвариант проекта — сохранить до
+   * всякого разбора. Поднимаем их тем же порядком, каким их клеит
+   * `combineBatch`: по времени получения.
+   */
+  const rawRows =
+    dumpIds.length === 0
+      ? []
+      : await db
+          .select({
+            batchId: messagesRaw.batchId,
+            kind: messagesRaw.kind,
+            text: messagesRaw.text,
+            at: messagesRaw.receivedAt,
+          })
+          .from(messagesRaw)
+          .where(inArray(messagesRaw.batchId, dumpIds))
+          .orderBy(messagesRaw.receivedAt);
+
+  const rawBy = new Map<string, { readonly text: string | null; readonly kind: string }[]>();
+
+  for (const row of rawRows) {
+    if (row.batchId === null) continue;
+
+    const list = rawBy.get(row.batchId) ?? [];
+    list.push({ text: row.text, kind: row.kind });
+    rawBy.set(row.batchId, list);
+  }
+
+  /**
+   * Что показать вместо склейки — и почему её нет.
+   *
+   * Голосовое без расшифровки текста не имеет вовсе: сказать «голосовое
+   * не расшифровано» честнее, чем показать пустоту.
+   */
+  const saidOf = (batchId: string, combined: string | null): string => {
+    if (combined !== null && combined !== '') return combined;
+
+    const parts = rawBy.get(batchId) ?? [];
+
+    if (parts.length === 0) return '';
+
+    const texts = parts.map((one) => one.text).filter((one): one is string => one !== null);
+
+    if (texts.length > 0) return texts.join('\n');
+
+    return parts.every((one) => one.kind === 'voice')
+      ? '(голосовое не расшифровано)'
+      : '(сообщения есть, текста в них нет)';
+  };
 
   const itemRows =
     dumpIds.length === 0
@@ -537,11 +732,21 @@ export async function personCard(
 
   return {
     person: page,
+    /** Сколько выгрузок всего: список обрезан, и это должно быть видно. */
+    dumpsTotal: dumpsAll?.total ?? 0,
+    /** Сказанное вне выгрузок: после отказа гейта его не видел никто. */
+    orphans: orphanRows.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      text: row.text,
+      at: row.at,
+    })),
+    orphansTotal: orphansAll?.total ?? 0,
     dumps: dumpRows.map((dump) => ({
       id: dump.id,
       openedAt: dump.openedAt,
       status: dump.status,
-      said: dump.combinedText,
+      said: saidOf(dump.id, dump.combinedText),
       trialCounted: dump.trialCountedAt !== null,
       error: dump.error,
       results: itemRows

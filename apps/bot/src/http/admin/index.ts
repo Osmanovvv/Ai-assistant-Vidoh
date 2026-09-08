@@ -500,15 +500,25 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       (req: Request, res: Response) => {
         const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
 
-        void overview(db, days).then(
-          (report) => {
-            res.json(report);
-          },
-          (error: unknown) => {
-            deps.onError?.(error);
-            res.status(500).json({ error: 'не удалось собрать обзор' });
-          },
-        );
+        /**
+         * Предел пробного периода читается здесь и передаётся воронке.
+         *
+         * Ревизия четвёртого этапа: без него воронка называла «пробный
+         * ещё идёт» тех, кому бот уже отказывает — снижение предела из
+         * панели мгновенно переводит человека за границу, а момент конца
+         * пробного задним числом не появляется.
+         */
+        void Promise.resolve(deps.settings?.number('trialDumps'))
+          .then(async (trialLimit) => await overview(db, days, trialLimit))
+          .then(
+            (report: Awaited<ReturnType<typeof overview>>) => {
+              res.json(report);
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(500).json({ error: 'не удалось собрать обзор' });
+            },
+          );
       },
     );
 

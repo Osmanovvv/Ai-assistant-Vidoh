@@ -201,6 +201,13 @@ export interface Overview {
   /** Возвращено за период — отдельной величиной, а не вычетом. */
   readonly refunded: readonly Revenue[];
   readonly payers: number;
+  /**
+   * Вызовов за период без известной цены.
+   *
+   * Больше нуля — расход выше показанного: модели нет в прайс-листе, и
+   * такие вызовы молча выпадали из суммы (ревизия четвёртого этапа).
+   */
+  readonly unpricedCalls: number;
   readonly funnel: Funnel;
   /** Чего в обзоре ещё нет и почему — словами, а не пустыми колонками. */
   readonly missing: readonly string[];
@@ -221,6 +228,8 @@ export interface FunnelRow {
   readonly paidAfterTrial: number;
   readonly paidWithoutTrialOver: number;
   readonly trialStillRunning: number;
+  /** Предел исчерпан, а момент не записан: бот уже отказывает. */
+  readonly trialOverUnrecorded: number;
 }
 
 export interface Funnel {
@@ -282,6 +291,21 @@ export interface CardDump {
 
 export interface PersonCard {
   readonly person: PersonRow;
+  /** Сколько выгрузок всего: список обрезан двадцатью. */
+  readonly dumpsTotal: number;
+  /**
+   * Сказанное вне выгрузок: после отказа гейта его не видел никто.
+   *
+   * Сообщение сохраняется до всякого разбора, но выгрузки для него не
+   * создаётся — и ни `/menu`, ни список выгрузок его не показывали.
+   */
+  readonly orphans: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly text: string | null;
+    readonly at: string;
+  }[];
+  readonly orphansTotal: number;
   readonly dumps: readonly CardDump[];
   readonly changes: readonly {
     readonly id: string;

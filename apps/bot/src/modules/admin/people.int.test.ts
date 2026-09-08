@@ -20,7 +20,7 @@ import {
   markInvoicePaid,
   nextInvId,
 } from '../billing/billing.repo.js';
-import { markTrialSpent } from '../billing/subscription.service.js';
+import { markTrialSpent, trialSpent } from '../billing/subscription.service.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import { overview, people, personCard } from './people.js';
@@ -578,21 +578,262 @@ describe('карточка: разбор жалобы «бот неправил�
     ).toBeUndefined();
   });
 
-  it('числа в карточке те же, что в списке', async () => {
+  it('числа в карточке те же, что в списке — включая способы разойтись', async () => {
     /**
      * Одно и то же число, посчитанное двумя способами, однажды
      * разойдётся — и человек, увидев разное в списке и в карточке,
      * перестанет верить обоим.
+     *
+     * **Обстановка усилена ревизией четвёртого этапа.** Прежде здесь
+     * стояли две удачные выгрузки в одной валюте и сравнивались два
+     * поля: `dumps` и первая сумма расхода. Такая проверка не различала
+     * главные способы разойтись — а они все были настоящими:
+     *  - выгрузка со статусом `failed` и стоящей отметкой пробного
+     *    (список считал по `status = 'done'`, гейт — по отметке);
+     *  - расход во второй валюте (сравнивалась только первая сумма);
+     *  - число потраченных пробных вообще (его не сравнивали).
+     *
+     * Теперь сравнивается **вся строка**, а обстановка содержит каждый
+     * из этих случаев.
      */
     await sowDump({ userId: anya, said: 'раз', results: ['Дело'] });
     await sowDump({ userId: anya, said: 'два', results: ['Дело'] });
+
+    // Сорвавшаяся выгрузка с отметкой пробного: разбор дошёл до конца, а
+    // отправка ответа сорвалась, и конвейер вернул выгрузку.
+    await testDb()
+      .insert(batches)
+      .values({
+        userId: anya,
+        status: 'failed',
+        openedAt: new Date(Date.now() - 5 * 3_600_000),
+        trialCountedAt: new Date(Date.now() - 5 * 3_600_000),
+      });
+
+    // Расход во второй валюте: сравнение только первой суммы его теряло.
+    await testDb().insert(aiCalls).values({
+      userId: anya,
+      stage: 'embedder',
+      model: 'openai:text-embedding-3-small',
+      promptVersion: 'нет',
+      latencyMs: 40,
+      ok: true,
+      costMicros: 1_500,
+      costCurrency: 'usd',
+    });
 
     const fromList = (await people(testDb(), { limit: 20, offset: 0 })).rows.find(
       (row) => row.id === anya,
     );
     const fromCard = (await personCard(testDb(), { userId: anya }))?.person;
 
-    expect(fromCard?.dumps).toBe(fromList?.dumps);
-    expect(fromCard?.spend[0]?.micros).toBe(fromList?.spend[0]?.micros);
+    expect(fromCard).toBeDefined();
+    expect(fromList).toBeDefined();
+
+    // Вся строка целиком, а не два поля: способ разойтись найдётся в том
+    // поле, которое сравнить забыли.
+    expect(fromCard).toEqual(fromList);
+
+    // И обстановка действительно та, что описана: иначе сравнение выше
+    // прошло бы на пустом месте.
+    expect(fromCard?.trialSpent).toBeGreaterThan(0);
+    expect(fromCard?.spend).toHaveLength(2);
+  });
+});
+
+describe('ревизия четвёртого этапа: числа людей не расходятся и не врут', () => {
+  /**
+   * Четыре находки в одном месте, и все про одно: панель называла
+   * фактом то, чего не проверяла.
+   */
+
+  it('«Пробных» считается тем же правилом, что гейт — даже у сорвавшейся выгрузки', async () => {
+    /**
+     * **Четвёртый способ считать одно и то же.** Гейт доступа считает по
+     * отметке без условия на статус, карточка — своим запросом, сегмент
+     * рассылки — общим выражением, а список людей брал оба числа из
+     * одного запроса с `status = 'done'`. Расхождение достижимо: отметка
+     * ставится в конце разбора, а конвейер может вернуть выгрузку в
+     * очередь **после** неё при сбое отправки ответа.
+     *
+     * Панель показывала «потрачено 4», гейт блокировал на пятой.
+     */
+    const person = await upsertUser(testDb(), { tgId: 9_301, firstName: 'Аня' });
+
+    // Разобранная выгрузка с отметкой.
+    await testDb()
+      .insert(batches)
+      .values({
+        userId: person.id,
+        status: 'done',
+        openedAt: new Date(Date.now() - 3 * 3_600_000),
+        trialCountedAt: new Date(Date.now() - 3 * 3_600_000),
+      });
+
+    // И сорвавшаяся — с отметкой тоже: разбор дошёл до конца, а отправка
+    // ответа сорвалась, и конвейер вернул выгрузку.
+    await testDb()
+      .insert(batches)
+      .values({
+        userId: person.id,
+        status: 'failed',
+        openedAt: new Date(Date.now() - 2 * 3_600_000),
+        trialCountedAt: new Date(Date.now() - 2 * 3_600_000),
+      });
+
+    const page = await people(testDb(), { limit: 20, offset: 0 });
+    const row = page.rows.find((one) => one.id === person.id);
+
+    // Разобрана одна, а пробных потрачено две — как и считает гейт.
+    expect(row?.dumps).toBe(1);
+    expect(row?.trialSpent).toBe(2);
+
+    // И то же число у гейта: одно определение на всех.
+    expect(await trialSpent(testDb(), person.id)).toBe(2);
+
+    // И в карточке — то же, что в списке.
+    const card = await personCard(testDb(), { userId: person.id });
+
+    expect(card?.person.trialSpent).toBe(2);
+    expect(card?.person.dumps).toBe(1);
+  });
+
+  it('карточка не теряет слова человека у сорвавшейся выгрузки', async () => {
+    /**
+     * **Карточка теряла слова именно там, где они нужнее всего.**
+     * `combined_text` пишется в начале разбора; у выгрузки, сорвавшейся
+     * до него, поле пусто — и карточка печатала «(текста нет)» как факт.
+     * Разбирающий жалобу «бот меня не понял» видел пустоту у той самой
+     * выгрузки, из-за которой человек и написал.
+     */
+    const person = await upsertUser(testDb(), { tgId: 9_302, firstName: 'Оля' });
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({
+        userId: person.id,
+        status: 'failed',
+        openedAt: new Date(Date.now() - 3_600_000),
+        error: 'распознавание не ответило',
+      })
+      .returning({ id: batches.id });
+
+    await testDb()
+      .insert(messagesRaw)
+      .values([
+        {
+          userId: person.id,
+          updateId: 9_302_001,
+          tgChatId: 9_302,
+          tgMessageId: 1,
+          batchId: batch?.id ?? '',
+          kind: 'text',
+          text: 'надо купить корм коту',
+          receivedAt: new Date(Date.now() - 3_600_000),
+        },
+        {
+          userId: person.id,
+          updateId: 9_302_002,
+          tgChatId: 9_302,
+          tgMessageId: 2,
+          batchId: batch?.id ?? '',
+          kind: 'text',
+          text: 'и записаться к врачу',
+          receivedAt: new Date(Date.now() - 3_500_000),
+        },
+      ]);
+
+    const card = await personCard(testDb(), { userId: person.id });
+    const said = card?.dumps[0]?.said ?? '';
+
+    // Слова на месте и в том порядке, в котором сказаны.
+    expect(said).toContain('корм коту');
+    expect(said).toContain('к врачу');
+    expect(said.indexOf('корм коту')).toBeLessThan(said.indexOf('к врачу'));
+  });
+
+  it('голосовое без расшифровки названо словами, а не пустотой', async () => {
+    const person = await upsertUser(testDb(), { tgId: 9_303, firstName: 'Вера' });
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId: person.id, status: 'failed', openedAt: new Date() })
+      .returning({ id: batches.id });
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId: person.id,
+        updateId: 9_303_001,
+        tgChatId: 9_303,
+        tgMessageId: 1,
+        batchId: batch?.id ?? '',
+        kind: 'voice',
+        fileId: 'файл-голосового',
+        receivedAt: new Date(),
+      });
+
+    const card = await personCard(testDb(), { userId: person.id });
+
+    expect(card?.dumps[0]?.said).toContain('не расшифровано');
+  });
+
+  it('карточка говорит, сколько выгрузок всего, а не только показанных', async () => {
+    /**
+     * Список обрезан двадцатью, и прежде об этом не было сказано ничего:
+     * разбирающий жалобу читал его как полный.
+     */
+    const person = await upsertUser(testDb(), { tgId: 9_304, firstName: 'Ася' });
+
+    for (let index = 0; index < 25; index++) {
+      await testDb()
+        .insert(batches)
+        .values({
+          userId: person.id,
+          status: 'done',
+          openedAt: new Date(Date.now() - index * 3_600_000),
+        });
+    }
+
+    const card = await personCard(testDb(), { userId: person.id });
+
+    expect(card?.dumps).toHaveLength(20);
+    expect(card?.dumpsTotal).toBe(25);
+  });
+
+  it('вызовы без известной цены видны числом, а не молчанием', async () => {
+    /**
+     * Модели нет в прайс-листе — цена не записана, и вызов молча выпадал
+     * из суммы: расход показывался как факт, хотя был нижней границей.
+     */
+    const person = await upsertUser(testDb(), { tgId: 9_305, firstName: 'Ната' });
+
+    await testDb()
+      .insert(aiCalls)
+      .values([
+        {
+          userId: person.id,
+          stage: 'router',
+          model: 'yandex:yandexgpt-lite/latest',
+          promptVersion: 'router@2',
+          latencyMs: 90,
+          ok: true,
+          costMicros: 2_000_000,
+          costCurrency: 'rub',
+        },
+        {
+          userId: person.id,
+          stage: 'classifier',
+          model: 'модель-без-цены',
+          promptVersion: 'classifier@7',
+          latencyMs: 120,
+          ok: true,
+          costMicros: null,
+        },
+      ]);
+
+    const report = await overview(testDb(), 30);
+
+    expect(report.unpricedCalls).toBe(1);
   });
 });

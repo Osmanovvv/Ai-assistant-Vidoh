@@ -20,13 +20,27 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
    */
 
   test('обзор показывает числа', async ({ page }) => {
+    /**
+     * **Числа сверяются точным текстом** — правка ревизии этапа.
+     *
+     * Прежде стояло `toContainText('1')` у плитки «Всего людей», а на
+     * стенде людей одиннадцать: единица находится в «11», и утверждение
+     * было верно при любом числе с единицей внутри. То же у «Выгрузок
+     * разобрано». Проверка, которая не может покраснеть, — не проверка.
+     */
     await signIn(page);
 
     const totals = page.locator('.итоги');
 
-    await expect(totals.locator('.итог', { hasText: 'Всего людей' })).toContainText('1');
-    await expect(totals.locator('.итог', { hasText: 'Выгрузок разобрано' })).toContainText('1');
-    await expect(totals.locator('.итог', { hasText: 'Расход на модели' })).toContainText('10.00 ₽');
+    await expect(
+      totals.locator('.итог', { hasText: 'Всего людей' }).locator('.итог__число'),
+    ).toHaveText('11');
+    await expect(
+      totals.locator('.итог', { hasText: 'Выгрузок разобрано' }).locator('.итог__число'),
+    ).toHaveText('1');
+    await expect(
+      totals.locator('.итог', { hasText: 'Расход на модели' }).locator('.итог__число'),
+    ).toHaveText('10.00 ₽');
   });
 
   test('выручка идёт по оплаченным счетам, а брошенный в неё не попадает', async ({ page }) => {
@@ -71,13 +85,25 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     await expect(page.getByTestId('moments-since')).toContainText('пределы: 1');
   });
 
-  test('список людей показывает выгрузки и расход', async ({ page }) => {
+  test('список людей показывает выгрузки, пробные и расход — точными числами', async ({ page }) => {
+    /**
+     * **Прежняя проверка была верна при любом коде.** Она требовала от
+     * строки `toContainText('1')` — а единица есть в «10.00 ₽», которое
+     * тут же и проверялось. Про выгрузки утверждения не было вовсе, хотя
+     * называлась проверка именно так.
+     *
+     * Теперь клетки берутся по индексу и сверяются точным текстом.
+     */
     await signIn(page, 'Пользователи');
 
     const row = page.getByRole('row', { name: /Аня/u });
+    const cells = row.getByRole('cell');
 
-    await expect(row).toContainText('10.00 ₽');
-    await expect(row).toContainText('1');
+    // Порядок колонок: Кто, Источник, Зарегистрирован, Был, Выгрузок,
+    // Пробных, Подписка, Расход.
+    await expect(cells.nth(4)).toHaveText('1');
+    await expect(cells.nth(5)).toHaveText('1');
+    await expect(cells.nth(7)).toHaveText('10.00 ₽');
   });
 
   test('в списке видно подписку: тариф, рельс, срок и продление', async ({ page }) => {
