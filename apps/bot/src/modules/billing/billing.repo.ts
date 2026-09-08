@@ -270,19 +270,18 @@ export async function livePromoInvoice(
   return row;
 }
 
-/** Счёт по нашему номеру — тому, что мы отправили Робокассе. */
-export async function invoiceByInvId(
-  db: Executor,
-  invId: number,
-): Promise<BillingInvoice | undefined> {
-  const [row] = await db
-    .select()
-    .from(billingInvoices)
-    .where(eq(billingInvoices.invId, invId))
-    .limit(1);
+/*
+  `invoiceByInvId` убрана ревизией четвёртого этапа.
 
-  return row;
-}
+  Счёт по нашему числовому номеру не искал никто: и уведомление
+  Робокассы, и подтверждение звёздного платежа находят счёт **по метке**
+  (`invoiceByRef`) — она случайна, неугадываема и приезжает обратно в
+  событии. Номер нужен в другую сторону: его мы **отправляем**, и по нему
+  же уходит продление.
+
+  Понадобится поиск по номеру — вернётся вместе со своим вызывающим и со
+  своим индексом.
+*/
 
 export async function markInvoicePaid(
   db: Executor,

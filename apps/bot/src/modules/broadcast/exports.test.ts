@@ -18,9 +18,30 @@ import { describe, expect, it } from 'vitest';
  * `ts-prune`), и вводить его ради одного модуля дороже, чем эта проверка.
  */
 
+/**
+ * Какие модули стережём.
+ *
+ * Рассылка — с ревизии четвёртого этапа (там нашлась `failedOf`), деньги
+ * — оттуда же: у них нашлись пять экспортов без вызывающих, и каждый
+ * хранил устаревшее знание. `errorCodeOfPage` разбирала страницу,
+ * которую открывает браузер человека; `successSignature` повторяла
+ * формулу уведомления; `tariffsOf` была вторым способом ответить на
+ * «что мы продаём»; `invoiceByInvId` искала счёт способом, которым его
+ * никто не ищет.
+ *
+ * Список растёт по мере надобности — как и всякий список в этом проекте,
+ * он живёт рядом с проверкой, а не в чьей-то голове.
+ */
 const MODULES = [
   'src/modules/broadcast/broadcast.repo.ts',
   'src/modules/broadcast/broadcast.service.ts',
+  'src/modules/billing/billing.repo.ts',
+  'src/modules/billing/tariffs.ts',
+  'src/modules/billing/promo.service.ts',
+  'src/modules/billing/checkout.service.ts',
+  'src/modules/billing/renewal.service.ts',
+  'src/modules/billing/providers/robokassa.ts',
+  'src/modules/billing/providers/robokassa-signature.ts',
 ];
 
 /**
@@ -30,14 +51,9 @@ const MODULES = [
  * каждое обязано быть названо здесь, а не обнаружено через год.
  */
 const ALLOWED = new Map<string, string>([
-  ['LEASE_MS', 'предел взятия строки: читается своим же модулем и проверками'],
-  ['DEFAULT_PER_SECOND', 'умолчание темпа: настройка его перекрывает, но без неё оно нужно'],
-  [
-    'TELEGRAM_MESSAGE_LIMIT',
-    'предел Bot API: проверяется в своём же модуле, а наружу отдан затем, чтобы панель однажды показала его человеку, а не повторила числом',
-  ],
-  ['REAL_CLOCK', 'настоящие часы: подставляются проверками, в бою берутся умолчанием'],
-  ['CHUNK', 'размер порции: читается своим же модулем и проверками'],
+  // Сегодня исключений нет: правило спрашивает «зовёт ли кто-нибудь»,
+  // и внутренние помощники ему отвечают сами. Список остаётся: у
+  // следующего исключения будет причина, названная здесь.
 ]);
 
 async function sources(): Promise<readonly { path: string; text: string }[]> {
@@ -73,8 +89,24 @@ function exportsOf(text: string): readonly string[] {
   return names;
 }
 
-describe('у экспортов рассылки есть вызывающие', () => {
-  it('каждый экспорт зовут снаружи своего модуля либо он назван исключением', async () => {
+/**
+ * Сколько раз имя стоит в своём же объявлении.
+ *
+ * Обычно один раз. Считать, а не предполагать: предположение здесь
+ * сделало бы проверку либо слепой, либо крикливой.
+ */
+function declarationsOf(text: string, name: string): number {
+  const patterns = [
+    new RegExp(`export async function ${name}\\b`, 'gu'),
+    new RegExp(`export function ${name}\\b`, 'gu'),
+    new RegExp(`export const ${name}\\b`, 'gu'),
+  ];
+
+  return patterns.reduce((sum, pattern) => sum + (text.match(pattern)?.length ?? 0), 0);
+}
+
+describe('у экспортов рассылки и денег есть вызывающие', () => {
+  it('каждый экспорт кто-нибудь зовёт либо он назван исключением', async () => {
     const all = await sources();
     const orphans: string[] = [];
 
@@ -87,11 +119,27 @@ describe('у экспортов рассылки есть вызывающие',
       for (const name of exportsOf(own.text)) {
         if (ALLOWED.has(name)) continue;
 
-        const callers = all.filter(
-          (one) => one.path !== modulePath && new RegExp(`\\b${name}\\b`, 'u').test(one.text),
-        );
+        /**
+         * Вызывающий может быть и **в своём модуле** — так правильно.
+         *
+         * Первая версия требовала вызывающего снаружи, и от неё краснели
+         * помощники, которыми модуль пользуется сам (`startRenewals`
+         * зовёт `runRenewals`, `chargeRecurring` — `errorTextOf`).
+         * Вопрос не в том, кто зовёт, а в том, зовёт ли **кто-нибудь**:
+         * `failedOf` не звал никто, и она хранила устаревшее знание про
+         * доставку.
+         *
+         * Считаются все упоминания имени в продуктовом коде; если их
+         * ровно столько, сколько в самом объявлении, — значит только
+         * объявление и есть.
+         */
+        const mentions = all.reduce((sum, one) => {
+          const found = one.text.match(new RegExp(`\\b${name}\\b`, 'gu'));
 
-        if (callers.length === 0) orphans.push(`${name} (${modulePath})`);
+          return sum + (found?.length ?? 0);
+        }, 0);
+
+        if (mentions <= declarationsOf(own.text, name)) orphans.push(`${name} (${modulePath})`);
       }
     }
 

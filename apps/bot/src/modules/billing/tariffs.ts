@@ -58,20 +58,17 @@ export async function priceOf(
   return kopecks > 0 ? { amountMinor: kopecks, currency: 'RUB' } : undefined;
 }
 
-/** Все заданные тарифы рельса. Пусто — продавать нечего. */
-export async function tariffsOf(
-  settings: SettingsRegistry,
-  rail: Rail,
-): Promise<readonly { readonly plan: PlanKind; readonly price: Price }[]> {
-  const out: { plan: PlanKind; price: Price }[] = [];
+/*
+  `tariffsOf` убрана ревизией четвёртого этапа.
 
-  for (const plan of PLANS) {
-    const price = await priceOf(settings, { plan, rail });
-    if (price !== undefined) out.push({ plan, price });
-  }
+  Она собирала заданные тарифы **одного** рельса, и вызывающих у неё не
+  было ни одного вне проверок: экран подписки, гейт и реплики спрашивают
+  `sellable` — та же сборка, но по всем рельсам и в порядке кнопок.
 
-  return out;
-}
+  Два способа ответить на вопрос «что мы продаём» — это два места, где
+  живёт одна правда, и расходятся они молча: добавь рельс, и один из них
+  о нём не узнает.
+*/
 
 /**
  * Конец оплаченного периода.

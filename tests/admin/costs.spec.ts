@@ -12,6 +12,31 @@ import { signIn } from './panel.js';
  * пустоту.
  */
 
+/**
+ * Придержанный ответ: обещание и рычаг, который его отпускает.
+ *
+ * Прежде рычаг заводился пустой стрелкой (`let release = () => {}`), и
+ * линтер жаловался на неё справедливо: до `new Promise` такой рычаг
+ * можно вызвать, и он молча ничего не сделает — проверка тогда ждала бы
+ * вечно, а причина была бы не видна. Здесь рычага без обещания не
+ * бывает: оба появляются вместе.
+ */
+function gate(): { readonly wait: Promise<void>; readonly release: () => void } {
+  let release: (() => void) | undefined;
+
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  // Тело `new Promise` выполняется сразу, поэтому рычаг уже на месте.
+  // Проверка стоит ради типов, а не ради надежды; но если обещание
+  // однажды перестанет так себя вести, мы узнаем об этом строкой, а не
+  // зависшим прогоном.
+  if (release === undefined) throw new Error('обещание не отдало рычаг');
+
+  return { wait, release };
+}
+
 test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
   /**
    * §21 п.14 — прямой критерий приёмки: «в админ-панели виден расход по
@@ -96,13 +121,10 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
     await expect(page.locator('.итоги')).toContainText('10.00 ₽');
 
     // Ответ придержан, чтобы застать окно, в котором дефект и жил.
-    let release = (): void => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const held = gate();
 
     await page.route('**/admin/api/costs?*days=7*', async (route) => {
-      await held;
+      await held.wait;
       await route.continue();
     });
 
@@ -113,7 +135,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
     await expect(page.getByText('Считаю…')).toBeVisible();
     await expect(page.locator('.итоги')).toHaveCount(0);
 
-    release();
+    held.release();
     await expect(page.locator('.итоги')).toContainText('10.00 ₽');
   });
 
@@ -131,10 +153,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
     await signIn(page, 'Расходы');
 
     const answered: number[] = [];
-    let holdFirst = (): void => {};
-    const first = new Promise<void>((resolve) => {
-      holdFirst = resolve;
-    });
+    const first = gate();
 
     await page.route('**/admin/api/costs?*', async (route) => {
       const url = route.request().url();
@@ -145,7 +164,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
         return;
       }
 
-      await first;
+      await first.wait;
 
       const answer = await route.fetch();
       const body = (await answer.json()) as Record<string, unknown>;
@@ -160,7 +179,7 @@ test.describe('расходы (§15, §21 п.14; задача 4.7)', () => {
 
     await expect.poll(() => answered.includes(90)).toBe(true);
 
-    holdFirst();
+    first.release();
     await expect.poll(() => answered.includes(7)).toBe(true);
 
     // Подсвечен девяностый — и числа на экране обязаны быть его: ни

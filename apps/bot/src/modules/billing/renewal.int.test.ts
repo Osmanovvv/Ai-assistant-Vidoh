@@ -417,6 +417,60 @@ describe('неудача продления', () => {
     expect(subscription?.currentPeriodEnd.toISOString()).toBe(periodEnd.toISOString());
 
     expect(warned).toEqual([{ userId, paidUntil: periodEnd }]);
+
+    /**
+     * **Код ошибки провайдера доезжает до счёта** (ревизия этапа 4).
+     *
+     * Прежде столбец `error_code` у неудачного счёта оставался **вечно
+     * пустым**: разбор кода в коде был (`errorTextOf`), но вызывающих у
+     * него не было ни одного вне проверок. В панели любое неудачное
+     * продление выглядело одинаково — «что-то не так», — хотя чинятся
+     * они разными людьми: код 34 («услуга не подключена магазину») ждёт
+     * владельца магазина, а код 29 («не сошлась подпись») — нас.
+     *
+     * Проверяется и текст: «ERROR: 34» разбирающему не говорит ничего,
+     * пока он не откроет документацию, а объяснение — говорит всё.
+     */
+    const [failedInvoice] = await testDb()
+      .select({ code: billingInvoices.errorCode, text: billingInvoices.errorText })
+      .from(billingInvoices)
+      .where(eq(billingInvoices.status, 'failed'));
+
+    expect(failedInvoice?.code).toBe(34);
+    expect(failedInvoice?.text).toContain('услуга не подключена');
+    // И сырой ответ рядом: объяснение наше, а ответ — их, и спорить о
+    // том, что именно приехало, не придётся.
+    expect(failedInvoice?.text).toContain('34');
+  });
+
+  it('незнакомый код всё равно записывается числом, а не теряется', async () => {
+    /**
+     * Ревизия этапа 4. У Робокассы список кодов открытый, и объяснения
+     * на всякий код у нас нет. Записать в этом случае **ничего** было бы
+     * возвратом к прежнему дефекту: разбирающий увидел бы пустоту там,
+     * где провайдер назвал причину. Поэтому объяснение необязательно, а
+     * число — обязательно.
+     */
+    await payingPerson({ periodEnd: new Date('2026-10-01T10:00:00.000Z') });
+
+    const round = await runRenewals({
+      db: testDb(),
+      logger,
+      robokassa: robokassa('ERROR: 777').deps,
+      settings,
+      now: () => new Date('2026-09-30T12:00:00.000Z'),
+    });
+
+    expect(round.failed).toBe(1);
+
+    const [failedInvoice] = await testDb()
+      .select({ code: billingInvoices.errorCode, text: billingInvoices.errorText })
+      .from(billingInvoices)
+      .where(eq(billingInvoices.status, 'failed'));
+
+    expect(failedInvoice?.code).toBe(777);
+    // Объяснения нет — значит в тексте сырой ответ, а не пустота.
+    expect(failedInvoice?.text).toBe('ERROR: 777');
   });
 
   it('потерянный ответ повтора НЕ вызывает', async () => {

@@ -103,7 +103,15 @@ export const MAX_ATTEMPTS = 3;
 /** Пауза между отправками внутри порции. */
 export const SEND_SPACING_MS = 120;
 
-/** Сколько пользователей раскладываем за проход. */
+/**
+ * Сколько людей берём **одной страницей** (не «за проход»).
+ *
+ * Правка ревизии четвёртого этапа: прежде это был предел прохода, и
+ * начиная с пятьсот первого человека напоминания не раскладывались
+ * вовсе — молча. Теперь это размер страницы, а раскладка идёт до
+ * исчерпания: держать в памяти всех сразу незачем, а пропустить
+ * человека нельзя.
+ */
 const PLAN_BATCH = 500;
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -130,26 +138,58 @@ interface Recipient {
   readonly quietTo: string;
 }
 
-/** Кому вообще пишем: незаблокированные, с настройками. */
+/**
+ * Кому вообще пишем: незаблокированные, с настройками.
+ *
+ * **Страницами до исчерпания, а не первые пятьсот** — правка ревизии
+ * четвёртого этапа. Прежде здесь стоял `limit(PLAN_BATCH)` без порядка и
+ * без продолжения: начиная с пятьсот первого человека напоминания не
+ * раскладывались **вовсе**, и узнать об этом было неоткуда — ни числа, ни
+ * строки в журнале. Порядок строк при этом задавал Postgres, то есть
+ * «первые пятьсот» каждый проход могли быть разными.
+ *
+ * Порядок по `users.id` устойчив, и курсор идёт по нему же: без порядка
+ * страницы пересекались бы или пропускали людей, а пропущенный человек
+ * — это человек без утреннего письма.
+ */
 async function recipients(db: Database): Promise<Recipient[]> {
-  return await db
-    .select({
-      userId: users.id,
-      tgId: users.tgId,
-      timeZone: users.timezone,
-      textProfile: userSettings.textProfile,
-      morningTime: userSettings.morningTime,
-      eveningTime: userSettings.eveningTime,
-      notificationsOn: userSettings.notificationsOn,
-      eveningOn: userSettings.eveningOn,
-      quietHoursOn: userSettings.quietHoursOn,
-      quietFrom: userSettings.quietFrom,
-      quietTo: userSettings.quietTo,
-    })
-    .from(users)
-    .innerJoin(userSettings, eq(userSettings.userId, users.id))
-    .where(eq(users.isBlocked, false))
-    .limit(PLAN_BATCH);
+  const all: Recipient[] = [];
+  let after: string | undefined;
+
+  for (;;) {
+    const page = await db
+      .select({
+        userId: users.id,
+        tgId: users.tgId,
+        timeZone: users.timezone,
+        textProfile: userSettings.textProfile,
+        morningTime: userSettings.morningTime,
+        eveningTime: userSettings.eveningTime,
+        notificationsOn: userSettings.notificationsOn,
+        eveningOn: userSettings.eveningOn,
+        quietHoursOn: userSettings.quietHoursOn,
+        quietFrom: userSettings.quietFrom,
+        quietTo: userSettings.quietTo,
+      })
+      .from(users)
+      .innerJoin(userSettings, eq(userSettings.userId, users.id))
+      .where(
+        after === undefined
+          ? eq(users.isBlocked, false)
+          : and(eq(users.isBlocked, false), gt(users.id, after)),
+      )
+      .orderBy(users.id)
+      .limit(PLAN_BATCH);
+
+    all.push(...page);
+
+    if (page.length < PLAN_BATCH) return all;
+
+    after = page[page.length - 1]?.userId;
+
+    // Курсора нет — дальше идти некуда, и молча зациклиться нельзя.
+    if (after === undefined) return all;
+  }
 }
 
 /**

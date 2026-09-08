@@ -169,33 +169,19 @@ export function resultSignature(params: {
   return hash(params.algo ?? DEFAULT_HASH_ALGO, parts.join(':'));
 }
 
-/**
- * Подпись возврата человека на SuccessURL. Пароль **№1**.
- *
- * База та же, что у уведомления, а пароль — как у ссылки. Именно поэтому
- * функция отдельная: разница между этими двумя подписями — один пароль,
- * и она невидима глазом.
- *
- * **Сам по себе `SuccessURL` ничего не подтверждает.** Человек может
- * открыть его руками; подтверждает оплату только уведомление на
- * ResultURL. Подпись здесь нужна ровно для одного: не показать «оплачено»
- * тому, кто подставил адрес.
- */
-export function successSignature(params: {
-  readonly outSum: string;
-  readonly invId: string;
-  readonly password1: string;
-  readonly userParams?: UserParams | undefined;
-  readonly algo?: HashAlgo | undefined;
-}): string {
-  return resultSignature({
-    outSum: params.outSum,
-    invId: params.invId,
-    password2: params.password1,
-    ...(params.userParams === undefined ? {} : { userParams: params.userParams }),
-    ...(params.algo === undefined ? {} : { algo: params.algo }),
-  });
-}
+/*
+  `successSignature` убрана ревизией четвёртого этапа.
+
+  Подпись SuccessURL проверяет тот, кто принимает возврат человека с
+  страницы оплаты. У нас такого пути нет: SuccessURL ведёт в чат бота, а
+  не на наш сервер, и решение о продлении принимает **уведомление**
+  (ResultURL) — единственное, чему можно верить. Вызывающих у функции не
+  было ни одного вне проверок, а формула её совпадала с формулой
+  уведомления: две одинаковые формулы в двух местах однажды разъезжаются.
+
+  Появится серверный SuccessURL — подпись вернётся вместе с ним и со
+  своим отличием от формулы уведомления, если оно будет.
+*/
 
 /**
  * Подпись запроса состояния операции (`OpStateExt`). Пароль №2.

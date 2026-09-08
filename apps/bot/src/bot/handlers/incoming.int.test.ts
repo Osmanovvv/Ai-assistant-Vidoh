@@ -6,8 +6,9 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, messagesRaw } from '../../db/schema.js';
-import { registerPaySupportCommands } from './billing.js';
+import { batches, billingSubscriptions, messagesRaw } from '../../db/schema.js';
+import { BILLING_ACTION, registerBillingHandlers, registerPaySupportCommands } from './billing.js';
+import type { Rail } from '../../modules/billing/tariffs.js';
 import { createLogger } from '../../infra/logger.js';
 import type { Context } from 'grammy';
 import type { StatusSender } from '../../modules/presenter/status.service.js';
@@ -79,6 +80,14 @@ interface BotOptions {
   readonly settings?: SettingsRegistry | undefined;
   /** Приём ответа словами — он стоит выше гейта (задача 3.61). */
   readonly consume?: ((ctx: Context, userId: string) => Promise<boolean>) | undefined;
+  /**
+   * Включённые рельсы оплаты (задача 4.2).
+   *
+   * Без них конец пробного периода не приглашает платить — и это
+   * правильно: приглашение без единого тарифа отправляет человека искать
+   * кнопку, которой нет. Проверки ниже мерят **обе** стороны этого «и».
+   */
+  readonly payRails?: readonly Rail[] | undefined;
 }
 
 function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] } {
@@ -111,6 +120,7 @@ function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] }
       ...(options.sender === undefined ? {} : { sender: options.sender }),
       ...(options.settings === undefined ? {} : { settings: options.settings }),
       ...(options.consume === undefined ? {} : { consume: options.consume }),
+      ...(options.payRails === undefined ? {} : { payRails: options.payRails }),
     }),
   );
 
@@ -464,6 +474,128 @@ describe('пробный период и деградация (§14, задач�
     expect(said).not.toContain(defaultTexts.limits.tooManyDumps);
   });
 
+  /**
+   * Реплика на границе — четыре проверки, названные ревизией этапа.
+   *
+   * До ревизии здесь мерилась одна реплика из четырёх: `limits.trialOver`
+   * («пробные разборы закончились»). Три остальные — приглашение к
+   * тарифу, «оплаченный период кончился» и «продление не прошло» —
+   * появились с задачей 4.2 и остались без единой проверки, хотя
+   * различить их важнее всего именно платившему: он читал «пробные
+   * разборы закончились» и решал, что бот забыл его оплату.
+   *
+   * Обстановка у всех четырёх одна: пробный исчерпан. Разница — в том,
+   * что есть **кроме** него: тариф и история подписок.
+   */
+  describe('какими словами гейт отказывает (§14, задача 4.2; ревизия этапа)', () => {
+    /** Тариф за рубли на рельсе Робокассы: приглашению нужны оба. */
+    async function withPrice(limit: number): Promise<SettingsRegistry> {
+      await putSetting(testDb(), { name: 'trialDumps', value: String(limit) });
+      await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
+
+      return new SettingsRegistry({ db: testDb(), ttlMs: 0 });
+    }
+
+    /** Строка подписки, срок которой уже вышел. */
+    async function seedPastSubscription(status: 'canceled' | 'past_due'): Promise<void> {
+      await testDb()
+        .insert(billingSubscriptions)
+        .values({
+          provider: 'robokassa',
+          userId,
+          plan: 'monthly',
+          status,
+          currentPeriodEnd: new Date(Date.now() - 24 * 3_600_000),
+        });
+    }
+
+    /** Что уехало человеку: текст и кнопки под ним. */
+    function replyOf(calls: readonly ApiCall[]): {
+      readonly text: unknown;
+      readonly buttons: string;
+    } {
+      const reply = calls.find((call) => call.method === 'sendMessage');
+
+      return {
+        text: reply?.payload['text'],
+        buttons: JSON.stringify(reply?.payload['reply_markup'] ?? {}),
+      };
+    }
+
+    it('пробный кончился, а тариф есть — приглашение с кнопкой подписки', async () => {
+      await seedTrialSpent(3);
+      const settings = await withPrice(3);
+
+      const { bot, calls } = createTestBot({ settings, payRails: ['robokassa:smz'] });
+      await bot.handleUpdate(textUpdate('купить продукты'));
+
+      const said = replyOf(calls);
+
+      expect(said.text).toBe(defaultTexts.billing.trialOverWithOffer);
+      expect(said.buttons).toContain(BILLING_ACTION.open);
+      expect(said.buttons).toContain(defaultTexts.menu.buttonSubscription);
+
+      // И выгрузка при этом всё равно не заводится: приглашение платить
+      // не значит «пропустим разок».
+      expect(await dumpCount()).toBe(3);
+    });
+
+    it('рельс включён, а цена не задана — приглашения нет вовсе', async () => {
+      /**
+       * Обратная сторона того же «и»: рельс без цены продавать нечем.
+       * «Выберите тариф» здесь было бы обещанием без товара — ровно то
+       * состояние, в котором бот и живёт до назначения цен в панели.
+       */
+      await seedTrialSpent(3);
+      const settings = await trialOf(3);
+
+      const { bot, calls } = createTestBot({ settings, payRails: ['robokassa:smz'] });
+      await bot.handleUpdate(textUpdate('купить продукты'));
+
+      const said = replyOf(calls);
+
+      expect(said.text).toBe(defaultTexts.limits.trialOver);
+      expect(said.buttons).not.toContain(BILLING_ACTION.open);
+    });
+
+    it('кончился оплаченный период — реплика про оплату, а не про пробный', async () => {
+      /**
+       * Платившему «пробные разборы закончились» читается как «бот забыл
+       * мою оплату». Причина берётся из истории подписок, а не
+       * угадывается: строка остаётся и после конца периода.
+       */
+      await seedTrialSpent(3);
+      await seedPastSubscription('canceled');
+      const settings = await withPrice(3);
+
+      const { bot, calls } = createTestBot({ settings, payRails: ['robokassa:smz'] });
+      await bot.handleUpdate(textUpdate('купить продукты'));
+
+      const said = replyOf(calls);
+
+      expect(said.text).toBe(defaultTexts.billing.paidOver);
+      expect(said.text).not.toBe(defaultTexts.billing.trialOverWithOffer);
+      expect(said.buttons).toContain(BILLING_ACTION.open);
+    });
+
+    it('продление не прошло — сказано именно это', async () => {
+      /**
+       * `past_due` отличается от истёкшей подписки тем, что человек
+       * продлеваться **хотел**: списание сорвалось. Предложить ему
+       * «оплаченный период кончился» значило бы умолчать о том, что
+       * чинится с его стороны — картой, а не выбором тарифа.
+       */
+      await seedTrialSpent(3);
+      await seedPastSubscription('past_due');
+      const settings = await withPrice(3);
+
+      const { bot, calls } = createTestBot({ settings, payRails: ['robokassa:smz'] });
+      await bot.handleUpdate(textUpdate('купить продукты'));
+
+      expect(replyOf(calls).text).toBe(defaultTexts.billing.renewalOver);
+    });
+  });
+
   it('ноль в настройке означает «пробного периода нет вовсе»', async () => {
     const settings = await trialOf(0);
 
@@ -716,5 +848,91 @@ describe('обращение по /paysupport попадает в базу (ре
         'Реплика при этом обещает «напишите сюда же словами, разберёмся и вернём деньги».',
       ].join('\n'),
     ).toBeGreaterThan(intake);
+  });
+});
+
+describe('порядок регистрации: служебное сообщение об оплате не доезжает до буфера', () => {
+  /**
+   * **Ревизия четвёртого этапа: страж мерил сборку, которой в бою нет.**
+   *
+   * Ветка «служебное сообщение — не выгрузка» в приёме существует, и
+   * четыре проверки её измеряют. Но в боевом порядке она не срабатывает
+   * вовсе: обработчик оплаты регистрируется **до** приёма, значит
+   * служебное сообщение забирает он. Комментарий при этом утверждал
+   * обратное.
+   *
+   * Ветка остаётся — она страхует обратный порядок, — а вот сам порядок
+   * не был закреплён ничем: перестановка двух строк в `index.ts` тихо
+   * отправила бы сообщение о платеже в буфер выгрузки, и модель
+   * разобрала бы его как мысль человека.
+   */
+  it('в боевом порядке оплата забирается до приёма: выгрузки не появляется', async () => {
+    const botInfo = {
+      id: 1,
+      is_bot: true,
+      first_name: 'ВЫДОХ',
+      username: 'vydoh_test_bot',
+    } as unknown as UserFromGetMe;
+
+    const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', { botInfo });
+    const calls: ApiCall[] = [];
+
+    bot.api.config.use((_prev, method, payload) => {
+      calls.push({ method, payload });
+
+      return Promise.resolve({
+        ok: true,
+        result: { message_id: calls.length, date: 0, chat: { id: TG_ID, type: 'private' } },
+      } as never);
+    });
+
+    // **Тот же порядок, что в сборке**: сперва оплата, потом приём.
+    registerBillingHandlers(bot, {
+      db: testDb(),
+      settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+      logger: createLogger({ level: 'silent' }),
+      providers: {},
+    });
+
+    bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
+
+    await bot.init();
+    await bot.handleUpdate(paymentUpdate());
+
+    // Выгрузки нет: сообщение о платеже до буфера не доехало.
+    expect(await testDb().select().from(batches)).toEqual([]);
+
+    /**
+     * И в `messages_raw` его тоже нет — так и должно быть.
+     *
+     * §9.1 «сначала сохраняем» про **слова человека**, а служебное
+     * сообщение об оплате написал Telegram: человек нажал кнопку. Сам
+     * платёж записан там, где ему место, — в событиях оплаты, вымаранных
+     * от личного (§16).
+     */
+    expect(await testDb().select().from(messagesRaw)).toEqual([]);
+  });
+
+  it('страж порядка читает сборку: оплата объявлена раньше приёма', async () => {
+    /**
+     * Проверка выше собирает бот сама и потому пройдёт при любом порядке
+     * в `index.ts` — а дефект был бы именно там. Здесь читается сборка.
+     */
+    const source = await readFile('src/index.ts', 'utf8');
+
+    const billing = source.indexOf('registerBillingHandlers(');
+    const intake = source.indexOf('incomingMiddleware(');
+
+    expect(billing, 'оплата не найдена в сборке').toBeGreaterThan(0);
+    expect(intake, 'приём не найден в сборке').toBeGreaterThan(0);
+
+    expect(
+      billing,
+      [
+        'Обработчик оплаты объявлен ПОСЛЕ приёма сообщений.',
+        'Тогда служебное сообщение о платеже уедет в буфер выгрузки,',
+        'и модель разберёт его как мысль человека.',
+      ].join('\n'),
+    ).toBeLessThan(intake);
   });
 });
