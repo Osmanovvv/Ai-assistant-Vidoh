@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /**
  * Подписанный пропуск в панель (§15 ТЗ, задача 4.5).
@@ -35,6 +35,21 @@ interface Payload {
   readonly login: string;
   /** Время истечения, миллисекунды. */
   readonly exp: number;
+  /**
+   * Случайная метка пропуска — чтобы его можно было **погасить**.
+   *
+   * **Найдено ревизией четвёртого этапа.** Пропуск первого шага
+   * подписан и живёт две минуты, а годных кодов у второго шага три
+   * (предыдущее окно, нынешнее и следующее — так требует стандарт).
+   * Предела попыток на сам пропуск не было: кто украл его из сетевого
+   * журнала или получил, зная пароль, мог перебирать коды до истечения.
+   * Задержка от подбора не защищает — она задерживает, а не запрещает.
+   *
+   * Метка даёт роутеру, чем считать промахи: пять неверных кодов — и
+   * пропуск негоден, даже пока не истёк. Погасить его иначе нечем:
+   * подписанный пропуск состояния не имеет.
+   */
+  readonly nonce: string;
 }
 
 function sign(secret: string, body: string): string {
@@ -52,6 +67,9 @@ export function issuePass(params: {
     kind: params.kind,
     login: params.login,
     exp: (params.now?.getTime() ?? Date.now()) + ttl,
+    // Метка нужна, чтобы роутер мог погасить пропуск после нескольких
+    // неверных кодов: подписанный пропуск состояния не имеет.
+    nonce: randomBytes(9).toString('base64url'),
   };
 
   const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
@@ -71,7 +89,7 @@ export function readPass(params: {
   readonly pass: string;
   readonly kind: PassKind;
   readonly now?: Date | undefined;
-}): { readonly login: string } | undefined {
+}): { readonly login: string; readonly nonce: string } | undefined {
   const parts = params.pass.split('.');
   if (parts.length !== 2) return undefined;
 
@@ -101,5 +119,14 @@ export function readPass(params: {
 
   if (payload.exp <= (params.now?.getTime() ?? Date.now())) return undefined;
 
-  return { login: payload.login };
+  /**
+   * Пропуск без метки не годится вовсе.
+   *
+   * Так отсекаются пропуски, выданные до этой правки: гасить их нечем, а
+   * жить им две минуты (сессии — двенадцать часов, и повторный вход
+   * стоит одного кода).
+   */
+  if (typeof payload.nonce !== 'string' || payload.nonce === '') return undefined;
+
+  return { login: payload.login, nonce: payload.nonce };
 }

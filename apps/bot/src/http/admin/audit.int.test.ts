@@ -13,6 +13,7 @@ import { upsertUser } from '../../modules/users/users.repo.js';
 import { createServer } from '../server.js';
 import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { accessTo, checkParam, recentAccess, recordAccess } from './audit.js';
+import { fullAdminRouter } from './full-router.js';
 import { createAdminRouter, SESSION_COOKIE, type AdminAuthConfig } from './index.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
@@ -275,21 +276,17 @@ describe('не записали — не отдали', () => {
  * стережётся отдельно — в `admin.test.ts` числом путей.
  */
 function everything(): ReturnType<typeof createAdminRouter> {
-  return createAdminRouter({
+  /**
+   * Тот же сборщик, что у сверки числа путей (ревизия этапа 4).
+   *
+   * Прежде здесь был свой список зависимостей, а сверка полноты сборки
+   * охраняла **другой** роутер, собранный в другом файле по другому
+   * списку. Два списка на один вопрос разъезжаются молча.
+   */
+  return fullAdminRouter({
     config: configOf(),
     db: testDb(),
     settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
-    evalDir: join(import.meta.dirname, 'нет-такой-папки'),
-    evalRunner: {
-      state: () => ({ kind: 'idle' }),
-      start: () => false,
-    },
-    enqueueBroadcast: async () => {
-      await Promise.resolve();
-    },
-    enqueueUser: async () => {
-      await Promise.resolve();
-    },
   });
 }
 
@@ -543,5 +540,150 @@ describe('журнал доступа читается панелью (§16, о�
     const base = await listen(withEverything());
 
     expect((await fetch(`${base}/admin/api/access`)).status).toBe(401);
+  });
+});
+
+describe('чужая ошибка — не наш сбой (ревизия четвёртого этапа)', () => {
+  it('карточка удалённого человека отвечает 404, а не 503', async () => {
+    /**
+     * **Прежде это была наша поломка на чужом действии.** Код человека
+     * уезжал прямо в журнал доступа, где стоит внешний ключ: Postgres
+     * отвечал ошибкой, панель говорила «доступ не записан в журнал» —
+     * 503, — а доля ошибок §18 росла и поднимала ложную тревогу. Ветка
+     * 404 внутри обработчика была недостижима вовсе.
+     *
+     * Случай штатный: человек мог удалить данные между открытием списка
+     * и нажатием на строку.
+     */
+    const failures: unknown[] = [];
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminOnError: (error) => {
+          failures.push(error);
+        },
+      }),
+    );
+
+    const gone = '00000000-0000-0000-0000-000000000000';
+
+    const response = await fetch(`${base}/admin/api/people/${gone}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(404);
+
+    // И это не считается нашим сбоем: тревога §18 от чужого действия не
+    // поднимается.
+    expect(failures).toEqual([]);
+  });
+
+  it('код не того вида отвечает 404 и до журнала не доходит', async () => {
+    const failures: unknown[] = [];
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminOnError: (error) => {
+          failures.push(error);
+        },
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/people/не-код-вовсе`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(404);
+    expect(failures).toEqual([]);
+
+    // В журнале ничего: обращения к персональным данным не было.
+    expect(await recentAccess(testDb())).toEqual([]);
+  });
+
+  it('битый JSON снаружи не считается нашим сбоем', async () => {
+    /**
+     * `onError` в бою считает долю неудачных обработок апдейтов (§18) и
+     * по ней посылает оповещение «бот перестал отвечать людям». Прежде
+     * он звался первой строкой обработчика ошибок — до разбирательства,
+     * чья это ошибка, — и любой запрос с битым телом снаружи (сканер,
+     * чужой бот, опечатка) поднимал тревогу про нас.
+     */
+    const failures: unknown[] = [];
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        onError: (error) => {
+          failures.push(error);
+        },
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{это не json',
+    });
+
+    expect(response.status).toBe(400);
+    expect(failures).toEqual([]);
+  });
+
+  it('сбой раздела панели идёт своим приёмником, а не общим', async () => {
+    /**
+     * Сбой запроса в панели — не провал обработки апдейта: люди при этом
+     * получают ответы как обычно. Прежде приёмник был один, и открытая
+     * заказчицей страница с упавшим запросом двигала окно оповещений §18.
+     */
+    const updates: unknown[] = [];
+    const panel: unknown[] = [];
+
+    /**
+     * База, роняющая любое чтение.
+     *
+     * Через `Proxy`, а не копированием полей: у объекта drizzle методы
+     * опираются на `this`, и копия их теряет.
+     */
+    const real = testDb();
+
+    const broken = new Proxy(real, {
+      get(one, name, receiver): unknown {
+        if (name !== 'select') return Reflect.get(one, name, receiver);
+
+        return () => {
+          throw new Error('база моргнула');
+        };
+      },
+    });
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: broken,
+        onError: (error) => {
+          updates.push(error);
+        },
+        adminOnError: (error) => {
+          panel.push(error);
+        },
+      }),
+    );
+
+    const response = await fetch(`${base}/admin/api/costs`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(panel.length).toBeGreaterThan(0);
+    expect(updates).toEqual([]);
   });
 });
