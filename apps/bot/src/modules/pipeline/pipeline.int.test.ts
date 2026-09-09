@@ -7,6 +7,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { batches, messagesRaw, type Batch } from '../../db/schema.js';
 import { RedisLock } from '../../infra/lock.js';
 import { createRedis } from '../../infra/redis.js';
+import { withTimeout } from '../../infra/retry.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
@@ -223,6 +224,44 @@ describe('судьба сбойной выгрузки', () => {
     expect(batch?.status).toBe('queued');
     expect(batch?.attempts).toBe(1);
     expect(batch?.error).toContain('fetch failed');
+  });
+
+  it('таймаут обращения к модели возвращает выгрузку в очередь', async () => {
+    /**
+     * Найдено ревизией второго этапа. `withTimeout` бросал голую
+     * `Error` — без класса и без причины, — и конвейер считал таймаут
+     * **постоянным** сбоем: выгрузка помечалась `failed`, а сбойные не
+     * переподхватываются. Слова человека оставались целы, но разобрать
+     * их было уже нечему.
+     *
+     * Обстановка достижима: у модели свой срок сто двадцать секунд, а
+     * предел вывода четыре тысячи токенов — длинная генерация в него не
+     * укладывается. Тем же болели речь и векторы: срок ставит одна и та
+     * же обёртка.
+     *
+     * Проверка идёт через **настоящий** `withTimeout`, а не через
+     * подделку ошибки: класс, поставленный руками в тесте, доказывал бы
+     * только то, что тест умеет его ставить.
+     */
+    const batchId = await queuedBatch('мысль', 0);
+
+    await expect(
+      processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: async () => {
+            await withTimeout(() => new Promise<never>(() => undefined), 20, 'запрос к модели');
+          },
+        },
+        userId,
+      ),
+    ).rejects.toThrow(/превышен таймаут/u);
+
+    const batch = await batchById(batchId);
+
+    expect(batch?.status).toBe('queued');
+    expect(batch?.error).toContain('превышен таймаут');
   });
 
   it('временную ошибку распознавателя тоже повторяет', async () => {

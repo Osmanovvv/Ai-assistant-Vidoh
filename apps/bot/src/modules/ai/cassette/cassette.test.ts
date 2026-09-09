@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { describeToday } from '../../classifier/dates.js';
 import { PermanentEmbeddingError } from '../../embedder/providers/types.js';
 import { PermanentLlmError } from '../providers/types.js';
 import {
@@ -26,12 +27,28 @@ import type { EmbedResult, EmbeddingProvider } from '../../embedder/providers/ty
  */
 
 const RECORDED = new Date('2026-09-06T12:00:00.000Z');
+/** Полдень нарочно: у полуночных часов день в поясе и день по UTC разные. */
+const READ_LATER = new Date('2026-09-09T12:00:00.000Z');
 const SCHEMA = { title: 'extractor', type: 'object' };
+
+/**
+ * Вход классификатора так, как его собирает бой (`buildInput`): первой
+ * строкой — настоящий `describeToday`, дальше сами мысли.
+ *
+ * **Строка берётся из той же функции, что зовёт бот, а не сочиняется.**
+ * Сочинённая («Сегодня 06.09.2026») подхватывалась цифровым образцом, и
+ * проверки зеленели на форме, которой в бою нет: там дата словами.
+ */
+function classifierInput(now: Date): string {
+  return [describeToday(now, 'Europe/Moscow'), '', 'Мысли:', '1. надо записаться к врачу'].join(
+    '\n',
+  );
+}
 
 function request(overrides: Partial<CompletionRequest> = {}): CompletionRequest {
   return {
     prompt: 'Разбери поток мыслей на дела.',
-    input: 'Сегодня 06.09.2026. надо записаться к врачу',
+    input: classifierInput(RECORDED),
     jsonSchema: SCHEMA,
     temperature: 0,
     ...overrides,
@@ -324,26 +341,60 @@ describe('ключ запроса', () => {
     expect(keyOf(base)).not.toBe(keyOf({ ...base, temperature: 0.3 }));
   });
 
-  it('день записи на ключ не влияет: даты в нём относительные', () => {
+  it('день чтения на ключ не влияет: сегодняшняя дата в нём относительная', () => {
     /**
-     * Иначе запись жила бы один день: во входе классификатора стоит
-     * «Сегодня 06.09.2026, суббота», и завтра ключ бы не совпал.
+     * **Проверка того, из-за чего запись жила один день.**
+     *
+     * Прежняя её версия задавала вход строкой «Сегодня 06.09.2026,
+     * суббота» и сдвигала вместе с ним **якорь**. Обе вольности лишали
+     * её силы: такой строки бот не строит нигде (первой строкой входа
+     * стоит дата словами, из `describeToday`), а якорь при чтении не
+     * сдвигается — он берётся из файла записи, `player.recordedAt`.
+     * Проверка была зелёной, а воспроизведение промахивалось по каждому
+     * вызову классификатора и резолвера уже на вторые сутки.
+     *
+     * Поэтому здесь вход собирается настоящим `describeToday` — той же
+     * функцией, что зовёт бой, — на два разных дня, а якорь остаётся
+     * один, как при чтении.
      */
-    const parts = {
-      stage: 'classifier',
-      prompt: 'промпт',
-      input: 'Сегодня 06.09.2026, суббота. надо к врачу',
-      schema: SCHEMA,
-    };
+    const parts = { stage: 'classifier', prompt: 'промпт', schema: SCHEMA };
 
-    const today = keyOf({ ...parts, recordedAt: RECORDED });
-    const shifted = keyOf({
-      ...parts,
-      input: 'Сегодня 07.09.2026, суббота. надо к врачу',
-      recordedAt: new Date('2026-09-07T12:00:00.000Z'),
-    });
+    const atRecord = keyOf({ ...parts, input: classifierInput(RECORDED), recordedAt: RECORDED });
+    const atRead = keyOf({ ...parts, input: classifierInput(READ_LATER), recordedAt: RECORDED });
 
-    expect(shifted).toBe(today);
+    expect(atRead).toBe(atRecord);
+  });
+});
+
+describe('запись годна не один день', () => {
+  /**
+   * Сквозной страж поверх всей связки: записали живой ответ в один день,
+   * прочли записанное в другой — и промаха нет, а срок в ответе сдвинут
+   * на столько же дней.
+   *
+   * **Мерится именно то, чем платят.** Промах не зеленит прогон, он
+   * роняет его с требованием перезаписать запись живой моделью, то есть
+   * за деньги — при том что вся затея с записью ради бесплатного
+   * прогона. Дешёвый прогон, годный один день, не дешевле платного.
+   */
+  it('записали 06.09, прочли 09.09 — промаха нет, срок сдвинут', async () => {
+    // «Завтра» от дня записи — то, что модель и вернула бы 06.09.
+    const live = liveLlm('{"deadline":"2026-09-07"}');
+    const recorder = new CassetteRecorder(RECORDED, 'yandexgpt/latest');
+
+    await new RecordingLlmProvider({ live, recorder, recordedAt: RECORDED }).complete(
+      request({ input: classifierInput(RECORDED) }),
+    );
+
+    const player = new CassettePlayer(recorder.toFile());
+
+    const result = await new ReplayLlmProvider(player, () => READ_LATER).complete(
+      request({ input: classifierInput(READ_LATER) }),
+    );
+
+    expect(player.missCount).toBe(0);
+    // «Завтра» от дня чтения: записанный срок остался годным.
+    expect(result.text).toBe('{"deadline":"2026-09-10"}');
   });
 });
 

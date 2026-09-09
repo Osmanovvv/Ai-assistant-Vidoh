@@ -1,4 +1,5 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import type { Logger } from 'pino';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, topics } from '../../db/schema.js';
@@ -147,7 +148,7 @@ describe('ветка темы', () => {
     const created = await ensureThread(deps(gateway), { topicId: topic!.id, chatId: CHAT });
     const itemId = await addItem({ topic: 'здоровье', text: 'к врачу' });
 
-    await forgetThread(deps(gateway), created.threadId!);
+    await forgetThread(deps(gateway), userId, created.threadId!);
 
     const after = await topicRow('здоровье');
     expect(after?.tgThreadId).toBeNull();
@@ -161,6 +162,62 @@ describe('ветка темы', () => {
     const again = await ensureThread(deps(gateway), { topicId: topic!.id, chatId: CHAT });
     expect(again.created).toBe(true);
     expect(again.threadId).not.toBe(created.threadId);
+  });
+
+  it('чужую тему с тем же номером ветки не трогает', async () => {
+    /**
+     * Найдено ревизией второго этапа. Номер ветки — это `message_id`
+     * служебного сообщения в личном чате: у каждого своя нумерация с
+     * малых чисел, и ветка №12 у двух людей — обычное дело.
+     *
+     * Условие без владельца обнуляло ветку и сводку **всем**, у кого тот
+     * же номер. Посторонний человек получал вторую ветку с тем же
+     * названием, новую закреплённую сводку в ней, а старая оставалась в
+     * чате с намертво замороженным списком дел — то самое, что §8.2
+     * запрещает двумя строками.
+     *
+     * Схема указывала на это прямо: уникальна пара `user_id` и
+     * `tg_thread_id`, а не номер сам по себе.
+     */
+    await seedTopics(['здоровье']);
+
+    const stranger = await upsertUser(testDb(), { tgId: 902, firstName: 'Посторонний' });
+    const shared = 12;
+
+    // У обоих тема с одним и тем же номером ветки — так бывает в бою.
+    await testDb()
+      .update(topics)
+      .set({ tgThreadId: shared, summaryMessageId: 77 })
+      .where(and(eq(topics.userId, userId), eq(topics.name, 'здоровье')));
+
+    await testDb()
+      .insert(topics)
+      .values({ userId: stranger.id, name: 'здоровье', tgThreadId: shared, summaryMessageId: 88 });
+
+    await forgetThread(deps(new FakeTopicGateway()), userId, shared);
+
+    /**
+     * Свою строку читаем **по владельцу**, а не помощником `topicRow`:
+     * тот выбирает по названию и при двух людях с темой «здоровье»
+     * отдаёт произвольную. Ровно та же слепота, что и в самом дефекте, —
+     * и она успела покраснеть на этой проверке, пока я её писал.
+     */
+    const [mine] = await testDb()
+      .select()
+      .from(topics)
+      .where(and(eq(topics.userId, userId), eq(topics.name, 'здоровье')));
+
+    expect(mine?.tgThreadId).toBeNull();
+    expect(mine?.summaryMessageId).toBeNull();
+
+    // …а у постороннего всё на месте.
+    const [alien] = await testDb()
+      .select()
+      .from(topics)
+      .where(and(eq(topics.userId, stranger.id), eq(topics.name, 'здоровье')));
+
+    expect(alien?.tgThreadId).toBe(shared);
+    expect(alien?.summaryMessageId).toBe(88);
   });
 });
 
@@ -524,6 +581,117 @@ describe('темп обращений к Telegram', () => {
     expect(waited).toEqual([3000]);
     expect(touched).toBe(1);
     expect(gateway.sent).toHaveLength(1);
+  });
+
+  /**
+   * Отказ закрепления не уносит сводку (ревизия этапов).
+   *
+   * **Чего не видел прежний набор.** Подделка шлюза на `pin` всегда
+   * отвечала успехом, поэтому отказа закрепления не знала ни одна
+   * проверка: перехват вокруг `pin` в `summary.service.ts` можно было
+   * снять целиком, и весь набор оставался зелёным. Свойство «сводка
+   * выживает без булавки» существовало только в комментарии.
+   *
+   * А отказ в бою настоящий и двух видов: у бота может не быть права
+   * закреплять (400), и на залпе из девяти веток в конце опроса Telegram
+   * просит сбавить темп (429). Без перехвата такой отказ уносит **всю**
+   * тему: сводка уже отправлена, номер её уже записан, и исключение
+   * поднимается наружу — `refreshSummaries` считает тему неудавшейся, а
+   * при одиночном вызове ошибка уходит выше.
+   */
+  describe('закрепление отказало', () => {
+    /** Журнал, в который видно: предупреждение обязано остаться. */
+    function noisy() {
+      const warned: { topic?: unknown; err?: unknown }[] = [];
+      return {
+        warned,
+        logger: {
+          warn: (payload: { topic?: unknown; err?: unknown }) => warned.push(payload),
+          info: () => undefined,
+          error: () => undefined,
+          debug: () => undefined,
+        } as unknown as Logger,
+      };
+    }
+
+    it.each(['noRights', 'throttled'] as const)('%s: сводка остаётся на месте', async (how) => {
+      await seedTopics(['здоровье']);
+      const gateway = new FakeTopicGateway({ pinFails: how });
+      const { warned, logger: noteTaking } = noisy();
+      await addItem({ topic: 'здоровье', text: 'к врачу' });
+
+      const result = await refreshSummary(
+        { db: testDb(), gateway, logger: noteTaking },
+        { userId, chatId: CHAT, topicName: 'здоровье', timeZone: MOSCOW },
+      );
+
+      // Тема не пропущена: отказ булавки — не отказ сводки.
+      expect(result).toEqual({ sent: true, edited: false, skipped: false });
+
+      // Сводка отправлена, и в ней то, что и должно быть.
+      expect(gateway.sent).toHaveLength(1);
+      expect(gateway.sent[0]?.text).toContain('к врачу');
+
+      // Номер записан — иначе следующая выгрузка отправит вторую сводку
+      // вместо правки первой, и лента темы станет свалкой (§8.2).
+      expect((await topicRow('здоровье'))?.summaryMessageId).not.toBeNull();
+
+      // Попытка была, но удачных закреплений нет: подделка не подыгрывает.
+      expect(gateway.pinAttempts).toHaveLength(1);
+      expect(gateway.pinned).toHaveLength(0);
+
+      // И об этом осталась строка в журнале: незакреплённая сводка — не
+      // норма, а состояние, которое надо будет заметить.
+      expect(warned).toHaveLength(1);
+      expect(warned[0]?.topic).toBe('здоровье');
+      expect(warned[0]?.err).toBeDefined();
+    });
+
+    it('залп из девяти сфер не удваивается из-за незакреплённых сводок', async () => {
+      /**
+       * Тот самый случай из §12.2, ради которого перехват и стоит: конец
+       * опроса создаёт ветку, сводку и закрепление на каждую выбранную
+       * сферу, а Telegram на таком залпе как раз и просит сбавить темп.
+       *
+       * **Здесь проверяется не «дошло», а «сколько это стоило».** Без
+       * перехвата сводки всё равно доходят — но кружным путём: отказ
+       * булавки поднимается как отказ темы, `refreshSummaries` видит
+       * просьбу подождать, ждёт три секунды и **повторяет** тему. На
+       * девяти сферах это двадцать семь секунд ожидания и вторая волна
+       * обращений — ровно тот залп, от которого пауза между темами и
+       * спасает. Проверка «сводка дошла» такое пропускает: она дошла.
+       */
+      const chosen = [
+        'семья',
+        'здоровье',
+        'работа',
+        'покупки',
+        'дом',
+        'дети',
+        'деньги',
+        'учёба',
+        'личное',
+      ];
+      await seedTopics(chosen);
+      const gateway = new FakeTopicGateway({ pinFails: 'throttled' });
+      const { waited, deps: paced } = pacing(gateway);
+
+      const touched = await refreshSummaries(paced, {
+        userId,
+        chatId: CHAT,
+        topicNames: chosen,
+        timeZone: MOSCOW,
+      });
+
+      expect(touched).toBe(chosen.length);
+      expect(gateway.sent).toHaveLength(chosen.length);
+      // Ни одной правки: повтора темы не было, сводка отправлена один раз.
+      expect(gateway.edited).toHaveLength(0);
+      // Ожидания — только паузы между темами, ни одной просьбы Telegram.
+      expect(waited).toEqual(Array.from({ length: chosen.length - 1 }, () => 400));
+      expect(gateway.pinAttempts).toHaveLength(chosen.length);
+      expect(gateway.pinned).toHaveLength(0);
+    });
   });
 
   it('если и после паузы отказ — тема пропускается, остальные идут', async () => {

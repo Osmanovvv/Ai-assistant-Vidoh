@@ -1,13 +1,23 @@
-import { sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  adminAccessLog,
+  billingInvoices,
+  billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
   aiCalls,
   batches,
+  itemRevisions,
   items,
   messagesRaw,
+  pendingQuestions,
+  projectSteps,
+  recurrenceSuggestions,
+  reminders,
   topics,
   userSettings,
   users,
@@ -22,7 +32,24 @@ import { deleteUserData, exportUserData } from './privacy.service.js';
 let userId: string;
 let seq = 0;
 
-/** Пользователь с данными во всех таблицах. */
+/**
+ * Пользователь с данными во **всех** таблицах, которые на него ссылаются.
+ *
+ * «Во всех» — не оборот речи, а условие проверки полноты удаления. Она
+ * берёт список ссылок на `users` из самой базы и смотрит, не осталось ли
+ * после удаления строк, показывающих на человека. Проверить она может
+ * только заселённое: пустая таблица отвечает «ноль строк» и при
+ * настроенном каскаде, и при полностью сломанном.
+ *
+ * Так и было: заселялось восемь таблиц из шестнадцати. Восемь остальных
+ * — ревизии, открытые вопросы, предложения регулярности, шаги проектов,
+ * напоминания, журнал доступа панели, счёта и подписки — проверка
+ * пропускала молча, а порог «ссылок не меньше семи» это скрывал:
+ * шестнадцать больше семи, значит зелено.
+ *
+ * Поэтому здесь по строке в каждую. Если ссылок станет семнадцать, а
+ * заселения не добавят, проверка теперь скажет об этом прямо.
+ */
 async function seedUser(tgId: number): Promise<string> {
   const user = await upsertUser(testDb(), {
     tgId,
@@ -67,7 +94,7 @@ async function seedUser(tgId: number): Promise<string> {
       { userId: user.id, name: 'личное', sortOrder: 1, isDefault: true },
     ]);
 
-  await testDb()
+  const seeded = await testDb()
     .insert(items)
     .values([
       {
@@ -89,7 +116,10 @@ async function seedUser(tgId: number): Promise<string> {
         isDraft: true,
         draftReason: 'извлечение не удалось',
       },
-    ]);
+    ])
+    .returning({ id: items.id });
+
+  const itemId = seeded[0]?.id ?? '';
 
   await testDb()
     .insert(userState)
@@ -115,6 +145,107 @@ async function seedUser(tgId: number): Promise<string> {
       tgId,
       status: 'sent',
       at: new Date(),
+    });
+
+  /**
+   * Остальные восемь таблиц со ссылкой на человека.
+   *
+   * По одной строке: проверке полноты нужна не правдоподобная история, а
+   * присутствие — строка, которая обязана исчезнуть или обезличиться.
+   * Содержимое взято настоящее по смыслу (в ревизии лежат слова человека,
+   * в счёте — его оплата), чтобы читающий видел, чем именно грозит
+   * оставшаяся строка.
+   */
+  const [dump] = await testDb()
+    .select({ id: batches.id })
+    .from(batches)
+    .where(eq(batches.userId, user.id))
+    .limit(1);
+
+  await testDb()
+    .insert(itemRevisions)
+    .values({
+      itemId,
+      userId: user.id,
+      changedBy: 'resolver',
+      reason: 'срок из фразы',
+      before: { text: 'записать сына к врачу' },
+      after: { text: 'записать сына к врачу', deadlineAt: '2026-09-01' },
+    });
+
+  await testDb()
+    .insert(pendingQuestions)
+    .values({
+      userId: user.id,
+      itemId,
+      batchId: dump?.id ?? '',
+      // В открытом вопросе лежат слова человека дословно — §16 требует
+      // стереть и их.
+      segment: 'а ещё туда взять карту прививок',
+      action: 'append_body',
+      changes: { body: 'карта прививок' },
+      expiresAt: new Date('2026-08-27T06:00:00.000Z'),
+    });
+
+  await testDb()
+    .insert(recurrenceSuggestions)
+    .values({
+      userId: user.id,
+      itemId,
+      itemIds: [itemId],
+      kind: 'week',
+      interval: 1,
+    });
+
+  await testDb()
+    .insert(projectSteps)
+    .values({ itemId, userId: user.id, text: 'найти телефон поликлиники', position: 0 });
+
+  await testDb()
+    .insert(reminders)
+    .values({
+      userId: user.id,
+      itemId,
+      kind: 'deadline_eve',
+      dueAt: new Date('2026-08-31T15:00:00.000Z'),
+      dedupeKey: 'deadline_eve:2026-09-01',
+    });
+
+  /**
+   * Журнал доступа панели: здесь человек — не автор строки, а тот, на
+   * чьи данные смотрели. Ссылка настроена на обезличивание: сам факт
+   * просмотра остаётся, а на кого смотрели — уходит.
+   */
+  await testDb()
+    .insert(adminAccessLog)
+    .values({ login: 'admin', route: '/users/card', subjectUserId: user.id, subjects: 1 });
+
+  await testDb()
+    .insert(billingInvoices)
+    .values({
+      provider: 'robokassa:smz',
+      userId: user.id,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'rub',
+      // Метка счёта — случайные шестнадцатеричные знаки, как её делает
+      // newRef(). Телеграм-номер сюда подставлять нельзя даже в тесте:
+      // строка счёта переживает удаление, и заселять её данными человека
+      // значило бы проверять §16 на подложной обстановке.
+      ref: randomUUID().replaceAll('-', '').slice(0, 20),
+      status: 'paid',
+    });
+
+  await testDb()
+    .insert(billingSubscriptions)
+    .values({
+      provider: 'robokassa:smz',
+      userId: user.id,
+      plan: 'monthly',
+      currentPeriodEnd: new Date('2026-09-26T00:00:00.000Z'),
+      // Ключ к способу оплаты: такому переживать удаление нельзя.
+      subscriptionRef: 'charge-777',
     });
 
   return user.id;
@@ -326,6 +457,14 @@ describe('deleteUserData', () => {
  * тем же утверждением — **ни одна строка нигде не показывает на
  * удалённого**, — потому что `set null` тоже обрывает ссылку.
  *
+ * **Но список из базы бесполезен без заселения.** Проверка спрашивает у
+ * каждой таблицы, сколько в ней строк на этого человека, и ждёт нуля.
+ * Пустая таблица отвечает нулём всегда — и при рабочем каскаде, и при
+ * снятом. Ровно так проверка и жила: ссылок шестнадцать, заселено
+ * восемь, а порог «не меньше семи» уверял, что всё под присмотром.
+ * Поэтому ниже проверяется и второе: до удаления **каждая** ссылка
+ * показывает на человека. Иначе «ноль после» ничего не значит.
+ *
  * Чего проверка не поймает: таблицу, которая хранит `tg_id` человека без
  * внешнего ключа. От этого страхует второй тест ниже.
  */
@@ -354,27 +493,51 @@ async function referencesToUsers(): Promise<readonly Reference[]> {
   return result.rows.map((row) => ({ table: row.table_name, column: row.column_name }));
 }
 
+/** Сколько строк в этой таблице показывают на человека. */
+async function countPointing(reference: Reference, id: string): Promise<number> {
+  const result = await testDb().execute<{ left: string }>(
+    sql`select count(*)::text as left from ${sql.identifier(reference.table)}
+        where ${sql.identifier(reference.column)} = ${id}`,
+  );
+
+  return Number.parseInt(result.rows[0]?.left ?? 'NaN', 10);
+}
+
 describe('удаление по всей базе, а не по списку', () => {
   it('ни одна таблица не хранит ссылку на удалённого человека', async () => {
     const references = await referencesToUsers();
 
-    // Пустой или короткий список означал бы, что проверка ничего не
-    // проверяет. На момент второго этапа ссылок шесть: настройки,
-    // сообщения, выгрузки, записи, темы, состояние — плюс учёт расхода.
-    expect(references.length).toBeGreaterThanOrEqual(7);
+    // Пустой список означал бы, что проверка ничего не проверяет.
+    expect(references.length).toBeGreaterThan(0);
+
+    /**
+     * Сначала — что проверять вообще есть что.
+     *
+     * Порог «ссылок не меньше семи» стоял здесь и был зелёным при
+     * шестнадцати ссылках и восьми заселённых таблицах: он мерил длину
+     * списка, а не то, что по этому списку проверяется. Число берётся со
+     * схемы, и заселено обязано быть **всё** это число — иначе половина
+     * таблиц проходит проверку тем, что в них никогда ничего не лежало.
+     */
+    const unseeded: string[] = [];
+    for (const reference of references) {
+      if ((await countPointing(reference, userId)) === 0) {
+        unseeded.push(`${reference.table}.${reference.column}`);
+      }
+    }
+
+    expect(
+      unseeded,
+      'Эти ссылки проверка не проверяет: строк на человека в них нет. ' +
+        'Добавьте по строке в seedUser — иначе «ноль после удаления» ничего не доказывает.',
+    ).toEqual([]);
 
     await deleteUserData(testDb(), userId);
 
     const survived: string[] = [];
     for (const reference of references) {
-      const result = await testDb().execute<{ left: string }>(
-        sql`select count(*)::text as left from ${sql.identifier(reference.table)}
-            where ${sql.identifier(reference.column)} = ${userId}`,
-      );
-
-      if (result.rows[0]?.left !== '0') {
-        survived.push(`${reference.table}.${reference.column}: ${result.rows[0]?.left ?? '?'}`);
-      }
+      const left = await countPointing(reference, userId);
+      if (left !== 0) survived.push(`${reference.table}.${reference.column}: ${String(left)}`);
     }
 
     expect(

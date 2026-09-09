@@ -45,17 +45,64 @@ describe('пометка блокировки', () => {
     await expect(canWrite()).resolves.toEqual([user.id]);
   });
 
+  /**
+   * Дата блокировки — про начало периода, а не про последнее наблюдение.
+   *
+   * **Что не видел прежний страж.** Он назывался так же, а сверял
+   * `second >= first` — условие, верное и при перетирании: `markBlocked`
+   * писал `now()` безусловно, вторая блокировка сдвигала дату, а
+   * проверка оставалась зелёной. Замерено 09.09.2026 зондом в этом же
+   * файле: `second > first` строго — то есть охраняемое свойство было
+   * сломано всё время, пока страж стоял.
+   *
+   * Сверять надо равенство: 403 приходит на каждую попытку отправки, и
+   * «когда человек заблокировал бота» иначе означает «когда мы в
+   * последний раз попробовали» — ответ, из которого не сделать ни
+   * чистки по давности, ни отчёта о потерянных людях.
+   */
   it('повторная блокировка не меняет дату первой', async () => {
     const db = testDb();
     await upsertUser(db, { tgId: 100, firstName: 'Аня' });
 
     await markBlocked(db, 100);
     const first = (await findByTgId(db, 100))?.blockedAt;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Ждём заметно больше разрешения `now()`, иначе равенство дат
+    // получилось бы само собой и страж снова ничего не проверял бы.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await markBlocked(db, 100);
     const second = (await findByTgId(db, 100))?.blockedAt;
 
-    expect(second?.getTime()).toBeGreaterThanOrEqual(first!.getTime());
+    // Дата обязана быть: страж, довольный двумя `null`, тоже мнимый.
+    expect(first).toBeInstanceOf(Date);
+    expect(second?.getTime(), 'вторая блокировка перетёрла дату первой').toBe(first?.getTime());
+  });
+
+  /**
+   * Обратная сторона той же правки (урок «страж должен отличать
+   * починенное от сломанного»): COALESCE не должен заморозить дату
+   * навсегда. Разблокировка — конец периода, и следующая блокировка
+   * начинает новый, со своей датой. Без этой проверки «починкой»
+   * сошёл бы и `markBlocked`, который не трогает `blocked_at` вовсе.
+   */
+  it('после разблокировки новая блокировка получает новую дату', async () => {
+    const db = testDb();
+    await upsertUser(db, { tgId: 100, firstName: 'Аня' });
+
+    await markBlocked(db, 100);
+    const first = (await findByTgId(db, 100))?.blockedAt;
+
+    // Человек снова написал — пометка снята вместе с датой.
+    await upsertUser(db, { tgId: 100, firstName: 'Аня' });
+    expect((await findByTgId(db, 100))?.blockedAt).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await markBlocked(db, 100);
+    const second = (await findByTgId(db, 100))?.blockedAt;
+
+    expect(
+      second!.getTime(),
+      'дата блокировки застыла на прошлом периоде: новый период недоступности выглядит старым',
+    ).toBeGreaterThan(first!.getTime());
   });
 
   it('пустая база даёт пустой список активных', async () => {

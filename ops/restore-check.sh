@@ -43,7 +43,46 @@ if [ -z "$LATEST" ] || [ ! -f "$LATEST" ]; then
   die "проверка восстановления" "в ${BACKUP_DIR} нет ни одной копии"
 fi
 
-echo "Проверяю копию: ${LATEST}"
+# Возраст копии — половина проверки, и её здесь не было.
+#
+# Условие готовности 1.22 требует «поднимает **вчерашний** дамп», а
+# скрипт брал самый свежий из имеющихся и о дате не спрашивал: отказ был
+# только на «нет ни одной копии». То есть стоило backup.sh перестать
+# снимать копии — и эта проверка каждый день докладывала «Копия
+# восстанавливается», подтверждая вчерашний дамп десятидневным.
+# Замерено 09.09.2026 на стенде: копия десятидневной давности проходила
+# проверку с кодом выхода 0 и без единого слова о её дате. Молчание
+# длилось бы до дня, когда ротация (BACKUP_KEEP_DAYS в backup.sh) съест
+# последнюю копию, — то есть до аварии, в которую восстанавливать будет
+# нечего.
+#
+# Порог в двое суток, а не в одни. По расписанию (ops/cron/vydoh) копия
+# снимается в 3:20, проверка идёт в 4:00 — то есть в норме копии около
+# сорока минут, и двое суток это запас на один пропущенный или
+# затянувшийся запуск. Тревога, которая звенит на норме, кончается тем,
+# что её перестают слушать. А вот двое суток без копии — это уже
+# сломанное задание, и звенеть надо.
+MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-48}"
+
+# Время файла: на сервере GNU stat, у разработчика на macOS — BSD.
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+}
+
+NOW_SECONDS="$(date +%s)"
+LATEST_SECONDS="$(file_mtime "$LATEST")"
+AGE_HOURS=$(( (NOW_SECONDS - LATEST_SECONDS) / 3600 ))
+
+# Возраст печатается всегда, а не только при отказе: «Копия
+# восстанавливается» без даты копии — ровно то сообщение, которое и
+# усыпляло. Число, по которому принимают решение, должно стоять в
+# журнале рядом с выводом.
+echo "Проверяю копию: ${LATEST} (возраст ${AGE_HOURS} ч)"
+
+if [ "$AGE_HOURS" -gt "$MAX_AGE_HOURS" ]; then
+  die "проверка восстановления" \
+    "последней копии ${AGE_HOURS} ч, а порог ${MAX_AGE_HOURS} ч: ${LATEST}. Похоже, копии перестали снимать — проверять восстановление уже нечего"
+fi
 
 WORK_DIR="$(mktemp -d)"
 cleanup() {
@@ -51,6 +90,18 @@ cleanup() {
   psql_run "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${CHECK_DB}\";" >/dev/null
 }
 trap cleanup EXIT
+
+# Открытая копия — это отказ, а не находка (§16; ревизия этапа 1).
+#
+# Прежде проверка принимала дамп без .gpg наравне с зашифрованным и
+# молчала: единственный признак того, что копии перестали шифровать,
+# уходил в журнал, который никто не читает. Теперь backup.sh без
+# парольной фразы копию не снимает вовсе, но открытая копия могла
+# остаться с прежних дней или быть положена руками — и тогда об этом
+# надо сказать, а не подтверждать её восстановление.
+if [[ "$LATEST" != *.gpg ]]; then
+  die "проверка восстановления" "последняя копия не зашифрована: ${LATEST}. §16 требует шифровать копии; уберите открытый дамп и снимите новый"
+fi
 
 DUMP="$LATEST"
 if [[ "$LATEST" == *.gpg ]]; then
@@ -89,13 +140,15 @@ TABLES_QUERY="SELECT table_name FROM information_schema.tables
 
 LIVE_TABLES="$(psql_run "$DATABASE_URL" -tAc "$TABLES_QUERY" | tr -d '\r' | tr '\n' ' ')"
 
-if [ -z "$(printf '%s' "$LIVE_TABLES" | tr -d ' ')" ]; then
+if [ -z "$(printf '%s' "$LIVE_TABLES" | tr -d '
+ ')" ]; then
   die "проверка восстановления" "в живой базе нет ни одной таблицы"
 fi
 
 MISSING=""
 for table in $LIVE_TABLES; do
-  FOUND="$(psql_run "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | tr -d ' ')"
+  FOUND="$(psql_run "$RESTORE_URL" -tAc "SELECT to_regclass('public.${table}');" | tr -d '
+ ')"
   if [ "$FOUND" != "$table" ]; then
     MISSING="${MISSING} ${table}"
   fi
@@ -116,8 +169,10 @@ LIVE_ROWS=0
 COPY_ROWS=0
 
 for table in $LIVE_TABLES; do
-  LIVE_COUNT="$(psql_run "$DATABASE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d ' ')"
-  COPY_COUNT="$(psql_run "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d ' ')"
+  LIVE_COUNT="$(psql_run "$DATABASE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d '
+ ')"
+  COPY_COUNT="$(psql_run "$RESTORE_URL" -tAc "SELECT count(*) FROM ${table};" | tr -d '
+ ')"
 
   LIVE_ROWS=$((LIVE_ROWS + LIVE_COUNT))
   COPY_ROWS=$((COPY_ROWS + COPY_COUNT))
@@ -137,4 +192,4 @@ if [ "$LIVE_ROWS" = "0" ]; then
   echo "Внимание: живая база пуста, сверять строки не с чем." >&2
 fi
 
-echo "Копия восстанавливается."
+echo "Копия восстанавливается (возраст ${AGE_HOURS} ч, порог ${MAX_AGE_HOURS} ч)."

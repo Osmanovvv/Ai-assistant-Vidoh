@@ -40,18 +40,30 @@ dump_stream() {
   $PG_DUMP_CMD --dbname="$DATABASE_URL" --format=custom --no-owner --no-privileges
 }
 
-if [ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]; then
-  echo "Снимаю и шифрую дамп: ${DUMP}.gpg"
-  dump_stream | gpg --batch --yes --symmetric --cipher-algo AES256 \
-      --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
-      --output "${DUMP}.gpg"
-  DUMP="${DUMP}.gpg"
-else
-  # Незашифрованный дамп с расшифровками — нарушение §16 ТЗ.
-  echo "ВНИМАНИЕ: BACKUP_ENCRYPTION_PASSPHRASE не задан, дамп не зашифрован" >&2
-  echo "Снимаю дамп: ${DUMP}"
-  dump_stream > "$DUMP"
+# Без парольной фразы копия не снимается вовсе (§16; ревизия этапа 1).
+#
+# Прежде здесь была ветка «нет фразы — пишем открытый дамп», а
+# предупреждение уходило в stderr, то есть в тот самый журнал, про
+# который соседний файл говорит прямо: «Журнал никто не читает».
+# Оповещения не было, ловушка ERR не срабатывала (ошибки-то нет), а
+# проверка восстановления принимала открытый дамп наравне с
+# зашифрованным. Итог: две недели открытых копий с расшифровками чужих
+# голосовых в /var/backups — и ни одного признака, что что-то не так.
+#
+# §16 говорит «резервные копии шифруются» без оговорок. Значит
+# отсутствие фразы — отказ, а не режим работы: лучше остаться без
+# сегодняшней копии и узнать об этом оповещением, чем получить открытую
+# и не узнать. Состояние достижимо человеческой ошибкой в backup.env, и
+# ровно это повторится при переносе на сервер заказчицы.
+if [ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]; then
+  die "копия базы" "нет BACKUP_ENCRYPTION_PASSPHRASE — открытую копию с расшифровками §16 запрещает"
 fi
+
+echo "Снимаю и шифрую дамп: ${DUMP}.gpg"
+dump_stream | gpg --batch --yes --symmetric --cipher-algo AES256 \
+    --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
+    --output "${DUMP}.gpg"
+DUMP="${DUMP}.gpg"
 
 SIZE="$(du -h "$DUMP" | cut -f1)"
 echo "Готово: ${DUMP} (${SIZE})"

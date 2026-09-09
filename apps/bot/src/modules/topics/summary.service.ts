@@ -269,6 +269,7 @@ export async function refreshSummary(
     if (isThreadGone(error)) {
       await forgetThread(
         { db: deps.db, gateway: deps.gateway, logger: deps.logger },
+        params.userId,
         thread.threadId,
       );
       return NOTHING;
