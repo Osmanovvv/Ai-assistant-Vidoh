@@ -148,16 +148,27 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
 
     await expect(page.getByTestId('card')).toBeVisible();
 
+    /**
+     * Всё читается **внутри самой статьи выгрузки**.
+     *
+     * Прежде итог искался по классу на всей странице, и это работало по
+     * случайности: класс `выгрузка__итог` носит и список «что изменилось»
+     * в таблице применённых изменений, а правок на стенде не было ни
+     * одной. Ревизия панели их посеяла — и строгий режим Playwright
+     * уронил проверку не по делу, на двух совпадениях.
+     */
+    const dump = page.locator('article.выгрузка').first();
+
     // Слова человека.
-    await expect(page.locator('.выгрузка__слова')).toContainText(
+    await expect(dump.locator('.выгрузка__слова')).toContainText(
       'надо записать сына к врачу в четверг',
     );
 
     // Что из них вышло.
-    await expect(page.locator('.выгрузка__итог')).toContainText('Записать сына к врачу');
+    await expect(dump.locator('.выгрузка__итог')).toContainText('Записать сына к врачу');
 
     // И чем это разобрано — без версии промпта жалобу не разобрать.
-    await expect(page.locator('.выгрузка__шапка')).toContainText('classifier@9');
+    await expect(dump.locator('.выгрузка__шапка')).toContainText('classifier@9');
   });
 
   test('из карточки можно вернуться к списку', async ({ page }) => {
@@ -237,5 +248,126 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
 
     await expect(who).toContainText('разобрано');
     await expect(who).toContainText(/разобрано \d+ из \d+/u);
+  });
+
+  test('на обзоре есть число про сбои — с него начинают разбор жалобы', async ({ page }) => {
+    /**
+     * Ревизия панели: про сбои на обзоре не было ни одного числа, а панель
+     * открывается именно на нём. Единственным следом поломки была оговорка
+     * про вызовы без цены — то есть страница говорила о сбое чужими
+     * словами и в неверном смысле; после её починки не говорила о сбое
+     * вовсе.
+     */
+    await signIn(page);
+
+    const totals = page.locator('.итоги');
+    const failed = totals.locator('.итог', { hasText: 'Сорвалось выгрузок' });
+
+    // Живьём: плитка есть, и в ней число, а не пустота от переименованного
+    // поля. Сорвавшиеся выгрузки на стенде посеяны, значит число не ноль.
+    await expect(failed.locator('.итог__число')).toHaveText(/^\d+$/u);
+    expect(Number((await failed.locator('.итог__число').textContent()) ?? '0')).toBeGreaterThan(0);
+
+    /**
+     * А **своё** ли это число — проверяется подменой ответа.
+     *
+     * Сверять с числом на стенде нельзя: сорвавшихся и разобранных там по
+     * одной, и подмена `{report.failedDumps}` на `{report.dumps}` осталась
+     * бы незамеченной — ровно случай с обратным `ORDER BY` из истории
+     * проекта. Вдобавок сорвавшуюся выгрузку забирает проверка
+     * перезапуска в журнале ошибок, и точное число зависело бы от порядка
+     * файлов. Здесь числа заведомо разные, и форма ответа настоящая:
+     * правятся два поля из настоящего.
+     */
+    await page.route('**/admin/api/overview?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+
+      await route.fulfill({ json: { ...body, dumps: 3, failedDumps: 7 } });
+    });
+
+    await page.getByRole('button', { name: 'Настройки' }).click();
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await expect(page.getByTestId('overview')).toBeVisible();
+
+    await expect(page.getByTestId('failed-dumps')).toHaveText('7');
+    await expect(
+      totals.locator('.итог', { hasText: 'Выгрузок разобрано' }).locator('.итог__число'),
+    ).toHaveText('3');
+  });
+
+  test('карточка показывает, что именно поправили, и слова человека', async ({ page }) => {
+    /**
+     * §15 просит применённые изменения «для разбора жалоб на качество», а
+     * §19 ставит первым риском «резолвер портит записи». Прежде таблица
+     * давала когда, какая запись, кто и почему — и ни слова про
+     * содержание правки: «с четверга на пятницу» приходилось смотреть в
+     * боевой базе через ssh, и 31.08.2026 именно так и было.
+     */
+    await signIn(page, 'Пользователи');
+    await page.getByRole('button', { name: 'Аня' }).first().click();
+
+    const changes = page
+      .getByTestId('card')
+      .locator('.разрез', { hasText: 'Применённые изменения' });
+
+    // Колонка называет то, что в ней лежит: сегодняшний текст записи.
+    await expect(changes.getByRole('columnheader', { name: 'Запись сейчас' })).toBeVisible();
+    await expect(changes.getByRole('columnheader', { name: 'Что изменилось' })).toBeVisible();
+
+    // Само изменение — с экрана, а не из базы. Текст записи в снимках
+    // одинаков, значит в разницу попал ровно срок, а не всё подряд.
+    await expect(changes).toContainText('срок:');
+    await expect(changes).not.toContainText('текст:');
+
+    // И слова человека, из-за которых правка: «Почему» — это фраза модели,
+    // и жалобу «почему бот так решил» ею не разобрать.
+    await expect(changes).toContainText('нет, лучше в пятницу');
+  });
+
+  test('в карточке есть телеграмный номер — жалобу можно довести до человека', async ({ page }) => {
+    /**
+     * Номер приезжал в панель в каждой строке списка и не рисовался
+     * нигде: данные ездили в браузер без надобности, а у человека без
+     * телеграмного имени связаться с ним было нечем. Карточка открывается
+     * на одного человека нарочно, и журнал доступа §16 пишет, на кого
+     * смотрели, — у показа есть и причина, и след.
+     */
+    await signIn(page, 'Пользователи');
+    await page.getByRole('button', { name: 'Аня' }).first().click();
+
+    const tg = page.getByTestId('tg-id');
+
+    await expect(tg).toHaveText('id 90001');
+    await expect(tg).toHaveAttribute('href', 'tg://user?id=90001');
+  });
+
+  test('поиск спрашивает сервер один раз на слово, а не на каждую букву', async ({ page }) => {
+    /**
+     * `/api/people` — персональный путь, и каждое обращение пишет строку в
+     * журнал доступа §16. Набранное «Аня» давало три записи, и журнал,
+     * заведённый ради вопроса «кто смотрел на чьи данные», отвечал на него
+     * шумом. Плюс гонка: ответ на «Ан» мог прийти после ответа на «Аня» и
+     * подменить список — на экране стояли люди, не подходящие к полю.
+     */
+    await signIn(page, 'Пользователи');
+    await expect(page.getByTestId('people')).toBeVisible();
+
+    let asked = 0;
+
+    await page.route('**/admin/api/people?**', async (route) => {
+      if (route.request().url().includes('q=')) asked += 1;
+      await route.continue();
+    });
+
+    await page.locator('input[name="q"]').pressSequentially('Аня', { delay: 60 });
+
+    await expect(page.getByRole('row', { name: /Аня/u })).toBeVisible();
+
+    // Пауза в наборе — 350 мс; ждём с запасом, чтобы «отложенные»
+    // запросы успели уйти, если задержки нет.
+    await page.waitForTimeout(700);
+
+    expect(asked).toBe(1);
   });
 });

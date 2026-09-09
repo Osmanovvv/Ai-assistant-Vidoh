@@ -165,9 +165,19 @@ export interface Costs {
   readonly userCount: number;
   readonly unattributed: readonly Money[];
   readonly unattributedCalls: number;
+  /**
+   * Сколько из обезличенных вызовов без известной цены.
+   *
+   * Не «все или ничего»: у отказа 429 цена ноль — правда, он не
+   * тарифится, — а у сорвавшегося по таймауту цены нет вовсе. По этому
+   * числу оговорка и решает, точная ли сумма; выбирать по «сумма пуста»
+   * значило печатать точную сумму про наполовину неоценённое множество.
+   */
+  readonly unattributedUnpriced: number;
   /** Расход вне выгрузок: он не входит в среднее «на выгрузку». */
   readonly unlinked: readonly Money[];
   readonly unlinkedCalls: number;
+  readonly unlinkedUnpriced: number;
   readonly perDump: readonly Money[];
   readonly perUser: readonly Money[];
   readonly dumps: number;

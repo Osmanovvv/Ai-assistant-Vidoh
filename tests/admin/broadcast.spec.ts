@@ -225,3 +225,97 @@ test.describe('остановленная рассылка не тупик', () 
     await expect(page.getByTestId('broadcast-text')).toHaveValue('я'.repeat(4_200));
   });
 });
+
+test.describe('список рассылок не врёт о своей полноте (ревизия панели)', () => {
+  test('заголовок называет число рассылок, а не молчит про обрезку', async ({ page }) => {
+    /**
+     * Запрос отдаёт последние двадцать. Без числа двадцать строк читаются
+     * как полный список: после двадцать первой рассылки предыдущие
+     * исчезают молча — вместе с единственным путём к «Повторить
+     * неудачные» и вместе с ответом на вопрос «а это письмо мы уже
+     * отправляли?».
+     */
+    await openBroadcast(page);
+
+    const heading = page.getByRole('heading', { name: /Прошлые рассылки/u });
+
+    await expect(heading).toContainText('всего');
+
+    const said = Number(/всего (\d+)/u.exec((await heading.textContent()) ?? '')?.[1] ?? '0');
+    const shown = await page.locator('tbody tr').count();
+
+    expect(said).toBeGreaterThan(0);
+    // Показано не больше, чем сказано: число приезжает из ответа, а не
+    // считается по вёрстке — иначе оно повторяло бы длину списка и
+    // молчало бы ровно там, где список обрезан.
+    expect(shown).toBeLessThanOrEqual(said);
+  });
+
+  test('повтор предлагается там, где сервер его разрешит, и только там', async ({ page }) => {
+    /**
+     * Кнопка, которая отказывает всегда, учит не верить панели. Сервер
+     * требует трёх условий — неудачные есть, состояние законченное,
+     * просьба остановиться пуста, — а условие показа спрашивало два: у
+     * законченной рассылки с непустой меткой кнопка висела активной и
+     * отвечала 409 на каждое нажатие, навсегда.
+     *
+     * Посеянная рассылка проверяет разрешённый случай живьём: законченная,
+     * одно не дошедшее письмо, метки нет.
+     */
+    await openBroadcast(page);
+
+    const done = page.locator('tr').filter({ hasText: 'Оплата открылась — вот тарифы.' });
+
+    await expect(done).toHaveCount(1);
+    await expect(done.getByRole('button', { name: 'Повторить неудачные' })).toBeVisible();
+
+    /**
+     * А запретный случай **подменяется ответом** — и иначе его не
+     * получить.
+     *
+     * Метку у законченной рассылки теперь снимает сам `finishBroadcast`,
+     * значит состояние «законченная с непустой меткой» на стенде больше
+     * не заводится ничем: гонка, которая его порождала, закрыта. Но в
+     * боевой базе такие строки лежат — они заведены до починки, — и
+     * условие показа обязано их узнавать. Форма ответа настоящая: у
+     * посеянной строки правится одно поле.
+     *
+     * Останавливаться на «у остановленной кнопки нет» нельзя: у
+     * остановленной на стенде ноль неудачных писем, и проверка проходила
+     * бы по этому нулю — то есть молчала бы и после снятия условия.
+     */
+    await page.route('**/admin/api/broadcast', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+
+      const answer = await route.fetch();
+      const body = (await answer.json()) as {
+        rows?: { text: string; stopRequestedAt: string | null }[];
+      };
+
+      const rows = (body.rows ?? []).map((row) =>
+        row.text.startsWith('Оплата открылась')
+          ? { ...row, stopRequestedAt: new Date().toISOString() }
+          : row,
+      );
+
+      await route.fulfill({ json: { ...body, rows } });
+    });
+
+    // Уход и возврат, а не перезагрузка: после перезагрузки панель
+    // открывается на «Обзоре», и раздела рассылки на экране не было бы.
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await page.getByRole('button', { name: 'Рассылка' }).click();
+    await expect(page.getByTestId('broadcast')).toBeVisible();
+
+    const asked = page.locator('tr').filter({ hasText: 'Оплата открылась — вот тарифы.' });
+
+    // Строка на месте — значит кнопки нет из-за метки, а не из-за того,
+    // что рассылка пропала со страницы.
+    await expect(asked).toHaveCount(1);
+    await expect(asked).toContainText('разослана');
+    await expect(asked.getByRole('button', { name: 'Повторить неудачные' })).toHaveCount(0);
+  });
+});
