@@ -172,11 +172,29 @@ export async function prepareAudio(
 
   const plan = planSegments(durationSec, silences, limits.maxSegmentSec);
 
+  /**
+   * Одна часть — конвертируем целиком, без лишнего перехода по времени.
+   * Но **только если эта часть и есть вся запись**.
+   *
+   * Обрезка по потолку тоже даёт одну часть, когда потолок меньше длины
+   * части, — и тогда пропуск -ss/-to возвращал в файл отброшенный хвост.
+   * Метаданные при этом говорили правду о намерении: `truncated` стоял,
+   * `endSec` равнялся потолку, а распознавателю уезжала вся запись, и
+   * оплачивалась она полностью.
+   *
+   * Так утекал остаток потолка выгрузки (§10.5): запись, упёршаяся в
+   * него, расшифровывается с `maxSingleDurationSec`, равным остатку —
+   * пятнадцать секунд против части в восемьдесят две. Разрешили
+   * пятнадцать, отправили двести. Хуже того, тело такого запроса
+   * перерастает потолок в 3,5 МБ, на котором SpeechKit обрывает
+   * соединение, — то есть человек не услышан вовсе.
+   */
+  const wholeSource = plan.length === 1 && !truncated;
+
   const parts: AudioPart[] = [];
   for (const [index, segment] of plan.entries()) {
     const path = join(outputDir, `part-${String(index).padStart(2, '0')}.wav`);
-    // Одна часть — конвертируем целиком, без лишнего перехода по времени.
-    await convertToWav(sourcePath, path, plan.length === 1 ? undefined : segment);
+    await convertToWav(sourcePath, path, wholeSource ? undefined : segment);
     parts.push({ path, startSec: segment.startSec, endSec: segment.endSec });
   }
 

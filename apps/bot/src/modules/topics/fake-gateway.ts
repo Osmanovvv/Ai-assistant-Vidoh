@@ -32,6 +32,21 @@ export interface FakeGatewayOptions {
   readonly throttleFirst?: { readonly times: number; readonly retryAfterSec: number };
   /** Первые столько удалений веток отвечают 429 с просьбой подождать. */
   readonly throttleDeletesFirst?: { readonly times: number; readonly retryAfterSec: number };
+  /**
+   * Закрепление отвечает отказом (ревизия этапов).
+   *
+   * До этого признака `pin` всегда отвечал успехом, и отказа закрепления
+   * не знала ни одна проверка. Перехват вокруг `pin` в
+   * `summary.service.ts` из-за этого нельзя было уронить: снимаешь его —
+   * весь набор остаётся зелёным. А в бою отказ настоящий: у бота может не
+   * быть права закреплять, и на залпе из девяти веток Telegram отвечает
+   * 429. Без перехвата такой отказ уносил бы **всю** тему.
+   *
+   * Значения: `'noRights'` — 400 без права закреплять, `'throttled'` —
+   * 429 с просьбой подождать (её `refreshSummaries` умеет повторять, и
+   * важно, что до повтора дело не доходит: сводка уже отправлена).
+   */
+  readonly pinFails?: 'noRights' | 'throttled';
 }
 
 /** Отказ Telegram нужной формы: код, текст и параметры, как у настоящего. */
@@ -157,7 +172,22 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve();
   }
 
+  /** Попытки закрепления, включая отказавшие: `pinned` считает только удачные. */
+  readonly pinAttempts: number[] = [];
+
   pin(params: { chatId: number; messageId: number }): Promise<void> {
+    this.pinAttempts.push(params.messageId);
+
+    if (this.options.pinFails === 'noRights') {
+      return Promise.reject(telegramError(400, 'Bad Request: not enough rights to pin a message'));
+    }
+
+    if (this.options.pinFails === 'throttled') {
+      return Promise.reject(
+        telegramError(429, 'Too Many Requests: retry after 3', { retry_after: 3 }),
+      );
+    }
+
     this.pinned.push(params.messageId);
     return Promise.resolve();
   }

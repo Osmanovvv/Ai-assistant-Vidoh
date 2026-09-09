@@ -1,4 +1,4 @@
-import { InlineKeyboard, type Bot, type CallbackQueryContext, type Context } from 'grammy';
+import type { Bot, CallbackQueryContext, Context, InlineKeyboard } from 'grammy';
 import type { Logger } from 'pino';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 
@@ -25,6 +25,7 @@ import {
   type OnboardingState,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { removeThread } from '../../modules/topics/topics.service.js';
@@ -63,15 +64,22 @@ import { findByTgId, recordConsentIfAbsent } from '../../modules/users/users.rep
  * а не через неделю в виде напоминания не в тот день.
  */
 
-function keyboardOf(question: Question): InlineKeyboard {
-  const keyboard = new InlineKeyboard();
-
-  for (const row of question.rows) {
-    for (const button of row) keyboard.text(button.label, button.action);
-    keyboard.row();
-  }
-
-  return keyboard;
+/**
+ * Клавиатура вопроса опроса — общей раскладкой по ширине.
+ *
+ * **Собственной сборки здесь быть не должно.** До ревизии этапов эта
+ * функция строила клавиатуру сама, `new InlineKeyboard()` и `row()` в
+ * конце каждой строки, — то есть ровно в том виде, который починка
+ * 01.09.2026 отменила: подписи не раскладывались по ширине телефона, а в
+ * хвосте оставалась лишняя пустая строка. Раскладку прошло всё, кроме
+ * опроса, и заметить это было некому: единственный страж на ширину
+ * оборачивал вопросы в `fitKeyboard` сам, а не брал то, что уходит
+ * человеку.
+ *
+ * Наружу — чтобы страж мерил ту же сборку, которой пользуется бот.
+ */
+export function keyboardOf(question: Question): InlineKeyboard {
+  return fitKeyboard(question.rows);
 }
 
 /** Подписи кнопок текущей реплики: в них живёт состояние выбора сфер. */

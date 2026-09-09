@@ -23,6 +23,7 @@ import {
   STEP,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { applyDecision } from '../../modules/resolver/patch.js';
 import { describeChange, undoButtons } from '../../modules/resolver/change-text.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
@@ -62,15 +63,18 @@ export interface AwaitingDeps {
   readonly promo?: ((ctx: Context, userId: string, code: string) => Promise<boolean>) | undefined;
 }
 
-function keyboardOf(question: Question): InlineKeyboard {
-  const keyboard = new InlineKeyboard();
-
-  for (const row of question.rows) {
-    for (const button of row) keyboard.text(button.label, button.action);
-    keyboard.row();
-  }
-
-  return keyboard;
+/**
+ * Клавиатура вопроса опроса — общей раскладкой по ширине.
+ *
+ * Путь ответа словами показывает те же вопросы, что и путь кнопок, и
+ * собственная сборка здесь была вторым таким же промахом: раскладка по
+ * ширине телефона мимо, лишняя пустая строка в хвосте. Подробности — в
+ * `onboarding.ts` над одноимённой функцией.
+ *
+ * Наружу — чтобы страж мерил ту же сборку, которой пользуется бот.
+ */
+export function keyboardOf(question: Question): InlineKeyboard {
+  return fitKeyboard(question.rows);
 }
 
 export function consumeAwaited(deps: AwaitingDeps) {

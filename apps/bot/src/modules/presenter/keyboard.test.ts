@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import { keyboardOf as keyboardOfAwaiting } from '../../bot/handlers/awaiting.js';
+import { keyboardOf as keyboardOfOnboarding } from '../../bot/handlers/onboarding.js';
+import {
+  offerTopicsQuestion,
+  questionFor,
+  timezoneQuestion,
+  topicRows,
+  STEP,
+  type Question,
+} from '../onboarding/onboarding.service.js';
 import { defaultTexts } from '../../texts/index.js';
 import { fitKeyboard, packButtons, packRows, rowFits } from './keyboard.js';
 
@@ -168,6 +178,131 @@ describe('клавиатура собирается настоящая', () => {
 
     expect(first && 'callback_data' in first ? first.callback_data : undefined).toBe(
       `a:${answer.buttonLater}`,
+    );
+  });
+});
+
+/**
+ * Клавиатуры опроса — те самые, что уходят человеку (ревизия этапов).
+ *
+ * **Чего не видел прежний страж.** Ширину строк проверял `keyboards.test.ts`
+ * — и оборачивал вопросы опроса в `fitKeyboard` **сам**. То есть мерил
+ * разложенную копию, а не то, что собирает бот: оба обработчика опроса
+ * строили клавиатуру своими руками, без раскладки. «Екатеринбург»,
+ * «Красноярск» и «Владивосток» стояли по три в строке — ровно тот
+ * обрезанный вид, из-за которого раскладку и написали 01.09.2026, — и в
+ * хвосте висела лишняя пустая строка.
+ *
+ * Поэтому здесь клавиатуры берутся у **обработчиков**: обе `keyboardOf`
+ * вывезены наружу именно для этого. Страж, который собирает предмет
+ * проверки сам, проверяет только себя.
+ */
+const questionsOfOnboarding = (): { where: string; question: Question }[] => {
+  const texts = defaultTexts;
+  const found: { where: string; question: Question }[] = [];
+
+  // Все шаги опроса, включая выбор сфер с отметками, — плюс два экрана,
+  // которые `questionFor` не отдаёт: города и предложение сферы §6.4.
+  for (const step of Object.values(STEP)) {
+    const question = questionFor(step, { texts, name: 'Аня' });
+    if (question) found.push({ where: `шаг ${String(step)}`, question });
+  }
+
+  found.push({ where: 'города', question: timezoneQuestion(texts) });
+  found.push({
+    where: 'сферы с отметками',
+    question: { text: texts.onboarding.topics, rows: topicRows(texts, ['семья', 'здоровье']) },
+  });
+
+  const offer = offerTopicsQuestion(texts, ['здоровье', 'покупки']);
+  if (offer) found.push({ where: 'предложение сферы', question: offer });
+
+  return found;
+};
+
+/** Обе сборки продукта: нажатия правят реплику, слова присылают новую. */
+const builders = [
+  { path: 'onboarding.ts (ответ нажатием)', build: keyboardOfOnboarding },
+  { path: 'awaiting.ts (ответ словами)', build: keyboardOfAwaiting },
+] as const;
+
+describe('клавиатуры опроса уходят разложенными по ширине', () => {
+  it('страж правда собрал вопросы, а не пустоту', () => {
+    // Пустой список сделал бы всё ниже вечно зелёным — а приехать сюда
+    // легко: `questionFor` отдаёт `undefined` на незнакомом шаге, и
+    // достаточно переименовать шаг, чтобы список схлопнулся.
+    const questions = questionsOfOnboarding();
+
+    expect(questions.length).toBeGreaterThanOrEqual(7);
+    expect(questions.map((one) => one.where)).toContain('города');
+  });
+
+  for (const { path, build } of builders) {
+    describe(path, () => {
+      it('ни одна строка не обрезается на телефоне', () => {
+        for (const { where, question } of questionsOfOnboarding()) {
+          for (const row of build(question).inline_keyboard) {
+            const labels = row.map((one) => one.text);
+            expect(rowFits(labels), `${where}: «${labels.join(' | ')}»`).toBe(true);
+          }
+        }
+      });
+
+      it('пустой строки в хвосте нет', () => {
+        /**
+         * Прежняя сборка звала `row()` в конце каждой строки и оставляла
+         * пустую последней. Telegram такое терпит молча — потому и жило
+         * долго, — но это лишний перенос под кнопками и признак того, что
+         * клавиатуру собрали в обход раскладки.
+         */
+        for (const { where, question } of questionsOfOnboarding()) {
+          const rows = build(question).inline_keyboard;
+
+          expect(
+            rows.map((row) => row.length),
+            `${where}: пустая строка в клавиатуре`,
+          ).not.toContain(0);
+        }
+      });
+
+      it('собрано ровно тем же правилом, что и остальные клавиатуры', () => {
+        // Не «похоже», а совпадает: раскладка одна на продукт, и своя
+        // сборка в обработчике — это и есть починенный дефект обратно.
+        for (const { where, question } of questionsOfOnboarding()) {
+          expect(build(question).inline_keyboard, where).toEqual(
+            fitKeyboard(question.rows).inline_keyboard,
+          );
+        }
+      });
+    });
+  }
+
+  it('оба пути опроса показывают одну и ту же клавиатуру', () => {
+    /**
+     * Вопросы одни, а сборок две — по одной на путь ответа. Разъехаться
+     * они могут порознь: правку внесут в тот обработчик, который правили,
+     * и человек, отвечающий словами, увидит другую раскладку.
+     */
+    for (const { where, question } of questionsOfOnboarding()) {
+      expect(keyboardOfAwaiting(question).inline_keyboard, where).toEqual(
+        keyboardOfOnboarding(question).inline_keyboard,
+      );
+    }
+  });
+
+  it('города правда разъезжаются: без раскладки строка была бы шире экрана', () => {
+    /**
+     * Доказательство, что проверки выше не пусты по существу. Города идут
+     * по три в ряд (`timezoneQuestion`), и «Екатеринбург | Омск |
+     * Красноярск» в 270 точек не влезает — значит раскладка обязана
+     * разбить эту строку, а не пропустить её как есть.
+     */
+    const raw = timezoneQuestion(defaultTexts).rows;
+    const tooWide = raw.filter((row) => !rowFits(row.map((one) => one.label)));
+
+    expect(tooWide.length).toBeGreaterThan(0);
+    expect(keyboardOfOnboarding({ text: '', rows: raw }).inline_keyboard.length).toBeGreaterThan(
+      raw.length,
     );
   });
 });

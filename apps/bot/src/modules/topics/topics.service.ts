@@ -136,13 +136,34 @@ export async function ensureThread(
  * состав тем без спроса, и удаление ветки спросом не является. Ветка
  * пересоздастся, когда в неё снова будет что написать.
  */
-export async function forgetThread(deps: TopicServiceDeps, threadId: number): Promise<void> {
+export async function forgetThread(
+  deps: TopicServiceDeps,
+  /**
+   * Чья ветка. Без владельца забывание чинило тему **чужому человеку**.
+   *
+   * Номер ветки в Telegram — это `message_id` служебного сообщения в
+   * личном чате, то есть у каждого своя нумерация с малых чисел: ветка
+   * №12 у двух людей — обычное дело, а не краевой случай. Условие без
+   * владельца обнуляло `tg_thread_id` и `summary_message_id` **всем**, у
+   * кого тот же номер: посторонний получал вторую ветку с тем же
+   * названием, новую закреплённую сводку в ней, а старая оставалась в
+   * чате с намертво замороженным списком дел. §8.2 запрещает это двумя
+   * строками — «одна тема Telegram соответствует одной записи» и «без
+   * мусора из брошенных ветвей».
+   *
+   * Схема на это указывала прямо: уникальна **пара** `user_id` и
+   * `tg_thread_id`, а не номер сам по себе. Найдено ревизией второго
+   * этапа.
+   */
+  userId: string,
+  threadId: number,
+): Promise<void> {
   await deps.db
     .update(topics)
     .set({ tgThreadId: null, summaryMessageId: null })
-    .where(eq(topics.tgThreadId, threadId));
+    .where(and(eq(topics.userId, userId), eq(topics.tgThreadId, threadId)));
 
-  deps.logger?.info({ threadId }, 'Ветка пропала, забыл её — пересоздам при надобности');
+  deps.logger?.info({ userId, threadId }, 'Ветка пропала, забыл её — пересоздам при надобности');
 }
 
 /**

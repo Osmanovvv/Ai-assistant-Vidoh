@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { crisisRefusal } from '../../texts/rules.js';
+
 import { profiles } from '../../texts/index.js';
 import { detectByMarkers, detectCrisis } from './crisis.js';
 
@@ -99,17 +101,17 @@ describe('ответ на кризис', () => {
     }
   });
 
-  it('не содержит вопроса', () => {
-    // §13.9: вопрос предполагает продолжение разговора, а §13.7 требует
-    // из него выйти. Ответ на кризис — не приглашение поговорить.
-    for (const profile of Object.values(profiles)) {
-      expect(profile.safety.crisis).not.toContain('?');
-    }
-  });
-
-  it('короткий: одна реплика, а не разговор (§13.7, выход из разговора)', () => {
-    for (const profile of Object.values(profiles)) {
-      expect(profile.safety.crisis.length).toBeLessThanOrEqual(200);
+  it('годится по тому же правилу, каким проверяется правка из панели', () => {
+    /**
+     * Правило одно, и это не косметика. До редактора текстов свойства
+     * кризисной реплики стерегли только проверки по словарю **из кода**;
+     * редактор §13.9 сделал реплику правимой, и правка шла в бой мимо
+     * них. Теперь и запись из панели, и словарь из кода судит
+     * `crisisRefusal` — второй копии правила быть не должно, иначе они
+     * разойдутся молча.
+     */
+    for (const [name, profile] of Object.entries(profiles)) {
+      expect(crisisRefusal(profile.safety.crisis), name).toBeUndefined();
     }
   });
 });

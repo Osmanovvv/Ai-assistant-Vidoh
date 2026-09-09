@@ -12,6 +12,7 @@ import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { transcribeBatch } from '../pipeline/transcribe.js';
 import { upsertUser } from '../users/users.repo.js';
 import { GLUE_PAUSE_SEC } from './audio.service.js';
+import { probeDurationSec } from './ffmpeg.js';
 import type {
   RecognizedUtterance,
   SpeechProvider,
@@ -37,6 +38,10 @@ import { transcribeVoices } from './speech.service.js';
 
 /** Длительности трёх записей, из которых считаются границы внутри склейки. */
 const SECONDS = [2, 3, 4] as const;
+
+/** Долгая запись для проверки обрезки: имя файла и её настоящая длина. */
+const LONG_FILE_ID = 'long';
+const LONG_FILE_SEC = 20;
 
 function intervals(): readonly { readonly startSec: number; readonly endSec: number }[] {
   const result: { startSec: number; endSec: number }[] = [];
@@ -104,6 +109,36 @@ class NoTimesProvider implements SpeechProvider {
   }
 }
 
+/**
+ * Провайдер, который меряет присланный ему файл.
+ *
+ * Нужен потому, что до сих пор ни одна проверка не открывала то, что
+ * уезжает в распознаватель. Обрезку по потолку выгрузки подтверждали
+ * флагом `truncated` и непустой расшифровкой — а и то и другое остаётся
+ * правдой, даже если в запрос ушла вся запись целиком. Платим мы за
+ * секунды звука в отправленном файле, значит и мерить надо его.
+ */
+class MeasuringProvider implements SpeechProvider {
+  readonly name = 'fake-measuring';
+  readonly timeline = true;
+  calls = 0;
+  /** Длительности отправленных файлов, снятые ffprobe. */
+  readonly sentSec: number[] = [];
+
+  async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+    this.calls++;
+    this.sentSec.push(await probeDurationSec(request.filePath));
+
+    const text = `часть ${String(this.calls)}`;
+    return {
+      text,
+      model: 'fake',
+      audioSeconds: Math.round(request.durationSec),
+      utterances: [{ text, words: [{ text, startMs: 300, endMs: 700 }] }],
+    };
+  }
+}
+
 let dir = '';
 let userId = '';
 let batch: Batch;
@@ -120,6 +155,9 @@ beforeEach(async () => {
     for (const [index, seconds] of SECONDS.entries()) {
       await makeAudio(join(dir, `v${String(index)}.wav`), [{ kind: 'tone', sec: seconds }]);
     }
+    // Запись, которая заведомо не влезает в остаток потолка выгрузки:
+    // на коротких файлах обрезку нечем отличить от её отсутствия.
+    await makeAudio(join(dir, `${LONG_FILE_ID}.wav`), [{ kind: 'tone', sec: LONG_FILE_SEC }]);
   }
 
   seq++;
@@ -385,7 +423,21 @@ describe('потолок на выгрузку (§10.5 ТЗ)', () => {
   it('запись, упёршаяся в потолок, слушается до остатка, а не выбрасывается', async () => {
     // Человек говорил, и услышать его надо настолько, насколько мы
     // обещали. Остаток пятнадцать секунд — как раз блок оплаты.
-    const provider = new TimedProvider([utteranceAt('Третье.', 0)]);
+    //
+    // **Здесь мерится отправленный файл, а не флаг.** Прежде проверка
+    // смотрела только на `truncated` и на «расшифровка непустая», а
+    // третья запись лежала на диске четырьмя секундами — то есть в
+    // остаток укладывалась и без всякой обрезки. Отличить «услышали
+    // ровно остаток» от «отправили всё целиком» было нечем: и то и
+    // другое даёт непустой текст и поднятый флаг. Теперь запись
+    // настоящая, двадцатисекундная, и длина снимается с того файла,
+    // который уехал в распознаватель.
+    const provider = new MeasuringProvider();
+
+    // Потолок выгрузки 17 секунд, первые две записи заявлены по одной:
+    // третьей остаётся ровно пятнадцать — блок оплаты, ниже которого
+    // остаток уже не берётся.
+    const remainderSec = 15;
 
     const outcome = await transcribeVoices(
       {
@@ -394,7 +446,15 @@ describe('потолок на выгрузку (§10.5 ТЗ)', () => {
         download,
         limits: { maxSegmentSec: 82, maxSingleDurationSec: 600, maxDumpDurationSec: 17 },
       },
-      { messages: voices([1, 1, 20]), userId, batchId: batch.id },
+      {
+        messages: [
+          { messageId: messageIds[0] ?? '', fileId: 'v0', durationSec: 1 },
+          { messageId: messageIds[1] ?? '', fileId: 'v1', durationSec: 1 },
+          { messageId: messageIds[2] ?? '', fileId: LONG_FILE_ID, durationSec: LONG_FILE_SEC },
+        ],
+        userId,
+        batchId: batch.id,
+      },
     );
 
     // Третья заявлена на 20 секунд, а остатка 15: она обрезается, но
@@ -402,6 +462,18 @@ describe('потолок на выгрузку (§10.5 ТЗ)', () => {
     expect(outcome.truncated).toBe(true);
     const transcripts = await transcriptsInOrder();
     expect(transcripts[2]).not.toBe('');
+
+    // Ни один отправленный файл не вправе быть длиннее остатка: сверх
+    // него мы платим за секунды, которые сами же назвали запретными
+    // (§10.5), а тело запроса перерастает потолок, на котором SpeechKit
+    // обрывает соединение.
+    expect(
+      Math.max(...provider.sentSec),
+      `отправлены файлы длиной ${provider.sentSec.map((sec) => sec.toFixed(2)).join(', ')} с`,
+    ).toBeLessThanOrEqual(remainderSec + 0.2);
+
+    // И не короче: обрезка не повод потерять почти весь остаток.
+    expect(Math.max(...provider.sentSec)).toBeGreaterThan(remainderSec - 0.5);
   });
 
   it('обрезка доходит до расшифровки выгрузки, а не теряется по пути', async () => {

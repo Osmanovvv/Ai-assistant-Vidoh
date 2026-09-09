@@ -121,7 +121,9 @@ export async function saveText(
     return { ok: true, reset: true };
   }
 
-  const refusal = refusalFor(params.said, reply.places);
+  // Путь передаётся не для красоты: у кризисной реплики требования §13.7
+  // свои, и проверить их можно только зная, какую реплику правят.
+  const refusal = refusalFor(params.said, reply.places, params.path);
 
   if (refusal !== undefined) return { ok: false, why: refusal };
 
