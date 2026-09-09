@@ -1,13 +1,16 @@
 import { InlineKeyboard, type Bot, type CallbackQueryContext, type Context } from 'grammy';
 import type { Logger } from 'pino';
 
-import { eq, not } from 'drizzle-orm';
+import { and, eq, not } from 'drizzle-orm';
 
-import { userSettings } from '../../db/schema.js';
+import { items, userSettings } from '../../db/schema.js';
 import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
 import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
+import { describeProject } from '../../modules/projects/project-text.js';
+import { stepButtons } from '../../modules/projects/project-actions.js';
+import { contextOf, projectsOf } from '../../modules/projects/projects.service.js';
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
@@ -63,6 +66,17 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 
 export const MENU_ACTION = {
   root: 'menu:root',
+  /**
+   * Подсказки «как со мной говорить» (§12.1: «Наговорить» — основная
+   * кнопка, «Написать» — рядом).
+   *
+   * Реплики для них лежали в словаре меню с самого начала и не
+   * читались никем: намерение было, связки не было. Сам текст
+   * подсказки берётся у приветствия — он там один и тот же, и вторая
+   * копия однажды разошлась бы с первой.
+   */
+  hintVoice: 'menu:hv',
+  hintText: 'menu:ht',
   all: 'menu:all',
   today: 'menu:today',
   help: 'menu:help',
@@ -72,6 +86,17 @@ export const MENU_ACTION = {
   pagePrefix: 'menu:p:',
   /** `menu:d:<страница>` — страница списка «Сегодня». */
   todayPage: 'menu:d:',
+  /**
+   * Проекты (§12.1). Пункт меню, а не только вопрос словами.
+   *
+   * Разложение на шаги, ближайший шаг и его закрытие работали с
+   * третьего этапа, но попасть к ним человек мог лишь речью — если
+   * догадается спросить. Экрана «какие у меня большие цели и какой
+   * ближайший шаг» не было, хотя §12.1 просит его прямо.
+   */
+  projects: 'menu:pr',
+  /** `menu:pr:<код>` — цель коротким кодом, как запись и тема. */
+  projectPrefix: 'menu:pr:',
   settings: 'menu:set',
   toggleReminders: 'menu:set:r',
   toggleQuiet: 'menu:set:q',
@@ -108,10 +133,19 @@ export const MENU_ACTION = {
 /** Наружу — чтобы страж ширины в `keyboards.test.ts` её проверял. */
 export function rootKeyboard(texts: TextProfile): InlineKeyboard {
   return fitKeyboard([
+    /**
+     * «Наговорить» первой: §12.1 называет её основной кнопкой, и это
+     * не украшение — голос и есть главный вход в продукт.
+     */
+    [
+      { label: texts.menu.buttonVoice, action: MENU_ACTION.hintVoice },
+      { label: texts.menu.buttonText, action: MENU_ACTION.hintText },
+    ],
     [
       { label: texts.menu.buttonAll, action: MENU_ACTION.all },
       { label: texts.menu.buttonToday, action: MENU_ACTION.today },
     ],
+    [{ label: texts.menu.buttonProjects, action: MENU_ACTION.projects }],
     [{ label: texts.menu.buttonHelp, action: MENU_ACTION.help }],
     [{ label: texts.menu.buttonSettings, action: MENU_ACTION.settings }],
     /**
@@ -638,6 +672,97 @@ export function registerMenuHandlers(
     logger.info({ userId: active.userId, topic: name, was: has }, 'Сфера переключена из настроек');
 
     await showTopicsScreen(ctx);
+  });
+  // ── Подсказки «как со мной говорить» §12.1 ───────────────────────────
+  /**
+   * Текст берётся у приветствия, а не пишется свой: подсказка одна и та
+   * же, и две её копии однажды разошлись бы. Экран правится тот же —
+   * меню это один экран, а не лента сообщений.
+   */
+  for (const [action, hint] of [
+    [MENU_ACTION.hintVoice, (texts: TextProfile) => texts.start.hintVoice],
+    [MENU_ACTION.hintText, (texts: TextProfile) => texts.start.hintText],
+  ] as const) {
+    bot.callbackQuery(action, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const active = await acting(ctx.from.id);
+      if (!active) return;
+
+      await show(ctx, hint(active.texts), backKeyboard(active.texts));
+    });
+  }
+
+  // ── Проекты §12.1: список целей, внутри контекст и ближайший шаг ─────
+  /**
+   * Текст цели собирает `describeProject` — тот же, которым бот отвечает
+   * на вопрос словами. Второй сборки здесь быть не должно: экран и ответ
+   * обязаны говорить одно, иначе человек получит две разные правды об
+   * одной цели.
+   */
+  bot.callbackQuery(MENU_ACTION.projects, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const mine = await projectsOf(db, active.userId);
+    const texts = active.texts;
+
+    if (mine.length === 0) {
+      await show(ctx, texts.menu.noProjects, backKeyboard(texts));
+      return;
+    }
+
+    await show(
+      ctx,
+      texts.menu.projectsTitle,
+      fitKeyboard([
+        ...mine.map((item) => [
+          {
+            label: item.text,
+            action: `${MENU_ACTION.projectPrefix}${toShortId(item.id)}`,
+          },
+        ]),
+        [{ label: texts.menu.buttonBack, action: MENU_ACTION.root }],
+      ]),
+    );
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.projectPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const code = ctx.callbackQuery.data.slice(MENU_ACTION.projectPrefix.length);
+    const id = fromShortId(code);
+
+    if (id === undefined) return;
+
+    /**
+     * Владелец проверяется запросом, а не кодом.
+     *
+     * Короткий код в `callback_data` не секретный: его можно подобрать.
+     * Условие по человеку стоит здесь по той же причине, по которой оно
+     * стоит у карточки записи — чужая цель открываться не должна.
+     */
+    const [item] = await db
+      .select()
+      .from(items)
+      .where(and(eq(items.id, id), eq(items.userId, active.userId)))
+      .limit(1);
+
+    if (!item) return;
+
+    const context = await contextOf(db, item.id);
+    const texts = active.texts;
+
+    await show(
+      ctx,
+      describeProject(item, context, texts),
+      fitKeyboard([
+        ...stepButtons(context.next, texts).map((button) => [button]),
+        [{ label: texts.menu.buttonBack, action: MENU_ACTION.projects }],
+      ]),
+    );
   });
   // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
   /**

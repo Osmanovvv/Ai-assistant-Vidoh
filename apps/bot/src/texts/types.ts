@@ -149,6 +149,17 @@ export interface TextProfile {
     readonly buttonNext: string;
     readonly pageOf: (page: number, pages: number) => string;
 
+    /**
+     * Проекты (§12.1: «Список проектов, внутри контекст и ближайший
+     * шаг»). Пункт меню появился 10.09.2026: разложение, ближайший шаг
+     * и его закрытие работали с третьего этапа, а экрана, где человек
+     * увидел бы свои цели, не было — только вопрос словами, если
+     * догадаешься спросить.
+     */
+    readonly buttonProjects: string;
+    readonly projectsTitle: string;
+    readonly noProjects: string;
+
     readonly topicsTitle: string;
     readonly noTopics: string;
     readonly todayTitle: string;

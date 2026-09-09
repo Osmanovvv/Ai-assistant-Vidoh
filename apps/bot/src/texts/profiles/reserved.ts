@@ -121,6 +121,10 @@ export const reserved: TextProfile = {
     buttonNext: '→',
     pageOf: (page, pages) => `${String(page)} из ${String(pages)}`,
 
+    buttonProjects: 'Большие цели',
+    projectsTitle: 'Большие цели:',
+    noProjects: 'Больших целей пока нет. Скажи о задумке — разложу на шаги.',
+
     topicsTitle: 'Твои сферы:',
     noTopics: 'Сфер пока нет — они появятся, когда разберём первую выгрузку.',
     todayTitle: 'На сегодня:',
