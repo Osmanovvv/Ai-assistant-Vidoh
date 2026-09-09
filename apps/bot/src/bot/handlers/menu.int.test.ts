@@ -3,7 +3,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, reminders, topics, userSettings } from '../../db/schema.js';
+import { items, projectSteps, reminders, topics, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -13,6 +13,7 @@ import { toShortId } from '../../modules/shared/short-id.js';
 import { registerCardHandlers } from './card.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { BILLING_ACTION } from './billing.js';
+import { DELETE_STEP_ONE } from './privacy.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
 
 /**
@@ -170,8 +171,13 @@ describe('меню', () => {
     const sent = calls.find((call) => call.method === 'sendMessage');
     expect(textOf(sent)).toBe(defaultTexts.menu.title);
     expect(keyboardOf(sent).map((button) => button.text)).toEqual([
+      // «Наговорить» — основная кнопка §12.1, поэтому первой.
+      defaultTexts.menu.buttonVoice,
+      defaultTexts.menu.buttonText,
       defaultTexts.menu.buttonAll,
       defaultTexts.menu.buttonToday,
+      // «Большие цели» — §12.1, пункт появился 10.09.2026.
+      defaultTexts.menu.buttonProjects,
       defaultTexts.menu.buttonHelp,
       defaultTexts.menu.buttonSettings,
       defaultTexts.menu.buttonSubscription,
@@ -179,27 +185,69 @@ describe('меню', () => {
     ]);
   });
 
-  it('в меню нет кнопок, за которыми пока ничего нет', async () => {
+  it('у каждой кнопки корня есть свой экран, а не пустота', async () => {
     /**
-     * §12.1 перечисляет девять пунктов, и приходят они со своими
-     * задачами: «Настройки» с 3.17, «Подписка» с 4.2. Кнопка, которая
-     * обещает и не выполняет, дороже отсутствующей — поэтому проверка
-     * называет то, чего ещё нет, и убывает по мере готовности.
+     * **Страж переписан 10.09.2026, и прежний был вреден.** Он требовал,
+     * чтобы в меню не было кнопки «Проекты», — и тем закреплял пробел:
+     * §12.1 просит этот пункт прямо, а закрытие строки ТЗ выглядело бы
+     * поломкой проверки. В его пояснении вдобавок стояла неправда:
+     * «экран проекта открывается из карточки записи» — такого экрана не
+     * существовало вовсе, `contextOf` звал только разбор выгрузки.
      *
-     * «Проекты» отдельным пунктом меню так и не появились: экран проекта
-     * открывается из карточки записи (задача 3.82), а не из корня.
+     * Стеречь надо не отсутствие кнопок, а **отсутствие кнопок без
+     * экрана**: кнопка, которая обещает и не выполняет, дороже
+     * отсутствующей — Telegram покажет часики, погасит их, и человек
+     * решит, что бот сломался.
+     *
+     * Кнопки, чьи обработчики живут в других файлах, сверяются по
+     * `callback_data` с их же константой — связывает половины только
+     * она (см. проверку про «Подписку» ниже).
      */
     const { bot, calls } = createTestBot();
     await bot.init();
 
     await bot.handleUpdate(commandUpdate('/menu'));
-    const labels = keyboardOf(calls.find((call) => call.method === 'sendMessage')).map(
-      (button) => button.text,
-    );
 
-    expect(labels).not.toContain('Проекты');
+    const root = keyboardOf(calls.find((call) => call.method === 'sendMessage'));
+
+    /** Кнопки, чей экран живёт не в `menu.ts`. */
+    const elsewhere = new Set<string>([BILLING_ACTION.open, DELETE_STEP_ONE]);
+
+    expect(root.length).toBeGreaterThan(4);
+
+    for (const button of root) {
+      const data = button.callback_data ?? '';
+
+      if (elsewhere.has(data)) continue;
+
+      const before = calls.length;
+      await bot.handleUpdate(callbackUpdate(data));
+      const answered = calls
+        .slice(before)
+        .some((call) => call.method === 'editMessageText' || call.method === 'sendMessage');
+
+      expect(answered, `кнопка «${button.text}» (${data}) не показала экрана`).toBe(true);
+    }
   });
 
+  it('«Наговорить» и «Написать» показывают подсказку, а не пустоту', async () => {
+    /**
+     * §12.1 называет «Наговорить» основной кнопкой меню. Реплики для
+     * обеих лежали в словаре и не читались никем — намерение было,
+     * связки не было.
+     *
+     * Текст берётся у приветствия: подсказка одна и та же, и две её
+     * копии однажды разошлись бы.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.hintVoice));
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.start.hintVoice);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.hintText));
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.start.hintText);
+  });
   it('«Подписка» ведёт на экран подписки, а не в пустоту', async () => {
     /**
      * Кнопка в корне меню и обработчик оплаты живут в разных файлах, и
@@ -856,5 +904,131 @@ describe('настройки §12.1: времена, пояс, сферы, им�
     await bot.handleUpdate(callbackUpdate(MENU_ACTION.askName));
 
     expect((await settingsRow())?.awaitingInput).toBe('set:name');
+  });
+});
+
+describe('проекты в меню (§12.1: список, контекст и ближайший шаг)', () => {
+  /**
+   * Разложение на шаги, ближайший шаг и его закрытие работали с третьего
+   * этапа. Не было экрана: попасть к ним человек мог только речью — если
+   * догадается спросить. §12.1 просит пункт меню прямо, а страж вдобавок
+   * требовал его отсутствия.
+   */
+  async function addProject(owner: string, text: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId: owner,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        sourceOrder: 0,
+        isProject: true,
+      })
+      .returning({ id: items.id });
+
+    return row!.id;
+  }
+
+  async function addStep(
+    owner: string,
+    itemId: string,
+    text: string,
+    position: number,
+    done = false,
+  ): Promise<void> {
+    await testDb()
+      .insert(projectSteps)
+      .values({
+        itemId,
+        userId: owner,
+        text,
+        position,
+        doneAt: done ? new Date() : null,
+      });
+  }
+
+  it('пункт меню есть, и он ведёт к списку целей', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addProject(userId, 'день рождения сына');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projects));
+
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.menu.projectsTitle);
+    expect(keyboardOf(calls.at(-1)).map((one) => one.text)).toContain('день рождения сына');
+  });
+
+  it('внутри цели видно контекст и ближайший шаг с кнопкой', async () => {
+    /**
+     * §12.1 просит «внутри контекст и ближайший шаг». Текст собирает та
+     * же функция, которой бот отвечает на вопрос словами: две сборки
+     * дали бы человеку две разные правды об одной цели.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const projectId = await addProject(userId, 'день рождения сына');
+    await addStep(userId, projectId, 'выбрать кафе', 1, true);
+    await addStep(userId, projectId, 'позвать гостей', 2);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projectPrefix + toShortId(projectId)));
+
+    const screen = textOf(calls.at(-1));
+
+    // Что сделано, что осталось и что дальше — всё три.
+    expect(screen).toContain('выбрать кафе');
+    expect(screen).toContain('позвать гостей');
+    expect(screen).toContain(defaultTexts.project.doneHeader);
+
+    // И кнопка закрыть ближайший шаг: без неё «Сделано» не наполнится.
+    expect(keyboardOf(calls.at(-1)).map((one) => one.text)).toContain(
+      defaultTexts.project.buttonStepDone,
+    );
+  });
+
+  it('чужая цель по подобранному коду не открывается', async () => {
+    // Короткий код в callback_data не секретный: владелец проверяется
+    // запросом, как и у карточки записи.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const alien = await addProject(otherUserId, 'чужая цель');
+    const before = calls.length;
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projectPrefix + toShortId(alien)));
+
+    const shown = calls
+      .slice(before)
+      .filter((call) => call.method === 'editMessageText' || call.method === 'sendMessage');
+
+    expect(shown).toHaveLength(0);
+  });
+
+  it('целей нет — сказано словами, а не пустым списком', async () => {
+    // Пустой экран человек читает как поломку; здесь он читает подсказку.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projects));
+
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.menu.noProjects);
+  });
+
+  it('обычная запись в список целей не попадает', async () => {
+    // Иначе «Большие цели» станут вторым списком всех задач.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await addItem({ owner: userId, text: 'купить хлеб', topic: 'покупки' });
+    await addProject(userId, 'день рождения сына');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projects));
+
+    const labels = keyboardOf(calls.at(-1)).map((one) => one.text);
+
+    expect(labels).toContain('день рождения сына');
+    expect(labels).not.toContain('купить хлеб');
   });
 });

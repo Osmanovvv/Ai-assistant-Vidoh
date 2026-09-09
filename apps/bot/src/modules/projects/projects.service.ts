@@ -1,7 +1,8 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 
-import { projectSteps, type ProjectStep } from '../../db/schema.js';
+import { items, projectSteps, type Item, type ProjectStep } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { openItemsWhere } from '../items/items.repo.js';
 
 /**
  * Проекты и ближайший шаг (§5 и §13.2 ТЗ, задача 3.12).
@@ -28,6 +29,26 @@ export interface ProjectContext {
   readonly remaining: readonly ProjectStep[];
   /** Первый незакрытый по порядку. Пусто — проект закончен. */
   readonly next: ProjectStep | undefined;
+}
+
+/**
+ * Большие цели человека — для экрана §12.1 «Проекты».
+ *
+ * Условие «открытых» то же, что у «Всех задач» и «Сегодня»
+ * (`openItemsWhere`), а не своё: список проектов, живущий по другому
+ * правилу, однажды разошёлся бы с остальными экранами — и человек
+ * увидел бы цель, которой нет в задачах, или наоборот.
+ *
+ * Отсюда же следствие: ушедшая в фон цель здесь не показывается. Она
+ * не потеряна — §13.6 держит её доступной поиском и вопросом, — но
+ * список «чем я занят» она бы засоряла.
+ */
+export async function projectsOf(db: Executor, userId: string): Promise<Item[]> {
+  return await db
+    .select()
+    .from(items)
+    .where(and(openItemsWhere(userId), eq(items.isProject, true)))
+    .orderBy(desc(items.createdAt), asc(items.sourceOrder), desc(items.id));
 }
 
 /** Все шаги проекта по порядку. */
