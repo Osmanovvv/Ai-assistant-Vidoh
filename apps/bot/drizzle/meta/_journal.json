@@ -295,6 +295,13 @@
       "when": 1788821000004,
       "tag": "0041_invoice_failed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1788821001004,
+      "tag": "0042_batch_status_taken",
+      "breakpoints": true
     }
   ]
 }

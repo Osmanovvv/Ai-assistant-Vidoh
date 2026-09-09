@@ -77,6 +77,7 @@ export async function showStatus(
     .select({
       statusMessageId: batches.statusMessageId,
       statusUpdatedAt: batches.statusUpdatedAt,
+      statusTaken: batches.statusTaken,
     })
     .from(batches)
     .where(eq(batches.id, target.batchId))
@@ -102,7 +103,13 @@ export async function showStatus(
 
     await deps.db
       .update(batches)
-      .set({ statusMessageId: messageId, statusUpdatedAt: now })
+      .set({
+        statusMessageId: messageId,
+        statusUpdatedAt: now,
+        // Финальная правка — это и есть занятие слота: с этого мига в
+        // сообщении лежит ответ по существу, и стирать его нельзя.
+        ...(options.force === true ? { statusTaken: true } : {}),
+      })
       .where(eq(batches.id, target.batchId));
 
     return true;
@@ -122,9 +129,33 @@ export async function showStatus(
     buttons: options.buttons,
   });
 
-  await deps.db.update(batches).set({ statusUpdatedAt: now }).where(eq(batches.id, target.batchId));
+  await deps.db
+    .update(batches)
+    .set({
+      statusUpdatedAt: now,
+      ...(options.force === true ? { statusTaken: true } : {}),
+    })
+    .where(eq(batches.id, target.batchId));
 
   return true;
+}
+
+/**
+ * Занят ли статусный слот ответом по существу.
+ *
+ * Спрашивают те, кто живёт вне обработчика выгрузки и потому не видит его
+ * памяти, — прежде всего докладчик о сбое. Правка занятого слота стирает
+ * и текст, и кнопки: так однажды исчезло подтверждение правки вместе с
+ * кнопкой «Отменить», и вернуть его было нечем.
+ */
+export async function statusIsTaken(deps: StatusDeps, batchId: string): Promise<boolean> {
+  const [batch] = await deps.db
+    .select({ statusTaken: batches.statusTaken })
+    .from(batches)
+    .where(eq(batches.id, batchId))
+    .limit(1);
+
+  return batch?.statusTaken ?? false;
 }
 
 /** Финальный ответ: правка проходит независимо от ограничения частоты. */

@@ -81,7 +81,7 @@ import { createFailureReporter } from './modules/pipeline/failure-notice.js';
 import { ceilingFromEnv, rublesOf } from './modules/metering/account-spend.js';
 import { limitFromEnv } from './modules/metering/limits.js';
 import { createSpendGuard } from './modules/metering/spend-guard.js';
-import { downloadTelegramFile } from './modules/speech/audio.service.js';
+import { downloadTelegramFile, sweepAudioLeftovers } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
 import { PromptRegistry } from './modules/ai/prompts/registry.js';
 import { createLlmProvider } from './modules/ai/providers/factory.js';
@@ -98,6 +98,29 @@ const logger = createLogger({
 });
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
+
+/**
+ * Последний рубеж: отказ без приёмника не должен убивать бота.
+ *
+ * Node с пятнадцатой версии выходит на необработанном отказе промиса, и
+ * ревизия первого этапа показала, чем это кончается: падение на **одном**
+ * апдейте уносило процесс целиком, а вместе с ним — разбор всех, кто в
+ * этот миг говорил. Прямую причину убрали (свой срок ответа у вебхука,
+ * см. `bot/webhook.ts`), но остаются пущенные и не дождавшиеся вызовы:
+ * их в обработчиках десятки, и забыть `catch` у одного — вопрос времени.
+ *
+ * **Здесь не глушат, а докладывают.** Строка в журнале и оповещение
+ * §18: молча съеденный отказ был бы ровно тем молчаливым сбоем, за
+ * который проект платит дороже всего. Но бот остаётся жив: для продукта,
+ * чей худший исход — тишина в ответ на сказанное, это верный обмен.
+ *
+ * `uncaughtException` сюда не добавлен нарочно: после него состояние
+ * процесса неизвестно, и продолжать работу опаснее, чем упасть и
+ * подняться заново — контейнер поднимет сам.
+ */
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Отказ промиса без приёмника — бот продолжает работу');
+});
 
 /** Оповещения в Telegram, если задан чат; иначе только в лог (§18 ТЗ). */
 function createAlertSink(api: Api, chatId: number | undefined): AlertSink {
@@ -164,6 +187,30 @@ async function main(): Promise<void> {
 
   const speech = createSpeechProvider(env);
   logger.info({ provider: speech.name }, 'Провайдер расшифровки выбран');
+
+  /**
+   * Подмести чужой голос, оставшийся от убитого процесса (§16).
+   *
+   * Удаление временной папки живёт в `finally` одного вызова, и при
+   * принудительном выходе оно не исполняется: остановка ждёт задание
+   * пятнадцать секунд, а расшифровка идёт минутами. Значит любая
+   * выкладка во время разбора оставляет голос человека на диске, а
+   * контейнер поднимается на прежнем слое — файл лежал бы до пересборки
+   * образа. §16 запрещает хранить аудио дольше обработки, и обрыв тут не
+   * оправдание: он штатен.
+   *
+   * Старт — единственный момент, когда точно можно подметать: своих
+   * папок ещё нет.
+   */
+  void sweepAudioLeftovers().then(
+    (swept) => {
+      if (swept > 0) logger.warn({ папок: swept }, 'Убран чужой голос от прерванной расшифровки');
+    },
+    (error: unknown) => {
+      // Не поднимаемся хуже из-за уборки: она про опрятность, а не про работу.
+      logger.error({ err: error }, 'Не удалось подмести временные папки расшифровки');
+    },
+  );
 
   // Полная модель разбирает смысл, лёгкая различает намерения (§7.1):
   // семь видов намерения проще, чем понять мысль, и полная модель здесь

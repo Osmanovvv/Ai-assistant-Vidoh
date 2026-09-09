@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -80,15 +80,78 @@ export interface PreparedAudio {
   readonly truncated: boolean;
 }
 
+/** Приставка временных папок: по ней их и подметают после обрыва. */
+const TEMP_PREFIX = 'vydoh-audio-';
+
 /** Создаёт временную папку и гарантированно удаляет её после работы. */
 export async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'vydoh-audio-'));
+  const dir = await mkdtemp(join(tmpdir(), TEMP_PREFIX));
   try {
     return await fn(dir);
   } finally {
     // force: не падать, если папку уже кто-то убрал.
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Подмести чужие временные папки при старте (§16, ревизия первого этапа).
+ *
+ * **Удаления в `finally` мало.** Оно не исполняется, когда процесс убит:
+ * штатная остановка ждёт текущее задание, но поверх неё стоит
+ * принудительный выход через пятнадцать секунд, а расшифровка идёт
+ * минутами — значит любая выкладка во время разбора обрывает работу на
+ * середине. То же при нехватке памяти и при необработанном исключении.
+ * Контейнер поднимается на прежнем слое, `/tmp` не в оперативной памяти,
+ * и голос человека лежит там до следующей пересборки образа — а после
+ * сдачи её может не быть месяцами.
+ *
+ * §16 не про утечку наружу, а про срок: «хранение аудио дольше времени
+ * обработки запрещено». Обрыв — не оправдание, потому что он штатен.
+ *
+ * **Порог по возрасту обязателен.** Рядом может работать второй процесс
+ * (выкладка поднимает новый контейнер до остановки старого, а на машине
+ * разработчика соседний прогон — обычное дело), и подметание без порога
+ * вырвало бы папку у живой расшифровки. Час — заведомо больше самой
+ * долгой обработки: потолок выгрузки двадцать минут.
+ */
+export async function sweepAudioLeftovers(params?: {
+  readonly olderThanMs?: number;
+  readonly now?: number;
+}): Promise<number> {
+  const olderThan = params?.olderThanMs ?? 60 * 60 * 1000;
+  const now = params?.now ?? Date.now();
+
+  let entries: readonly string[];
+
+  try {
+    entries = await readdir(tmpdir());
+  } catch {
+    // Нет доступа к временной папке — не повод не подняться боту.
+    return 0;
+  }
+
+  let swept = 0;
+
+  for (const entry of entries) {
+    if (!entry.startsWith(TEMP_PREFIX)) continue;
+
+    const full = join(tmpdir(), entry);
+
+    try {
+      const info = await stat(full);
+
+      if (now - info.mtimeMs < olderThan) continue;
+
+      await rm(full, { recursive: true, force: true });
+      swept += 1;
+    } catch {
+      // Папку убрали между чтением списка и удалением, либо она чужая по
+      // правам. Обе причины не наши, и обе не мешают работе.
+    }
+  }
+
+  return swept;
 }
 
 /**
