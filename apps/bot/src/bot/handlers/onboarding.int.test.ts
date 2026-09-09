@@ -15,6 +15,7 @@ import {
   topicRows,
   type Button,
 } from '../../modules/onboarding/onboarding.service.js';
+import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -1245,5 +1246,71 @@ describe('город словами', () => {
 
     expect((await timezoneOf())?.zone).toBe(before);
     expect(repliesOf(calls)).toContain(defaultTexts.onboarding.cityNotFound);
+  });
+});
+
+describe('правка настроек словами не двигает опрос (§12.1)', () => {
+  /**
+   * Виды ожидания у настроек свои, и вот зачем.
+   *
+   * Ответ на опросе двигает опрос дальше — `askNext`. Если бы правка
+   * времени из настроек шла тем же видом ожидания, человек, поправивший
+   * время через месяц, снова оказался бы в знакомстве: бот задал бы ему
+   * следующий вопрос опроса, которого он не просил.
+   *
+   * Проверяется именно это: значение меняется, а шаг остаётся `done`.
+   */
+  async function readyUser(): Promise<void> {
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.done, onboardingDoneAt: new Date() })
+      .where(eq(userSettings.userId, userId));
+  }
+
+  it('время словами меняется, а шаг опроса остаётся пройденным', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    await readyUser();
+
+    await setAwaiting(testDb(), userId, AWAITING.setMorning);
+    await bot.handleUpdate(textUpdate('в 06:45'));
+
+    const row = await settingsOf();
+
+    expect(row?.morningTime).toBe('06:45:00');
+    expect(row?.onboardingStep).toBe(STEP.done);
+    // Ожидание снято: следующее сообщение — это уже новая мысль.
+    expect(row?.awaitingInput).toBeNull();
+  });
+
+  it('имя словами меняется, а опрос не начинается заново', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    await readyUser();
+
+    await setAwaiting(testDb(), userId, AWAITING.setName);
+    await bot.handleUpdate(textUpdate('Оля'));
+
+    const row = await settingsOf();
+
+    expect(row?.preferredName).toBe('Оля');
+    expect(row?.onboardingStep).toBe(STEP.done);
+  });
+
+  it('непонятное время не съедается молча и настройку не портит', async () => {
+    // Ничего не съедается молча: не подошло — сказали и оставили как было.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await readyUser();
+
+    await setAwaiting(testDb(), userId, AWAITING.setMorning);
+    await bot.handleUpdate(textUpdate('когда-нибудь утром'));
+
+    const row = await settingsOf();
+
+    expect(row?.morningTime).toBe('08:30:00');
+    expect(calls.some((call) => textOf(call) === defaultTexts.onboarding.timeNotUnderstood)).toBe(
+      true,
+    );
   });
 });

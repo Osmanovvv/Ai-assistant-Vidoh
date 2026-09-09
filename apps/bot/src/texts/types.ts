@@ -377,6 +377,54 @@ export interface TextProfile {
     readonly buttonRemindersOn: string;
     readonly buttonQuietOff: string;
     readonly buttonQuietOn: string;
+
+    /**
+     * Остальные четыре величины §12.1: времена, пояс, сферы и имя.
+     *
+     * Экран открылся раньше своего этапа с двумя выключателями §11, а
+     * времена, пояс и темы были отложены «четвёртому этапу» — и остались
+     * там без владельца. Человек, выбравший на опросе 08:00, не мог
+     * изменить это ничем: ни кнопкой, ни словами. Хуже с поясом: он
+     * ломает все сроки разом, а переезд или ошибка на опросе исправлялись
+     * только через разработчика.
+     */
+    readonly morningAt: (time: string) => string;
+    readonly eveningAt: (time: string) => string;
+    readonly eveningNever: string;
+    readonly cityIs: (city: string) => string;
+    readonly nameIs: (name: string) => string;
+    readonly nameNone: string;
+    readonly topicsAre: (list: string) => string;
+
+    readonly buttonMorning: string;
+    readonly buttonEvening: string;
+    readonly buttonCity: string;
+    readonly buttonName: string;
+    readonly buttonTopics: string;
+
+    readonly askMorning: string;
+    readonly askEvening: string;
+    readonly askCity: string;
+    readonly askName: string;
+    /** Сферы отмечаются нажатием, поэтому подсказка про повторное. */
+    readonly askTopics: string;
+    readonly buttonTopicsDone: string;
+
+    /** Что стало после правки: человек должен видеть новое значение. */
+    readonly savedMorning: (time: string) => string;
+    readonly savedEvening: (time: string) => string;
+    readonly savedEveningOff: string;
+    readonly savedCity: (city: string) => string;
+    readonly savedName: (name: string) => string;
+    readonly savedTopics: (list: string) => string;
+
+    /**
+     * Последнюю сферу убрать нельзя.
+     *
+     * Классификация без списка не работает, и человек без тем получил бы
+     * записи в никуда. Отказ говорит причину, а не «нельзя».
+     */
+    readonly lastTopicKept: string;
   };
 
   /**

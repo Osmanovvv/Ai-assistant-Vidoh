@@ -27,8 +27,11 @@ import { createTopics, DEFAULT_TOPIC_NAMES, FALLBACK_TOPIC } from '../topics/top
  *
  * Отсюда же решение по имени: берётся то, что уже дал Telegram, и
  * подтверждается кнопкой. Спросить «как тебя называть» свободным текстом
- * значило бы вернуть ту же развилку, а поменять имя можно будет в
- * настройках (задача 4.9).
+ * значило бы вернуть ту же развилку, а поменять имя можно в настройках —
+ * кнопка «Имя» на экране §12.1 (`bot/handlers/menu.ts`). Прежде здесь
+ * стояла ссылка на задачу 4.9, но 4.9 оказалась про админку заказчицы, а
+ * не про человека: обещание жило в коде без владельца, пока его не нашла
+ * ревизия второго этапа.
  *
  * **Один вопрос в реплике** — §13.9. Поэтому шаги идут по одному, каждый
  * своей репликой, и ответ на предыдущий правит ту же реплику.
@@ -385,6 +388,16 @@ export function cityOfZone(zone: string): string | undefined {
 export function topicRows(
   texts: TextProfile,
   chosen: readonly string[],
+  /**
+   * Приставка действия. По умолчанию — опроса.
+   *
+   * Параметром, а не второй копией сборки: экран настроек §12.1 показывает
+   * те же сферы теми же кнопками, но своим действием — обработчик опроса
+   * сверяет шаг, и после опроса он бы просто промолчал. Две сборки одной
+   * клавиатуры однажды разошлись бы, и ровно это уже случилось с
+   * раскладкой по ширине.
+   */
+  prefix: string = ACTION.topicPrefix,
 ): readonly (readonly Button[])[] {
   const marked = new Set(chosen);
   const rows: Button[][] = [];
@@ -393,7 +406,7 @@ export function topicRows(
     rows.push(
       TOPIC_CHOICES.slice(index, index + 3).map((name) => ({
         label: marked.has(name) ? texts.onboarding.topicChosen(name) : name,
-        action: `${ACTION.topicPrefix}${name}`,
+        action: `${prefix}${name}`,
       })),
     );
   }

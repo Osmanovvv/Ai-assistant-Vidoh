@@ -729,7 +729,7 @@ async function main(): Promise<void> {
   });
   registerMembershipHandlers(bot, db, logger);
   registerOnboardingHandlers(bot, db, logger, topicGateway, settings);
-  registerMenuHandlers(bot, db, logger);
+  registerMenuHandlers(bot, db, logger, settings);
 
   // Команды платёжной платформы — после приёма: сперва сохраняем
   // обращение человека, потом отвечаем (ревизия четвёртого этапа).

@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import {
+  AWAITING,
   awaitingOf,
   parseName,
   parseTime,
@@ -220,6 +221,89 @@ export function consumeAwaited(deps: AwaitingDeps) {
       await ctx.reply(texts.onboarding.eveningSaved(time));
       logger.info({ userId, time }, 'Вечернее время задано словами');
       await askNext(ctx, userId, STEP.topics);
+      return true;
+    }
+
+    // ── Правка настроек словами (§12.1) ──────────────────────────────────
+    /**
+     * То же, что на опросе, но человек уже прошёл его.
+     *
+     * Отличие одно и важное: `askNext` здесь не зовётся. Поправив время
+     * через месяц, человек не должен снова оказаться в опросе — он менял
+     * настройку, а не проходил знакомство.
+     */
+    if (
+      awaiting.kind === AWAITING.setMorning ||
+      awaiting.kind === AWAITING.setEvening ||
+      awaiting.kind === AWAITING.setName ||
+      awaiting.kind === AWAITING.setCity
+    ) {
+      await setAwaiting(db, userId, null);
+
+      if (awaiting.kind === AWAITING.setName) {
+        const name = parseName(text);
+
+        if (name === undefined) {
+          await ctx.reply(texts.onboarding.nameNotUnderstood);
+          return false;
+        }
+
+        await setPreferredName(db, userId, name);
+        await ctx.reply(texts.settings.savedName(name));
+        logger.info({ userId }, 'Имя изменено из настроек');
+        return true;
+      }
+
+      if (awaiting.kind === AWAITING.setCity) {
+        const zone = zoneOfCity(text);
+
+        if (zone === undefined) {
+          // Догадка по созвучию запрещена: неверный пояс ломает все сроки.
+          await ctx.reply(texts.onboarding.cityNotFound);
+          return true;
+        }
+
+        const change = await setTimezone(db, userId, zone);
+
+        /**
+         * Сроки **не** пересчитываются, и это решение, а не упущение.
+         *
+         * Пересчёт нужен только первому подтверждению: тогда мы угадали
+         * пояс неверно, и сроки надо поправить. А человек, сменивший
+         * город в настройках, переехал — сроки, которые он называл
+         * раньше, были верны в тот момент. Разница принципиальная, и
+         * признак `firstConfirmation` для неё и заведён.
+         */
+        if (change.firstConfirmation && change.from !== change.to) {
+          try {
+            await recalcDeadlines(db, userId, change);
+          } catch (error) {
+            logger.error({ err: error, userId }, 'Не удалось пересчитать сроки под новый город');
+          }
+        }
+
+        await ctx.reply(texts.settings.savedCity(cityOfZone(zone) ?? zone));
+        logger.info({ userId, zone }, 'Пояс изменён из настроек');
+        return true;
+      }
+
+      const time = parseTime(text);
+
+      if (time === undefined) {
+        await ctx.reply(texts.onboarding.timeNotUnderstood);
+        return false;
+      }
+
+      if (awaiting.kind === AWAITING.setMorning) {
+        await setMorning(db, userId, time);
+        await ctx.reply(texts.settings.savedMorning(time));
+        logger.info({ userId, time }, 'Утреннее время изменено из настроек');
+        return true;
+      }
+
+      await setEvening(db, userId, time);
+      await ctx.reply(texts.settings.savedEvening(time));
+      logger.info({ userId, time }, 'Вечернее время изменено из настроек');
       return true;
     }
 
