@@ -97,17 +97,230 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
      */
     await signIn(page, 'Ошибки');
 
-    const section = page.getByTestId('failed-payments');
+    await expect(page.getByTestId('failed-payments')).toBeVisible();
 
-    await expect(section).toBeVisible();
-
-    const row = page.getByRole('row', { name: /Оля/u });
+    /**
+     * **Строка ищется внутри своего разреза.**
+     *
+     * Прежде она искалась по всей странице (`page.getByRole('row', {name:
+     * /Оля/})`), и это работало по случайности: у Оли была ровно одна
+     * строка во всём журнале. Ревизия панели добавила ей и не дошедшее
+     * письмо рассылки, и сорвавшееся напоминание — три строки на одно
+     * имя, и строгий режим Playwright уронил бы проверку не по делу.
+     */
+    const payments = page.locator('.разрез').filter({ hasText: 'Неудачные платежи' });
+    const row = payments.getByRole('row', { name: /Оля/u });
 
     await expect(row).toContainText('399.00 ₽');
     await expect(row).toContainText('1.00');
     await expect(row).toContainText('карта');
 
     await expect(page.getByText('повтора нет и не будет', { exact: false })).toBeVisible();
+  });
+
+  test('у неуспешного вызова модели видно, у кого он сорвался', async ({ page }) => {
+    /**
+     * Ревизия панели. Жалоба приходит от конкретного человека и в
+     * конкретное время, а связать с ним строку было нечем: у соседней
+     * таблицы сорвавшихся разборов имя есть, здесь его не было вовсе —
+     * `userId` в выборку не входил, хотя в базе лежит и уже читается в
+     * разрезах расходов. Вместо имени возился `batchId`, который не
+     * рисовался нигде.
+     *
+     * Вторая строка того же разреза — вызов человека, удалившего данные:
+     * §16 обнуляет `user_id`, и пустая клетка читалась бы как «имя
+     * потеряли мы». Сказано словами.
+     */
+    await signIn(page, 'Ошибки');
+
+    const calls = page.locator('.разрез').filter({ hasText: 'Неуспешные вызовы модели' });
+
+    await expect(calls.getByRole('columnheader', { name: 'У кого' })).toBeVisible();
+    await expect(calls.getByRole('row', { name: /429 Too Many Requests/u })).toContainText('Аня');
+    await expect(calls.getByRole('row', { name: /DeadlineExceeded/u })).toContainText(
+      'данные удалены',
+    );
+  });
+
+  test('вид напоминания назван словом, а не кодом из базы', async ({ page }) => {
+    /**
+     * Ревизия панели. В колонке «Какое» стоял код `reminder_kind` —
+     * «morning» в русской панели, — при том что соседние клетки того же
+     * журнала переводят и рельс («карта»), и тариф («месяц»). Заказчица
+     * читает такие строки как чужой отладочный вывод и перестаёт верить
+     * колонке.
+     *
+     * Сорвавшихся напоминаний на стенде прежде не было ни одного, поэтому
+     * словарь видов проверить было нечем: разрез показывал «за этот срок
+     * нет», и проверка читала бы пустоту как «код больше не печатается».
+     */
+    await signIn(page, 'Ошибки');
+
+    const reminders = page.locator('.разрез').filter({ hasText: 'Сорвавшиеся напоминания' });
+
+    await expect(reminders.getByTestId('failed-reminders')).toBeVisible();
+    await expect(reminders).toContainText('утреннее');
+    await expect(reminders).not.toContainText('morning');
+  });
+
+  test('не дошедшее письмо названо вместе со своей рассылкой и получателем', async ({ page }) => {
+    /**
+     * Ревизия панели. Подпись велела идти к «нужной рассылке», а в строке
+     * не было ни её времени, ни текста: `broadcastId` приезжал и не
+     * рисовался, а раздел рассылки идентификаторов не печатает. «Кому»
+     * было сырым телеграмным номером — по нему человека в панели не
+     * найти, поиск в «Пользователях» идёт по имени и @имени.
+     *
+     * И совет назван вместе с условием: кнопка «Повторить неудачные» есть
+     * только у законченной рассылки, у остановленной вместо неё
+     * «Продолжить». Безусловный совет посылал бы человека нажимать
+     * кнопку, которой нет.
+     */
+    await signIn(page, 'Ошибки');
+
+    const sends = page.locator('.разрез').filter({ hasText: 'Не дошедшие письма рассылки' });
+
+    await expect(sends.getByRole('columnheader', { name: 'Из какой рассылки' })).toBeVisible();
+
+    const letter = sends.getByRole('row', { name: /message is too long/u });
+
+    await expect(letter).toContainText('Оля');
+    await expect(letter).toContainText('Оплата открылась');
+
+    await expect(sends).toContainText('только у законченной');
+    await expect(sends).toContainText('«Продолжить»');
+  });
+
+  test('неудачные платежи отбираются по времени отказа, а не по дате счёта', async ({ page }) => {
+    /**
+     * Ревизия панели, с новым столбцом в базе. Счёт заводится в момент
+     * нажатия кнопки и живёт до `expires_at`, а недоплата приходит
+     * уведомлением провайдера тогда, когда человек соберётся заплатить.
+     * Отбор шёл по дате счёта — и продление, отвергнутое банком сегодня
+     * по счёту трёхдневной давности, при выборе «сутки» в журнал не
+     * попадало вовсе: самое свежее событие было не видно именно там, где
+     * его ищут. В колонке «Когда» при этом стояла дата счёта, то есть не
+     * время разбираемого события.
+     *
+     * Стенд сеет ровно эту строку: `created_at` — три дня назад,
+     * `failed_at` — сейчас.
+     */
+    await signIn(page, 'Ошибки');
+
+    await page.getByRole('button', { name: 'сутки' }).click();
+
+    const payments = page.locator('.разрез').filter({ hasText: 'Неудачные платежи' });
+    const refused = payments.getByRole('row', { name: /банк отклонил списание/u });
+
+    // Под прежним отбором строки здесь не было бы вовсе.
+    await expect(refused).toBeVisible();
+    await expect(refused).toContainText('продление');
+
+    /**
+     * И «Когда» — сегодня, а не три дня назад.
+     *
+     * Дата считается в поясе, который задан проверкам
+     * (`playwright.config.ts`), а не в поясе машины: панель печатает
+     * время по часам браузера, и на машине в другом поясе проверка
+     * краснела бы от переезда, а не от поломки.
+     */
+    const today = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      dateStyle: 'short',
+    }).format(new Date());
+
+    await expect(refused.locator('td').first()).toContainText(today);
+  });
+
+  test('пустой разрез называет пустоту словами, а не исчезает с заголовком', async ({ page }) => {
+    /**
+     * Ревизия панели. Три разреза из шести были обёрнуты в `length > 0`:
+     * при пустом списке с экрана пропадал и заголовок. Проджект,
+     * разбирающий «я заплатил, доступ не дали», не видел раздела платежей
+     * вовсе и не мог отличить «неудачных платежей за сутки не было» от
+     * «журнал платежей не показывает» — то есть шёл спрашивать нас.
+     *
+     * Пустота подменяется нарочно: на стенде каждый источник посеян
+     * непустым (иначе не проверить сами таблицы), а добиться пустоты
+     * можно только удалением посева. Форма ответа настоящая — та же, что
+     * отдаёт сервер на периоде без сбоев.
+     */
+    await page.route('**/admin/api/errors?*', async (route) => {
+      await route.fulfill({
+        json: {
+          days: 1,
+          batches: [],
+          calls: [],
+          sends: [],
+          payments: [],
+          reminders: [],
+          batchesTotal: 0,
+          callsTotal: 0,
+          paymentsTotal: 0,
+          sendsTotal: 0,
+          remindersTotal: 0,
+          missing: [],
+        },
+      });
+    });
+
+    await signIn(page, 'Ошибки');
+
+    await expect(page.getByTestId('no-failed-batches')).toBeVisible();
+    await expect(page.getByTestId('no-failed-payments')).toBeVisible();
+    await expect(page.getByTestId('no-failed-sends')).toBeVisible();
+    await expect(page.getByTestId('no-failed-reminders')).toBeVisible();
+    await expect(page.getByText('Неуспешных вызовов за этот срок нет.')).toBeVisible();
+
+    // Заголовки на месте: пустой журнал — это ответ, а не отсутствие
+    // раздела. И совет про повтор у пустого списка спрятан: повторять
+    // нечего.
+    await expect(page.getByRole('heading', { name: /Неудачные платежи/u })).toBeVisible();
+    await expect(page.getByTestId('errors')).not.toContainText('Повторить их можно в разделе');
+  });
+
+  test('под каждым списком сказано, сколько строк скрыла обрезка', async ({ page }) => {
+    /**
+     * Ревизия панели. Сервер отдаёт последние пятьдесят строк и число за
+     * период рядом, но словами об этом говорил только журнал доступа §16.
+     * В сбое, который и порождает сотни срывов (модель лежала час),
+     * разбирающий решил бы, что перезапустил всех, а перезапустил
+     * последних пятьдесят.
+     *
+     * Итог подменяется, а списки берутся настоящие: пятидесяти одной
+     * строки на стенде нет и заводить их ради подписи значило бы сеять
+     * то, чего в бою в таком количестве не бывает. Пять журналов плюс
+     * журнал доступа — шесть строк об обрезке, все одними словами.
+     */
+    await page.route('**/admin/api/errors?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+
+      await route.fulfill({
+        json: {
+          ...body,
+          batchesTotal: 137,
+          callsTotal: 137,
+          paymentsTotal: 137,
+          sendsTotal: 137,
+          remindersTotal: 137,
+        },
+      });
+    });
+
+    await page.route('**/admin/api/access?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+
+      await route.fulfill({ json: { ...body, total: 137 } });
+    });
+
+    await signIn(page, 'Ошибки');
+
+    await expect(page.getByTestId('errors')).toBeVisible();
+    await expect(
+      page.locator('p.оговорка', { hasText: /Показаны последние \d+ из 137\./u }),
+    ).toHaveCount(6);
   });
 });
 

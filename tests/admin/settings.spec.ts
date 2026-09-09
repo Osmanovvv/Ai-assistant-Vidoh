@@ -243,4 +243,86 @@ test.describe('настройки (§15; задача 4.9)', () => {
     await expect(fresh).toContainText('выключен');
     await expect(fresh.getByRole('button', { name: 'Включить' })).toBeVisible();
   });
+
+  test('срок действия кода задаётся и виден — ревизия панели', async ({ page }) => {
+    /**
+     * Срок был на всём пути, кроме экрана: колонка в базе, разбор тела в
+     * маршруте, соблюдение ботом («код истёк»). Форма поля не посылала, а
+     * таблица колонки не печатала — значит код с прошедшим сроком
+     * показывался живым, с кнопкой «Выключить», пока бот уже отказывал
+     * человеку. Жалобу блогера разобрать было нечем.
+     */
+    await signIn(page, 'Настройки');
+
+    // Засеянный код с прошедшим сроком: помечен «истёк», и срок напечатан.
+    await expect(page.getByTestId('promo-SPRING5')).toContainText('истёк');
+    await expect(page.getByTestId('promo-until-SPRING5')).toContainText('31.03.2026');
+
+    // Бессрочный код так и назван: пустая клетка читалась бы как факт.
+    await expect(page.getByTestId('promo-until-BLOGGER7')).toContainText('без срока');
+    await expect(page.getByTestId('promo-BLOGGER7')).not.toContainText('истёк');
+
+    /**
+     * Новый код со сроком: дата доезжает до базы и возвращается в таблицу.
+     * Дата считается от сегодняшнего дня, а не зашита: зашитая однажды
+     * окажется в прошлом, и проверка покраснеет от календаря, а не от
+     * кода.
+     */
+    const soon = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const [year = '', month = '', day = ''] = soon.toISOString().slice(0, 10).split('-');
+    const code = `AUTUMN-${String(Date.now())}`;
+
+    await page.locator('input[name="promoCode"]').fill(code);
+    await page.locator('input[name="promoRub"]').fill('14900');
+    await page.locator('input[name="promoStars"]').fill('60');
+    await page.locator('input[name="promoUntil"]').fill(`${year}-${month}-${day}`);
+    await page.locator('button[name="promoSave"]').click();
+
+    await expect(page.getByTestId(`promo-until-${code}`)).toContainText(`${day}.${month}.${year}`);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+
+    // Срок в будущем — код живой, и пометки «истёк» у него нет.
+    await expect(page.getByTestId(`promo-${code}`)).not.toContainText('истёк');
+  });
+
+  test('отказ чтения настроек не уносит с экрана промокоды — ревизия панели', async ({ page }) => {
+    /**
+     * Код утёк в публичный канал, выключить его надо срочно — а на экране
+     * «Не удалось прочитать настройки», и выключить нечем. Блок промокодов
+     * читается своим запросом и мог ответить нормально: отказ чтения
+     * обязан печататься на месте таблицы, а не вместо раздела.
+     *
+     * Истёкший пропуск сюда не попадает: 401 уводит на вход событием.
+     * Случай ровно один — пятисотая на `/api/settings` при живом
+     * `/api/promo`.
+     */
+    await page.route('**/admin/api/settings', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'не удалось прочитать настройки' }),
+      });
+    });
+
+    await signIn(page, 'Настройки');
+
+    await expect(page.getByRole('alert')).toContainText('Не удалось прочитать настройки');
+
+    // Промокоды на месте, и выключить код есть чем.
+    await expect(page.getByTestId('promo')).toBeVisible();
+    await expect(page.getByTestId('promo-BLOGGER7')).toBeVisible();
+    await expect(
+      page.locator('tr', { has: page.getByTestId('promo-BLOGGER7') }).getByRole('button', {
+        name: 'Выключить',
+      }),
+    ).toBeVisible();
+
+    // А таблицы настроек нет — отказ её и подменяет.
+    await expect(page.getByTestId('now-trialDumps')).toHaveCount(0);
+  });
 });

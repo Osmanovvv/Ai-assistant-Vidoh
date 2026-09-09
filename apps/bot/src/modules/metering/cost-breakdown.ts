@@ -86,6 +86,20 @@ export interface CostBreakdown {
   /** Сколько обезличенных вызовов: без числа сверить колонки нечем. */
   readonly unattributedCalls: number;
   /**
+   * Сколько обезличенных вызовов **без известной цены**.
+   *
+   * Найдено на стенде после первой починки этой оговорки. Панель
+   * выбирала слова по «сумма пуста», то есть по случаю «цены неизвестны
+   * у всех». А частый случай — смешанный: у отказа 429 цена ноль (он не
+   * тарифится, и ноль здесь правда), у сорвавшегося по таймауту цены нет
+   * вовсе. Тогда панель печатала точную сумму без единой оговорки, и
+   * читающий делал вывод «столько и стоило» — про множество, часть
+   * которого не оценена.
+   *
+   * Ноль означает «цены известны все», и только тогда сумма точная.
+   */
+  readonly unattributedUnpriced: number;
+  /**
    * Расход вне выгрузок — отдельной величиной (ревизия этапа).
    *
    * Выгрузка уходит каскадом вместе с человеком, а строка учёта
@@ -94,6 +108,8 @@ export interface CostBreakdown {
    */
   readonly unlinked: readonly Money[];
   readonly unlinkedCalls: number;
+  /** Столько из них без известной цены — см. `unattributedUnpriced`. */
+  readonly unlinkedUnpriced: number;
   /** Средний расход на разобранную выгрузку. */
   readonly perDump: readonly Money[];
   /** Средний расход на человека. */
@@ -377,9 +393,18 @@ export async function costBreakdown(db: Executor, params: BreakdownParams): Prom
      * моделям» проверить нечем.
      */
     unattributedCalls: anonymous.reduce((sum, row) => sum + row.calls, 0),
+    /**
+     * И сколько из них без цены — тем же счётчиком, что везде в отчёте.
+     *
+     * Считается из `fold`, а не отдельным запросом: то же число, взятое
+     * вторым способом, однажды разошлось бы с первым — и разошлось бы
+     * молча, потому что сверять его не с чем.
+     */
+    unattributedUnpriced: anonymous.reduce((sum, row) => sum + row.unknownPrices, 0),
     /** Расход вне выгрузок — отдельной величиной, а не в числителе. */
     unlinked: totalOf(unlinked),
     unlinkedCalls: unlinked.reduce((sum, row) => sum + row.calls, 0),
+    unlinkedUnpriced: unlinked.reduce((sum, row) => sum + row.unknownPrices, 0),
     /**
      * **Числители берутся из тех же множеств, что знаменатели.**
      *

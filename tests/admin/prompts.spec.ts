@@ -139,6 +139,102 @@ test.describe('промпты (§15; задача 4.8)', () => {
     ).toBeVisible();
   });
 
+  test('второе нажатие «Прогнать набор» не подменяет раздел, а называет причину', async ({
+    page,
+  }) => {
+    /**
+     * Кнопка гасилась по уже загруженному состоянию, и между нажатием и
+     * ответом она оставалась живой. Второе нажатие получало 409 «прогон
+     * уже идёт» — правду: прогон запущен и уже тратит деньги, — а панель
+     * заменяла весь раздел красной строкой «Не удалось запустить прогон»:
+     * без таблицы версий, без отказа, без кнопки. Выйти можно было только
+     * сменой вкладки.
+     *
+     * Отказ подменяется нарочно: добиться его от стенда можно только
+     * гонкой двух нажатий, и такая проверка краснела бы от расписания, а
+     * не от поломки. Форма ответа настоящая — та же, что у сервера.
+     */
+    await page.route('**/admin/api/prompts/run-eval', async (route) => {
+      await route.fulfill({
+        status: 409,
+        json: { started: false, error: 'прогон уже идёт', run: { kind: 'idle' } },
+      });
+    });
+
+    await openPrompts(page);
+
+    const made = await makeHotfix(page, 'classifier@1', 'Разбери сказанное. Второе нажатие.');
+
+    await page.getByTestId(`activate-${made}`).click();
+    await expect(page.getByTestId('refusal')).toBeVisible();
+
+    await page.getByTestId('measure').click();
+
+    // Причина — словами сервера, рядом с отказом.
+    const problem = page.getByTestId('run-problem');
+
+    await expect(problem).toBeVisible();
+    await expect(problem).toContainText('прогон уже идёт');
+
+    // И раздел на месте целиком: таблица версий и сам отказ.
+    await expect(page.getByTestId('prompts')).toBeVisible();
+    await expect(page.getByTestId('version-classifier@1')).toBeVisible();
+    await expect(page.getByTestId('refusal')).toBeVisible();
+  });
+
+  test('раздела нет — панель объясняет почему, а не краснеет', async ({ page }) => {
+    /**
+     * Состояние достижимо на любом новом сервере: без отчётов прогонов
+     * путей `/api/prompts*` не объявлялось, и запрос ловила отдача файлов
+     * панели — приходил `index.html` с кодом 200, разбор спотыкался, и
+     * человек читал «Не удалось прочитать промпты», то есть шёл искать
+     * поломку, которой нет.
+     *
+     * На стенде отчёты есть нарочно — без них не проверить заслон §10.3,
+     * — поэтому выключенный раздел подменяется ответом. Форма настоящая:
+     * та же, что отдаёт сервер без папки набора.
+     */
+    await page.route('**/admin/api/prompts', async (route) => {
+      await route.fulfill({
+        json: {
+          enabled: false,
+          why: 'на сервере нет ни одного отчёта прогона контрольного набора, а без них раздел не может судить о §10.3',
+          how: './ops/seed-prompts.sh (можно без --activate)',
+        },
+      });
+    });
+
+    await signIn(page, 'Промпты');
+
+    const off = page.getByTestId('prompts-off');
+
+    await expect(off).toBeVisible();
+    await expect(off).toContainText('отчёт');
+    await expect(page.getByTestId('prompts-off-how')).toContainText('seed-prompts.sh');
+
+    // И ни слова про поломку: раздела нет нарочно.
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+
+  test('стадии названы по-человечески: ключей из базы на экране нет', async ({ page }) => {
+    /**
+     * `Prompts.tsx` объявляет: «Ключи из базы — не для глаз», — но строка
+     * «Набор не мерит: …» печатала их как есть («presenter»). В таблице
+     * рядом та же стадия называется «Ответ человеку», и читающий должен
+     * был догадаться, что это одно и то же.
+     *
+     * Стенд сеет включённую версию представления нарочно: набор мерит
+     * разбор, а не ответ, и без такой версии строка не появляется вовсе —
+     * то есть проверять было бы нечего.
+     */
+    await openPrompts(page);
+
+    const ok = page.getByTestId('freshness-ok');
+
+    await expect(ok).toContainText('Набор не мерит: Ответ человеку');
+    await expect(ok).not.toContainText('presenter');
+  });
+
   test('цикл целиком: создать, прогнать, включить, откатить', async ({ page }) => {
     /**
      * Условие плана дословно. Рядом с отказом лежит кнопка прогона:

@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { TOPIC_CHOICES } from '../onboarding/onboarding.service.js';
+import { SETTINGS } from '../settings/settings.repo.js';
+
 /**
  * Предел числа тем доезжает до **каждого** создателя тем (§6.4).
  *
@@ -130,6 +133,19 @@ describe('предел числа тем доезжает до всех созд
     expect(calls.length).toBeGreaterThanOrEqual(3);
     expect(calls.map((one) => one.file)).toContain('modules/pipeline/dump.handler.ts');
     expect(calls.map((one) => one.file)).toContain('bot/handlers/onboarding.ts');
+  });
+
+  it('умолчание предела не ниже числа сфер, которые бот предлагает', () => {
+    /**
+     * Иначе обрезка получается не решением, а опечаткой: человек
+     * отмечает все предложенные сферы и молча получает меньше. Заказчица
+     * вправе поставить предел ниже — это её выбор, и он виден в панели, —
+     * но **умолчание** обязано держать то, что бот сам и предложил.
+     *
+     * Страж стоит на паре чисел, потому что расходятся они порознь:
+     * сферу добавят в список выбора, не тронув настройку, либо наоборот.
+     */
+    expect(SETTINGS.maxTopics.fallback).toBeGreaterThanOrEqual(TOPIC_CHOICES.length);
   });
 
   it('и правда читает файлы, а не пустоту', () => {

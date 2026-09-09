@@ -3,7 +3,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { testDb } from '../../test/db.js';
 import { createChosenTopics, TOPIC_CHOICES } from '../onboarding/onboarding.service.js';
 import { upsertUser } from '../users/users.repo.js';
-import { appendTopics, createTopics, FALLBACK_TOPIC, listTopics } from './topics.repo.js';
+import {
+  appendTopics,
+  createTopics,
+  FALLBACK_TOPIC,
+  listTopics,
+  MAX_TOPICS,
+} from './topics.repo.js';
 
 /**
  * Предел числа тем действует на **оба** пути создания (§6.4, §15).
@@ -48,11 +54,29 @@ describe('предел числа тем на начальном наборе', 
   });
 
   it('умолчание из кода тоже предел, а не «сколько попросили»', async () => {
-    // Без реестра настроек работает умолчание — восемь. Девять сфер
-    // помещаться в него не должны: до правки помещались.
-    await createChosenTopics(testDb(), userId, [...TOPIC_CHOICES]);
+    /**
+     * Без реестра настроек работает умолчание из кода — и оно тоже
+     * предел, иначе стенд и любой вызов без реестра жили бы без него.
+     *
+     * Сверка с `MAX_TOPICS`, а не с числом: само число закреплено
+     * отдельно, стражем «умолчание не ниже числа сфер на выбор»
+     * (`topics-limit.wiring.test.ts`). Держать его здесь вторым
+     * экземпляром значило бы иметь два источника правды об одном
+     * умолчании — и правили бы их порознь.
+     *
+     * Просим заведомо больше умолчания: список из сфер плюс придуманные
+     * названия. Не будь предела — создались бы все.
+     */
+    const tooMany = [
+      ...TOPIC_CHOICES,
+      ...Array.from({ length: 5 }, (_unused, index) => `сфера ${String(index + 1)}`),
+    ];
 
-    expect(await names()).toHaveLength(8);
+    expect(tooMany.length).toBeGreaterThan(MAX_TOPICS);
+
+    await createChosenTopics(testDb(), userId, tooMany);
+
+    expect(await names()).toHaveLength(MAX_TOPICS);
   });
 
   it('тема по умолчанию остаётся даже под самым тесным пределом', async () => {
