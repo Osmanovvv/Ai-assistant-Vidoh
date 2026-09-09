@@ -24,6 +24,7 @@ import { reminderKind } from '../../db/schema.js';
  */
 
 const panel = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../admin/src/Errors.tsx');
+const server = resolve(dirname(fileURLToPath(import.meta.url)), 'errors.ts');
 
 /** Пять журналов от `/api/errors`. Шестой, доступа §16, — со своего пути. */
 const LOGS = ['batches', 'calls', 'payments', 'sends', 'reminders'] as const;
@@ -31,6 +32,18 @@ const LOGS = ['batches', 'calls', 'payments', 'sends', 'reminders'] as const;
 function source(): string {
   return readFileSync(panel, 'utf8');
 }
+
+/** Число словом: столько источников обещает шапка `errors.ts`. */
+const WORDS: Readonly<Record<number, string>> = {
+  3: 'Три источника',
+  4: 'Четыре источника',
+  5: 'Пять источников',
+  6: 'Шесть источников',
+  7: 'Семь источников',
+};
+
+/** Конец объявления: перевод строки и закрывающая скобка. */
+const BLOCK_END = String.fromCharCode(10) + '}';
 
 /** Клетки таблицы: от `page.<список>.map(` до конца тела таблицы. */
 function bodyOf(text: string, log: string): string {
@@ -160,5 +173,77 @@ describe('журнал сбоев говорит словами, а не пус�
      * двумя слоями типов и не рисовался нигде.
      */
     expect(bodyOf(source(), 'calls')).toContain('row.who');
+  });
+});
+
+/**
+ * Шапка журнала обещает ровно то, что журнал выбирает (ревизия панели).
+ *
+ * Разбор «частично подтверждённых» нашёл в шапке два переобещания разом:
+ * «Три источника» при пяти и «сюда попадают… неоткрывшиеся страницы
+ * оплаты», которых там нет и быть не может — Робокассе страница не
+ * запрашивается, код ошибки человек видит в своём браузере.
+ *
+ * **Почему это не придирка к комментарию.** Шапка — единственное место,
+ * где сказано, что журнал накрывает; по ней решают, искать жалобу здесь
+ * или идти к провайдеру. Комментарий, обещающий лишнее, отправляет искать
+ * там, где нет, — и тем дороже, чем спокойнее он читается.
+ *
+ * Число и состав проверяются порознь: они и расходятся порознь.
+ */
+describe('шапка журнала не обещает больше, чем журнал выбирает', () => {
+  /** Списки строк в `ErrorsView` — они и есть источники журнала. */
+  function logsOf(text: string): readonly string[] {
+    const start = text.indexOf('export interface ErrorsView {');
+
+    expect(start, 'объявление ErrorsView не найдено').toBeGreaterThan(-1);
+
+    const block = text.slice(start, text.indexOf(BLOCK_END, start));
+
+    return (
+      [...block.matchAll(/^ {2}readonly ([a-zA-Z]+): readonly /gmu)]
+        .map((match) => match[1] ?? '')
+        /**
+         * `missing` — не источник, а его противоположность: перечень того,
+         * чего в журнале нарочно нет, со причиной у каждой строки. Считать
+         * его источником значило бы обещать человеку разрез, который ему
+         * как раз объясняет, почему разреза не будет.
+         */
+        .filter((name) => name !== 'missing')
+    );
+  }
+
+  it('источников названо столько, сколько их есть', () => {
+    const text = readFileSync(server, 'utf8');
+    const logs = logsOf(text);
+    const word = WORDS[logs.length];
+
+    // Своя проверка на себя: словаря не хватило — значит источников стало
+    // больше, чем предполагал страж, и молчать об этом нельзя.
+    expect(word, `нет слова для ${String(logs.length)} источников`).toBeDefined();
+
+    expect(
+      text.includes(word ?? ''),
+      `шапка errors.ts обещает не то число: источников ${String(logs.length)} ` +
+        `(${logs.join(', ')}), а сказано не «${word ?? ''}». По этой строке решают, ` +
+        'искать жалобу здесь или у провайдера.',
+    ).toBe(true);
+  });
+
+  it('снятое обещание не возвращается', () => {
+    /**
+     * Обещание снято не «за ненадобностью», а потому что событие боту
+     * невидимо: Робокассе страница не запрашивается вовсе. Вернуть фразу
+     * значит вернуть неправду, поэтому она названа здесь дословно.
+     */
+    expect(readFileSync(server, 'utf8')).not.toContain('неоткрывшиеся страницы оплаты');
+  });
+
+  it('и правда читает исходник, а не пустоту', () => {
+    const logs = logsOf(readFileSync(server, 'utf8'));
+
+    expect(logs).toContain('batches');
+    expect(logs).toContain('payments');
+    expect(logs.length).toBeGreaterThanOrEqual(5);
   });
 });

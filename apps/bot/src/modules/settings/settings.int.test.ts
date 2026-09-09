@@ -120,6 +120,44 @@ describe('мусор в значении не роняет бота', () => {
     expect(warned[0]?.key).toBe(SETTINGS.trialDumps.key);
     expect(warned[0]?.raw).toBe('десять');
   });
+
+  it('отвергнутое значение видно панели, а не только журналу', async () => {
+    /**
+     * Разбор ревизии панели: строка в журнале — не место для этого
+     * разговора, туда заказчица не смотрит. Панель печатала действующее
+     * число **без** пометки «(из кода)», потому что строка в базе есть,
+     * — то есть утверждала, что в базе именно оно.
+     *
+     * Обстановка боя: значение вне пределов кладут руками в базу либо
+     * оно остаётся с прежних пределов, когда предел сузили. Второе
+     * случилось в этот же день — потолок цены в звёздах свели с
+     * пределом рельса, и всё, что было записано выше, стало
+     * отвергнутым.
+     */
+    await testDb().insert(appSettings).values({ key: SETTINGS.trialDumps.key, value: '5000' });
+
+    const rows = await new SettingsRegistry({ db: testDb(), logger }).all();
+    const row = rows.find((one) => one.name === 'trialDumps');
+
+    // Действующее — умолчание, и это прежнее поведение.
+    expect(row?.value).toBe(SETTINGS.trialDumps.fallback);
+    // Новое: панель узнаёт, что в базе лежит другое.
+    expect(row?.rejected).toBe('5000');
+    // И «задано в базе» остаётся правдой: строка там есть.
+    expect(row?.set).toBe(true);
+  });
+
+  it('годное значение отвергнутым не объявляется', async () => {
+    // Обратная сторона: ложная тревога в этом месте пугает заказчицу
+    // разладом, которого нет, — и учит не читать красное.
+    await testDb().insert(appSettings).values({ key: SETTINGS.trialDumps.key, value: ' 07 ' });
+
+    const rows = await new SettingsRegistry({ db: testDb(), logger }).all();
+    const row = rows.find((one) => one.name === 'trialDumps');
+
+    expect(row?.value).toBe(7);
+    expect(row?.rejected).toBeUndefined();
+  });
 });
 
 describe('кэш', () => {
