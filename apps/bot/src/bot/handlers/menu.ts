@@ -11,7 +11,20 @@ import { openItemsFor } from '../../modules/items/items.repo.js';
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
-import { listTopics } from '../../modules/topics/topics.repo.js';
+import { appendTopics, archiveTopicsExcept, listTopics } from '../../modules/topics/topics.repo.js';
+import {
+  cityOfZone,
+  EVENING_TIMES,
+  MORNING_TIMES,
+  setEvening,
+  setMorning,
+  setTimezone,
+  TIMEZONES,
+  topicRows,
+  TOPIC_CHOICES,
+} from '../../modules/onboarding/onboarding.service.js';
+import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -31,10 +44,13 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
  * нет, хуже отсутствующей: она обещает и не выполняет, и человек перестаёт
  * верить остальным.
  *
- * **«Настройки» открылись раньше своего этапа, но урезанными.** §11 требует
- * выключатель напоминаний и режим тишины, а с задачи 3.14 бот начал писать
- * сам — настройка, до которой нельзя дотянуться, настройкой не является.
- * Времена, пояс и темы остаются четвёртому этапу.
+ * **«Настройки» закрывают свою строку §12.1 целиком** — темы, время
+ * напоминаний, часовой пояс и выключатель напоминаний. Открылись они
+ * раньше своего этапа с двумя выключателями §11, а остальное было
+ * отложено «четвёртому этапу» — и осталось там без задачи-владельца.
+ * Ревизия второго этапа это и нашла: человек, выбравший на опросе 08:00,
+ * не мог изменить время ничем — ни кнопкой, ни словами; пояс, который
+ * ломает все сроки разом, правился только через разработчика.
  *
  * **Списки простые, без постраничности.** Постраничность и реестр
  * инструментов — задача 3.11, там же «Проекты». Здесь ровно то, без чего
@@ -56,10 +72,37 @@ export const MENU_ACTION = {
   pagePrefix: 'menu:p:',
   /** `menu:d:<страница>` — страница списка «Сегодня». */
   todayPage: 'menu:d:',
-  /** Настройки: пока только два выключателя из §11 (задача 3.17). */
   settings: 'menu:set',
   toggleReminders: 'menu:set:r',
   toggleQuiet: 'menu:set:q',
+
+  /**
+   * Остальные четыре величины §12.1: времена, пояс, сферы и имя.
+   *
+   * Действия свои, а не опросные: обработчики опроса сверяют шаг, и после
+   * его прохождения молча ничего не делают. Служебные функции при этом те
+   * же — `setMorning`, `setEvening`, `setTimezone`, `setPreferredName`,
+   * `appendTopics`/`archiveTopicsExcept`: нового поведения здесь нет,
+   * появилась связка, которой не было.
+   */
+  askMorning: 'menu:set:m',
+  askEvening: 'menu:set:e',
+  askCity: 'menu:set:c',
+  askName: 'menu:set:n',
+  askTopics: 'menu:set:t',
+  /** `menu:set:m:08:00` — выбранное время из готовых. */
+  morningPrefix: 'menu:set:m:',
+  eveningPrefix: 'menu:set:e:',
+  eveningOff: 'menu:set:e:off',
+  /** `menu:set:c:Asia/Omsk` — 24 байта, предел callback_data 64. */
+  cityPrefix: 'menu:set:c:',
+  /** `menu:set:t:работа` — переключить сферу. */
+  topicSetPrefix: 'menu:set:t:',
+  topicsSetDone: 'menu:set:t!',
+  /** Ввод словами: своё время, свой город, имя. */
+  ownMorning: 'menu:set:m!',
+  ownEvening: 'menu:set:e!',
+  ownCity: 'menu:set:c!',
 } as const;
 
 /** Наружу — чтобы страж ширины в `keyboards.test.ts` её проверял. */
@@ -151,7 +194,20 @@ function itemsKeyboard(
   return keyboard.text(texts.menu.buttonBack, back);
 }
 
-export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): void {
+export function registerMenuHandlers(
+  bot: Bot,
+  db: Database,
+  logger: Logger,
+  /**
+   * Реестр настроек — ради предела числа тем (§6.4).
+   *
+   * Необязателен, как и у остальных обработчиков: без него работает
+   * умолчание из кода, и стенд проверок поднимается без реестра. Но
+   * передать его обязательно, иначе заказчица поставит в панели своё
+   * число, а человек получит другое — на эту связку стоит страж.
+   */
+  settings?: SettingsRegistry,
+): void {
   /** Кто нажал и с какими текстами ему отвечать. */
   async function acting(
     tgId: number,
@@ -202,7 +258,11 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
    * состояние или то, что случится по нажатию. Состояние — в тексте,
    * действие — на кнопке, и спутать нечего.
    */
-  async function showSettings(ctx: CallbackQueryContext<Context>): Promise<void> {
+  async function showSettings(
+    ctx: CallbackQueryContext<Context>,
+    /** Что только что изменилось. Человек должен увидеть новое значение. */
+    note?: string,
+  ): Promise<void> {
     const active = await acting(ctx.from.id);
     if (!active) return;
 
@@ -212,6 +272,10 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
         quietHoursOn: userSettings.quietHoursOn,
         quietFrom: userSettings.quietFrom,
         quietTo: userSettings.quietTo,
+        morningTime: userSettings.morningTime,
+        eveningTime: userSettings.eveningTime,
+        eveningOn: userSettings.eveningOn,
+        preferredName: userSettings.preferredName,
       })
       .from(userSettings)
       .where(eq(userSettings.userId, active.userId))
@@ -220,31 +284,76 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     if (!current) return;
 
     const texts = active.texts;
+    const mine = await listTopics(db, active.userId);
+
     const lines = [
+      ...(note === undefined ? [] : [note, '']),
       texts.settings.title,
       '',
       current.notificationsOn ? texts.settings.remindersOn : texts.settings.remindersOff,
       current.quietHoursOn
         ? texts.settings.quietOn(shortTime(current.quietFrom), shortTime(current.quietTo))
         : texts.settings.quietOff,
+      texts.settings.morningAt(shortTime(current.morningTime)),
+      current.eveningOn
+        ? texts.settings.eveningAt(shortTime(current.eveningTime))
+        : texts.settings.eveningNever,
+      texts.settings.cityIs(cityOfZone(active.timeZone) ?? active.timeZone),
+      current.preferredName === null
+        ? texts.settings.nameNone
+        : texts.settings.nameIs(current.preferredName),
+      texts.settings.topicsAre(mine.map((one) => one.name).join(', ')),
     ];
 
-    const keyboard = new InlineKeyboard()
-      .text(
-        current.notificationsOn
-          ? texts.settings.buttonRemindersOff
-          : texts.settings.buttonRemindersOn,
-        MENU_ACTION.toggleReminders,
-      )
-      .row()
-      .text(
-        current.quietHoursOn ? texts.settings.buttonQuietOff : texts.settings.buttonQuietOn,
-        MENU_ACTION.toggleQuiet,
-      )
-      .row()
-      .text(texts.menu.buttonBack, MENU_ACTION.root);
+    const keyboard = fitKeyboard([
+      [
+        {
+          label: current.notificationsOn
+            ? texts.settings.buttonRemindersOff
+            : texts.settings.buttonRemindersOn,
+          action: MENU_ACTION.toggleReminders,
+        },
+      ],
+      [
+        {
+          label: current.quietHoursOn
+            ? texts.settings.buttonQuietOff
+            : texts.settings.buttonQuietOn,
+          action: MENU_ACTION.toggleQuiet,
+        },
+      ],
+      [
+        { label: texts.settings.buttonMorning, action: MENU_ACTION.askMorning },
+        { label: texts.settings.buttonEvening, action: MENU_ACTION.askEvening },
+      ],
+      [
+        { label: texts.settings.buttonCity, action: MENU_ACTION.askCity },
+        { label: texts.settings.buttonName, action: MENU_ACTION.askName },
+      ],
+      [{ label: texts.settings.buttonTopics, action: MENU_ACTION.askTopics }],
+      [{ label: texts.menu.buttonBack, action: MENU_ACTION.root }],
+    ]);
 
     await show(ctx, lines.join(NEWLINE), keyboard);
+  }
+
+  /** Подэкран настройки: вопрос, свои кнопки и возврат в настройки. */
+  async function askOnSettings(
+    ctx: CallbackQueryContext<Context>,
+    text: string,
+    rows: readonly (readonly { readonly label: string; readonly action: string }[])[],
+  ): Promise<void> {
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await show(
+      ctx,
+      text,
+      fitKeyboard([
+        ...rows,
+        [{ label: active.texts.menu.buttonBack, action: MENU_ACTION.settings }],
+      ]),
+    );
   }
 
   bot.callbackQuery(MENU_ACTION.settings, async (ctx) => {
@@ -288,6 +397,248 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
     await showSettings(ctx);
   });
 
+  // ── Настройки §12.1: времена, пояс, сферы, имя ────────────────────────
+  /**
+   * **Порядок объявления здесь значим.** grammY примеряет обработчики по
+   * порядку, и «не надо вечером» подходит приставке вечернего времени
+   * тоже. Точные объявлены раньше приставочных.
+   */
+  bot.callbackQuery(MENU_ACTION.askMorning, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await askOnSettings(ctx, active.texts.settings.askMorning, [
+      MORNING_TIMES.map((time) => ({
+        label: time,
+        action: `${MENU_ACTION.morningPrefix}${time}`,
+      })),
+      [{ label: active.texts.onboarding.buttonTimeOwn, action: MENU_ACTION.ownMorning }],
+    ]);
+  });
+
+  bot.callbackQuery(MENU_ACTION.askEvening, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await askOnSettings(ctx, active.texts.settings.askEvening, [
+      EVENING_TIMES.map((time) => ({
+        label: time,
+        action: `${MENU_ACTION.eveningPrefix}${time}`,
+      })),
+      [
+        { label: active.texts.onboarding.buttonTimeOwn, action: MENU_ACTION.ownEvening },
+        { label: active.texts.onboarding.buttonEveningOff, action: MENU_ACTION.eveningOff },
+      ],
+    ]);
+  });
+
+  bot.callbackQuery(MENU_ACTION.askCity, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await askOnSettings(ctx, active.texts.settings.askCity, [
+      ...[0, 3, 6].map((from) =>
+        TIMEZONES.slice(from, from + 3).map((one) => ({
+          label: one.city,
+          action: `${MENU_ACTION.cityPrefix}${one.zone}`,
+        })),
+      ),
+      [{ label: active.texts.onboarding.buttonCityOwn, action: MENU_ACTION.ownCity }],
+    ]);
+  });
+
+  /**
+   * Имя и «своё время»/«свой город» — ввод словами.
+   *
+   * Ожидание своего вида, а не опросного: ответ на опросе двигает опрос
+   * дальше, а правка настройки не должна двигать ничего.
+   */
+  bot.callbackQuery(MENU_ACTION.askName, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await setAwaiting(db, active.userId, AWAITING.setName);
+    await askOnSettings(ctx, active.texts.settings.askName, []);
+  });
+
+  bot.callbackQuery(MENU_ACTION.ownMorning, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await setAwaiting(db, active.userId, AWAITING.setMorning);
+    await askOnSettings(ctx, active.texts.onboarding.timeAsk, []);
+  });
+
+  bot.callbackQuery(MENU_ACTION.ownEvening, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await setAwaiting(db, active.userId, AWAITING.setEvening);
+    await askOnSettings(ctx, active.texts.onboarding.timeAsk, []);
+  });
+
+  bot.callbackQuery(MENU_ACTION.ownCity, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await setAwaiting(db, active.userId, AWAITING.setCity);
+    await askOnSettings(ctx, active.texts.onboarding.cityAsk, []);
+  });
+
+  bot.callbackQuery(MENU_ACTION.eveningOff, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    await setEvening(db, active.userId, null);
+    logger.info({ userId: active.userId }, 'Вечерние напоминания выключены из настроек');
+
+    await showSettings(ctx, active.texts.settings.savedEveningOff);
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.morningPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const time = ctx.callbackQuery.data.slice(MENU_ACTION.morningPrefix.length);
+
+    // Значение из чужой кнопки в дело не идёт: список закрытый.
+    if (!MORNING_TIMES.includes(time as (typeof MORNING_TIMES)[number])) return;
+
+    await setMorning(db, active.userId, time);
+    logger.info({ userId: active.userId, time }, 'Утреннее время изменено из настроек');
+
+    await showSettings(ctx, active.texts.settings.savedMorning(time));
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.eveningPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const time = ctx.callbackQuery.data.slice(MENU_ACTION.eveningPrefix.length);
+
+    if (!EVENING_TIMES.includes(time as (typeof EVENING_TIMES)[number])) return;
+
+    await setEvening(db, active.userId, time);
+    logger.info({ userId: active.userId, time }, 'Вечернее время изменено из настроек');
+
+    await showSettings(ctx, active.texts.settings.savedEvening(time));
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.cityPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const zone = ctx.callbackQuery.data.slice(MENU_ACTION.cityPrefix.length);
+
+    if (!TIMEZONES.some((one) => one.zone === zone)) return;
+
+    /**
+     * Сроки не пересчитываются, и это решение, а не упущение.
+     *
+     * Пересчёт положен только первому подтверждению: тогда пояс угадали
+     * неверно, и сроки надо поправить. А человек, сменивший город здесь,
+     * переехал — сроки, которые он называл раньше, были верны в тот
+     * момент. Признак firstConfirmation у прошедшего опрос уже ложь, и
+     * заведён он ровно для этой разницы.
+     */
+    await setTimezone(db, active.userId, zone);
+    logger.info({ userId: active.userId, zone }, 'Пояс изменён из настроек');
+
+    await showSettings(ctx, active.texts.settings.savedCity(cityOfZone(zone) ?? zone));
+  });
+
+  // ── Сферы: те же кнопки, что на опросе, но своим действием ────────────
+  /** Что человек ведёт сейчас — из базы, а не из подписей клавиатуры. */
+  async function myTopicNames(userId: string): Promise<readonly string[]> {
+    return (await listTopics(db, userId)).map((one) => one.name);
+  }
+
+  async function showTopicsScreen(
+    ctx: CallbackQueryContext<Context>,
+    note?: string,
+  ): Promise<void> {
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const mine = await myTopicNames(active.userId);
+
+    await askOnSettings(ctx, note ?? active.texts.settings.askTopics, [
+      ...topicRows(active.texts, mine, MENU_ACTION.topicSetPrefix),
+      [{ label: active.texts.settings.buttonTopicsDone, action: MENU_ACTION.topicsSetDone }],
+    ]);
+  }
+
+  bot.callbackQuery(MENU_ACTION.askTopics, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showTopicsScreen(ctx);
+  });
+
+  bot.callbackQuery(MENU_ACTION.topicsSetDone, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const mine = await myTopicNames(active.userId);
+
+    await showSettings(ctx, active.texts.settings.savedTopics(mine.join(', ')));
+  });
+
+  bot.callbackQuery(new RegExp(`^${MENU_ACTION.topicSetPrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const name = ctx.callbackQuery.data.slice(MENU_ACTION.topicSetPrefix.length);
+
+    if (!TOPIC_CHOICES.includes(name as (typeof TOPIC_CHOICES)[number])) return;
+
+    const mine = await myTopicNames(active.userId);
+    const has = mine.includes(name);
+
+    /**
+     * Убрать последнюю сферу нельзя.
+     *
+     * Классификация без списка не работает: записи ушли бы в никуда, а
+     * человек узнал бы об этом по пустому разбору. Отказ называет причину.
+     */
+    if (has && mine.length === 1) {
+      await showTopicsScreen(ctx, active.texts.settings.lastTopicKept);
+      return;
+    }
+
+    if (has) {
+      /**
+       * Сферы вне предложенного списка не трогаем.
+       *
+       * archiveTopicsExcept убирает всё, чего нет в списке «оставить»,
+       * поэтому свои темы человека — заведённые не из этих девяти —
+       * обязаны в него попасть. Иначе снятие одной галочки увозило бы в
+       * архив всё остальное, что он вёл.
+       */
+      await archiveTopicsExcept(
+        db,
+        active.userId,
+        mine.filter((one) => one !== name),
+      );
+    } else {
+      await appendTopics(db, active.userId, [name], await settings?.number('maxTopics'));
+    }
+
+    logger.info({ userId: active.userId, topic: name, was: has }, 'Сфера переключена из настроек');
+
+    await showTopicsScreen(ctx);
+  });
   // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
   /**
    * Полный бэклог по темам. Два входа, одна реализация: пункт меню и

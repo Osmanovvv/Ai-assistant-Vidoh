@@ -687,3 +687,174 @@ describe('«Оставить на потом» оставляет сводку �
     expect(textOf(edited)).toBe(defaultTexts.answer.laterAccepted);
   });
 });
+
+describe('настройки §12.1: времена, пояс, сферы, имя', () => {
+  /**
+   * Строка §12.1 обещает четыре величины: «Темы, время напоминаний,
+   * часовой пояс, выключатель напоминаний». До ревизии второго этапа
+   * экран умел только последнюю: человек, выбравший на опросе 08:00, не
+   * мог изменить время ничем — ни кнопкой, ни словами, — а пояс, который
+   * ломает все сроки разом, правился только через разработчика.
+   *
+   * Проверки идут через настоящие обработчики и настоящую базу: связка
+   * здесь и была дырой, а не сами служебные функции — они работали.
+   */
+  async function settingsRow() {
+    const [row] = await testDb().select().from(userSettings).where(eq(userSettings.userId, userId));
+
+    return row;
+  }
+
+  async function myTopics(): Promise<readonly string[]> {
+    const rows = await testDb().select().from(topics).where(eq(topics.userId, userId));
+
+    return rows.filter((one) => !one.isArchived).map((one) => one.name);
+  }
+
+  it('экран называет все четыре величины, а не одну', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'работа');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.settings));
+
+    const screen = textOf(calls.at(-1));
+
+    // Времена, пояс и сферы — то, чего на экране не было вовсе.
+    expect(screen).toContain('08:30');
+    expect(screen).toContain('Москва');
+    expect(screen).toContain('работа');
+
+    // И кнопки ко всем четырём, а не только к выключателям §11.
+    const buttons = keyboardOf(calls.at(-1)).map((one) => one.text);
+
+    expect(buttons).toContain(defaultTexts.settings.buttonMorning);
+    expect(buttons).toContain(defaultTexts.settings.buttonEvening);
+    expect(buttons).toContain(defaultTexts.settings.buttonCity);
+    expect(buttons).toContain(defaultTexts.settings.buttonTopics);
+  });
+
+  it('утреннее время меняется кнопкой и видно новое значение', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askMorning));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.morningPrefix + '09:00'));
+
+    expect((await settingsRow())?.morningTime).toBe('09:00:00');
+
+    // Человек должен увидеть, что стало, а не догадываться.
+    expect(textOf(calls.at(-1))).toContain('09:00');
+  });
+
+  it('чужое время из подделанной кнопки не принимается', async () => {
+    // callback_data не секретна: список времён закрытый, и значение
+    // мимо него в базу попадать не должно.
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.morningPrefix + '03:33'));
+
+    expect((await settingsRow())?.morningTime).toBe('08:30:00');
+  });
+
+  it('«не надо вечером» выключает вечернее и только его', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.eveningOff));
+
+    const row = await settingsRow();
+
+    expect(row?.eveningOn).toBe(false);
+    // Человек просил не писать вечером, а не молчать вовсе.
+    expect(row?.notificationsOn).toBe(true);
+  });
+
+  it('город меняется кнопкой, и сроки при этом не пересчитываются', async () => {
+    /**
+     * Пересчёт положен только первому подтверждению пояса: тогда мы
+     * угадали неверно. Человек, сменивший город в настройках, переехал —
+     * сроки, которые он называл раньше, были верны в тот момент.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const when = new Date(Date.UTC(2026, 8, 15, 9, 0, 0));
+    const itemId = await addItem({
+      owner: userId,
+      text: 'к зубному',
+      topic: 'здоровье',
+      deadlineAt: when,
+    });
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askCity));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.cityPrefix + 'Asia/Omsk'));
+
+    expect(textOf(calls.at(-1))).toContain('Омск');
+
+    // Срок остался тем, который человек называл.
+    expect((await itemRow(itemId))?.deadlineAt?.toISOString()).toBe(when.toISOString());
+  });
+
+  it('сферу можно добавить и убрать', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'работа');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
+
+    expect(await myTopics()).toContain('здоровье');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
+
+    expect(await myTopics()).not.toContain('здоровье');
+  });
+
+  it('последнюю сферу убрать нельзя, и причина названа', async () => {
+    // Классификация без списка не работает: записи ушли бы в никуда.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'работа');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'работа'));
+
+    expect(await myTopics()).toEqual(['работа']);
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.settings.lastTopicKept);
+  });
+
+  it('снятие галочки не уносит в архив свои сферы человека', async () => {
+    /**
+     * `archiveTopicsExcept` убирает всё, чего нет в списке «оставить».
+     * Значит темы, заведённые не из девяти предложенных, обязаны в него
+     * попасть — иначе одна снятая галочка увозила бы в архив всё
+     * остальное, что человек вёл.
+     */
+    const { bot } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'работа');
+    await addTopic(userId, 'мотоцикл');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'работа'));
+
+    const left = await myTopics();
+
+    expect(left).not.toContain('работа');
+    expect(left).toContain('мотоцикл');
+  });
+
+  it('«Имя» ждёт ответа словами — и своим видом ожидания', async () => {
+    /**
+     * Вид ожидания свой, а не опросный: ответ на опросе двигает опрос
+     * дальше, а человек, поправивший имя через месяц, не должен снова
+     * оказаться в знакомстве.
+     */
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askName));
+
+    expect((await settingsRow())?.awaitingInput).toBe('set:name');
+  });
+});

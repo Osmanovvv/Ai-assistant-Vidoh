@@ -231,6 +231,36 @@ export const reserved: TextProfile = {
     buttonRemindersOn: 'Включить напоминания',
     buttonQuietOff: 'Можно писать ночью',
     buttonQuietOn: 'Не писать ночью',
+
+    morningAt: (time) => `Утром пишу в ${time}.`,
+    eveningAt: (time) => `Вечером — в ${time}.`,
+    eveningNever: 'Вечером не пишу.',
+    cityIs: (city) => `Город: ${city}.`,
+    nameIs: (name) => `Зову тебя ${name}.`,
+    nameNone: 'По имени не зову.',
+    topicsAre: (list) => `Сферы: ${list}.`,
+
+    buttonMorning: 'Утро',
+    buttonEvening: 'Вечер',
+    buttonCity: 'Город',
+    buttonName: 'Имя',
+    buttonTopics: 'Сферы',
+
+    askMorning: 'Во сколько писать утром?',
+    askEvening: 'Во сколько писать вечером?',
+    askCity: 'В каком городе ты сейчас?',
+    askName: 'Как тебя звать?',
+    askTopics: 'Отметь свои сферы. Нажатие включает и выключает, потом нажми «Готово».',
+    buttonTopicsDone: 'Готово',
+
+    savedMorning: (time) => `Готово, утром теперь в ${time}.`,
+    savedEvening: (time) => `Готово, вечером теперь в ${time}.`,
+    savedEveningOff: 'Готово, вечером писать не буду.',
+    savedCity: (city) => `Готово, считаю по времени города ${city}.`,
+    savedName: (name) => `Готово, буду звать ${name}.`,
+    savedTopics: (list) => `Готово. Сферы: ${list}.`,
+
+    lastTopicKept: 'Одну сферу оставлю: без сфер записи будет некуда раскладывать.',
   },
 
   returning: {

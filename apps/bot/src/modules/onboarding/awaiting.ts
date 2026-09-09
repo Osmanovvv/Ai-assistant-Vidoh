@@ -37,6 +37,19 @@ export const AWAITING = {
   promo: 'promo',
   /** `edit:6f1e…` — правка текста записи словами. */
   editPrefix: 'edit:',
+
+  /**
+   * То же словами, но **из настроек**, а не из опроса (§12.1).
+   *
+   * Виды отдельные, потому что дальше пути расходятся: ответ на опросе
+   * двигает опрос (`askNext`), а правка из настроек возвращает человека
+   * в настройки и ничего не двигает. Один вид на оба случая означал бы,
+   * что человек, поправивший время через месяц, снова попадает в опрос.
+   */
+  setName: 'set:name',
+  setMorning: 'set:morning',
+  setEvening: 'set:evening',
+  setCity: 'set:city',
 } as const;
 
 /**
@@ -67,6 +80,10 @@ export function parseAwaiting(value: string | null): Awaiting | undefined {
     AWAITING.evening,
     AWAITING.city,
     AWAITING.promo,
+    AWAITING.setName,
+    AWAITING.setMorning,
+    AWAITING.setEvening,
+    AWAITING.setCity,
   ];
 
   return known.includes(value) ? { kind: value } : undefined;
