@@ -11,7 +11,13 @@ import { aiStage, type AiStage } from '../../db/schema.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { errorsView, restartBatch } from '../../modules/admin/errors.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
-import { promoRows, savePromo, setPromoEnabled } from '../../modules/billing/promo.service.js';
+import {
+  CODE_MAX,
+  CODE_MIN,
+  promoRows,
+  savePromo,
+  setPromoEnabled,
+} from '../../modules/billing/promo.service.js';
 import {
   cancelDraft,
   countBroadcasts,
@@ -830,7 +836,12 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
         void settings.all().then(
           (rows) => {
             /**
-             * Чего в §15 просят, а здесь нет — и почему.
+             * Настройки без читателя в коде — и почему это важно.
+             *
+             * Заголовок был шире: «чего в §15 просят, а здесь нет».
+             * Кладётся сюда другое, и разбор ревизии поймал заголовок на
+             * слове: пустой список означает «у каждой настройки есть
+             * читатель», а читался как «по §15 долгов нет».
              *
              * **Список считается, а не зашивается.** Ревизия четвёртого
              * этапа нашла здесь литерал `missing: []` — то есть панель
@@ -1096,7 +1107,9 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
                * следующие минуты.
                */
               const why: Record<string, string> = {
-                'bad-code': 'Код — латиница, цифры и дефис, от 4 до 24 знаков',
+                // Числа — из того же места, где живёт шаблон: подсказка в
+                // панели, отказ здесь и сама проверка расходились втроём.
+                'bad-code': `Код — латиница, цифры и дефис, от ${String(CODE_MIN)} до ${String(CODE_MAX)} знаков`,
                 'bad-price': 'Обе цены должны быть больше нуля',
                 exists: 'Такой код уже есть. Выключите старый или назовите новый',
               };

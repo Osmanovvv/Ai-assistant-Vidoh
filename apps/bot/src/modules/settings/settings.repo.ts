@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 
 import { appSettings } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { STARS_MAX_SUBSCRIPTION } from '../billing/providers/stars.js';
 import type { BufferLimits } from '../buffer/buffer.service.js';
 
 /**
@@ -251,10 +252,20 @@ export const SETTINGS = {
     key: 'price.monthly_stars',
     fallback: 0,
     measured: false,
-    // Подписка за звёзды у Telegram ограничена сверху, и запас
-    // здесь шире его предела нарочно: свой предел проверяет рельс.
     min: 0,
-    max: 1_000_000,
+    /**
+     * Потолок — тот самый, что проверяет рельс, а не свой.
+     *
+     * Прежде здесь стоял запас в сто раз шире «нарочно: свой предел
+     * проверяет рельс». Довод неверен по следствию: рельс проверяет
+     * **на выставлении счёта**, то есть уже у человека. Заказчица
+     * вводила 12 000, панель отвечала «Сохранено», подсказка рядом
+     * обещала потолок 10 000, а месяц перестал продаваться — и связать
+     * это с настройкой было нечем.
+     *
+     * Отказ на записи говорит словами: «допустимо от 0 до 10000».
+     */
+    max: STARS_MAX_SUBSCRIPTION,
     readBy: 'экран подписки',
   },
   priceYearlyStars: {
@@ -262,6 +273,16 @@ export const SETTINGS = {
     fallback: 0,
     measured: false,
     min: 0,
+    /**
+     * У годового потолок **другой**, и он нам не известен.
+     *
+     * Подписка в звёздах бывает только месячной, поэтому год продаётся
+     * разовым платежом, а у него свой предел в документации Bot API —
+     * мы его не выясняли. Ставить сюда потолок подписки значило бы
+     * запретить то, что Telegram, возможно, разрешает; поэтому запас
+     * остаётся широким, и отказ по-прежнему приходит от рельса.
+     * Выясним число — приедет сюда так же, одним экземпляром.
+     */
     max: 1_000_000,
     readBy: 'экран подписки',
   },
@@ -469,6 +490,20 @@ export class SettingsRegistry {
       readonly measured: boolean;
       /** Задано ли значение в базе или работает умолчание из кода. */
       readonly set: boolean;
+      /**
+       * Что лежит в базе, если оно **отвергнуто** пределами.
+       *
+       * Пусто в обычном случае: значение из базы и есть действующее.
+       * Непусто означает разлад — в строке одно, работает другое.
+       *
+       * Ревизия панели: `value` берётся у `number()`, а тот на значении
+       * вне пределов молча возвращает умолчание из кода (см. разбор
+       * там же). При 5000 в базе панель печатала «30» и рядом не
+       * ставила пометку «(из кода)», потому что строка-то есть — то
+       * есть утверждала, что в базе тридцать. Откат был виден только
+       * предупреждением в журнале, куда заказчица не смотрит.
+       */
+      readonly rejected?: string | undefined;
     }[]
   > {
     const names = Object.keys(SETTINGS) as SettingName[];
@@ -479,18 +514,29 @@ export class SettingsRegistry {
       fallback: number;
       measured: boolean;
       set: boolean;
+      rejected?: string | undefined;
     }[] = [];
 
     for (const name of names) {
       const setting = SETTINGS[name];
+      const raw = await this.raw(setting.key);
+      const value = await this.number(name);
+
+      /**
+       * Отвергнутым считается то, что в базе есть и на действующее не
+       * похоже. Сравнение по числу, а не по строке: «030» и «30» —
+       * одно и то же значение, и звать это разладом незачем.
+       */
+      const rejected = raw !== undefined && Number(raw) !== value ? raw : undefined;
 
       out.push({
         name,
         key: setting.key,
-        value: await this.number(name),
+        value,
         fallback: setting.fallback,
         measured: setting.measured,
-        set: (await this.raw(setting.key)) !== undefined,
+        set: raw !== undefined,
+        ...(rejected === undefined ? {} : { rejected }),
       });
     }
 

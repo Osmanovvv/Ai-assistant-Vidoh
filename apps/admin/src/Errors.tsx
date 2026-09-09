@@ -283,7 +283,7 @@ export function ErrorsPanel(): React.ReactElement {
               </thead>
               <tbody>
                 {page.calls.map((row) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} data-testid={`failed-call-${row.id}`}>
                     <td>{when(row.at)}</td>
                     <td>{row.who}</td>
                     <td>{row.stage}</td>
