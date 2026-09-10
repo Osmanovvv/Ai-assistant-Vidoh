@@ -1,5 +1,5 @@
 import { closeDb, getDb } from '../infra/db.js';
-import { loadActivePrompt } from '../modules/ai/prompts/registry.js';
+import { loadActivePrompt, promptFailureAdvice } from '../modules/ai/prompts/registry.js';
 import { SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
 import type { AiStage } from '../db/schema.js';
 
@@ -24,15 +24,35 @@ import type { AiStage } from '../db/schema.js';
 const db = getDb();
 const stages = Object.keys(SCHEMA_BY_STAGE) as AiStage[];
 
-const missing: string[] = [];
+/** Этап, промпт которого не поднялся: причина и что с ней делать. */
+interface Broken {
+  readonly stage: AiStage;
+  readonly why: string;
+  readonly advice: string;
+}
+
+const broken: Broken[] = [];
 const found: string[] = [];
 
 for (const stage of stages) {
   try {
     const prompt = await loadActivePrompt(db, stage);
     found.push(`${stage}: ${prompt.version}`);
-  } catch {
-    missing.push(stage);
+  } catch (error) {
+    /**
+     * Причина не теряется.
+     *
+     * «Заливки не было» — только одна из четырёх, и три остальные
+     * заливкой не лечатся: схема в базе разошлась с кодом, схемы нет в
+     * коде вовсе, база не ответила. Прежде все четыре сваливались в
+     * `catch {}` и печатались одной строкой с одним советом — а бот к
+     * этому моменту уже поднят и хоронит выгрузки.
+     */
+    broken.push({
+      stage,
+      why: error instanceof Error ? error.message : String(error),
+      advice: promptFailureAdvice(error),
+    });
   }
 }
 
@@ -40,12 +60,23 @@ await closeDb();
 
 for (const line of found) process.stdout.write(`  ${line}\n`);
 
-if (missing.length > 0) {
-  process.stderr.write(
-    `\nНет активного промпта: ${missing.join(', ')}.\n` +
-      'Бот поднимется здоровым и упадёт на первой выгрузке.\n' +
-      'Залить: ./ops/seed-prompts.sh --activate\n',
-  );
+if (broken.length > 0) {
+  process.stderr.write('\nРазбор работать не будет:\n');
+
+  for (const item of broken) {
+    process.stderr.write(`  ${item.stage}: ${item.why}\n`);
+  }
+
+  /**
+   * Совет — по одному разу на причину, а не на этап: отказ базы валит
+   * все шесть этапов разом, и шесть одинаковых рецептов подряд читать
+   * перестанут вместе со всем остальным.
+   */
+  for (const advice of new Set(broken.map((item) => item.advice))) {
+    process.stderr.write(`\n  ${advice}\n`);
+  }
+
+  process.stderr.write('\nБот при этом уже поднялся здоровым и упадёт на первой выгрузке.\n');
   process.exit(1);
 }
 

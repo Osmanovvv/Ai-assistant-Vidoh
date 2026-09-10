@@ -206,15 +206,54 @@ export function createLogger(
    * же: молча потерять журнал хуже, чем потерять его громко.
    */
   if (file !== undefined && file !== '') {
-    try {
-      const streams = [
-        { level, stream: pino.destination({ dest: 1, sync: false }) },
-        { level, stream: pino.destination({ dest: file, append: true, mkdir: true, sync: false }) },
-      ];
+    const toStdout = pino.destination({ dest: 1, sync: false });
 
-      return pino(base, pino.multistream(streams, { levels: pino.levels.values }));
+    try {
+      const toFile = pino.destination({ dest: file, append: true, mkdir: true, sync: false });
+
+      /**
+       * **Отказ файла обязан быть слышен, а не смертелен** (ревизия
+       * этапов 1–2).
+       *
+       * `try/catch` ловит только синхронный бросок, а поток открыт с
+       * `sync: false`: папка не создалась, кончилось место, нет прав —
+       * всё это приходит **событием** `error` из колбэка открытия файла.
+       * Слушателя у него не было ни одного, значит EventEmitter бросал
+       * необработанное исключение, а `uncaughtException` в боте не
+       * ставится нарочно. То есть ровно те три причины, ради которых
+       * писался откат ниже, процесс убивали — и `restart: unless-stopped`
+       * заводил петлю перезапусков.
+       *
+       * Случай не выдуманный: том `./logs` создаёт демон Docker от root,
+       * а бот работает под непривилегированным пользователем.
+       *
+       * Говорим один раз: поток отказывает на каждой записи, и жалоба на
+       * каждую строку утопила бы сам журнал.
+       */
+      let told = false;
+
+      toFile.on('error', (error: unknown) => {
+        if (told) return;
+        told = true;
+
+        pino(base, toStdout).error(
+          { err: error, file },
+          'Журнал в файл не пишется, остаётся только вывод: разбирать вчерашнее будет нечем',
+        );
+      });
+
+      return pino(
+        base,
+        pino.multistream(
+          [
+            { level, stream: toStdout },
+            { level, stream: toFile },
+          ],
+          { levels: pino.levels.values },
+        ),
+      );
     } catch (error) {
-      const fallback = pino(base);
+      const fallback = pino(base, toStdout);
       fallback.error({ err: error, file }, 'Журнал в файл не открылся, пишу только в вывод');
       return fallback;
     }
