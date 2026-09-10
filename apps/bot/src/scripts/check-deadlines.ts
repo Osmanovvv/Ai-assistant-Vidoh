@@ -148,6 +148,18 @@ try {
 
   process.stdout.write(`\nОтброшено сроков: ${String(rejected.length)}\n`);
   for (const reason of rejected) process.stdout.write(`  — ${reason}\n`);
+
+  /**
+   * Цена замера — вслух.
+   *
+   * Страж расхода тут стоял с самого начала, но работала только
+   * защитная его половина: потолок до прогона. Назвать цену тому, кто
+   * платит, он не успевал — `costReport` не звался ни разу, и замер,
+   * идущий через полную модель, выглядел бесплатным.
+   */
+  process.stdout.write(
+    String.fromCharCode(10) + (await guard.costReport()) + String.fromCharCode(10),
+  );
 } finally {
   await closeDb();
 }

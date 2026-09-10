@@ -68,9 +68,9 @@ import {
   type PipelineJob,
 } from './infra/queue.js';
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
-import { createServer } from './http/server.js';
+import { createServer, runHealthChecks, type HealthCheck } from './http/server.js';
 import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
-import { modelsWithoutPrice } from './modules/metering/pricing.js';
+import { warnAboutUnpricedModels } from './modules/metering/pricing.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { startScheduler } from './modules/scheduler/scheduler.service.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
@@ -147,6 +147,11 @@ function createAlertSink(api: Api, chatId: number | undefined): AlertSink {
   };
 }
 
+/**
+ * Сколько ждать зависимости при подъёме. Разбор — у самой проверки ниже.
+ */
+const STARTUP_HEALTH_TIMEOUT_MS = 10_000;
+
 async function main(): Promise<void> {
   if (env.NODE_ENV === 'production') {
     for (const warning of productionWarnings(env)) {
@@ -155,7 +160,50 @@ async function main(): Promise<void> {
   }
 
   const db = getDb();
-  await Promise.all([pingDb(db), pingRedis(getRedis())]);
+
+  /**
+   * Один список — и подъёму, и готовности `/health/ready`.
+   *
+   * Разойдись они, и готовность стерегла бы не то, что проверено при
+   * старте: одно и то же считалось бы двумя способами.
+   */
+  const healthChecks: readonly HealthCheck[] = [
+    { name: 'postgres', check: () => pingDb(db) },
+    { name: 'redis', check: () => pingRedis(getRedis()) },
+  ];
+
+  /**
+   * У стартовой проверки обязан быть срок (ревизия этапов 1–2).
+   *
+   * Прежде здесь стоял голый `Promise.all` без срока — и проверка была
+   * бесполезна ровно тогда, когда нужна. Клиент ioredis настроен копить
+   * команды до возвращения связи (`infra/redis.ts`), поэтому `ping` при
+   * мёртвом Redis не возвращается **никогда**. Процесс висел молча, не
+   * подняв даже `/health`; `restart: unless-stopped` перезапускает по
+   * выходу, а не по нездоровью, — значит не перезапускал вовсе. А
+   * выкладка, не дождавшись здоровья, печатала хвост журнала, в котором
+   * про этот запуск ничего и не было.
+   *
+   * Десять секунд, а не две как у готовности: там на другом конце ждёт
+   * обратившийся, здесь не ждёт никто. Порог больше собственного срока
+   * подключения Postgres (пять секунд), иначе наш общий «не ответил»
+   * затирал бы причину, которую драйвер назвал бы сам.
+   */
+  const health = await runHealthChecks(healthChecks, STARTUP_HEALTH_TIMEOUT_MS);
+
+  if (!health.ok) {
+    /**
+     * Отчёт уходит наверх **полем**, а не склеенной строкой.
+     *
+     * По нему в журнале отбирается «упало на redis», и он переживает
+     * выкладку: журнал пишется в файл, а не только в вывод контейнера.
+     * Дальше сработает общий приёмник `main` — `logger.fatal` и выход,
+     * после которого контейнер поднимут заново.
+     */
+    logger.fatal({ checks: health.checks }, 'Зависимости не ответили при подъёме');
+    process.exit(1);
+  }
+
   logger.info('Postgres и Redis отвечают');
 
   // TELEGRAM_API_ROOT задаётся только сквозным тестом (2.23); в бою
@@ -370,13 +418,26 @@ async function main(): Promise<void> {
     );
   }
 
-  // §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
-  // цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
-  // при старте, а не из отчёта через месяц.
-  const unpriced = modelsWithoutPrice([speech.name]);
-  if (unpriced.length > 0) {
-    logger.warn({ models: unpriced }, 'Цена модели неизвестна: расход будет считаться неполным');
-  }
+  /**
+   * §10.5 ТЗ: себестоимость выгрузки должна быть посчитана. Модель без
+   * цены в прайс-листе даёт null вместо суммы, и узнать об этом лучше
+   * при старте, а не из отчёта через месяц.
+   *
+   * **Спрашиваем у всех, кто берёт деньги, а не у одного.** Проверка
+   * написана 25.08.2026, когда платный провайдер был один —
+   * распознавание; полная модель, лёгкая и вектора приехали следующим
+   * коммитом, а список остался прежним, и проверялась четверть расхода.
+   * Имя модели приходит из окружения, значит смена ветки на ту, которой
+   * нет в прайсе, уводила бы три четверти расхода на выгрузку в «цена
+   * неизвестна» — ровно то, ради чего проверка и написана. Ниже по
+   * течению об этом молчат оба: страж расхода ругается только при
+   * заданном потолке, мягкий лимит — только у человека с лимитом.
+   *
+   * Имена берутся у самих провайдеров, а не переписываются сюда руками:
+   * в учёт попадает то же `provider.name`, и второй список разошёлся бы
+   * с первым молча.
+   */
+  warnAboutUnpricedModels(logger, [speech.name, llm.name, llmLight.name, embedder.name]);
 
   // Один отправитель на оба конца разговора: подтверждение приёма шлёт
   // обработчик входящих, результат — конвейер, но правят они одно и то
@@ -1003,10 +1064,9 @@ async function main(): Promise<void> {
               }
             : {}),
         }),
-    healthChecks: [
-      { name: 'postgres', check: () => pingDb(db) },
-      { name: 'redis', check: () => pingRedis(getRedis()) },
-    ],
+    // Тот же список, что проверялся при подъёме: готовность обязана
+    // стеречь ровно то, без чего бот не поднялся бы.
+    healthChecks,
     ...(billingRouter === undefined ? {} : { billingRouter }),
     webhookPath: WEBHOOK_PATH,
     // Сквозной идентификатор запроса на весь конвейер обработки (§18 ТЗ).

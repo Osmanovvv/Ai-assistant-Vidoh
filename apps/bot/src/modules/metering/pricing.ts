@@ -250,3 +250,34 @@ export function modelsWithoutPrice(
 ): readonly string[] {
   return models.filter((model) => pricing[model] === undefined);
 }
+
+/**
+ * Проверка цен при подъёме — вместе со своим голосом (§10.5).
+ *
+ * **Вопрос и ответ живут в одном месте нарочно.** Прежде вопрос задавался
+ * в `index.ts`, а ответ уходил строкой `logger.warn` там же — и оба были
+ * непроверяемы: поднять запуск значит поднять базу, Redis, Telegram и
+ * провайдеров. Отсюда и вышел молчаливый отказ: спрашивали у одного
+ * распознавания, хотя платных провайдеров четыре, и заметить это было
+ * нечем.
+ *
+ * **Повторы схлопываются**: полная и лёгкая модель могут быть настроены
+ * на одну и ту же ветку, и жаловаться на неё дважды незачем.
+ *
+ * Уровень `warn`, а не `error`: расход считается неполным, но продукт
+ * работает. И не `debug` — умолчание уровня в бою `info`, значит `debug`
+ * не напечатается вовсе, и отказ снова стал бы молчаливым.
+ */
+export function warnAboutUnpricedModels(
+  logger: { warn: (context: object, message: string) => void } | undefined,
+  models: readonly string[],
+  pricing: Readonly<Record<string, ModelPricing>> = PRICING,
+): readonly string[] {
+  const unpriced = modelsWithoutPrice([...new Set(models)], pricing);
+
+  if (unpriced.length > 0) {
+    logger?.warn({ models: unpriced }, 'Цена модели неизвестна: расход будет считаться неполным');
+  }
+
+  return unpriced;
+}
