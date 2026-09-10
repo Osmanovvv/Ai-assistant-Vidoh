@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import type { Item } from '../../db/schema.js';
+import { cardKeyboard } from '../../bot/handlers/card.js';
+
 import { keyboardOf as keyboardOfAwaiting } from '../../bot/handlers/awaiting.js';
 import { keyboardOf as keyboardOfOnboarding } from '../../bot/handlers/onboarding.js';
 import {
@@ -72,22 +75,32 @@ describe('пары кнопок продукта', () => {
 });
 
 describe('карточка записи', () => {
-  it('четыре кнопки карточки остаются по две', () => {
-    // Здесь всё было в порядке и до починки: подписи короткие. Тест
-    // сторожит, чтобы раскладка не «улучшила» то, что и так работало.
-    const card = defaultTexts.card;
+  it('раскладка карточки та, что уходит человеку', () => {
+    /**
+     * Раскладка берётся у `cardKeyboard`, а не собирается здесь руками.
+     *
+     * Прежде эта проверка складывала свою копию из четырёх подписей — и
+     * когда у карточки появилась пятая кнопка «В другую сферу», осталась
+     * зелёной, сторожа экран, которого больше нет. Тот же приём, за
+     * который проект уже бил себя по рукам на клавиатуре опроса: страж
+     * обязан смотреть на то, что уходит человеку.
+     */
+    const keyboard = cardKeyboard(
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        text: 'Записать сына к врачу',
+        topic: 'здоровье',
+        status: 'new',
+        deadlineAt: null,
+        deadlineAccuracy: null,
+      } as unknown as Item,
+      defaultTexts,
+      'menu',
+    );
 
     expect(
-      labelsOf(
-        packRows([
-          [button(card.buttonDone), button(card.buttonSnooze)],
-          [button(card.buttonEdit), button(card.buttonDelete)],
-        ]),
-      ),
-    ).toEqual([
-      ['Сделано', 'Отложить'],
-      ['Изменить', 'Убрать'],
-    ]);
+      keyboard.inline_keyboard.map((row) => row.map((one) => ('text' in one ? one.text : ''))),
+    ).toEqual([['Сделано', 'Отложить'], ['Изменить', 'Убрать'], ['В другую сферу'], ['Назад']]);
   });
 });
 
