@@ -305,9 +305,11 @@ describe('уборка за собой', () => {
      * вопрос висит открытым вечно, а доля исходов «время вышло» занижена
      * ровно на таких людей.
      */
+    // Выгрузка вопроса уже разобрана: уборка нарочно не трогает вопрос
+    // той, что разбирают прямо сейчас.
     const [batch] = await testDb()
       .insert(batches)
-      .values({ userId, status: 'processing' })
+      .values({ userId, status: 'done' })
       .returning({ id: batches.id });
 
     const [item] = await testDb()

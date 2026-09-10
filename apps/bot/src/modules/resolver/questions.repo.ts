@@ -1,6 +1,11 @@
-import { and, desc, eq, isNull, lte } from 'drizzle-orm';
+import { and, desc, eq, isNull, lte, sql } from 'drizzle-orm';
 
-import { pendingQuestions, type PendingQuestion, type QuestionOutcome } from '../../db/schema.js';
+import {
+  batches,
+  pendingQuestions,
+  type PendingQuestion,
+  type QuestionOutcome,
+} from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 
@@ -174,12 +179,35 @@ export async function answerQuestion(
  * Нужна планировщику (3.14): пока его нет, протухшее закрывается при
  * первом же обращении к вопросу человека — но полагаться на то, что
  * человек придёт, нельзя.
+ *
+ * **Кроме вопросов выгрузки, которую разбирают прямо сейчас.** Разбор
+ * читает открытый вопрос дважды — в начале, чтобы сказать о нём модели,
+ * и в конце, применяя ответ, — а между чтениями лежит вызов модели, то
+ * есть секунды. Закрой строку в этот промежуток, и ответ человека «да, к
+ * прошлой» окажется отвечать нечему: правка не применится, слова уйдут в
+ * никуда, а человеку скажут «Остальное из этой фразы сохранила отдельно»,
+ * что читается как «основное записала».
+ *
+ * Раньше этой гонки не было: уборка появилась 10.09.2026, до неё срок
+ * закрывался только при обращении и по тем же часам, что и разбор.
+ * Условие ниже возвращает то же свойство — не задерживая уборку у всех
+ * остальных: разбор длится секунды, а срок вопроса измеряется часами.
  */
 export async function expireQuestions(db: Executor, now = new Date()): Promise<number> {
   const rows = await db
     .update(pendingQuestions)
     .set({ resolvedAt: now, outcome: 'timeout' })
-    .where(and(isNull(pendingQuestions.resolvedAt), lte(pendingQuestions.expiresAt, now)))
+    .where(
+      and(
+        isNull(pendingQuestions.resolvedAt),
+        lte(pendingQuestions.expiresAt, now),
+        sql`not exists (
+          select 1 from ${batches}
+          where ${batches.userId} = ${pendingQuestions.userId}
+            and ${batches.status} in ('queued', 'processing')
+        )`,
+      ),
+    )
     .returning({ id: pendingQuestions.id });
 
   return rows.length;

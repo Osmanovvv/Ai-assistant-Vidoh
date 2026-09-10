@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
-import { saveDraft } from '../items/items.repo.js';
+import { hasDraft, saveDraft } from '../items/items.repo.js';
 import { answerRemainder, readAnswer } from './answer.js';
 import { applyDecision, type Applied } from './patch.js';
 import {
@@ -81,6 +81,59 @@ export async function settlePendingQuestion(
   params: SettleParams,
 ): Promise<PendingResult> {
   const now = params.now ?? new Date();
+
+  /**
+   * Ответ есть, а вопроса, на который он отвечал, уже нет.
+   *
+   * Гонка, которую код описывает сам ниже: кнопку нажали, пока шли
+   * расшифровка и маршрутизация. Саму правку применила та кнопка — её
+   * повторять нельзя. А вот сказанное **сверх** ответа («да, к прошлой,
+   * и ещё купить чехол») до этой правки просто выбрасывалось: ни записи,
+   * ни черновика, ни строки в журнале. §9.1 запрещает ровно это.
+   *
+   * Оба места потери сведены к одному телу: страж иначе покрывал бы одну
+   * ветку и молчал про вторую.
+   */
+  const rescueOrphanAnswer = async (): Promise<PendingResult> => {
+    const said = params.answerText;
+    if (said === undefined) return { kind: 'none' };
+
+    /**
+     * Молчим, когда терять нечего.
+     *
+     * Голое «да» без вопроса — не отказ: содержания в нём нет, кнопка
+     * своё сделала. Строка в журнале на каждый такой случай обесценила бы
+     * ту, ради которой журнал и читают.
+     */
+    const orphaned = answerRemainder(said);
+    if (orphaned === '') return { kind: 'none' };
+
+    /**
+     * Дважды не кладём.
+     *
+     * Выгрузка возвращается в очередь при нашем простое и разбирается
+     * снова — до пяти раз. Без этой проверки человек получил бы пять
+     * копий черновика и пять реплик «Остальное сохранила отдельно».
+     */
+    if (await hasDraft(db, { batchId: params.batchId, text: orphaned })) {
+      return { kind: 'none' };
+    }
+
+    await saveDraft(db, {
+      userId: params.userId,
+      batchId: params.batchId,
+      text: orphaned,
+      reason: 'слова из ответа на уже снятый вопрос — сохранены отдельно',
+    });
+
+    params.logger?.warn(
+      { userId: params.userId, batchId: params.batchId },
+      'Ответ пришёл без открытого вопроса — слова сверх ответа сохранены черновиком',
+    );
+
+    return { kind: 'none', leftoverSaved: true };
+  };
+
   const open = await openQuestionOf(db, params.userId, now);
 
   if (!open) {
@@ -98,7 +151,7 @@ export async function settlePendingQuestion(
       batchId: params.batchId,
     });
 
-    if (unfinished === undefined) return { kind: 'none' };
+    if (unfinished === undefined) return await rescueOrphanAnswer();
 
     params.logger?.info(
       { userId: params.userId, batchId: params.batchId },
@@ -170,9 +223,15 @@ export async function settlePendingQuestion(
     now,
   });
 
-  // Между чтением и ответом вопрос мог снять кто-то ещё — например
-  // нажатие кнопки, пришедшее пока шла расшифровка.
-  if (outcome.kind === 'stale') return { kind: 'none' };
+  /**
+   * Между чтением и ответом вопрос мог снять кто-то ещё — например
+   * нажатие кнопки, пришедшее пока шла расшифровка.
+   *
+   * Дальше всё как при ответе без вопроса: саму правку применила та
+   * кнопка, а слова сверх ответа спасать было некому — `keepLeftover`
+   * объявлен выше, но сюда не доходил, и текст пропадал молча.
+   */
+  if (outcome.kind === 'stale') return await rescueOrphanAnswer();
 
   if (reading === 'separate') {
     return { kind: 'separate', carryOver: open.segment, leftoverSaved: await keepLeftover() };
