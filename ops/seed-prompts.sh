@@ -135,7 +135,18 @@ if [ -d docs/eval/runs ]; then
     RESOLVER_RUNS="resolver/runs"
   fi
 
-  sshx "rm -rf $REMOTE_DIR/eval && mkdir -p $REMOTE_DIR/eval/runs"
+  # **Саму папку `eval` сносить нельзя: она примонтирована в бота**
+  # (docker-compose.prod.yml, `./eval:/eval:ro`). Docker привязывает том
+  # по иноду: снесённую папку контейнер держит открытой и читает дальше,
+  # а новая на хозяине для него не существует. Отчёты уезжали бы в
+  # никуда до следующей выкладки — только она пересоздаёт контейнер,
+  # перезапуск оставляет тот же инод. На этом уже обжигались с
+  # Caddyfile — разбор записан рядом с его томом в compose.
+  #
+  # Поэтому чистим содержимое, а точку монтирования не трогаем:
+  # зеркало сохраняется, отменённый отчёт на сервере не остаётся.
+  sshx "mkdir -p $REMOTE_DIR/eval && find $REMOTE_DIR/eval -mindepth 1 -delete && mkdir -p $REMOTE_DIR/eval/runs" \
+    || fail "не удалось очистить папку отчётов на сервере"
 
   # shellcheck disable=SC2086
   tar -czf - -C docs/eval runs $RESOLVER_RUNS | ssh $SSH_OPTS "$HOST" "tar -xzf - -C $REMOTE_DIR/eval" \

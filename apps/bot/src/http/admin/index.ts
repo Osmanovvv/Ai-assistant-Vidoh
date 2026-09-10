@@ -48,7 +48,7 @@ import {
 import { saveText, textsView } from '../../modules/admin/texts.js';
 import { TextsRegistry } from '../../texts/registry.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
-import { MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
+import { hasAnyRun, MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
 import { accessView, checkParam, noteSubjects, recordAccess, type Exposure } from './audit.js';
 import { AUTH_ROUTES, createAuthRouter, requireAdmin, type AdminAuthConfig } from './auth.js';
 
@@ -1591,36 +1591,73 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
     const evalDir = deps.evalDir;
     const runner = deps.evalRunner;
 
+    /**
+     * Раздела нет — один ответ на оба «нет»: путь не задан и по пути
+     * пусто. Для читающего это одно состояние и одно лечение.
+     */
+    const OFF = {
+      enabled: false,
+      why:
+        'на сервере нет ни одного отчёта прогона контрольного набора, ' +
+        'а без них раздел не может судить о §10.3',
+      how: './ops/seed-prompts.sh (можно без --activate)',
+    } as const;
+
     closed('get', '/api/prompts', NOT_PERSONAL, (_req: Request, res: Response) => {
       if (evalDir === undefined) {
-        res.json({
-          enabled: false,
-          why:
-            'на сервере нет ни одного отчёта прогона контрольного набора, ' +
-            'а без них раздел не может судить о §10.3',
-          how: './ops/seed-prompts.sh (можно без --activate)',
-        });
+        res.json(OFF);
 
         return;
       }
 
-      void promptsView(db, evalDir).then(
-        (view) => {
-          /**
-           * `canRun` — есть ли кому прогнать набор.
-           *
-           * На боевом набора нет и быть не должно: в нём живые
-           * расшифровки (§16). Без этого признака панель рисовала бы
-           * кнопку прогона всегда, а на сервере такого пути нет — и
-           * нажатие давало бы невнятный отказ вместо честного «прогон
-           * идёт с машины разработчика».
-           */
-          res.json({
-            enabled: true,
-            ...view,
-            run: runner?.state() ?? { kind: 'idle' },
-            canRun: runner !== undefined,
-          });
+      /**
+       * Есть ли отчёты — спрашивается **у диска, на каждый запрос**.
+       *
+       * Прежде это решалось один раз при подъёме бота: путь сюда
+       * передавался только при найденном отчёте. А свежесть тех же
+       * отчётов читалась с диска каждый раз — одно число двумя
+       * способами. Связка от этого рвалась: заливка кладёт отчёты в
+       * работающий сервер и бота не перезапускает, значит раздел
+       * оставался выключенным до следующей выкладки, а рантбук лечил
+       * это командой, которая помочь не могла.
+       *
+       * Вопрос нарочно грубый — «есть ли хоть один», а не «годен ли».
+       * Годность разбирает `promptsView` и умеет объяснить словами, чем
+       * именно отчёт не годится. Спроси мы здесь про годность — человек
+       * читал бы «отчётов нет» там, где они есть и неполны, и лечил бы
+       * это заливкой тех же файлов.
+       */
+      void hasAnyRun(evalDir).then(
+        (any) => {
+          if (!any) {
+            res.json(OFF);
+
+            return;
+          }
+
+          return promptsView(db, evalDir).then(
+            (view) => {
+              /**
+               * `canRun` — есть ли кому прогнать набор.
+               *
+               * На боевом набора нет и быть не должно: в нём живые
+               * расшифровки (§16). Без этого признака панель рисовала бы
+               * кнопку прогона всегда, а на сервере такого пути нет — и
+               * нажатие давало бы невнятный отказ вместо честного «прогон
+               * идёт с машины разработчика».
+               */
+              res.json({
+                enabled: true,
+                ...view,
+                run: runner?.state() ?? { kind: 'idle' },
+                canRun: runner !== undefined,
+              });
+            },
+            (error: unknown) => {
+              deps.onError?.(error);
+              res.status(500).json({ error: 'не удалось прочитать промпты' });
+            },
+          );
         },
         (error: unknown) => {
           deps.onError?.(error);

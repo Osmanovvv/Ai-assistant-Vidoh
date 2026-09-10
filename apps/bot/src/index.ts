@@ -21,7 +21,7 @@ import {
   settleStopRequests,
 } from './modules/broadcast/broadcast.repo.js';
 import { sendChunk, type BroadcastSender } from './modules/broadcast/broadcast.service.js';
-import { newestRun } from './eval/freshness.js';
+import { hasAnyRun } from './eval/freshness.js';
 import {
   createPromoConsumer,
   registerBillingHandlers,
@@ -907,7 +907,20 @@ async function main(): Promise<void> {
   const evalDir =
     env.ADMIN_EVAL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../docs/eval');
 
-  const evalReady = (await newestRun(evalDir)) !== undefined;
+  /**
+   * Есть ли отчёты — вопрос **к диску на каждый запрос**, а не сюда.
+   *
+   * Отчёты кладёт в работающий сервер `./ops/seed-prompts.sh`, бота он
+   * не перезапускает (поднимает разовый `migrate`), а свежесть тех же
+   * отчётов панель и так читает с диска каждый раз. Признак,
+   * посчитанный один раз при старте, был вторым способом счёта того же
+   * числа — и раздел молчал до следующей выкладки, а рантбук лечил это
+   * командой, которая помочь не могла.
+   *
+   * Здесь остаётся только то, что и правда решается один раз: есть ли
+   * на этой машине сам набор, то есть кому прогонять.
+   */
+  const evalReady = await hasAnyRun(evalDir);
 
   /**
    * Кнопка прогона появляется только там, где есть **сам набор**.
@@ -925,8 +938,8 @@ async function main(): Promise<void> {
     logger.info(
       { папка: evalDir, отчёты: evalReady, случаев: evalCases },
       evalReady
-        ? 'Раздел промптов в панели включён'
-        : 'Раздела промптов в панели нет: отчётов прогона по этому пути не найдено',
+        ? 'Отчёты прогона на месте: раздел промптов в панели работает'
+        : 'Отчётов прогона по этому пути на старте нет: раздел включится сам, как только они появятся',
     );
   }
 
@@ -974,7 +987,11 @@ async function main(): Promise<void> {
           adminEnqueueUser: async (userId: string) => {
             await enqueueUserProcessing(queue, userId);
           },
-          ...(evalReady ? { adminEvalDir: evalDir } : {}),
+          /**
+           * Путь отдаётся всегда: это путь, а не признак. Показывать ли
+           * раздел, решает сама панель — вопросом к диску.
+           */
+          adminEvalDir: evalDir,
           ...(evalCases > 0
             ? {
                 adminEvalRunner: createEvalRunner({
