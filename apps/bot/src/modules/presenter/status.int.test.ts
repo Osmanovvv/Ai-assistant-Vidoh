@@ -27,7 +27,7 @@ function recordingSender() {
     },
     edit: ({ text }) => {
       edited.push(text);
-      return Promise.resolve();
+      return Promise.resolve('edited' as const);
     },
   };
 
@@ -82,7 +82,7 @@ describe('первое сообщение', () => {
         capturedThread = threadId;
         return Promise.resolve(1);
       },
-      edit: () => Promise.resolve(),
+      edit: () => Promise.resolve('edited' as const),
     };
 
     await showStatus(
@@ -170,5 +170,102 @@ describe('ошибки', () => {
         'Слушаю.',
       ),
     ).rejects.toThrow(/не найдена/u);
+  });
+});
+
+describe('удалённое статусное сообщение', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливый отказ.
+   *
+   * В личном чате Telegram человеку разрешено удалять сообщения бота, а
+   * статусное сообщение выглядит служебным. Итог разбора уходит ровно
+   * этим путём — §9.2 требует одной реплики на выгрузку, — и правка била
+   * в пустоту: человек получал **ничего**. Не ошибку, не «попробуй ещё»,
+   * а тишину, которую честно читает как поломку.
+   *
+   * Панель при этом показывала выгрузку удавшейся: обработчик не бросил,
+   * значит `done`, а раздел ошибок берёт только `failed` — перезапустить
+   * её было нечем.
+   */
+
+  it('исчезло — отправляется заново, а не в пустоту', async () => {
+    const sent: string[] = [];
+    let messageId = 500;
+
+    const sender = {
+      send: ({ text }: { readonly text: string }) => {
+        sent.push(text);
+        messageId += 1;
+        return Promise.resolve(messageId);
+      },
+      edit: () => Promise.resolve('gone' as const),
+    } as unknown as StatusSender;
+
+    await testDb().update(batches).set({ statusMessageId: 499 }).where(eq(batches.id, batchId));
+
+    const shown = await showStatus(
+      { db: testDb(), sender },
+      target(),
+      'Перенесла срок на пятницу',
+      { force: true },
+    );
+
+    expect(shown, 'реплика объявлена доставленной, а её не было').toBe(true);
+    expect(sent, 'ответ не ушёл заново').toEqual(['Перенесла срок на пятницу']);
+
+    // И новое сообщение запомнено: следующая правка пойдёт в него.
+    const [row] = await testDb()
+      .select({ statusMessageId: batches.statusMessageId, statusTaken: batches.statusTaken })
+      .from(batches)
+      .where(eq(batches.id, batchId));
+
+    expect(row?.statusMessageId).toBe(501);
+    expect(row?.statusTaken, 'слот не помечен занятым').toBe(true);
+  });
+
+  it('отказ правки не выдаётся за доставленную реплику', async () => {
+    const sender = {
+      send: () => Promise.resolve(600),
+      edit: () => Promise.resolve('failed' as const),
+    } as unknown as StatusSender;
+
+    await testDb().update(batches).set({ statusMessageId: 599 }).where(eq(batches.id, batchId));
+
+    const shown = await showStatus(
+      { db: testDb(), sender },
+      target(),
+      'Перенесла срок на пятницу',
+      { force: true },
+    );
+
+    expect(shown, 'ноль вместо «не смогли» — та же ложь').toBe(false);
+  });
+
+  it('но слот всё равно помечен занятым, и время правки записано', async () => {
+    /**
+     * `ECONNRESET` нарочно не повторяется — «он бывает и посреди
+     * ответа», — значит есть достижимый случай, когда Telegram правку
+     * применил, а ответ оборвался. Не пометь мы слот занятым, докладчик о
+     * сбое стёр бы с экрана уже лежащий там ответ вместе с кнопкой
+     * «Отменить» — ровно тот убыток, ради которого слот и заводили.
+     */
+    const sender = {
+      send: () => Promise.resolve(700),
+      edit: () => Promise.resolve('failed' as const),
+    } as unknown as StatusSender;
+
+    await testDb().update(batches).set({ statusMessageId: 699 }).where(eq(batches.id, batchId));
+
+    await showStatus({ db: testDb(), sender }, target(), 'Перенесла срок на пятницу', {
+      force: true,
+    });
+
+    const [row] = await testDb()
+      .select({ statusTaken: batches.statusTaken, statusUpdatedAt: batches.statusUpdatedAt })
+      .from(batches)
+      .where(eq(batches.id, batchId));
+
+    expect(row?.statusTaken).toBe(true);
+    expect(row?.statusUpdatedAt).not.toBeNull();
   });
 });
