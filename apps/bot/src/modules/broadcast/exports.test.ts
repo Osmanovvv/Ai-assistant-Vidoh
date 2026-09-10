@@ -4,7 +4,7 @@ import { sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Страж связки: у экспорта модуля рассылки есть вызывающий (ревизия 4).
+ * Страж связки: у стерегомого экспорта есть вызывающий (ревизия 4).
  *
  * **Написанное и никем не вызванное — не задел на будущее.** Это третье
  * место, где живёт правда про доставку, и оно устаревает молча: `failedOf`
@@ -52,6 +52,20 @@ const MODULES = [
   'src/modules/billing/renewal.service.ts',
   'src/modules/billing/providers/robokassa.ts',
   'src/modules/billing/providers/robokassa-signature.ts',
+  /**
+   * Вход и досмотр — с ревизии этапов 1–2. Там нашлись `pruneUpdates` и
+   * `expireQuestions`: обе написаны, обе покрыты зелёными тестами, обе
+   * ждали планировщика (задача 3.14) и не звались ниоткуда. Под первую
+   * вдобавок держался индекс `telegram_updates_received_at_idx`,
+   * который платится на каждой вставке в горячем пути.
+   *
+   * Досмотр в списке рядом нарочно: обе уборки живут внутри
+   * `sweepOnce`, и пропади вызывающий у `startRecoverySweep` — они
+   * снова стали бы недостижимы, не потревожив первого стража.
+   */
+  'src/modules/gateway/updates.repo.ts',
+  'src/modules/resolver/questions.repo.ts',
+  'src/modules/pipeline/sweeper.ts',
 ];
 
 /**
@@ -192,7 +206,7 @@ function orphansIn(
   return orphans;
 }
 
-describe('у экспортов рассылки и денег есть вызывающие', () => {
+describe('у стерегомых экспортов есть вызывающие', () => {
   it('каждый экспорт кто-нибудь зовёт либо он назван исключением', async () => {
     const all = await sources();
 

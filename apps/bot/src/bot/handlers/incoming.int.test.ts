@@ -14,6 +14,7 @@ import type { Context } from 'grammy';
 import type { StatusSender } from '../../modules/presenter/status.service.js';
 import { SettingsRegistry, putSetting } from '../../modules/settings/settings.repo.js';
 import type { PipelineJob } from '../../infra/queue.js';
+import { DEFAULT_LIMITS } from '../../modules/buffer/buffer.service.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -934,5 +935,76 @@ describe('порядок регистрации: служебное сообще
         'и модель разберёт его как мысль человека.',
       ].join('\n'),
     ).toBeLessThan(intake);
+  });
+});
+
+describe('осиротевшее закрытие снимается вместе с выгрузкой', () => {
+  /**
+   * Потолок сообщений закрывает выгрузку прямо в приёме, а отложенное
+   * закрытие от предыдущего сообщения остаётся висеть до конца окна.
+   *
+   * Вреда от него больше нет — заход над закрытой выгрузкой себя не
+   * переставляет (ревизия этапов 1–2), — но обещание `closeJobId` «одно
+   * задание на выгрузку» без снятия неправда: задание живёт дольше самой
+   * выгрузки, просыпается над чужим и ходит в базу зря. А главное: пока
+   * оно висит, у следующей выгрузки того же человека закрытие идёт уже
+   * не своим путём.
+   */
+
+  it('закрытая потолком выгрузка снимает своё отложенное задание', async () => {
+    // Потолок сообщений настройкой не объявлен (§15 его не просит) и живёт
+    // умолчанием в коде — поэтому он приходит сюда параметром.
+    const limits = { ...DEFAULT_LIMITS, maxMessagesPerBatch: 2 };
+
+    const removed: string[] = [];
+    const jobs = new Map<string, { remove: () => Promise<void> }>();
+
+    const queue = {
+      getJob: (id: string) => Promise.resolve(jobs.get(id)),
+      add: (_name: string, _data: unknown, options?: { jobId?: string }) => {
+        const id = options?.jobId;
+
+        if (id !== undefined) {
+          jobs.set(id, {
+            remove: () => {
+              removed.push(id);
+              jobs.delete(id);
+              return Promise.resolve();
+            },
+          });
+        }
+
+        return Promise.resolve({});
+      },
+    } as unknown as Queue<PipelineJob>;
+
+    const settings = new SettingsRegistry({ db: testDb(), ttlMs: 0 });
+    const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', {
+      botInfo: {
+        id: 1,
+        is_bot: true,
+        first_name: 'ВЫДОХ',
+        username: 'vydoh_test_bot',
+      } as unknown as UserFromGetMe,
+    });
+
+    bot.api.config.use(() =>
+      Promise.resolve({
+        ok: true,
+        result: { message_id: 1, date: 0, chat: { id: TG_ID, type: 'private' } },
+      } as never),
+    );
+
+    bot.use(incomingMiddleware({ db: testDb(), queue, settings, limits }));
+
+    // Первое сообщение ставит закрытие по тишине.
+    await bot.handleUpdate(textUpdate('первая мысль'));
+    expect(jobs.size, 'закрытие по тишине не поставлено').toBe(1);
+
+    // Второе упирается в потолок: выгрузка уходит в разбор сразу.
+    await bot.handleUpdate(textUpdate('вторая мысль'));
+
+    expect(removed, 'задание закрытия осталось висеть над закрытой выгрузкой').toHaveLength(1);
+    expect(jobs.size).toBe(0);
   });
 });

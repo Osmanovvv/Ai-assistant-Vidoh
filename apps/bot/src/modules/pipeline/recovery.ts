@@ -2,7 +2,7 @@ import { and, eq, lt, or, sql } from 'drizzle-orm';
 
 import { batches } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { DEFAULT_LIMITS, type BufferLimits } from '../buffer/buffer.service.js';
+import { DEFAULT_LIMITS, silenceThreshold, type BufferLimits } from '../buffer/buffer.service.js';
 
 /**
  * Восстановление после перезапуска (задача 1.18).
@@ -38,7 +38,7 @@ export async function recoverStuckBatches(
      * Возвращаем в очередь — обработка идемпотентна на уровне выгрузки.
      *
      * **Но только застрявшую, а не идущую.** Досмотр зовёт это правило
-     * каждые полминуты, и без порога оно возвращало в очередь живой
+     * раз в минуту, и без порога оно возвращало в очередь живой
      * разбор: боевое 04.09.2026, 18:25:31 — выгрузка закрыта в 18:24:49,
      * разбор шёл, и через сорок секунд досмотр счёл его умершим. Замок на
      * пользователя спас от двойного ответа, но журнал врал «очередь
@@ -63,7 +63,11 @@ export async function recoverStuckBatches(
     // Открытая выгрузка старше жёсткого потолка: либо Redis потерял
     // задание, либо процесс не дожил до его постановки. Закрываем.
     const staleThreshold = new Date(now.getTime() - limits.maxBatchAgeMs);
-    const silenceThreshold = new Date(now.getTime() - limits.silenceWindowMs);
+
+    // Порог тишины — общей функцией с закрытием по тишине: это одно и то
+    // же число, и посчитай мы его здесь вторым способом, расхождение
+    // выглядело бы как «очередь потеряла задание».
+    const silenceAt = silenceThreshold(now, limits.silenceWindowMs);
 
     const closed = await tx
       .update(batches)
@@ -71,10 +75,7 @@ export async function recoverStuckBatches(
       .where(
         and(
           eq(batches.status, 'open'),
-          or(
-            lt(batches.openedAt, staleThreshold),
-            sql`${batches.lastMessageAt} <= ${silenceThreshold}`,
-          ),
+          or(lt(batches.openedAt, staleThreshold), sql`${batches.lastMessageAt} <= ${silenceAt}`),
         ),
       )
       .returning({ userId: batches.userId });

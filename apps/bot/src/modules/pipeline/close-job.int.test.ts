@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { appSettings, batches, messagesRaw, users } from '../../db/schema.js';
@@ -25,6 +26,13 @@ import { runCloseBatchJob } from './close-job.js';
 
 let userId = '';
 
+/**
+ * «Сейчас» для задания. Своё, а не машинное: выгрузки в этой проверке
+ * заводятся строкой в базу от того же значения, и обе стороны
+ * неравенства «тишина выдержана» обязаны считаться от одних часов.
+ */
+const NOW = new Date('2026-09-10T09:00:00.000Z');
+
 beforeEach(async () => {
   await testDb().delete(appSettings);
   await testDb().delete(messagesRaw);
@@ -42,7 +50,7 @@ beforeEach(async () => {
  * ожидая её по-настоящему.
  */
 async function openBatch(agoMs: number): Promise<string> {
-  const said = new Date(Date.now() - agoMs);
+  const said = new Date(NOW.getTime() - agoMs);
 
   const [row] = await testDb()
     .insert(batches)
@@ -75,6 +83,12 @@ function watching(): {
     seen,
     deps: {
       db: testDb(),
+      /**
+       * Часы швом: остаток окна считается от них, и без шва проверка
+       * закладывалась бы на то, сколько миллисекунд заняли вставка
+       * выгрузки и чтение настроек.
+       */
+      now: () => NOW,
       reschedule: async (again) => {
         seen.rescheduled.push({ batchId: again.batchId, delayMs: again.delayMs });
         await Promise.resolve();
@@ -129,9 +143,19 @@ describe('окно из панели решает, закрывать ли вы�
     expect(outcome.closed).toBe(false);
     expect(seen.processed).toEqual([]);
 
-    // Задание переставлено, а не брошено: прежде выгрузку подхватывал
-    // досмотр, обвиняя очередь в том, чего она не делала.
-    expect(seen.rescheduled).toEqual([{ batchId, delayMs: 300_000 }]);
+    /**
+     * Задание переставлено, а не брошено: прежде выгрузку подхватывал
+     * досмотр, обвиняя очередь в том, чего она не делала.
+     *
+     * И на **остаток** окна, а не на окно целиком (ревизия этапа 4,
+     * пункт 2.2): последнее слово сказано минуту назад, окно пять минут —
+     * значит ждать осталось четыре. Прежде здесь стояло 300 000, то есть
+     * человеку добавляли минуту молчания на ровном месте.
+     *
+     * Число точное, а не диапазон: часы у задания швом (`deps.now`),
+     * иначе нижняя граница была бы ставкой на скорость машины.
+     */
+    expect(seen.rescheduled).toEqual([{ batchId, delayMs: 240_000 }]);
   });
 
   it('без реестра работает умолчание из кода', async () => {
@@ -159,5 +183,65 @@ describe('окно из панели решает, закрывать ли вы�
 
     expect(outcome.silenceWindowMs).toBe(30_000);
     expect(seen.processed).toEqual([userId]);
+  });
+});
+
+describe('выгрузка, закрытая не этим заданием', () => {
+  /**
+   * **Ловушка починки: круг без конца.**
+   *
+   * `closeBatchOnSilence` отдавал `false` на два разных случая — «человек
+   * ещё говорит» и «выгрузку закрыли без нас», — а задание переставляло
+   * себя на любой `false`. Пока переставка была инертна (BullMQ молча не
+   * ставил на занятый идентификатор), круг разрывал сам дефект. Почини
+   * переставку, не разведя случаи, — и на каждой выгрузке, закрытой
+   * потолком сообщений или возраста прямо в приёме, останется задание,
+   * которое ставит себя заново каждое окно тишины и не кончается никогда.
+   *
+   * Случай не редкий: потолок в приёме срабатывает на каждой длинной
+   * серии, а отложенное закрытие от предыдущего сообщения остаётся висеть.
+   */
+
+  it('на закрытой выгрузке задание молчит, а не переставляет себя', async () => {
+    const batchId = await openBatch(1_000);
+
+    // Закрыл кто-то другой: потолок сообщений в приёме, досмотр, соседний
+    // заход. Тишина при этом заведомо не выдержана — иначе задание
+    // закрыло бы выгрузку само, и ловушка бы не проверялась.
+    await testDb()
+      .update(batches)
+      .set({ status: 'queued', closedAt: NOW })
+      .where(eq(batches.id, batchId));
+
+    const { seen, deps } = watching();
+
+    const outcome = await runCloseBatchJob(
+      { ...deps, settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }) },
+      { batchId, userId },
+    );
+
+    expect(outcome.closed).toBe(false);
+    expect(outcome.rescheduled, 'задание переставило себя на закрытой выгрузке').toBe(false);
+    expect(seen.rescheduled).toEqual([]);
+
+    // И разбор второй раз не ставится: его поставил тот, кто закрыл.
+    expect(seen.processed).toEqual([]);
+  });
+
+  it('исчезнувшая выгрузка тоже не заводит круг', async () => {
+    // Данные человека удалены по §16 между постановкой задания и заходом.
+    // Строки нет вовсе — «не открыта» обязано покрыть и этот случай.
+    const batchId = await openBatch(1_000);
+    await testDb().delete(batches).where(eq(batches.id, batchId));
+
+    const { seen, deps } = watching();
+
+    const outcome = await runCloseBatchJob(
+      { ...deps, settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }) },
+      { batchId, userId },
+    );
+
+    expect(outcome.rescheduled).toBe(false);
+    expect(seen.rescheduled).toEqual([]);
   });
 });

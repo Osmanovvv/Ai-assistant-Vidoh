@@ -26,6 +26,15 @@ import type { Database } from '../../infra/db.js';
 
 export interface CloseJobDeps {
   readonly db: Database;
+  /**
+   * Часы — швом, а не `new Date()` внутри.
+   *
+   * Без него проверку на остаток окна пришлось бы писать диапазоном и
+   * закладываться на скорость машины: «между вставкой выгрузки и заходом
+   * прошло меньше секунды». На загруженной машине такой страж краснеет
+   * не по делу, а страж, краснеющий не по делу, скоро перестают читать.
+   */
+  readonly now?: (() => Date) | undefined;
   /** Реестр настроек: окно читается в момент закрытия, а не при старте. */
   readonly settings?: SettingsRegistry | undefined;
   /** Поставить задание заново — на новое окно. */
@@ -44,6 +53,11 @@ export interface CloseJobResult {
   readonly rescheduled: boolean;
   /** Окно, по которому решали. Ради журнала и проверок. */
   readonly silenceWindowMs: number;
+  /**
+   * Остаток окна, на который переставлено задание. Есть только у
+   * переставленного: закрытой выгрузке переставлять нечего.
+   */
+  readonly retryInMs?: number;
 }
 
 /**
@@ -54,6 +68,17 @@ export interface CloseJobResult {
  * не было: `scheduleBatchClose` вызывается только из приёма сообщений, и
  * дописавший человек его не ставит. Выгрузку подхватывал досмотр — с
  * опозданием и с ложной записью в журнал.
+ *
+ * **Но не на всякий отказ, и это ловушка для чинящего.** Выгрузку могли
+ * закрыть и без нас — потолком сообщений или возраста прямо в приёме,
+ * досмотром, соседним заходом. Задание, переставленное на закрытую
+ * выгрузку, ставило бы себя заново каждое окно тишины и не кончилось бы
+ * никогда. Поэтому причину отказа даёт `closeBatchOnSilence`, а не
+ * догадка по булеву значению.
+ *
+ * **И на остаток окна, а не на окно целиком** (ревизия этапа 4, пункт
+ * 2.2): ждать заново полминуты после слова, сказанного секунду назад, —
+ * это лишние полминуты молчания бота.
  */
 export async function runCloseBatchJob(
   deps: CloseJobDeps,
@@ -61,21 +86,34 @@ export async function runCloseBatchJob(
 ): Promise<CloseJobResult> {
   const limits = await effectiveLimits(deps.settings, DEFAULT_LIMITS);
 
-  const closed = await closeBatchOnSilence(deps.db, params.batchId, {
+  const outcome = await closeBatchOnSilence(deps.db, params.batchId, {
     silenceWindowMs: limits.silenceWindowMs,
+    ...(deps.now === undefined ? {} : { now: deps.now() }),
   });
 
-  if (closed) {
+  if (outcome.closed) {
     await deps.process(params.userId);
 
     return { closed: true, rescheduled: false, silenceWindowMs: limits.silenceWindowMs };
   }
 
+  if (outcome.reason === 'not_open') {
+    // Закрыли без нас: потолок в приёме, досмотр, соседний заход. Разбор
+    // человеку поставил тот, кто закрыл, — добавить нам нечего, а
+    // переставить себя на закрытую выгрузку значит завести круг без конца.
+    return { closed: false, rescheduled: false, silenceWindowMs: limits.silenceWindowMs };
+  }
+
   await deps.reschedule({
     batchId: params.batchId,
     userId: params.userId,
-    delayMs: limits.silenceWindowMs,
+    delayMs: outcome.retryInMs,
   });
 
-  return { closed: false, rescheduled: true, silenceWindowMs: limits.silenceWindowMs };
+  return {
+    closed: false,
+    rescheduled: true,
+    silenceWindowMs: limits.silenceWindowMs,
+    retryInMs: outcome.retryInMs,
+  };
 }

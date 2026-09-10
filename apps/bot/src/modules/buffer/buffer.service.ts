@@ -146,20 +146,54 @@ export async function attachMessageToBatch(
 }
 
 /**
+ * Граница тишины: раньше неё сказанное считается давним.
+ *
+ * Одной функцией на всех, потому что порог считают двое — закрытие по
+ * тишине и восстановление после перезапуска, — и разъехались бы они
+ * молча. Правило проекта: одно число не считается двумя способами.
+ */
+export function silenceThreshold(now: Date, windowMs: number): Date {
+  return new Date(now.getTime() - windowMs);
+}
+
+/**
+ * Чем кончился заход закрытия по тишине.
+ *
+ * **Три случая, а не два.** Прежде функция отдавала `false` и когда
+ * человек ещё говорит, и когда выгрузку закрыли без нас — потолком
+ * сообщений или возраста в `attachMessageToBatch`, досмотром, соседним
+ * заходом. Задание закрытия переставляло себя на любой `false`; почини
+ * одну переставку, не разведя эти два случая — и на каждой выгрузке,
+ * закрытой потолком, останется задание, которое ставит себя заново
+ * каждое окно тишины и не кончается никогда.
+ */
+export type SilenceCloseResult =
+  /** Закрыли: тишина выдержана. */
+  | { readonly closed: true }
+  /** Выгрузка уже не открыта. Ставить закрытие заново нечему и незачем. */
+  | { readonly closed: false; readonly reason: 'not_open' }
+  /** Человек ещё говорит: до конца окна осталось `retryInMs`. */
+  | { readonly closed: false; readonly reason: 'still_talking'; readonly retryInMs: number };
+
+/**
  * Закрывает выгрузку по тишине. Вызывается отложенным заданием.
  *
  * Проверка «последнее сообщение было давно» обязательна: задание могло
  * быть поставлено до того, как пришло очередное сообщение. Без неё
  * выгрузка закрылась бы посреди речи.
+ *
+ * Порог считается один раз и живёт в одной переменной: условие UPDATE
+ * (`lastMessageAt <= threshold`) и остаток (`lastMessageAt - threshold`)
+ * — одно и то же неравенство с двух сторон, и разойтись им негде.
  */
 export async function closeBatchOnSilence(
   db: Executor,
   batchId: string,
   params: { readonly now?: Date; readonly silenceWindowMs?: number } = {},
-): Promise<boolean> {
+): Promise<SilenceCloseResult> {
   const now = params.now ?? new Date();
   const windowMs = params.silenceWindowMs ?? DEFAULT_LIMITS.silenceWindowMs;
-  const threshold = new Date(now.getTime() - windowMs);
+  const threshold = silenceThreshold(now, windowMs);
 
   const closed = await db
     .update(batches)
@@ -173,7 +207,38 @@ export async function closeBatchOnSilence(
     )
     .returning({ id: batches.id });
 
-  return closed.length > 0;
+  if (closed.length > 0) return { closed: true };
+
+  /**
+   * Не закрыли — надо сказать почему, и отдельным запросом: UPDATE
+   * возвращает только подошедшие строки, а нам нужна причина
+   * неподошедшей. Молчание здесь стоило выгрузке лишней минуты у
+   * досмотра, а журналу — ложного обвинения очереди.
+   */
+  const [state] = await db
+    .select({ status: batches.status, lastMessageAt: batches.lastMessageAt })
+    .from(batches)
+    .where(eq(batches.id, batchId))
+    .limit(1);
+
+  // Строки может не быть вовсе: данные человека удалены по §16 между
+  // постановкой задания и заходом.
+  if (state?.status !== 'open') return { closed: false, reason: 'not_open' };
+
+  return {
+    closed: false,
+    reason: 'still_talking',
+    /**
+     * Остаток окна, а не окно целиком (ревизия этапа 4, пункт 2.2).
+     * Ждать заново полминуты после слова, сказанного секунду назад, —
+     * это лишние полминуты молчания бота.
+     *
+     * Ноль возможен только в гонке: выгрузку тронули между UPDATE и этим
+     * запросом. Задание на нулевой задержке просто зайдёт снова, и
+     * закроет — `now` идёт вперёд, а `lastMessageAt` назад не ходит.
+     */
+    retryInMs: Math.max(0, state.lastMessageAt.getTime() - threshold.getTime()),
+  };
 }
 
 /**

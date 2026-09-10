@@ -3,7 +3,7 @@ import { InlineKeyboard, type Context, type MiddlewareFn } from 'grammy';
 
 import type { Database } from '../../infra/db.js';
 import type { PipelineJob } from '../../infra/queue.js';
-import { enqueueUserProcessing, scheduleBatchClose } from '../../infra/queue.js';
+import { cancelBatchClose, enqueueUserProcessing, scheduleBatchClose } from '../../infra/queue.js';
 import {
   DEFAULT_LIMITS,
   attachMessageToBatch,
@@ -302,6 +302,17 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       // Потолок по числу сообщений или по возрасту: обрабатываем сразу,
       // не дожидаясь тишины.
       await enqueueUserProcessing(deps.queue, outcome.userId);
+
+      /**
+       * И снимаем закрытие, поставленное предыдущим сообщением.
+       *
+       * Иначе оно висит до конца окна, просыпается над закрытой выгрузкой
+       * и уходит ни с чем. Вреда от него нет — заход над закрытой
+       * выгрузкой себя не переставляет, — но обещание `closeJobId`
+       * («одно задание на выгрузку») без этой строки неправда: задание
+       * живёт дольше самой выгрузки.
+       */
+      await cancelBatchClose(deps.queue, attached.batchId);
     } else {
       // Каждое новое сообщение отодвигает закрытие: серия голосовых —
       // это одна мысль (§9.1 правило 2 ТЗ).
