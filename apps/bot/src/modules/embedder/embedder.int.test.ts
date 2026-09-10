@@ -251,8 +251,8 @@ describe('setItemEmbedding', () => {
       .from(items)
       .where(eq(items.id, id));
 
-    expect(after?.updatedAt?.toISOString(), 'запись «постарела» от служебной правки').toBe(
-      before?.updatedAt?.toISOString(),
+    expect(after?.updatedAt.toISOString(), 'запись «постарела» от служебной правки').toBe(
+      before?.updatedAt.toISOString(),
     );
   });
 });

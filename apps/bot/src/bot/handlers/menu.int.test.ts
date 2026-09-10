@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, projectSteps, reminders, topics, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
+import { CARD_ACTION } from '../../modules/items/card-actions.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
@@ -1030,5 +1031,107 @@ describe('проекты в меню (§12.1: список, контекст и 
 
     expect(labels).toContain('день рождения сына');
     expect(labels).not.toContain('купить хлеб');
+  });
+});
+
+/**
+ * §8.2 дословно: «Если запись меняет тему, бот переносит её и обновляет
+ * сводки обеих веток».
+ *
+ * Половины были готовы с задачи 2.15 и не были связаны: `moveItemToTopic`
+ * жила покрытой пятью тестами и не звалась ниоткуда. Поэтому страж стоит
+ * на связке целиком — от нажатия до обеих веток, — а не на службе
+ * переноса: её тесты были зелёными всё это время и о разрыве не знали.
+ */
+describe('«В другую сферу» переносит запись и обновляет обе ветки (§8.2)', () => {
+  it('дело меняет сферу, и сводки обеих веток переписаны', async () => {
+    const gateway = new FakeTopicGateway();
+    const { bot, calls } = createTestBot(gateway);
+
+    await addTopic(userId, 'здоровье');
+    await addTopic(userId, 'покупки');
+
+    const id = await addItem({ owner: userId, text: 'Купить витамины', topic: 'здоровье' });
+    const code = toShortId(id);
+
+    // Экран выбора: нынешней сферы в нём нет — перенос в неё же не перенос.
+    await bot.handleUpdate(callbackUpdate(`${CARD_ACTION.move}${code}`));
+
+    const choices = keyboardOf(calls.at(-1));
+    expect(choices.map((one) => one.text)).toEqual(['покупки', 'Назад']);
+
+    const to = choices[0]?.callback_data ?? '';
+    expect(to.startsWith(CARD_ACTION.moveTo)).toBe(true);
+
+    const writesBefore = gateway.writes;
+    await bot.handleUpdate(callbackUpdate(to));
+
+    // Запись переехала — и ссылка, и название.
+    const row = await itemRow(id);
+    expect(row?.topic).toBe('покупки');
+    expect(row?.topicId).not.toBeNull();
+
+    expect(textOf(calls.at(-1))).toContain('покупки');
+
+    // И обе ветки переписаны, а не одна: §8.2 требует обеих.
+    expect(
+      gateway.writes - writesBefore,
+      'сводку обновили не в обеих ветках',
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('чужую запись переложить нельзя', async () => {
+    const { bot, calls } = createTestBot();
+
+    await addTopic(userId, 'здоровье');
+    await addTopic(userId, 'покупки');
+
+    const stranger = await addItem({
+      owner: otherUserId,
+      text: 'Чужое дело',
+      topic: 'здоровье',
+    });
+
+    await bot.handleUpdate(callbackUpdate(`${CARD_ACTION.move}${toShortId(stranger)}`));
+
+    // Код в кнопке не секрет: он приходит снаружи и подделывается. Без
+    // проверки владельца чужая запись переезжала бы по подобранному коду.
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.card.gone);
+
+    const row = await itemRow(stranger);
+    expect(row?.topic).toBe('здоровье');
+  });
+
+  it('переложить в чужую сферу нельзя', async () => {
+    const { bot, calls } = createTestBot();
+
+    await addTopic(userId, 'здоровье');
+    const alien = await addTopic(otherUserId, 'чужая сфера');
+
+    const id = await addItem({ owner: userId, text: 'Купить витамины', topic: 'здоровье' });
+
+    await bot.handleUpdate(
+      callbackUpdate(`${CARD_ACTION.moveTo}${toShortId(id)}:${toShortId(alien)}`),
+    );
+
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.card.moveNoTopic);
+
+    // §6.4: тема, которой у человека нет, не должна возникнуть от переноса.
+    const row = await itemRow(id);
+    expect(row?.topic).toBe('здоровье');
+  });
+
+  it('одна сфера — экран говорит об этом, а не показывает пустоту', async () => {
+    const { bot, calls } = createTestBot();
+
+    await addTopic(userId, 'здоровье');
+    const id = await addItem({ owner: userId, text: 'Купить витамины', topic: 'здоровье' });
+
+    await bot.handleUpdate(callbackUpdate(`${CARD_ACTION.move}${toShortId(id)}`));
+
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.card.moveNoTopics);
+
+    // Тупика быть не должно: назад в карточку.
+    expect(keyboardOf(calls.at(-1)).map((one) => one.text)).toEqual(['Назад']);
   });
 });

@@ -183,6 +183,7 @@ export interface TextProfile {
     readonly buttonSnooze: string;
     readonly buttonEdit: string;
     readonly buttonDelete: string;
+    readonly buttonMove: string;
 
     readonly done: string;
     readonly snoozed: string;
@@ -199,6 +200,13 @@ export interface TextProfile {
     readonly editHint: string;
     /** Правка не легла: записи нет или текст тот же. */
     readonly editNotApplied: string;
+    /** Выбор сферы и три исхода переноса (§8.2: обновляются обе ветки). */
+    readonly moveWhere: string;
+    readonly moveNoTopics: string;
+    readonly moved: (topic: string) => string;
+    readonly moveAlready: (topic: string) => string;
+    readonly moveNoTopic: string;
+    readonly moveFailed: string;
     readonly gone: string;
   };
 

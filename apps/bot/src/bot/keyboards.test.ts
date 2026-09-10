@@ -14,6 +14,7 @@ import {
 } from '../modules/onboarding/onboarding.service.js';
 import { buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
+import { CARD_ACTION } from '../modules/items/card-actions.js';
 import { cardKeyboard } from './handlers/card.js';
 import { BILLING_ACTION } from './handlers/billing.js';
 import { PLANS, RAILS } from '../modules/billing/tariffs.js';
@@ -144,6 +145,18 @@ function everyCallbackData(): { where: string; data: string }[] {
   fromKeyboard('card', cardKeyboard(itemFixture(), defaultTexts, MENU_ACTION.root));
 
   /**
+   * Выбор сферы при переносе (§8.2).
+   *
+   * Собирается в обработчике, а не в `cardKeyboard`, и потому мимо
+   * сборки выше — ровно так экран подписки и прожил без измеренного
+   * предела. Худший случай: два кода и разделитель между ними.
+   */
+  found.push({
+    where: 'card:moveTo',
+    data: `${CARD_ACTION.moveTo}${toShortId(randomUUID())}:${toShortId(randomUUID())}`,
+  });
+
+  /**
    * Подписка (§14, задачи 4.2 и 4.4).
    *
    * **Экран подписки в этом страже не значился**, хотя план требует
@@ -218,6 +231,25 @@ describe('предел Telegram на callback_data', () => {
 });
 
 describe('идентификаторы действий не пересекаются', () => {
+  it('ни одно действие карточки не является началом другого', () => {
+    /**
+     * Обработчики карточки ловят по началу строки: будь «i:mv:» началом
+     * «i:to:», половина нажатий уходила бы не в тот обработчик, и
+     * заметить это можно было бы только руками.
+     *
+     * Отдельной проверкой, потому что список ниже собран вручную и
+     * новое действие карточки в него попасть забудут.
+     */
+    const all = Object.values(CARD_ACTION);
+
+    for (const one of all) {
+      for (const other of all) {
+        if (one === other) continue;
+        expect(other.startsWith(one), `${other} начинается с ${one}`).toBe(false);
+      }
+    }
+  });
+
   it('ни одно действие не является началом другого с тем же смыслом', () => {
     // Обработчики ловят по префиксу. Если одно действие — начало другого,
     // нажатие уйдёт не туда, и заметить это можно только руками.

@@ -9,6 +9,8 @@ import { localDateParts } from '../../modules/classifier/dates.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { nextDeadlineAfterDone } from '../../modules/recurrence/recurrence.service.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import { listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
+import { moveItemToTopic } from '../../modules/topics/topics.service.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -19,8 +21,15 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 /**
  * Карточка записи (§12.2 ТЗ, задача 2.18).
  *
- * Заголовок, тема, срок, статус и четыре кнопки: сделано, отложить,
- * изменить, убрать.
+ * Заголовок, тема, срок, статус и пять кнопок: сделано, отложить,
+ * изменить, убрать, в другую сферу.
+ *
+ * **Пятая — сверх перечисленных в §12.2, и это осознанно** (запрос на
+ * изменение №3). §8.2 обещает: «если запись меняет тему, бот переносит
+ * её и обновляет сводки обеих веток». Перенос был написан и покрыт
+ * тестами с задачи 2.15, а вызвать его было нечем — тему записи в
+ * продукте не менял никто. Человек, у которого дело легло не в ту сферу,
+ * не мог поправить это ни кнопкой, ни словами.
  *
  * **Каждое нажатие сверяет, чья это запись.** Короткий идентификатор в
  * `callback_data` — не секрет, а сокращение: он приходит снаружи, и его
@@ -94,6 +103,9 @@ export function cardKeyboard(item: Item, texts: TextProfile, back: string): Inli
       { label: texts.card.buttonEdit, action: `${CARD_ACTION.edit}${code}` },
       { label: texts.card.buttonDelete, action: `${CARD_ACTION.remove}${code}` },
     ],
+    // Своей строкой: рядом с «Убрать» подпись длиннее всех остальных, и
+    // пара читалась бы как одна кнопка с хвостом.
+    [{ label: texts.card.buttonMove, action: `${CARD_ACTION.move}${code}` }],
     [{ label: texts.menu.buttonBack, action: back }],
   ]);
 }
@@ -118,10 +130,17 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
    */
   async function ownItem(
     tgId: number,
-    data: string,
-    prefix: string,
+    /**
+     * Уже отрезанный код, а не всё нажатие с префиксом.
+     *
+     * У переноса `callback_data` несёт два кода через двоеточие, и
+     * «отрежь префикс» из этой пары запись не достаёт. Резать снаружи —
+     * значит оставить проверку владельца одной на все кнопки; вторая её
+     * копия однажды разошлась бы с первой.
+     */
+    code: string,
   ): Promise<{ item: Item; texts: TextProfile; timeZone: string; userId: string } | undefined> {
-    const uuid = fromShortId(data.slice(prefix.length));
+    const uuid = fromShortId(code);
     if (uuid === undefined) return undefined;
 
     const user = await findByTgId(db, tgId);
@@ -144,9 +163,20 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     };
   }
 
-  /** Сводка темы после смены статуса: запись из неё ушла или вернулась. */
-  async function refresh(userId: string, chatId: number, topic: string | null): Promise<void> {
-    if (!deps.topics || topic === null) return;
+  /**
+   * Сводки тем после правки: запись из темы ушла или в неё пришла.
+   *
+   * Тем может быть две — §8.2 требует при переносе обновить «сводки
+   * обеих веток». Повторы снимает сама `refreshSummaries`; снимать их и
+   * здесь значило бы считать одно и то же двумя способами.
+   */
+  async function refresh(
+    userId: string,
+    chatId: number,
+    ...topics: readonly (string | null)[]
+  ): Promise<void> {
+    const names = topics.filter((one): one is string => one !== null && one.length > 0);
+    if (!deps.topics || names.length === 0) return;
 
     const context = await outputContextOf(db, userId);
     await refreshSummaries(
@@ -154,7 +184,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       {
         userId,
         chatId,
-        topicNames: [topic],
+        topicNames: names,
         timeZone: context.timeZone,
         profile: context.textProfile,
       },
@@ -165,7 +195,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
   bot.callbackQuery(new RegExp(`^${CARD_PREFIX}[A-Za-z0-9_-]{22}$`, 'u'), async (ctx) => {
     await ctx.answerCallbackQuery();
 
-    const active = await ownItem(ctx.from.id, ctx.callbackQuery.data, CARD_PREFIX);
+    const active = await ownItem(ctx.from.id, ctx.callbackQuery.data.slice(CARD_PREFIX.length));
     if (!active) {
       await ctx.editMessageText(textsFor(null).card.gone);
       return;
@@ -185,7 +215,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     bot.callbackQuery(new RegExp(`^${prefix}`, 'u'), async (ctx) => {
       await ctx.answerCallbackQuery();
 
-      const active = await ownItem(ctx.from.id, ctx.callbackQuery.data, prefix);
+      const active = await ownItem(ctx.from.id, ctx.callbackQuery.data.slice(prefix.length));
       if (!active) {
         await ctx.editMessageText(textsFor(null).card.gone);
         return;
@@ -261,7 +291,10 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
    * это свойство сохранено.
    */
   bot.callbackQuery(new RegExp(`^${CARD_ACTION.edit}`, 'u'), async (ctx) => {
-    const active = await ownItem(ctx.from.id, ctx.callbackQuery.data, CARD_ACTION.edit);
+    const active = await ownItem(
+      ctx.from.id,
+      ctx.callbackQuery.data.slice(CARD_ACTION.edit.length),
+    );
 
     if (!active) {
       // Записи нет — вот здесь карточку заменить как раз надо: она врёт.
@@ -273,5 +306,137 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     await ctx.answerCallbackQuery();
     await setAwaiting(db, active.userId, `${AWAITING.editPrefix}${active.item.id}`);
     await ctx.reply(active.texts.card.editHint);
+  });
+  /**
+   * «В другую сферу»: экран выбора (§8.2, запрос на изменение №3).
+   *
+   * §8.2 обещает, что при смене темы бот «переносит её и обновляет сводки
+   * обеих веток». Перенос был написан и покрыт тестами с задачи 2.15, но
+   * звать его было неоткуда: обещание держалось на функции без
+   * вызывающего. Тему записи в продукте не менял никто — резолвер её не
+   * знает даже схемой ответа, — и человек, у которого дело легло не в ту
+   * сферу, не мог поправить это ни кнопкой, ни словами.
+   *
+   * Нынешняя сфера в список не идёт: перенос в неё же — не перенос, а
+   * лишняя кнопка на экране, где их и так по числу сфер.
+   */
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.move}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const active = await ownItem(
+      ctx.from.id,
+      ctx.callbackQuery.data.slice(CARD_ACTION.move.length),
+    );
+    if (!active) {
+      await ctx.editMessageText(textsFor(null).card.gone);
+      return;
+    }
+
+    const code = toShortId(active.item.id);
+    const own = await listTopics(db, active.userId);
+    const current = active.item.topic === null ? null : normalizeTopicName(active.item.topic);
+    const others = own.filter((topic) => normalizeTopicName(topic.name) !== current);
+
+    if (others.length === 0) {
+      // Молчать нельзя: человек нажал и обязан узнать, почему ничего не
+      // случилось. Кнопка назад остаётся, иначе экран — тупик.
+      await ctx.editMessageText(active.texts.card.moveNoTopics, {
+        reply_markup: fitKeyboard([
+          [{ label: active.texts.menu.buttonBack, action: `${CARD_PREFIX}${code}` }],
+        ]),
+      });
+      return;
+    }
+
+    await ctx.editMessageText(active.texts.card.moveWhere, {
+      reply_markup: fitKeyboard([
+        ...others.map((topic) => [
+          { label: topic.name, action: `${CARD_ACTION.moveTo}${code}:${toShortId(topic.id)}` },
+        ]),
+        [{ label: active.texts.menu.buttonBack, action: `${CARD_PREFIX}${code}` }],
+      ]),
+    });
+  });
+
+  /**
+   * Перенос в выбранную сферу.
+   *
+   * Оба кода приходят снаружи, поэтому проверяются оба: запись — как у
+   * всех кнопок карточки, сфера — поиском среди тем этого человека.
+   * `moveItemToTopic` сверяет тему ещё раз по названию, и это не второй
+   * способ счёта, а её собственное условие: §6.4 запрещает создавать темы
+   * без спроса, а перенос в отсутствующую создал бы её именем в поле
+   * записи — тихо и мимо всех правил.
+   */
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.moveTo}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const [itemCode = '', topicCode = ''] = ctx.callbackQuery.data
+      .slice(CARD_ACTION.moveTo.length)
+      .split(':');
+
+    const active = await ownItem(ctx.from.id, itemCode);
+    if (!active) {
+      await ctx.editMessageText(textsFor(null).card.gone);
+      return;
+    }
+
+    const own = await listTopics(db, active.userId);
+    const target = own.find((topic) => topic.id === fromShortId(topicCode));
+
+    if (!target) {
+      // Сферу могли убрать в архив, пока экран висел, а код мог быть и
+      // подделан. Для человека оба случая одинаковы, но в журнале след
+      // нужен: молчаливый отказ — худший отказ.
+      logger.info({ userId: active.userId }, 'Перенос: такой сферы у человека нет');
+      await ctx.editMessageText(active.texts.card.moveNoTopic);
+      return;
+    }
+
+    const chatId = ctx.chat?.id;
+
+    try {
+      const result = await moveItemToTopic(db, {
+        itemId: active.item.id,
+        userId: active.userId,
+        topicName: target.name,
+      });
+
+      if (!result.moved) {
+        await ctx.editMessageText(active.texts.card.moveAlready(result.to));
+        return;
+      }
+
+      logger.info(
+        { userId: active.userId, from: result.from, to: result.to },
+        'Запись перенесена в другую сферу кнопкой карточки',
+      );
+
+      await ctx.editMessageText(active.texts.card.moved(result.to));
+
+      /**
+       * Прежняя ветка — под именем из таблицы тем, а не из записи.
+       *
+       * В поле записи название лежит так, как его сказала модель, а
+       * сводка находит тему точным равенством имени. «Здоровье» из
+       * разбора не нашло бы тему «здоровье», и старая ветка осталась бы
+       * с делом, которого там уже нет, — молча.
+       */
+      const from = result.from;
+      const previous =
+        from === null
+          ? null
+          : (own.find((topic) => normalizeTopicName(topic.name) === normalizeTopicName(from))
+              ?.name ?? from);
+
+      if (chatId !== undefined) await refresh(active.userId, chatId, previous, result.to);
+    } catch (error) {
+      /**
+       * Запись могла исчезнуть по §16, пока экран висел, а база — отказать.
+       * Для человека это одно: «не вышло», и карточка врать не должна.
+       */
+      logger.warn({ err: error, userId: active.userId }, 'Перенос записи не удался');
+      await ctx.editMessageText(active.texts.card.moveFailed);
+    }
   });
 }
