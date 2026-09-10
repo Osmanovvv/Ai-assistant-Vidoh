@@ -1,5 +1,5 @@
-import { eq } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appSettings,
@@ -14,7 +14,13 @@ import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import { createInvoice, nextInvId, subscriptionOf } from './billing.repo.js';
 import { applyPaymentEvent } from './subscription.service.js';
-import { resolveAwaiting, runRenewals, ROBOKASSA_RAIL } from './renewal.service.js';
+import {
+  RENEWAL_TICK_MS,
+  resolveAwaiting,
+  runRenewals,
+  ROBOKASSA_RAIL,
+  startRenewals,
+} from './renewal.service.js';
 import type { PaymentProvider } from './provider.js';
 
 /**
@@ -66,15 +72,31 @@ function robokassa(answer: string | Error) {
  * **фактический** номер материнского платежа, и появляется он именно
  * оплатой.
  */
-async function payingPerson(params: { readonly periodEnd: Date }): Promise<void> {
+async function payingPerson(params: {
+  readonly periodEnd: Date;
+  /**
+   * Второй платящий в том же тесте.
+   *
+   * Ссылка и внешний номер задаются вместе с человеком нарочно: ключ
+   * идемпотентности события оплаты — внешний номер, и повтор «5001»
+   * отбился бы как дубль. Второй человек молча остался бы без подписки,
+   * а проверка мерила бы не то, что думает.
+   */
+  readonly who?: string | undefined;
+  readonly ref?: string | undefined;
+  readonly externalId?: string | undefined;
+}): Promise<void> {
+  const person = params.who ?? userId;
+  const ref = params.ref ?? 'first';
+
   await createInvoice(testDb(), {
     provider: ROBOKASSA_RAIL,
-    userId,
+    userId: person,
     plan: 'monthly',
     kind: 'initial',
     amountMinor: 39_900,
     currency: 'RUB',
-    ref: 'first',
+    ref,
     invId: await nextInvId(testDb()),
     autoRenew: true,
   });
@@ -83,8 +105,8 @@ async function payingPerson(params: { readonly periodEnd: Date }): Promise<void>
     provider: ROBOKASSA_RAIL,
     event: {
       kind: 'paid',
-      externalId: '5001',
-      ref: 'first',
+      externalId: params.externalId ?? '5001',
+      ref,
       amount: 39_900,
       currency: 'RUB',
       renewal: false,
@@ -761,5 +783,122 @@ describe('разбор ушедших списаний без ответа', () 
         now: () => new Date('2026-09-30T12:00:00.000Z'),
       }),
     ).toEqual({ finished: 0, failed: 0, unknown: 0 });
+  });
+});
+
+describe('подъём не ждёт первого часа', () => {
+  /**
+   * **Находка ревизии этапов 1–2.** Продление просыпалось только по
+   * таймеру: чистый `setInterval` с шагом час и без первого прохода.
+   *
+   * Каждая выкладка убивает процесс и заводит таймер заново, то есть
+   * обнуляет час. День с выкладками чаще часа — а такой день бывает
+   * ровно тогда, когда что-то чинят, — и продление не проходит **ни
+   * разу**. Списание уходит за сутки до конца периода; сутки без единого
+   * прохода означают, что у платящего человека подписка просто кончится,
+   * и он об этом даже не будет предупреждён: `giveUp` тоже живёт внутри
+   * прохода.
+   *
+   * У досмотра первого прохода нет НАРОЧНО (см. `startRecoverySweep`):
+   * его работу при подъёме делает `recoverAfterRestart`, и второй раз
+   * она была бы вредна. У продления такого второго входа нет — значит
+   * довод досмотра здесь не работает, и первый проход нужен.
+   */
+  it('первый проход идёт при подъёме, а не через час', async () => {
+    await payingPerson({ periodEnd: new Date('2026-10-01T10:00:00.000Z') });
+
+    const rk = robokassa('OK1234');
+    const stop = startRenewals(
+      {
+        db: testDb(),
+        logger,
+        robokassa: rk.deps,
+        settings,
+        now: () => new Date('2026-09-30T12:00:00.000Z'),
+      },
+      // Шаг настоящий, часовой: проверка должна доказать, что списание
+      // ушло ДО первого тика, а не подкрутить таймер до миллисекунды.
+      RENEWAL_TICK_MS,
+    );
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(rk.asked).toHaveLength(1);
+        },
+        { timeout: 5_000, interval: 10 },
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  it('первый проход при подъёме не берёт денег второй раз', async () => {
+    /**
+     * **Главный вопрос к первому проходу**, и отвечает на него база, а
+     * не рассуждение. Так выглядит выкладка посреди суток списания:
+     * старый процесс уже списал Миле, новый поднялся и первым же делом
+     * пошёл по той же выборке.
+     *
+     * Вера здесь маяк: ей списать ещё можно, и её списание означает, что
+     * первый проход прошёл выборку целиком, а не остановился раньше
+     * Милы. Без маяка проверка ждала бы «чтобы ничего не случилось» —
+     * то есть зеленела бы и на невыполненном проходе.
+     */
+    const вера = await upsertUser(testDb(), { tgId: 4_400_002, firstName: 'Вера' });
+
+    // Мила продлевается сегодня, Вера — сутками позже. Так старый
+    // процесс берёт только Милу, а выкладка назавтра застаёт обеих.
+    await payingPerson({ periodEnd: new Date('2026-10-01T10:00:00.000Z') });
+    await payingPerson({
+      periodEnd: new Date('2026-10-02T10:00:00.000Z'),
+      who: вера.id,
+      ref: 'second',
+      externalId: '5002',
+    });
+
+    const rk = robokassa('OK1234');
+    const depsAt = (moment: string) => ({
+      db: testDb(),
+      logger,
+      robokassa: rk.deps,
+      settings,
+      now: () => new Date(moment),
+    });
+
+    // Старый процесс списал Миле и умер.
+    await runRenewals(depsAt('2026-09-30T12:00:00.000Z'));
+    expect(rk.asked).toHaveLength(1);
+
+    /**
+     * Выкладка сутки спустя. Срок Милы к этому моменту уже прошёл, и от
+     * второго списания её держит только заведённое продление: подписка
+     * по-прежнему `active`, а `currentPeriodEnd` по-прежнему подходит
+     * под условие выборки.
+     */
+    const stop = startRenewals(depsAt('2026-10-01T12:00:00.000Z'), RENEWAL_TICK_MS);
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(rk.asked).toHaveLength(2);
+        },
+        { timeout: 5_000, interval: 10 },
+      );
+    } finally {
+      stop();
+    }
+
+    /**
+     * Мила заплатила один раз: одно продление в базе и разные номера в
+     * двух отправках. Считаем отправки, а не записи, — платит отправка.
+     */
+    const мила = await testDb()
+      .select()
+      .from(billingInvoices)
+      .where(and(eq(billingInvoices.userId, userId), eq(billingInvoices.kind, 'renewal')));
+
+    expect(мила).toHaveLength(1);
+    expect(new Set(rk.asked.map((one) => one.get('InvoiceID'))).size).toBe(2);
   });
 });
