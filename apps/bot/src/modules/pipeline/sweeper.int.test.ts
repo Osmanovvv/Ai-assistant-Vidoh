@@ -178,6 +178,7 @@ describe('sweepOnce', () => {
       users: 0,
       pruned: 0,
       expiredQuestions: 0,
+      orphanedMessages: 0,
     });
     expect(processed).toEqual([]);
   });
@@ -505,5 +506,106 @@ describe('исход досмотра доезжает до наблюдений
 
     expect(processed, 'сломавшийся приёмник унёс с собой весь проход').toHaveLength(2);
     expect(result.users).toBe(2);
+  });
+});
+
+describe('сообщения без выгрузки видны', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливый отказ.
+   *
+   * Сообщение сохранено, а к выгрузке не привязано — тихая потеря мысли
+   * при сохранённых словах. Разбор читает сообщения строго по выгрузке, и
+   * такая фраза не склеится ни с чем: человек не получает ни «Слушаю», ни
+   * разбора, и сказанное не попадёт даже в следующую выгрузку. Досмотр
+   * слеп по устройству: он смотрит в выгрузки, а у сироты выгрузки нет.
+   *
+   * **Подбирать молча нельзя, и это решение.** Подбор завёл бы выгрузку
+   * мимо суточного потолка §10.5, заплатил бы за расшифровку голосового у
+   * человека без доступа и гонялся бы с живым приёмом за то же сообщение.
+   * Узнать — наша работа, решать — человека.
+   */
+
+  it('осиротевшая фраза считается и названа', async () => {
+    const HOUR = 60 * 60_000;
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_001,
+        tgChatId: 800,
+        tgMessageId: 9001,
+        kind: 'text',
+        text: 'записать сына к врачу',
+        receivedAt: at(-2 * HOUR),
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages, 'сирота осталась невидимой').toBe(1);
+  });
+
+  it('команда сиротой не считается', async () => {
+    /**
+     * Команда сохраняется и дальше буфера не идёт нарочно: иначе бот
+     * отвечает «Слушаю.» на `/delete_my_data` и потом зачитывает её
+     * обратно расшифровкой. Считать её потерей значит утопить настоящие
+     * потери в шуме.
+     */
+    const HOUR = 60 * 60_000;
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_002,
+        tgChatId: 800,
+        tgMessageId: 9002,
+        kind: 'text',
+        text: '/menu',
+        receivedAt: at(-2 * HOUR),
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages).toBe(0);
+  });
+
+  it('только что пришедшее сиротой не считается', async () => {
+    // Приём сохраняет сообщение раньше, чем привязывает его к выгрузке:
+    // между этими шагами лежит живая работа, и торопиться нельзя.
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_003,
+        tgChatId: 800,
+        tgMessageId: 9003,
+        kind: 'text',
+        text: 'ещё в пути',
+        receivedAt: at(-60_000),
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages).toBe(0);
   });
 });

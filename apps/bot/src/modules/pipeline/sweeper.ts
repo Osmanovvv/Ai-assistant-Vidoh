@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import type { BufferLimits } from '../buffer/buffer.service.js';
+import { countOrphanedMessages } from '../gateway/orphans.js';
 import { pruneUpdates, UPDATE_LOG_RETENTION_MS } from '../gateway/updates.repo.js';
 import { expireQuestions } from '../resolver/questions.repo.js';
 import { recoverStuckBatches, usersAwaitingWork } from './recovery.js';
@@ -90,6 +91,15 @@ export interface SweepResult {
    */
   readonly pruned: number | null;
   readonly expiredQuestions: number | null;
+  /**
+   * Сообщения, сохранённые и не привязанные ни к какой выгрузке.
+   *
+   * Считаются, а не подбираются: подбор завёл бы выгрузку мимо суточного
+   * потолка §10.5, заплатил бы за расшифровку у человека без доступа и
+   * гонялся бы с живым приёмом за то же сообщение. Узнать — наша работа,
+   * решать — человека.
+   */
+  readonly orphanedMessages: number | null;
 }
 
 /**
@@ -120,7 +130,7 @@ export interface SweepResult {
 async function tidyUp(
   deps: SweepDeps,
   now: Date,
-): Promise<Pick<SweepResult, 'pruned' | 'expiredQuestions'>> {
+): Promise<Pick<SweepResult, 'pruned' | 'expiredQuestions' | 'orphanedMessages'>> {
   let pruned: number | null = null;
   let expiredQuestions: number | null = null;
 
@@ -140,7 +150,30 @@ async function tidyUp(
     deps.logger.info({ pruned, expiredQuestions }, 'Прибрано за собой');
   }
 
-  return { pruned, expiredQuestions };
+  /**
+   * Осиротевшие сообщения — тихая потеря мысли при сохранённых словах.
+   *
+   * Разбор читает сообщения строго по выгрузке, и такая фраза не
+   * склеится ни с чем: человек не получает ни «Слушаю», ни разбора.
+   * Досмотр слеп по устройству — он смотрит в выгрузки, а у сироты
+   * выгрузки нет. Теперь хотя бы видно, что она есть.
+   */
+  let orphanedMessages: number | null = null;
+
+  try {
+    orphanedMessages = await countOrphanedMessages(deps.db, { now });
+
+    if (orphanedMessages > 0) {
+      deps.logger.warn(
+        { orphanedMessages },
+        'Есть сообщения без выгрузки: слова сохранены, но разобрать их некому',
+      );
+    }
+  } catch (error) {
+    deps.logger.error({ err: error }, 'Не удалось посчитать сообщения без выгрузки');
+  }
+
+  return { pruned, expiredQuestions, orphanedMessages };
 }
 /**
  * Разбор не начался: замок этого человека держит кто-то другой.

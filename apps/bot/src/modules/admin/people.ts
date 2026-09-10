@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import {
   aiCalls,
@@ -15,6 +15,7 @@ import type { Executor } from '../../infra/db.js';
 import { activePayersCount } from '../billing/billing.repo.js';
 import { funnelOf, type Funnel } from './funnel.js';
 import { RESTORABLE_FIELDS } from '../resolver/revisions.repo.js';
+import { orphanedOnly } from '../gateway/orphans.js';
 import { unpricedCountSql, unpricedSql } from '../metering/unpriced.js';
 import type { Money } from '../metering/cost-breakdown.js';
 
@@ -852,14 +853,24 @@ export async function personCard(
       at: messagesRaw.receivedAt,
     })
     .from(messagesRaw)
-    .where(and(eq(messagesRaw.userId, params.userId), isNull(messagesRaw.batchId)))
+    /**
+     * Только неслучайные (ревизия этапов 1–2).
+     *
+     * Команда и служебное сообщение остаются без выгрузки **нарочно**, и
+     * лежали здесь вперемешку с настоящими сиротами — под подписью «так
+     * бывает после отказа гейта». Намеренное и случайное были
+     * неразличимы, то есть список читался как факт, которым не являлся.
+     */
+    .where(orphanedOnly(params.userId))
     .orderBy(desc(messagesRaw.receivedAt))
     .limit(20);
 
   const [orphansAll] = await db
     .select({ total: count() })
     .from(messagesRaw)
-    .where(and(eq(messagesRaw.userId, params.userId), isNull(messagesRaw.batchId)));
+    // Итог считается тем же условием, что и список: разойдись они — и
+    // подпись «показаны последние N из M» стала бы врать.
+    .where(orphanedOnly(params.userId));
 
   /**
    * Сколько выгрузок у человека **всего** (ревизия четвёртого этапа).
