@@ -10,7 +10,7 @@ import type {
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
-import { describeToday, resolveDeadline, type ResolvedDeadline } from './dates.js';
+import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
 
 /**
@@ -391,11 +391,35 @@ export function correctItems(
      */
     let recurrence: ResolvedRecurrence | undefined;
     if (isActionable(type)) {
+      /**
+       * Якорь берётся из **проверенного** срока, а не из строки модели.
+       *
+       * Срок проходит проверку и пересчёт кодом: «в четверг» при ответе
+       * модели «среда» исправляется на четверг (замер задачи 2.7),
+       * «сегодня», датированное завтрашним днём, возвращается на сегодня
+       * (боевое 03.09.2026). Правило же строилось из непроверенной
+       * строки — и расходилось со сроком той же записи навсегда: после
+       * первого «сделано» «каждый четверг» становилось «каждой средой»,
+       * а в карточке при этом стояли слова человека про четверг.
+       *
+       * Обещание в шапке `recurrence.ts` — «правило не может разойтись со
+       * сроком, они одно» — было правдой, когда правило вводили; поправки
+       * в разборе дат его сняли, и заметить это было нечем.
+       *
+       * **Когда проверенного срока нет, берётся строка модели — как и
+       * раньше.** Не «правила нет»: срок отвергается и по причине «человек
+       * времени не называл», а «по будням собирать обед» — законное
+       * `weekdays` без всякого срока. Выбросить правило здесь значило бы
+       * лечить один промах другим, и цену этого без прогона набора не
+       * измерить.
+       */
+      const anchor = deadline === undefined ? item.deadline : isoDateIn(deadline.at, ctx.timeZone);
+
       const resolvedRecurrence = resolveRecurrence({
         kind: item.recurrenceKind,
         interval: item.recurrenceInterval,
         text: item.recurrenceText,
-        deadline: item.deadline,
+        deadline: anchor,
       });
 
       if (resolvedRecurrence.text !== undefined) {

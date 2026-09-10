@@ -358,6 +358,107 @@ describe('регулярность (задача 2.18а)', () => {
     expect(result.corrections.recurrence).toBe(0);
   });
 
+  it('якорь берётся из проверенного срока, а не из строки модели', async () => {
+    /**
+     * Ревизия этапов 1–2, регрессия высокой важности.
+     *
+     * Срок проходит проверку и пересчёт кодом: человек назвал четверг,
+     * модель ответила средой — это измеренный промах (`dates.ts`), и код
+     * исправляет дату на четверг. Правило же строилось из **строки
+     * модели**, и якорь оставался средой.
+     *
+     * Дальше расхождение становится вечным: после первого «сделано»
+     * `nextDeadlineAfterDone` считает следующее повторение от якоря и
+     * отдаёт следующую среду. «Каждый четверг» навсегда превращается в
+     * «каждую среду», а в карточке при этом стоят слова человека про
+     * четверг — и объяснить это ему нечем.
+     *
+     * Обещание в шапке `recurrence.ts` — «правило не может разойтись со
+     * сроком, они одно» — было правдой, когда правило вводили; поправки в
+     * разборе дат его сняли, и покраснеть было нечему.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'записаться к стоматологу',
+            // 2026-09-09 — среда. Человек сказал «в четверг».
+            deadline: '2026-09-09',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'weekly',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый четверг',
+            deadlineText: '',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('каждый четверг записываться к стоматологу'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [item] = result.items;
+
+    // Срок исправлен кодом на четверг 10 сентября…
+    expect(item?.deadline?.at.toISOString()).toBe('2026-09-09T21:00:00.000Z');
+    expect(result.corrections.deadline).toBe(1);
+
+    // …и якорь обязан быть тем же четвергом, а не средой модели.
+    expect(item?.recurrence?.rule?.anchor, 'правило разошлось со сроком той же записи').toBe(
+      '2026-09-10',
+    );
+  });
+
+  it('без проверенного срока правило всё равно строится', async () => {
+    /**
+     * «По будням собирать обед» — законное `weekdays`, а срока человек не
+     * называл, и разбор дат его законно отвергает.
+     *
+     * Правка якоря соблазняет выбросить правило вместе с отвергнутым
+     * сроком. Здесь записано, почему так делать нельзя: цена — потеря
+     * измеренного случая из контрольного набора, и без прогона набора
+     * она не проверяется. Опора на строку модели остаётся, как и была.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'собирать сыну обед в школу',
+            deadline: '2026-09-07',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'weekdays',
+            recurrenceInterval: 1,
+            recurrenceText: 'по будням',
+            deadlineText: '',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('по будням собирать сыну обед в школу'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [item] = result.items;
+
+    // Срок отвергнут: времени человек не называл.
+    expect(item?.deadline).toBeUndefined();
+
+    // А правило на месте.
+    expect(item?.recurrence?.rule?.kind).toBe('weekdays');
+  });
+
   it('у регулярного дела срок дневной, даже если модель сказала «неделя»', async () => {
     /**
      * Задача 3.30. «Каждый вторник» модель помечала точностью `week`, и

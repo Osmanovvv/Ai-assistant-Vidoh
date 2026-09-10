@@ -182,38 +182,6 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
    * какое число месяца повторять. Поэтому берётся новый срок, если он
    * назван, иначе нынешний.
    */
-  if (params.changes.recurrenceKind !== 'none') {
-    /**
-     * Нынешний срок берётся **в поясе человека** (задача 3.74).
-     *
-     * Схема правила требует этого прямо: «`anchor` — дата первого
-     * повторения в поясе человека». Брался он из `toISOString()`, то
-     * есть по UTC, и у москвича четверг превращался в среду, а у омича
-     * промах шире на все шесть часов его пояса. Правило «каждый четверг»
-     * становилось правилом «каждую среду» — навсегда.
-     */
-    const anchor =
-      deadline.length > 0
-        ? deadline
-        : item.deadlineAt === null
-          ? ''
-          : isoDateIn(item.deadlineAt, params.timeZone);
-
-    const resolved = resolveRecurrence({
-      kind: params.changes.recurrenceKind,
-      interval: params.changes.recurrenceInterval,
-      text: params.changes.recurrenceText,
-      deadline: anchor,
-    });
-
-    if (resolved.rule !== undefined && resolved.text !== undefined) {
-      next.recurrenceRule = resolved.rule;
-      next.recurrenceText = resolved.text;
-      next.recurrenceSource =
-        params.recurrenceSource ?? sourceOf(params.spoken ?? '', resolved.source);
-    }
-  }
-
   // Пустая строка означает «не трогать»: так же устроена схема
   // классификации, и модели такой ответ даётся надёжнее пропуска ключа.
   // Правило то же, что при сохранении: заголовок не должен менять
@@ -271,6 +239,53 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
         next.deadlineAt = at;
         next.deadlineAccuracy = outcome.deadline.accuracy;
       }
+    }
+  }
+
+  /**
+   * Правка правила повторения (задача 3.8б).
+   *
+   * «Запомни, это у меня каждый месяц» про существующее дело — правка, а
+   * не новая запись. Ведёт себя как правка срока: показывается человеку и
+   * откатывается одним тапом.
+   *
+   * **Стоит после разбора срока, и это не косметика.** Правило опирается
+   * на дату, и брать её надо ту, которая у записи действительно будет, —
+   * не строку модели. Строку тут же ниже пересчитывает `nearestWeekday`:
+   * человек сказал «в четверг», модель ответила средой, срок исправлен, а
+   * якорь оставался средой — и «каждый четверг» становилось «каждой
+   * средой» навсегда (ревизия этапов 1–2). Порядок — и есть починка.
+   *
+   * Якорь берётся **в поясе человека** (задача 3.74): схема правила
+   * требует этого прямо, а `toISOString()` у москвича делал из четверга
+   * среду, у омича промахивался на все шесть часов пояса.
+   */
+  if (params.changes.recurrenceKind !== 'none') {
+    const at = next.deadlineAt ?? item.deadlineAt;
+
+    /**
+     * Последняя опора — строка модели, как и раньше.
+     *
+     * Срока может не быть вовсе: «запомни, это каждый месяц» про запись
+     * без даты. Выбросить тут правило значило бы потерять законное
+     * `weekdays` у «по будням» — цену такой замены без прогона набора не
+     * измерить, а `resolveRecurrence` и сам откажет, если опереться не на
+     * что.
+     */
+    const anchor = at === null ? deadline : isoDateIn(at, params.timeZone);
+
+    const resolved = resolveRecurrence({
+      kind: params.changes.recurrenceKind,
+      interval: params.changes.recurrenceInterval,
+      text: params.changes.recurrenceText,
+      deadline: anchor,
+    });
+
+    if (resolved.rule !== undefined && resolved.text !== undefined) {
+      next.recurrenceRule = resolved.rule;
+      next.recurrenceText = resolved.text;
+      next.recurrenceSource =
+        params.recurrenceSource ?? sourceOf(params.spoken ?? '', resolved.source);
     }
   }
 

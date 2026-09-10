@@ -128,6 +128,18 @@ export function resolveRecurrence(raw: RecurrenceFromModel): ResolvedRecurrence 
     return { text, source: 'stated', problem: 'нет срока, на который опереться' };
   }
 
+  if (!isRealDate(raw.deadline)) {
+    /**
+     * Вид проверяла регулярка, а календарь — никто.
+     *
+     * «2026-02-31» её проходит, а `Date.UTC` молча делает из него третье
+     * марта — тот самый переход через край месяца, который разбор сроков
+     * запрещает явно. Правило «каждое 31-е» тихо становилось бы правилом
+     * «каждое 3-е», и объяснить это человеку было бы нечем.
+     */
+    return { text, source: 'stated', problem: `якорь «${raw.deadline}» — несуществующая дата` };
+  }
+
   const interval = Number.isInteger(raw.interval) && raw.interval >= 1 ? raw.interval : 1;
 
   const parsed = recurrenceRuleSchema.safeParse({
@@ -147,6 +159,25 @@ export function resolveRecurrence(raw: RecurrenceFromModel): ResolvedRecurrence 
 export function parseStoredRule(value: unknown): RecurrenceRule | undefined {
   const parsed = recurrenceRuleSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * Настоящая ли это дата календаря.
+ *
+ * Регулярка стережёт вид записи, а не существование дня: 31 февраля и
+ * нулевое число её проходят. Дальше `Date.UTC` переносит их через край
+ * месяца молча — правило «каждое 31-е» стало бы «каждым 3-м».
+ *
+ * Тем же условием, что и разбор сроков (`dates.ts`), и по той же
+ * причине: одно понимание «бывает ли такой день» на весь бот.
+ */
+function isRealDate(iso: string): boolean {
+  const { year, month, day } = partsFromIso(iso);
+
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+
+  return true;
 }
 
 /** Понедельник — единица, воскресенье — семь. */
