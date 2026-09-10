@@ -7,6 +7,7 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import { collectCandidates } from './candidates.js';
+import { reembedItem } from '../embedder/reembed.js';
 import { applyDecision, type Applied } from './patch.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
@@ -316,7 +317,36 @@ export async function resolvePatchSegment(
 
   // Менять нечего — запись уже в этом состоянии. Ни ревизии, ни реплики:
   // сообщение о том, чего не было, доверия не прибавляет.
-  return applied === undefined
-    ? { kind: 'parked', reason: 'запись уже в нужном состоянии' }
-    : { kind: 'applied', applied };
+  if (applied === undefined) return { kind: 'parked', reason: 'запись уже в нужном состоянии' };
+
+  /**
+   * Заголовок сменился — пересчитываем вектор (план 2.9).
+   *
+   * Обещание плана дословно: «Считается при создании записи **и при
+   * изменении заголовка**». Вторая половина не работала вовсе, и после
+   * «не к врачу, а к стоматологу» смысловой источник кандидатов §7.2
+   * продолжал искать запись по словам, которых в ней уже нет.
+   *
+   * **После записи, а не внутри неё.** Внутри `applyDecision` висит
+   * `select … for update`, и платный вызов под открытой транзакцией
+   * держал бы строку запертой всё время ожидания сети.
+   *
+   * **Только при смене текста.** Срок, тема и правило вектора не
+   * касаются: он считается от заголовка. Платить за неизменившийся
+   * текст — это тот же расход, за который проект уже бил себя по рукам.
+   */
+  if (applied.fields.includes('text')) {
+    await reembedItem(
+      {
+        db: deps.db,
+        ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+        ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+        ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+        ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+      },
+      { itemId: applied.after.id, text: applied.after.text, userId: params.userId },
+    );
+  }
+
+  return { kind: 'applied', applied };
 }

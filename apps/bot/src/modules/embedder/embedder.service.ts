@@ -172,7 +172,17 @@ export async function findSimilarItems(
   return rows;
 }
 
-/** Дописывает вектор к уже существующей записи. Нужен досчёту. */
+/**
+ * Дописывает вектор к уже существующей записи: пересчёт после правки
+ * заголовка и ручной досчёт.
+ *
+ * **`updated_at` не трогается, и это здесь главное.** Это время значит
+ * «запись изменили», и по нему §7.2 собирает короткую память сессии —
+ * записи за последние сутки. Двинь его тут — и ручной досчёт втащил бы
+ * в сессию всю базу разом, а после правки заголовка время разошлось бы
+ * с тем, что вернул `applyDecision` и что легло в ревизию: одно число
+ * посчиталось бы двумя способами.
+ */
 export async function setItemEmbedding(
   db: Executor,
   itemId: string,
@@ -181,6 +191,6 @@ export async function setItemEmbedding(
   const literal = toVectorLiteral(vector);
 
   await db.execute(
-    sql`update ${items} set embedding = ${sql.raw(`'${literal}'::vector`)}, updated_at = now() where ${items.id} = ${itemId}`,
+    sql`update ${items} set embedding = ${sql.raw(`'${literal}'::vector`)} where ${items.id} = ${itemId}`,
   );
 }
