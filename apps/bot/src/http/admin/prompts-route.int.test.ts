@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -284,5 +284,111 @@ describe('раздела нет — так и сказано, а не «не у�
     const response = await fetch(`${base}/admin/api/prompts`);
 
     expect(response.status).toBe(401);
+  });
+});
+
+describe('раздел включается и гаснет по диску, а не по памяти о старте', () => {
+  /**
+   * Ревизия этапов 1–2. Признак «отчёты есть» считался **один раз при
+   * подъёме бота**: путь до отчётов передавался в панель только при
+   * найденном отчёте. А свежесть тех же отчётов панель читала с диска на
+   * каждый запрос — одно число двумя способами.
+   *
+   * Связка от этого рвалась там, где её и лечили: `./ops/seed-prompts.sh`
+   * кладёт отчёты в **работающий** сервер и бота не перезапускает
+   * (поднимает разовый `migrate`). Значит после заливки раздел оставался
+   * выключенным до следующей выкладки, а рантбук предлагал ровно ту
+   * команду, которая помочь не могла.
+   *
+   * Проверяется поведением на одном и том же поднятом сервере: пусто —
+   * раздела нет; появился отчёт — раздел есть; отчёт убрали — раздела
+   * снова нет. Ни один перезапуск между шагами не делается нарочно.
+   */
+
+  async function ask(base: string): Promise<{ enabled: boolean; why?: string }> {
+    const res = await fetch(`${base}/admin/api/prompts`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    return (await res.json()) as { enabled: boolean; why?: string };
+  }
+
+  it('пустая папка — раздела нет; появился отчёт — раздел есть; убрали — снова нет', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'vydoh-eval-live-'));
+    statics.push(dir);
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminEvalDir: dir,
+      }),
+    );
+
+    expect((await ask(base)).enabled, 'раздел включён без единого отчёта').toBe(false);
+
+    // Заливка: отчёт лёг в работающий сервер, бота никто не трогал.
+    await mkdir(join(dir, 'runs'), { recursive: true });
+    await writeFile(join(dir, 'runs', '2026-09-10T00-00-00.json'), '{}', 'utf8');
+
+    expect(
+      (await ask(base)).enabled,
+      'раздел не увидел отчёт, положенный в работающий сервер',
+    ).toBe(true);
+
+    // И обратный ход: без него страж мерил бы один булев, а не диск.
+    await rm(join(dir, 'runs'), { recursive: true, force: true });
+
+    expect((await ask(base)).enabled, 'раздел остался включён без отчётов').toBe(false);
+  });
+
+  it('отчёты только у резолвера тоже включают раздел', async () => {
+    /**
+     * У резолвера свой набор и свои отчёты — `resolver/runs`. Сервер, где
+     * есть только они, промптом резолвера управлять обязан: судить о
+     * §10.3 для него есть по чему.
+     */
+    const dir = await mkdtemp(join(tmpdir(), 'vydoh-eval-resolver-'));
+    statics.push(dir);
+
+    await mkdir(join(dir, 'resolver', 'runs'), { recursive: true });
+    await writeFile(join(dir, 'resolver', 'runs', '2026-09-10T00-00-00.json'), '{}', 'utf8');
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminEvalDir: dir,
+      }),
+    );
+
+    expect((await ask(base)).enabled, 'раздел не увидел отчётов резолвера').toBe(true);
+  });
+
+  it('неполный отчёт — это не «отчётов нет»', async () => {
+    /**
+     * Битый или неполный отчёт `promptsView` разбирает сам и говорит
+     * словами, чем он не годится. Спроси мы про годность здесь — раздел
+     * исчез бы целиком, человек прочитал бы «отчётов нет» там, где они
+     * есть, и полечил бы это заливкой тех же файлов.
+     */
+    const dir = await mkdtemp(join(tmpdir(), 'vydoh-eval-broken-'));
+    statics.push(dir);
+
+    await mkdir(join(dir, 'runs'), { recursive: true });
+    await writeFile(join(dir, 'runs', '2026-09-10T00-00-00.json'), 'не json вовсе', 'utf8');
+
+    const base = await listen(
+      createServer({
+        healthChecks: [],
+        admin: configOf(),
+        adminDb: testDb(),
+        adminEvalDir: dir,
+      }),
+    );
+
+    expect((await ask(base)).enabled, 'неполный отчёт погасил раздел целиком').toBe(true);
   });
 });

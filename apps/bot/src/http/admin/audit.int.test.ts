@@ -1,10 +1,12 @@
 import type { Server } from 'node:http';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 
 import { eq } from 'drizzle-orm';
 import type { Express } from 'express';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { adminAccessLog, aiCalls, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -17,6 +19,28 @@ import { fullAdminRouter } from './full-router.js';
 import { createAdminRouter, SESSION_COOKIE, type AdminAuthConfig } from './index.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
+
+const evalDirs: string[] = [];
+
+/**
+ * Папка отчётов с одним прогоном.
+ *
+ * Раздел промптов включается по наличию отчёта на диске — значит для
+ * проверки признака `canRun` отчёт обязан быть. Прежде здесь стояла
+ * заведомо несуществующая папка, и раздел всё равно отвечал `enabled`:
+ * решение принималось один раз при подъёме бота, а не по диску (ревизия
+ * этапов 1–2). Теперь такая папка честно гасит раздел, и мерить в нём
+ * было бы нечего.
+ */
+async function withOneRun(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'vydoh-audit-eval-'));
+  evalDirs.push(dir);
+
+  await mkdir(join(dir, 'runs'), { recursive: true });
+  await writeFile(join(dir, 'runs', '2026-09-10T00-00-00.json'), '{}', 'utf8');
+
+  return dir;
+}
 
 /**
  * Журнал доступа к персональным данным (§16 ТЗ, задача 4.11).
@@ -57,6 +81,10 @@ async function listen(app: Express): Promise<string> {
 
   return `http://127.0.0.1:${String(port)}`;
 }
+
+afterAll(async () => {
+  await Promise.all(evalDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -361,7 +389,7 @@ describe('панель не рисует кнопок, за которыми н�
         healthChecks: [],
         admin: configOf(),
         adminDb: testDb(),
-        adminEvalDir: join(import.meta.dirname, 'нет-такой-папки'),
+        adminEvalDir: await withOneRun(),
       }),
     );
 
@@ -379,7 +407,7 @@ describe('панель не рисует кнопок, за которыми н�
         healthChecks: [],
         admin: configOf(),
         adminDb: testDb(),
-        adminEvalDir: join(import.meta.dirname, 'нет-такой-папки'),
+        adminEvalDir: await withOneRun(),
         adminEvalRunner: { state: () => ({ kind: 'idle' }), start: () => false },
       }),
     );
