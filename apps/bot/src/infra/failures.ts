@@ -117,14 +117,21 @@ const ALREADY_PAID = Symbol.for('vydoh.alreadyPaid');
 /**
  * Что именно оплачено.
  *
- * Пока это только секунды звука: у модели и векторов брошенный запрос
- * отменяется сигналом и денег не стоит, а распознавание платит отправкой.
+ * Секунды звука — у распознавания: оно платит отправкой. Токены — у
+ * модели, когда ответ пришёл, но оказался непригоден: обрезанная по
+ * лимиту генерация оплачена до последнего разрешённого токена.
+ *
+ * Все поля необязательные, и это язык для «не знаем»: чего провайдер не
+ * назвал, того мы не выдумываем. Ноль вместо «не знаем» — та же ложь,
+ * только тише: он читается как «вызов был бесплатным».
  *
  * Своя узкая форма, а не тип из учёта: `infra` не должна зависеть от
  * модуля, который сама обслуживает.
  */
 export interface PaidUsage {
-  readonly audioSeconds: number;
+  readonly audioSeconds?: number;
+  readonly tokensIn?: number;
+  readonly tokensOut?: number;
 }
 
 function paidMark(error: unknown): true | PaidUsage | undefined {
@@ -133,7 +140,7 @@ function paidMark(error: unknown): true | PaidUsage | undefined {
   const mark = (error as Record<symbol, unknown>)[ALREADY_PAID];
   if (mark === true) return true;
 
-  return typeof mark === 'object' && mark !== null ? (mark as PaidUsage) : undefined;
+  return typeof mark === 'object' && mark !== null ? mark : undefined;
 }
 
 /**
