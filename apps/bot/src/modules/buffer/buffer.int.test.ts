@@ -192,9 +192,9 @@ describe('closeBatchOnSilence', () => {
       now: at(0),
     });
 
-    const closed = await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+    const outcome = await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
 
-    expect(closed).toBe(true);
+    expect(outcome).toEqual({ closed: true });
     expect((await currentBatch())?.status).toBe('queued');
   });
 
@@ -205,9 +205,12 @@ describe('closeBatchOnSilence', () => {
       now: at(0),
     });
 
-    const closed = await closeBatchOnSilence(testDb(), batchId, { now: at(20_000) });
+    const outcome = await closeBatchOnSilence(testDb(), batchId, { now: at(20_000) });
 
-    expect(closed).toBe(false);
+    // Окно тридцать секунд, слово сказано в нулевую, «сейчас» — двадцатая:
+    // ждать осталось ровно десять. Это число едет в задание закрытия, и
+    // ждать заново целое окно после него значило бы молчать вдвое дольше.
+    expect(outcome).toEqual({ closed: false, reason: 'still_talking', retryInMs: 10_000 });
     expect((await currentBatch())?.status).toBe('open');
   });
 
@@ -226,9 +229,10 @@ describe('closeBatchOnSilence', () => {
       now: at(25_000),
     });
 
-    const closed = await closeBatchOnSilence(testDb(), batchId, { now: at(30_000) });
+    const outcome = await closeBatchOnSilence(testDb(), batchId, { now: at(30_000) });
 
-    expect(closed).toBe(false);
+    // Последнее слово — на 25-й секунде, окно тридцать: остаток двадцать пять.
+    expect(outcome).toEqual({ closed: false, reason: 'still_talking', retryInMs: 25_000 });
     expect((await currentBatch())?.status).toBe('open');
   });
 
@@ -240,7 +244,14 @@ describe('closeBatchOnSilence', () => {
     });
     await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
 
-    await expect(closeBatchOnSilence(testDb(), batchId, { now: at(60_000) })).resolves.toBe(false);
+    // «Не открыта», а не «человек ещё говорит» — и разница не косметическая:
+    // на первом задание закрытия себя переставляет, на втором обязано
+    // замолчать. Иначе выгрузка, закрытая потолком, получает задание,
+    // которое ставит себя заново каждое окно и не кончается никогда.
+    await expect(closeBatchOnSilence(testDb(), batchId, { now: at(60_000) })).resolves.toEqual({
+      closed: false,
+      reason: 'not_open',
+    });
   });
 });
 

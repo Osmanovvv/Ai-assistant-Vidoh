@@ -63,7 +63,7 @@ import {
   createWorker,
   enqueueBroadcast,
   enqueueUserProcessing,
-  scheduleBatchClose,
+  rescheduleBatchClose,
   type BroadcastJob,
   type PipelineJob,
 } from './infra/queue.js';
@@ -481,12 +481,20 @@ async function main(): Promise<void> {
        * четвёртого этапа: окно ожидания тишины бралось константой из
        * кода, хотя задание ставилось значением из панели.
        */
-      await runCloseBatchJob(
+      const outcome = await runCloseBatchJob(
         {
           db,
           settings,
           reschedule: async (again) => {
-            await scheduleBatchClose(queue, again);
+            /**
+             * Изнутри активного задания — только в обход своего
+             * идентификатора: на свой BullMQ молча не ставит ничего.
+             *
+             * Через `scheduleBatchClose` вышло бы то же самое — снять
+             * своё же задание нельзя, и он ушёл бы сюда же, — но идти
+             * туда за этим значит полагаться на длину чужого замка.
+             */
+            await rescheduleBatchClose(queue, again);
           },
           process: async (userId) => {
             await enqueueUserProcessing(queue, userId);
@@ -494,6 +502,29 @@ async function main(): Promise<void> {
         },
         { batchId: data.batchId, userId: data.userId },
       );
+
+      /**
+       * Исход задания читается и пишется.
+       *
+       * Прежде его не смотрел никто, и потерянная переставка не была
+       * видна ни в журнале, ни на экране: о ней узнавали по чужой строке
+       * досмотра «Подобрал выгрузки, о которых очередь забыла».
+       *
+       * Уровень разный по делу. Закрытие — обычный ход дела, оно и так
+       * видно по разбору; а «человек ещё говорит» и «закрыли без нас» —
+       * редкие ветки, за которыми и придут, разбирая жалобу. `debug` на
+       * боевом молчит: умолчание уровня — `info`.
+       */
+      if (outcome.closed) {
+        logger.debug({ batchId: data.batchId, ...outcome }, 'Выгрузка закрыта по тишине');
+      } else {
+        logger.info(
+          { batchId: data.batchId, userId: data.userId, ...outcome },
+          outcome.rescheduled
+            ? 'Человек ещё говорит — жду тишины снова'
+            : 'Выгрузку закрыло не это задание',
+        );
+      }
 
       return;
     }

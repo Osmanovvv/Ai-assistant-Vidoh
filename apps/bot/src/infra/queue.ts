@@ -75,11 +75,29 @@ export async function scheduleBatchClose(
   const jobId = closeJobId(params.batchId);
 
   const existing = await queue.getJob(jobId);
-  if (existing) {
-    // Задание могло уже начать выполняться — тогда удалить его нельзя,
-    // и это не страшно: closeBatchOnSilence проверит время последнего
-    // сообщения и откажется закрывать выгрузку, в которую только что дописали.
-    await existing.remove().catch(() => undefined);
+  const freed =
+    existing === undefined
+      ? true
+      : await existing.remove().then(
+          () => true,
+          () => false,
+        );
+
+  if (!freed) {
+    /**
+     * Задание уже выполняется, и снять его нельзя: BullMQ бросает
+     * «could not be removed because it is locked by another worker».
+     *
+     * **Прежде отказ глотался, и на этом всё кончалось.** `queue.add` на
+     * занятый идентификатор не бросает и не ставит: скрипт видит
+     * существующий ключ и возвращает тот же jobId строкой, а проверка
+     * «код меньше нуля» на строке ложна. Отказ выходил молчаливым
+     * дважды, нового закрытия не появлялось вовсе, и выгрузку подбирал
+     * досмотр — с опозданием до минуты и с ложной строкой «Подобрал
+     * выгрузки, о которых очередь забыла».
+     */
+    await rescheduleBatchClose(queue, params);
+    return;
   }
 
   await queue.add(
@@ -87,6 +105,48 @@ export async function scheduleBatchClose(
     { kind: 'close-batch', batchId: params.batchId, userId: params.userId },
     { jobId, delay: params.delayMs },
   );
+}
+
+/**
+ * Поставить закрытие **в обход занятого идентификатора**.
+ *
+ * Без своего `jobId`, и это не упущение — та же причина, что у
+ * `enqueueBroadcast` ниже. Задание, которое ставит себя заново, в этот
+ * миг ещё выполняется, и на свой же идентификатор BullMQ молча отвечает
+ * «такое уже есть».
+ *
+ * **Лишнее задание безвредно и не размножается.** Закрытие идёт одним
+ * UPDATE по `status='open'`, а заход, чья выгрузка уже не открыта, себя
+ * не переставляет — значит лишняя ветка умирает на первом же заходе
+ * после закрытия. Переставка при этом идёт на остаток окна, поэтому обе
+ * ветки сходятся к одному сроку, а не расходятся.
+ */
+export async function rescheduleBatchClose(
+  queue: Queue<PipelineJob>,
+  params: { readonly batchId: string; readonly userId: string; readonly delayMs: number },
+): Promise<void> {
+  await queue.add(
+    'close-batch',
+    { kind: 'close-batch', batchId: params.batchId, userId: params.userId },
+    { delay: params.delayMs },
+  );
+}
+
+/**
+ * Снять закрытие: выгрузку закрыли раньше срока.
+ *
+ * Потолок сообщений или возраста закрывает выгрузку прямо в приёме, а
+ * отложенное задание от предыдущего сообщения остаётся висеть. Прежде
+ * оно молча переставляло себя вникуда; теперь оно честно ходит в базу и
+ * умирает — но ходить незачем, если снять его сразу.
+ *
+ * Отказ проглатывается намеренно: снять активное задание нельзя, и это
+ * не беда — оно само увидит закрытую выгрузку и промолчит.
+ */
+export async function cancelBatchClose(queue: Queue<PipelineJob>, batchId: string): Promise<void> {
+  const existing = await queue.getJob(closeJobId(batchId));
+
+  if (existing !== undefined) await existing.remove().catch(() => undefined);
 }
 
 export async function enqueueUserProcessing(
