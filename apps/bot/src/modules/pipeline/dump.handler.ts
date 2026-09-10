@@ -1049,27 +1049,40 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         continue;
       }
 
+      /**
+       * «Не смогла посмотреть» — своя шапка и пустое тело.
+       *
+       * Ветка отдельная, потому что «ничего не нашлось» и «не сумели
+       * поискать» выглядят одинаково пустыми, а значат противоположное:
+       * первое человек примет за факт о своих делах и не переспросит.
+       */
       const header =
         answer.kind === 'today'
           ? texts.backlog.today
           : answer.kind === 'about'
             ? texts.backlog.about
-            : texts.backlog.nothing;
+            : answer.kind === 'unavailable'
+              ? texts.backlog.unavailable
+              : texts.backlog.nothing;
 
       /**
        * Шапка называет день — значит вчерашнее «завтра» в строке лишнее
        * (задача 3.78). Срезается только у дела, чей срок и есть сегодня.
+       *
+       * Условие по видам с записями, а не «кроме пустого»: при строгих
+       * типах компилятор сам приводит сюда за руку, когда видов
+       * прибавляется.
        */
       const body =
-        answer.kind === 'nothing'
-          ? []
-          : answer.items.map((item) =>
+        answer.kind === 'today' || answer.kind === 'about'
+          ? answer.items.map((item) =>
               texts.backlog.line(
                 answer.kind === 'today'
                   ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
                   : item.text,
               ),
-            );
+            )
+          : [];
 
       await tell([header, ...body].join('\n'));
     }

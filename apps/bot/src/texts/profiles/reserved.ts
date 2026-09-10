@@ -209,6 +209,7 @@ export const reserved: TextProfile = {
     about: 'Вот что у меня про это записано:',
     line: (text) => `— ${text}`,
     nothing: 'Про это у меня ничего не записано.',
+    unavailable: 'Сейчас не смогла заглянуть в записи — они на месте.',
   },
 
   project: {

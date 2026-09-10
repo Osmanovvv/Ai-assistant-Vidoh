@@ -118,6 +118,35 @@ export async function saveItems(db: Database, params: SaveItemsParams): Promise<
   });
 }
 
+/**
+ * Черновик с таким текстом у этой выгрузки уже есть.
+ *
+ * Нужно спасателям сказанного: выгрузка возвращается в очередь при нашем
+ * простое и разбирается снова — до пяти раз. Без этой проверки человек
+ * получил бы пять копий одного черновика.
+ *
+ * Сверка по тексту, а не по признаку «уже спасали»: признак пришлось бы
+ * хранить, а он и есть сам черновик.
+ */
+export async function hasDraft(
+  db: Executor,
+  params: { readonly batchId: string; readonly text: string },
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: items.id })
+    .from(items)
+    .where(
+      and(
+        eq(items.sourceBatchId, params.batchId),
+        eq(items.isDraft, true),
+        eq(items.text, params.text),
+      ),
+    )
+    .limit(1);
+
+  return row !== undefined;
+}
+
 export async function saveDraft(db: Executor, params: SaveDraftParams): Promise<Item> {
   const [row] = await db
     .insert(items)

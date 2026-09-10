@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
+import { SpendCeilingError } from '../../infra/failures.js';
 import { testDb } from '../../test/db.js';
+import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
+import { PermanentEmbeddingError } from '../embedder/providers/types.js';
 import type { EmbedRequest, EmbedResult, EmbeddingProvider } from '../embedder/providers/types.js';
 import { upsertUser } from '../users/users.repo.js';
 import { answerBacklogQuery } from './query.service.js';
@@ -102,6 +105,74 @@ describe('вопрос про дело, которое нашлось поиск
   it('без похожего вовсе — тоже «ничего»', async () => {
     // Обратная сторона: правило не должно превращать «нашлось» в
     // «ничего» всегда — иначе ответ по бэклогу перестал бы работать.
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что там с садиком' },
+    );
+
+    expect(answer.kind).toBe('nothing');
+  });
+});
+
+describe('наш простой не выдаётся за отсутствие записей', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливый отказ — и самый дорогой из них для
+   * человека.
+   *
+   * Вектор вопроса не посчитался — перейдённый потолок расхода, 403 от
+   * провайдера, таймаут, — и бот отвечал «Про это у меня ничего не
+   * записано» про существующую запись. Наш сбой становился утверждением
+   * о делах человека, а единственный его читатель — сам человек, и
+   * проверить это ему нечем. Партия при этом закрывается успешной,
+   * повтора не будет, и ответ остаётся навсегда.
+   *
+   * Мониторинг тоже слеп: отказ съеден внутри разбора, задание
+   * завершается успехом, срочное оповещение про наш простой висит на
+   * ветке отказа задания и не срабатывает вовсе.
+   */
+
+  it('вектор не посчитался — это «не смогла посмотреть», а не «ничего нет»', async () => {
+    await addItem('записать сына в садик', 'active');
+
+    const broken = new MockEmbeddingProvider({
+      failFirst: { times: 5, error: new PermanentEmbeddingError('модель недоступна') },
+    });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder: broken, logger },
+      { userId, text: 'что там с садиком' },
+    );
+
+    expect(answer.kind, 'наш сбой выдан за отсутствие записей').toBe('unavailable');
+  });
+
+  it('перейдённый потолок расхода — то же самое', async () => {
+    /**
+     * Здесь неправда особенно дорога: записи на месте, деньги кончились
+     * у нас, а человек читает, что у него ничего не записано.
+     */
+    await addItem('записать сына в садик', 'active');
+
+    const answer = await answerBacklogQuery(
+      {
+        db: testDb(),
+        embedder,
+        logger,
+        spendGuard: {
+          beforeCall: () => Promise.reject(new SpendCeilingError('потолок за сутки перейдён')),
+          noteSpent: () => undefined,
+          report: () => Promise.resolve([]),
+        },
+      },
+      { userId, text: 'что там с садиком' },
+    );
+
+    expect(answer.kind).toBe('unavailable');
+  });
+
+  it('исправный поиск по-прежнему отвечает «ничего», когда нечего показать', async () => {
+    // Обратная сторона: «не смогла» не должно вытеснить честное
+    // «ничего не записано» — иначе человек перестанет верить и ему.
     const answer = await answerBacklogQuery(
       { db: testDb(), embedder, logger },
       { userId, text: 'что там с садиком' },

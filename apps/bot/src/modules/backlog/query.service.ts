@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 
 import type { Item } from '../../db/schema.js';
+import { isOwnOutage } from '../../infra/errors.js';
 import type { Database } from '../../infra/db.js';
 import { findSimilarItems } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
@@ -63,7 +64,15 @@ export type BacklogAnswer =
   /** Спрашивали про конкретное дело: что о нём известно. */
   | { readonly kind: 'about'; readonly items: readonly Item[] }
   /** Ничего похожего не нашлось. */
-  | { readonly kind: 'nothing' };
+  | { readonly kind: 'nothing' }
+  /**
+   * Посмотреть не удалось: вектор вопроса не посчитался.
+   *
+   * Отдельный вид ответа, а не `nothing`. «Ничего не записано» — это
+   * утверждение о делах человека, и говорить его, не заглянув в них,
+   * значит соврать про существующую запись.
+   */
+  | { readonly kind: 'unavailable' };
 
 /** Сколько записей показывать в ответе: §13.9 просит коротких реплик. */
 const MAX_SHOWN = 5;
@@ -211,6 +220,15 @@ export async function answerBacklogQuery(
         ...(deps.logger === undefined ? {} : { logger: deps.logger }),
         ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
         ...(deps.spendGuard === undefined ? {} : { spendGuard: deps.spendGuard }),
+        /**
+         * Один заход, а не три.
+         *
+         * Вопрос интерактивный: человек ждёт ответа прямо сейчас. Три
+         * попытки по таймауту в полминуты с паузами — это полторы минуты
+         * тишины перед честным «не смогла заглянуть». Прежняя неправда
+         * была быстрой; правда не должна быть медленной настолько.
+         */
+        retry: { attempts: 1 },
       },
       {
         text: params.text,
@@ -220,8 +238,34 @@ export async function answerBacklogQuery(
       },
     );
   } catch (error) {
-    deps.logger?.warn({ err: error }, 'Вектор вопроса не посчитан, отвечать нечем');
-    return { kind: 'nothing' };
+    /**
+     * Не посчитали вектор — значит не посмотрели, а не «ничего нет».
+     *
+     * Сюда приходит и наш простой — перейдённый потолок расхода, 403 от
+     * провайдера, — и обычный отказ вектора. Прежде всё это отвечало
+     * «Про это у меня ничего не записано»: наш сбой становился
+     * утверждением о записях человека, а единственный его читатель — сам
+     * человек, и проверить это ему нечем. Партия при этом закрывается
+     * успешной, повтора не будет, и ответ остаётся навсегда.
+     *
+     * В журнале — те же слова, что были, плюс опознаватели: жалоба
+     * приходит от конкретного человека в конкретное время, а привязать к
+     * нему строку было нечем. `ownOutage` — тем же предикатом, которым
+     * конвейер решает судьбу выгрузки: разбирающему надо отличить
+     * «кончились деньги или доступ» от «провайдер моргнул», а второе
+     * правило для этого однажды разошлось бы с первым.
+     */
+    deps.logger?.warn(
+      {
+        err: error,
+        userId: params.userId,
+        batchId: params.batchId,
+        ownOutage: isOwnOutage(error),
+      },
+      'Вектор вопроса не посчитан: человеку сказано, что посмотреть не вышло',
+    );
+
+    return { kind: 'unavailable' };
   }
 
   const similar = await findSimilarItems(deps.db, {
