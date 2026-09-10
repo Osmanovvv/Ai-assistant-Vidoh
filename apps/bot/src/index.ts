@@ -68,6 +68,7 @@ import {
   type PipelineJob,
 } from './infra/queue.js';
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
+import { AccessDeniedError } from './infra/failures.js';
 import { createServer, runHealthChecks, type HealthCheck } from './http/server.js';
 import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
 import { warnAboutUnpricedModels } from './modules/metering/pricing.js';
@@ -512,7 +513,30 @@ async function main(): Promise<void> {
     });
   }
   const queue = createQueue(queueConnection);
-  const lock = new RedisLock(getRedis());
+  /**
+   * Потерянный замок обязан быть слышен (ревизия этапов 1–2).
+   *
+   * Пока `renew` отдавал `false` в пустоту, самый дорогой отказ этой
+   * области наступал бесшумно: досмотр возвращает выгрузку в очередь,
+   * второй воркер разбирает её заново, человек получает ответ дважды, а
+   * модель оплачена дважды. Ни строки в журнале, ни счёта в мониторинге.
+   *
+   * В журнал — всегда: разбирающему жалобу «бот ответил дважды» нужен
+   * след причины. В мониторинг — тоже: про двойную оплату надо узнавать
+   * в тот же час, а не из отчёта через месяц. Дребезг гасит сам монитор.
+   */
+  const lock = new RedisLock(getRedis(), 'lock:', (event) => {
+    logger.warn(
+      { замок: event.name, повод: event.reason, err: event.error },
+      'Замок потерян: разбор мог пойти вторым заходом',
+    );
+
+    void monitor.alert({
+      key: 'lock-lost',
+      title: 'Замок пользователя потерян: возможен двойной разбор',
+      details: { замок: event.name, повод: event.reason },
+    });
+  });
 
   /**
    * §9.1 правило 4 ТЗ: незавершённая обработка возобновляется, а не теряется.
@@ -736,6 +760,29 @@ async function main(): Promise<void> {
     // Окно — получателем: правка из панели действует без перезапуска.
     limits: async () => await effectiveLimits(settings, DEFAULT_LIMITS),
     process: (userId) => processUserBatches({ db, lock, handleBatch, onFailure }, userId),
+    /**
+     * Досмотр разбирает мимо очереди — значит и наблюдения §18 обязан
+     * подавать сам. Прежде они висели только на событиях воркера, и в
+     * деградированном режиме, ради которого досмотр и написан, доля
+     * ошибок не считалась вовсе.
+     *
+     * Заход с занятым замком наблюдением не считается: разбора не было.
+     */
+    onOutcome: (outcome, error) => {
+      if (outcome === 'skipped') return;
+
+      void monitor.recordOutcome(outcome === 'ok');
+
+      // Отказ в доступе оповещает сразу, минуя долю ошибок (3.72): у бота
+      // один-два разбора в час, и окно наблюдений набралось бы к вечеру.
+      if (outcome === 'failed' && error instanceof AccessDeniedError) {
+        void monitor.alert({
+          key: 'access-denied',
+          title: 'Модель недоступна: разбор не работает',
+          details: { где: 'досмотр' },
+        });
+      }
+    },
   });
 
   worker.on('completed', () => {
