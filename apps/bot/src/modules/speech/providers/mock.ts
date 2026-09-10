@@ -18,6 +18,13 @@ export interface MockSpeechOptions {
   readonly failFirst?: { readonly times: number; readonly error: Error };
   readonly model?: string;
   readonly delayMs?: number;
+  /**
+   * Считать ли звук принятым до отказа.
+   *
+   * Ровно та черта, за которой распознавание уже оплачено: провайдер
+   * зовёт `onSent`, и повторять такой отказ отправкой нельзя.
+   */
+  readonly acceptsBeforeFailure?: boolean;
 }
 
 export class MockSpeechProvider implements SpeechProvider {
@@ -41,8 +48,15 @@ export class MockSpeechProvider implements SpeechProvider {
 
     const { failFirst } = this.options;
     if (failFirst && index < failFirst.times) {
+      // Звук приняли, а результата нет: деньги уже ушли.
+      if (this.options.acceptsBeforeFailure === true) {
+        request.onSent?.(Math.round(request.durationSec));
+      }
+
       throw failFirst.error;
     }
+
+    request.onSent?.(Math.round(request.durationSec));
 
     const text =
       this.options.respond?.(request, index) ??

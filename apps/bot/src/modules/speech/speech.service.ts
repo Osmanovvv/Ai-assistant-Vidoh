@@ -20,7 +20,12 @@ import {
   type AudioLimits,
   type VoiceSource,
 } from './audio.service.js';
-import type { RecognizedUtterance, SpeechProvider } from './providers/types.js';
+import type {
+  RecognizedUtterance,
+  SpeechProvider,
+  TranscriptionResult,
+} from './providers/types.js';
+import { markAlreadyPaid } from '../../infra/failures.js';
 import { withTimeout, type RetryOptions } from '../../infra/retry.js';
 
 /**
@@ -91,6 +96,63 @@ export interface TranscribeOutcome {
  */
 const DEFAULT_TIMEOUT_MS = 300_000;
 
+/**
+ * Одна отправка звука провайдеру под таймаутом.
+ *
+ * **Зачем обёртка, а не голый `withTimeout`.** Распознавание платит
+ * отправка: как только провайдер принял звук, секунды списаны, что бы ни
+ * случилось дальше. Свои отказы провайдер помечает оплаченными сам, но
+ * таймаут стоит **снаружи** и в гонке отдаёт наверх свой, чужой отказ —
+ * без пометки. `withRetry` такой отказ повторяет, и та же минута записи
+ * уезжает второй и третий раз; в учёте у неё пустой расход, поэтому
+ * переплаты не видно ни в панели, ни в потолке.
+ *
+ * Мест два — одиночная запись и склейка, — а правило одно, и разъехаться
+ * им нельзя: отсюда общая функция.
+ *
+ * **Отсутствие `onSent` — не доказательство, а нижняя оценка.** Таймаут
+ * может выиграть и до того, как провайдер успел сказать о приёме: звук
+ * тогда мог быть принят, а ответ не доехать. Повторять такой отказ мы
+ * всё же разрешаем — иначе разучимся переживать моргнувшую сеть, а это
+ * куда более частый случай.
+ */
+async function sendPart(
+  deps: TranscribeDeps,
+  part: { readonly path: string; readonly durationSec: number },
+  timeoutMs: number,
+): Promise<TranscriptionResult> {
+  let paidSeconds: number | undefined;
+
+  try {
+    return await withTimeout(
+      () =>
+        deps.provider.transcribe({
+          filePath: part.path,
+          durationSec: part.durationSec,
+          language: deps.language,
+          onSent: (audioSeconds) => {
+            paidSeconds = audioSeconds;
+          },
+        }),
+      timeoutMs,
+      'расшифровка',
+    );
+  } catch (error) {
+    // О приёме звука провайдер не сказал: скорее всего денег не потратили,
+    // и повтор остаётся единственным способом пережить сетевой обрыв.
+    if (paidSeconds === undefined) throw error;
+
+    // Редкая строка по построению: она значит «деньги ушли, результата
+    // нет». На здоровом прогоне не появляется ни разу.
+    deps.logger?.warn(
+      { audioSeconds: paidSeconds, err: error },
+      'Звук отправлен и оплачен, а расшифровки нет: отправкой не повторяем',
+    );
+
+    throw markAlreadyPaid(error, { audioSeconds: paidSeconds });
+  }
+}
+
 export async function transcribeMessage(
   deps: TranscribeDeps,
   params: TranscribeParams,
@@ -115,15 +177,10 @@ export async function transcribeMessage(
           batchId: params.batchId,
         },
         async () => {
-          const result = await withTimeout(
-            () =>
-              deps.provider.transcribe({
-                filePath: part.path,
-                durationSec: part.endSec - part.startSec,
-                language: deps.language,
-              }),
+          const result = await sendPart(
+            deps,
+            { path: part.path, durationSec: part.endSec - part.startSec },
             timeoutMs,
-            'расшифровка',
           );
 
           return {
@@ -234,15 +291,10 @@ async function transcribeGroup(
           batchId: params.batchId,
         },
         async () => {
-          const result = await withTimeout(
-            () =>
-              deps.provider.transcribe({
-                filePath: part.path,
-                durationSec: part.endSec - part.startSec,
-                language: deps.language,
-              }),
+          const result = await sendPart(
+            deps,
+            { path: part.path, durationSec: part.endSec - part.startSec },
             timeoutMs,
-            'расшифровка',
           );
 
           return { value: result, usage: { audioSeconds: result.audioSeconds } };
