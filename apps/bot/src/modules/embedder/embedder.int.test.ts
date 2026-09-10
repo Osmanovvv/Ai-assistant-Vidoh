@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { aiCalls, items, promptVersions } from '../../db/schema.js';
@@ -224,6 +224,36 @@ describe('setItemEmbedding', () => {
 
     const found = await findSimilarItems(testDb(), { userId, vector: vector(1, 0, 0) });
     expect(found.map((row) => row.id)).toEqual([id]);
+  });
+
+  it('не двигает «когда изменили»: это время значит другое', async () => {
+    /**
+     * `updated_at` значит «запись изменили», и по нему §7.2 собирает
+     * короткую память сессии — записи за последние сутки.
+     *
+     * Прежде эта функция двигала его вместе с вектором. Вызывающих у неё
+     * не было, поэтому в бою это ничего не стоило; но ручной досчёт
+     * втащил бы в сессию всю базу разом, а пересчёт после правки
+     * заголовка развёл бы время записи с тем, что вернул `applyDecision`
+     * и что легло в ревизию: одно число посчиталось бы двумя способами.
+     */
+    const id = await addItem(userId, 'запись со своим временем', null);
+
+    const [before] = await testDb()
+      .select({ updatedAt: items.updatedAt })
+      .from(items)
+      .where(eq(items.id, id));
+
+    await setItemEmbedding(testDb(), id, vector(0, 1, 0));
+
+    const [after] = await testDb()
+      .select({ updatedAt: items.updatedAt })
+      .from(items)
+      .where(eq(items.id, id));
+
+    expect(after?.updatedAt?.toISOString(), 'запись «постарела» от служебной правки').toBe(
+      before?.updatedAt?.toISOString(),
+    );
   });
 });
 

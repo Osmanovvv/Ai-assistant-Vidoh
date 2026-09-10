@@ -39,6 +39,7 @@ import {
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
+import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { FakeTopicGateway } from '../topics/fake-gateway.js';
 import { ensureThread } from '../topics/topics.service.js';
 import { STEP } from '../onboarding/onboarding.service.js';
@@ -1204,6 +1205,180 @@ describe('дополнение против замены сквозь конве
 
     // И второй записи не появилось — ради этого всё и делалось.
     expect(saved.filter((one) => !one.isDraft)).toHaveLength(1);
+  });
+
+  it('вектор пересчитывается, когда правка сменила заголовок', async () => {
+    /**
+     * План 2.9 обещает дословно: «Считается при создании записи **и при
+     * изменении заголовка**». Вторая половина не работала вовсе:
+     * `setItemEmbedding` из боя не звал никто — написана, покрыта
+     * тестами, недостижима.
+     *
+     * Цена: после «не к врачу, а к стоматологу» смысловой источник
+     * кандидатов §7.2 продолжал искать запись по словам, которых в ней
+     * уже нет. Сутки это прикрывает источник «сессия», дальше — нет.
+     */
+    const prompts = await seedPrompts();
+    const embedder = new MockEmbeddingProvider();
+
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать сына к врачу в четверг',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+      })
+      .returning({ id: items.id });
+
+    // Вектор от прежних слов: так выглядит запись, созданная разбором.
+    const before = await embedder.embed({
+      text: 'Записать сына к врачу в четверг',
+      purpose: 'document',
+    });
+    await setItemEmbedding(testDb(), item?.id ?? '', before.vector);
+
+    await queuedBatchOf([{ kind: 'text', text: 'не к врачу, а к стоматологу', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'не к врачу, а к стоматологу' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: '',
+          text: 'Записать сына к стоматологу в четверг',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'замена заголовка',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, embedder }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb()
+      .select({ text: items.text, embedding: items.embedding, updatedAt: items.updatedAt })
+      .from(items)
+      .where(eq(items.id, item?.id ?? ''));
+
+    expect(after?.text).toBe('Записать сына к стоматологу в четверг');
+
+    // Вектор новых слов, а не прежних.
+    const expected = await embedder.embed({
+      text: 'Записать сына к стоматологу в четверг',
+      purpose: 'document',
+    });
+
+    /**
+     * Целиком, а не по первому измерению: свёртка заглушки разрежена, и
+     * у двух разных текстов нулевое измерение совпадает запросто. Страж,
+     * сравнивавший его, зеленел и на сломанном дереве — проверено
+     * диверсией.
+     */
+    const shape = (vector: readonly number[]): string =>
+      vector.map((one) => one.toFixed(6)).join(',');
+
+    expect(shape(after?.embedding ?? []), 'вектор не от нынешних слов записи').toBe(
+      shape(expected.vector),
+    );
+
+    expect(
+      shape(after?.embedding ?? []),
+      'вектор остался от слов, которых в записи уже нет',
+    ).not.toBe(shape(before.vector));
+  });
+
+  it('вектор не пересчитывается, когда заголовок не менялся', async () => {
+    /**
+     * Платит отправка, а не результат. Дополнение подробности заголовка
+     * не трогает — значит и платить за него нечего: вектор считается от
+     * заголовка, и второй вызов дал бы ровно тот же вектор за те же
+     * деньги.
+     */
+    const prompts = await seedPrompts();
+    const embedder = new MockEmbeddingProvider();
+
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать сына к врачу в четверг',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+      })
+      .returning({ id: items.id });
+
+    const before = await embedder.embed({
+      text: 'Записать сына к врачу в четверг',
+      purpose: 'document',
+    });
+    await setItemEmbedding(testDb(), item?.id ?? '', before.vector);
+
+    /**
+     * Считаем только вызовы **на запись** (`document`). Резолвер тем же
+     * провайдером считает и вектор запроса (`query`), чтобы найти
+     * кандидатов, — он идёт всегда и к пересчёту отношения не имеет.
+     */
+    const documents = (): number =>
+      embedder.requests.filter((one) => one.purpose === 'document').length;
+
+    const spent = documents();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'а ещё туда надо взять карту прививок', offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'а ещё туда надо взять карту прививок' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'append',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: 'взять карту прививок',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'дополнение',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, embedder }),
+      },
+      userId,
+    );
+
+    expect(documents() - spent, 'заплатили за вектор, хотя заголовок не менялся').toBe(0);
   });
 
   it('замена, понятая дополнением: реплика не врёт и даёт поправить заголовок', async () => {
