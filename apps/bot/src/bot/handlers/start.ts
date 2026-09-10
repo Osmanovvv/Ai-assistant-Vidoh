@@ -2,6 +2,7 @@ import type { Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
+import { escapeMarkdown } from '../markdown.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import {
   firstStep,
@@ -83,7 +84,25 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
     if (state.step !== 0) return undefined;
 
     const step = firstStep(state.name);
-    const question = questionFor(step, { texts: textsFor(), name: state.name, opening: true });
+
+    /**
+     * Имя экранируется здесь, а не в самом вопросе (ревизия этапов 1–2).
+     *
+     * Этот экран уходит с разметкой — она нужна ровно для ссылки на
+     * политику, — и подставлял имя из Telegram как есть. Имя человек
+     * задаёт себе сам, и `Ann_a`, `*K*`, `[Ю` в нём не редкость: Telegram
+     * отвечал «can't parse entities», отправка падала, а повтор доставки
+     * глушился дедупликацией апдейтов. Первый экран терялся навсегда — на
+     * самое первое `/start` человек получал ноль байт.
+     *
+     * Ровно здесь, потому что тот же вопрос уходит и без разметки — из
+     * разбора выгрузки, — и слеши там были бы видны человеку.
+     */
+    const question = questionFor(step, {
+      texts: textsFor(),
+      name: escapeMarkdown(state.name),
+      opening: true,
+    });
     if (!question) return undefined;
 
     await setStep(db, user.id, step);

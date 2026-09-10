@@ -2,6 +2,7 @@ import { AccessDeniedError } from '../../../infra/failures.js';
 import { describe, expect, it } from 'vitest';
 
 import { PermanentLlmError, TransientLlmError } from './types.js';
+import { isAlreadyPaid, paidUsage } from '../../../infra/failures.js';
 import { YandexLlmProvider } from './yandex.js';
 
 /**
@@ -240,6 +241,55 @@ describe('классификация ошибок', () => {
     });
 
     await expect(provider.complete(request())).rejects.toThrow(/обрезан по лимиту токенов/u);
+  });
+
+  it('обрезанный ответ несёт свою цену: он оплачен', async () => {
+    /**
+     * Ревизия этапов 1–2, молчаливый отказ.
+     *
+     * Генерация дошла до последнего разрешённого токена — значит списано
+     * по полной, около шести рублей за случай. А в учёт у сорвавшегося
+     * вызова уходил пустой расход: колонка читалась как «этот вызов был
+     * бесплатным», страж потолка недосчитывал потраченное, и в отчёте, по
+     * которому назначают цену подписки, этих денег не было вовсе.
+     */
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: fetchReturning(
+        200,
+        answering('{"units":[{"text":"нед', { status: 'ALTERNATIVE_STATUS_TRUNCATED_FINAL' }),
+      ),
+    });
+
+    const failure = await provider.complete(request()).catch((error: unknown) => error);
+
+    expect(isAlreadyPaid(failure), 'оплаченный отказ выдан за бесплатный').toBe(true);
+    expect(paidUsage(failure)).toEqual({ tokensIn: 247, tokensOut: 582 });
+  });
+
+  it('без чисел в ответе ничего не выдумывается', async () => {
+    /**
+     * Ноль вместо «не знаем» — та же ложь, только тише: он читается как
+     * «вызов был бесплатным» и не попадает даже в оговорку «цену не
+     * знаем». Чего провайдер не назвал, того мы не пишем.
+     */
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: fetchReturning(200, {
+        result: {
+          alternatives: [
+            {
+              message: { role: 'assistant', text: '{"units":[{"text":"нед' },
+              status: 'ALTERNATIVE_STATUS_TRUNCATED_FINAL',
+            },
+          ],
+        },
+      }),
+    });
+
+    const failure = await provider.complete(request()).catch((error: unknown) => error);
+
+    expect(paidUsage(failure)).toEqual({});
   });
 
   it('ответ без текста считается постоянной ошибкой', async () => {

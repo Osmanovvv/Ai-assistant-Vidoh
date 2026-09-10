@@ -1,4 +1,8 @@
-import { ACCESS_DENIED_STATUSES, AccessDeniedError } from '../../../infra/failures.js';
+import {
+  ACCESS_DENIED_STATUSES,
+  AccessDeniedError,
+  markAlreadyPaid,
+} from '../../../infra/failures.js';
 
 import {
   PermanentLlmError,
@@ -153,17 +157,44 @@ export class YandexLlmProvider implements LlmProvider {
       throw new PermanentLlmError('в ответе модели нет текста');
     }
 
+    const usage = asRecord(result?.['usage']);
+
     // Обрезанный по лимиту токенов ответ — это заведомо неразбираемый
     // JSON. Повтор не поможет, помогает только больший лимит, поэтому
     // ошибка постоянная и с внятным текстом.
     const status = first?.['status'];
     if (status === 'ALTERNATIVE_STATUS_TRUNCATED_FINAL') {
-      throw new PermanentLlmError(
-        `ответ модели обрезан по лимиту токенов (${String(request.maxTokens ?? DEFAULT_MAX_TOKENS)})`,
+      /**
+       * **И он оплачен** (ревизия этапов 1–2, молчаливый отказ).
+       *
+       * Генерация дошла до последнего разрешённого токена — значит
+       * списано по полной, около шести рублей за случай. А в учёт у
+       * сорвавшегося вызова уходил пустой расход: колонка читалась как
+       * «этот вызов был бесплатным», страж потолка недосчитывал
+       * потраченное, и в отчёте, по которому назначают цену подписки,
+       * этих денег не было вовсе.
+       *
+       * Числа берутся у самого ответа и только те, что он назвал:
+       * выдуманный ноль был бы той же ложью, только тише — он не
+       * попадает даже в оговорку «цену не знаем».
+       */
+      const spent = {
+        ...(usage?.['inputTextTokens'] === undefined
+          ? {}
+          : { tokensIn: toCount(usage['inputTextTokens']) }),
+        ...(usage?.['completionTokens'] === undefined
+          ? {}
+          : { tokensOut: toCount(usage['completionTokens']) }),
+      };
+
+      throw markAlreadyPaid(
+        new PermanentLlmError(
+          `ответ модели обрезан по лимиту токенов (${String(request.maxTokens ?? DEFAULT_MAX_TOKENS)})`,
+        ),
+        spent,
       );
     }
 
-    const usage = asRecord(result?.['usage']);
     const version = result?.['modelVersion'];
 
     return {
