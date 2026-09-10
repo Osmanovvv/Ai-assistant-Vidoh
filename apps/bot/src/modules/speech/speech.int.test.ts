@@ -263,6 +263,86 @@ describe('учёт расхода', () => {
   }, 60_000);
 });
 
+describe('оплаченная отправка', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливые отказы 7 и 8.
+   *
+   * Распознавание платит **отправкой**: как только провайдер принял звук,
+   * секунды списаны, что бы ни случилось дальше. Своим отказам провайдер
+   * ставил пометку «уже заплачено», но таймаут стоит снаружи и в гонке
+   * отдавал наверх свой, чужой отказ — без пометки. Повтор отправлял ту
+   * же минуту записи второй и третий раз.
+   *
+   * А в учёте у сорвавшегося вызова стоял пустой расход. Панель при этом
+   * не показывала «не смогли посчитать»: оговорка «расход не меньше
+   * показанного» намеренно считала только удавшиеся вызовы. Секунды
+   * оплачены, в сумму не вошли, оговорка не горит — ноль вместо «не
+   * смогли», самая дорогая из лжей.
+   */
+
+  it('звук принят, а результата нет: отправкой не повторяем', async () => {
+    const provider = new MockSpeechProvider({
+      acceptsBeforeFailure: true,
+      failFirst: { times: 3, error: new TransientSpeechError('сеть моргнула после приёма') },
+    });
+
+    await expect(
+      transcribeMessage(
+        { db: testDb(), provider, download: downloadFrom(shortAudio), pricing },
+        { messageId, fileId: 'voice-paid-1', userId },
+      ),
+    ).rejects.toThrow();
+
+    expect(provider.callCount, 'за одну и ту же запись заплатили дважды').toBe(1);
+  }, 60_000);
+
+  it('оплаченные секунды доезжают до учёта и до цены', async () => {
+    const provider = new MockSpeechProvider({
+      acceptsBeforeFailure: true,
+      failFirst: { times: 3, error: new TransientSpeechError('результат не доехал') },
+    });
+
+    await expect(
+      transcribeMessage(
+        { db: testDb(), provider, download: downloadFrom(shortAudio), pricing },
+        { messageId, fileId: 'voice-paid-2', userId },
+      ),
+    ).rejects.toThrow();
+
+    const [call] = await testDb().select().from(aiCalls);
+
+    expect(call?.ok).toBe(false);
+    expect(call?.audioSeconds, 'оплаченные секунды записаны нулём').toBeGreaterThan(0);
+    expect(call?.costMicros, 'ушедшие деньги не попали в счёт').toBeGreaterThan(0);
+  }, 60_000);
+
+  it('звук не приняли — повтор остаётся', async () => {
+    /**
+     * Обратная сторона: запретить повтор сетевому обрыву значило бы
+     * разучиться переживать моргнувшую сеть, а это куда более частый
+     * случай, чем отказ после приёма.
+     */
+    const provider = new MockSpeechProvider({
+      failFirst: { times: 1, error: new TransientSpeechError('не достучались') },
+      responses: ['', 'текст со второй попытки'],
+    });
+
+    const outcome = await transcribeMessage(
+      {
+        db: testDb(),
+        provider,
+        download: downloadFrom(shortAudio),
+        pricing,
+        retry: { attempts: 2, sleep: () => Promise.resolve() },
+      },
+      { messageId, fileId: 'voice-retry-ok', userId },
+    );
+
+    expect(outcome.text).toContain('второй попытки');
+    expect(provider.callCount).toBe(2);
+  }, 60_000);
+});
+
 describe('устойчивость', () => {
   it('повторяет временную ошибку и доводит дело до конца', async () => {
     const provider = new MockSpeechProvider({

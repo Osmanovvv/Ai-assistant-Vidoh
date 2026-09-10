@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from 'drizzle-orm';
 
 import { aiCalls, type AiStage } from '../../db/schema.js';
+import { paidUsage } from '../../infra/failures.js';
 import type { Executor } from '../../infra/db.js';
 import { callCost, type Currency, type ModelPricing, type UsageAmount } from './pricing.js';
 import type { SpendGuard } from './spend-guard.js';
@@ -120,14 +121,29 @@ export async function meterCall<T>(
 
     return outcome.value;
   } catch (error) {
-    await recordAiCall(db, {
+    /**
+     * У сорвавшегося вызова расход обычно пуст, и это правда: таймаут
+     * отменяет генерацию модели, платить не за что.
+     *
+     * Но распознавание платит **отправкой**: если звук приняли, а
+     * результат не доехал, секунды уже списаны. Записать их пустотой
+     * значит показать нулём ушедшие деньги — строка сюда попадёт, а в
+     * сумму панели нет, и оговорка «расход не меньше показанного» не
+     * загорится: она намеренно считает только удавшиеся вызовы.
+     */
+    const micros = await recordAiCall(db, {
       context,
-      usage: {},
+      usage: paidUsage(error) ?? {},
       latencyMs: Date.now() - startedAt,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
       pricing: options.pricing,
     });
+
+    // Потолок обязан знать и об этих деньгах: между чтениями базы он
+    // ведёт счёт сам, и без этого считает мимо на каждой переплате.
+    if (micros !== null) options.guard?.noteSpent(micros);
+
     throw error;
   }
 }

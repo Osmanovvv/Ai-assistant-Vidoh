@@ -330,6 +330,10 @@ export class YandexSpeechProvider implements SpeechProvider {
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
     const audio = await readFile(request.filePath);
 
+    // Секунды, за которые возьмут деньги. Считаются один раз: это же
+    // число уходит и в пометку об оплате, и в учёт.
+    const audioSeconds = Math.round(request.durationSec);
+
     /**
      * **Платит отправка, а не результат** (задача 3.82).
      *
@@ -351,6 +355,15 @@ export class YandexSpeechProvider implements SpeechProvider {
      */
     const operationId = await this.startRecognition(audio, request.language);
 
+    /**
+     * Звук принят — деньги списаны. Говорим об этом немедленно.
+     *
+     * Наш таймаут стоит **снаружи** вызова, и если гонку выиграет он, до
+     * пометки в `catch` ниже дело просто не дойдёт: наверх уйдёт чужой
+     * отказ без пометки, а повтор отправит те же секунды заново.
+     */
+    request.onSent?.(audioSeconds);
+
     try {
       await this.awaitOperation(operationId);
       const recognition = await this.fetchRecognition(operationId);
@@ -358,11 +371,11 @@ export class YandexSpeechProvider implements SpeechProvider {
       return {
         text: recognition.text,
         model: this.model,
-        audioSeconds: Math.round(request.durationSec),
+        audioSeconds,
         utterances: recognition.utterances,
       };
     } catch (error) {
-      throw markAlreadyPaid(error);
+      throw markAlreadyPaid(error, { audioSeconds });
     }
   }
 

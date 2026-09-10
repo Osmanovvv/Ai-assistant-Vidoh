@@ -114,10 +114,47 @@ export const ACCESS_DENIED_GRPC_CODES: ReadonlySet<number> = new Set([7, 16]);
  */
 const ALREADY_PAID = Symbol.for('vydoh.alreadyPaid');
 
-/** Помечает отказ как оплаченный: повторять его отправкой нельзя. */
-export function markAlreadyPaid<E>(error: E): E {
+/**
+ * Что именно оплачено.
+ *
+ * Пока это только секунды звука: у модели и векторов брошенный запрос
+ * отменяется сигналом и денег не стоит, а распознавание платит отправкой.
+ *
+ * Своя узкая форма, а не тип из учёта: `infra` не должна зависеть от
+ * модуля, который сама обслуживает.
+ */
+export interface PaidUsage {
+  readonly audioSeconds: number;
+}
+
+function paidMark(error: unknown): true | PaidUsage | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  const mark = (error as Record<symbol, unknown>)[ALREADY_PAID];
+  if (mark === true) return true;
+
+  return typeof mark === 'object' && mark !== null ? (mark as PaidUsage) : undefined;
+}
+
+/**
+ * Помечает отказ как оплаченный: повторять его отправкой нельзя.
+ *
+ * `paid` называет, **сколько** оплачено. Без числа учёт запишет
+ * сорвавшемуся вызову пустой расход, а пустая колонка читается как ноль —
+ * то есть как «денег не потратили», чего не было.
+ *
+ * `configurable: true` намеренно: один и тот же отказ помечается дважды —
+ * своими силами внутри провайдера и снаружи, где известен наш таймаут.
+ * Без этого вторая пометка падала бы `TypeError` и подменяла собой
+ * настоящую причину отказа.
+ */
+export function markAlreadyPaid<E>(error: E, paid?: PaidUsage): E {
   if (typeof error === 'object' && error !== null) {
-    Object.defineProperty(error, ALREADY_PAID, { value: true, enumerable: false });
+    Object.defineProperty(error, ALREADY_PAID, {
+      value: paid ?? true,
+      enumerable: false,
+      configurable: true,
+    });
   }
 
   return error;
@@ -125,9 +162,11 @@ export function markAlreadyPaid<E>(error: E): E {
 
 /** Оплачен ли уже вызов, на котором случился этот отказ. */
 export function isAlreadyPaid(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as Record<symbol, unknown>)[ALREADY_PAID] === true
-  );
+  return paidMark(error) !== undefined;
+}
+
+/** Сколько уже оплачено, если отказ это назвал. */
+export function paidUsage(error: unknown): PaidUsage | undefined {
+  const mark = paidMark(error);
+  return mark === true || mark === undefined ? undefined : mark;
 }
