@@ -134,7 +134,7 @@ function Table({
             <thead>
               <tr>
                 <th>{head}</th>
-                <th className="таблица__число">Вызовов</th>
+                <th className="таблица__число">Отправок</th>
                 <th className="таблица__число">Сбоев</th>
                 <th className="таблица__число">Без цены</th>
                 <th className="таблица__число">Расход</th>

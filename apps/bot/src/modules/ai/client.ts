@@ -3,8 +3,8 @@ import type { z } from 'zod';
 
 import type { AiStage } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
-import { meterCall } from '../metering/ai-calls.repo.js';
+import { withTimeout, type RetryOptions } from '../../infra/retry.js';
+import { meterEachSend } from '../metering/metered-send.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import type { PromptRegistry } from './prompts/registry.js';
@@ -159,9 +159,15 @@ export async function requestStructured<T>(
         ? active.prompt
         : `${active.prompt}\n\n${REINFORCEMENT.replace('{problem}', problem)}`;
 
-    // Каждый заход — отдельная строка учёта: он потрачен и оплачен
-    // независимо от того, подошёл ответ или нет (§10.5 ТЗ).
-    const completion = await meterCall(
+    /**
+     * Каждый заход — отдельная строка учёта: он потрачен и оплачен
+     * независимо от того, подошёл ответ или нет (§10.5 ТЗ).
+     *
+     * И каждая **отправка** внутри захода — тоже своя строка: §10.5
+     * просит видеть неуспешные вызовы, а повтор прежде прятал их
+     * внутри одной записи. Порядок обёрток живёт в `meterEachSend`.
+     */
+    const completion = await meterEachSend(
       deps.db,
       {
         stage: request.stage,
@@ -171,25 +177,21 @@ export async function requestStructured<T>(
         batchId: request.batchId,
       },
       async () => {
-        const result = await withRetry(
-          () =>
-            withTimeout(
-              (signal) =>
-                deps.provider.complete({
-                  prompt,
-                  input: request.input,
-                  jsonSchema: active.jsonSchema,
-                  temperature: request.temperature ?? temperatureFor(request.stage),
-                  maxTokens: request.maxTokens,
-                  // Таймаут отменяет генерацию, а не только ожидание
-                  // (задача 3.81): брошенный запрос иначе оплачивается
-                  // до конца, и повтор стоит второй раз.
-                  signal,
-                }),
-              timeoutMs,
-              'запрос к модели',
-            ),
-          deps.retry ?? {},
+        const result = await withTimeout(
+          (signal) =>
+            deps.provider.complete({
+              prompt,
+              input: request.input,
+              jsonSchema: active.jsonSchema,
+              temperature: request.temperature ?? temperatureFor(request.stage),
+              maxTokens: request.maxTokens,
+              // Таймаут отменяет генерацию, а не только ожидание
+              // (задача 3.81): брошенный запрос иначе оплачивается
+              // до конца, и повтор стоит второй раз.
+              signal,
+            }),
+          timeoutMs,
+          'запрос к модели',
         );
 
         return {
@@ -198,7 +200,7 @@ export async function requestStructured<T>(
           ...(result.modelVersion === undefined ? {} : { modelVersion: result.modelVersion }),
         };
       },
-      { pricing: deps.pricing, guard: deps.spendGuard },
+      { pricing: deps.pricing, guard: deps.spendGuard, retry: deps.retry },
     );
 
     raw = completion.text;

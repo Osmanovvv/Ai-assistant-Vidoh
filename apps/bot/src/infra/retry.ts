@@ -1,4 +1,4 @@
-import { isAlreadyPaid, PermanentError, TransientError } from './failures.js';
+import { isAlreadyPaid, PermanentError, SpendCeilingError, TransientError } from './failures.js';
 
 /**
  * Повтор с растущей паузой и таймаут (задачи 1.15, 2.3).
@@ -68,6 +68,22 @@ export async function withRetry<T>(
        * платной отправки прекращается здесь.
        */
       if (isAlreadyPaid(error)) {
+        throw error;
+      }
+
+      /**
+       * Потолок расхода за секунды не опустеет (§10.5, ревизия этапа 2).
+       *
+       * Отказ потолка — временный по классу: наверху он читается как
+       * «вернусь позже», и выгрузка не хоронится. Но повторять его тесно
+       * бессмысленно: три захода с паузами в секунду и две упрутся в тот
+       * же потолок и задержат честный отказ на три секунды.
+       *
+       * Стало важно после того, как учёт переехал внутрь повтора: страж
+       * расхода спрашивается теперь на каждой отправке, а не раз на
+       * вызов, — см. `metering/metered-send.ts`.
+       */
+      if (error instanceof SpendCeilingError) {
         throw error;
       }
       if (attempt === attempts) {

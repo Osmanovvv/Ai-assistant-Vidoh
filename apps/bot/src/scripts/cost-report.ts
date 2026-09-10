@@ -1,4 +1,4 @@
-import { gte } from 'drizzle-orm';
+import { and, eq, gte } from 'drizzle-orm';
 
 import { aiCalls } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
@@ -46,7 +46,17 @@ try {
       costCurrency: aiCalls.costCurrency,
     })
     .from(aiCalls)
-    .where(since === undefined ? undefined : gte(aiCalls.createdAt, since));
+    /**
+     * Только удавшиеся отправки.
+     *
+     * С учётом на каждую отправку (§10.5) сорвавшийся заход тоже
+     * лежит в таблице — с пустыми токенами и без цены. В
+     * себестоимости ему не место дважды: он ничего не стоил, и
+     * пустая цена вывела бы всю выгрузку в «цена неизвестна».
+     */
+    .where(
+      and(eq(aiCalls.ok, true), since === undefined ? undefined : gte(aiCalls.createdAt, since)),
+    );
 
   /**
    * Колонка объявлена bigint в режиме числа, преобразование делает
