@@ -302,6 +302,13 @@
       "when": 1788821001004,
       "tag": "0042_batch_status_taken",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1788821002004,
+      "tag": "0043_batch_processing_at",
+      "breakpoints": true
     }
   ]
 }

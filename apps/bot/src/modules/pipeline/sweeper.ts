@@ -1,12 +1,10 @@
-import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { batches } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { BufferLimits } from '../buffer/buffer.service.js';
 import { pruneUpdates, UPDATE_LOG_RETENTION_MS } from '../gateway/updates.repo.js';
 import { expireQuestions } from '../resolver/questions.repo.js';
-import { recoverStuckBatches } from './recovery.js';
+import { recoverStuckBatches, usersAwaitingWork } from './recovery.js';
 
 /**
  * Периодический досмотр застрявших выгрузок (задача 1.18).
@@ -66,24 +64,6 @@ export interface SweepResult {
    */
   readonly pruned: number | null;
   readonly expiredQuestions: number | null;
-}
-
-/**
- * Пользователи с выгрузками, ждущими разбора.
- *
- * Ждать своей очереди выгрузка может по двум причинам: её только что
- * закрыли — тогда задание уже стоит и досмотр просто не успеет вперёд
- * него, — либо задание потерялось. Второе снаружи не отличить от первого,
- * поэтому берём всех: лишний заход стоит одного запроса и упирается
- * в замок, а пропущенная выгрузка стоит человеку ответа.
- */
-async function usersAwaitingWork(db: Database): Promise<readonly string[]> {
-  const rows = await db
-    .selectDistinct({ userId: batches.userId })
-    .from(batches)
-    .where(eq(batches.status, 'queued'));
-
-  return rows.map((row) => row.userId);
 }
 
 /**
@@ -200,10 +180,28 @@ export function startRecoverySweep(
   deps: SweepDeps,
   intervalMs: number = DEFAULT_SWEEP_INTERVAL_MS,
 ): () => void {
+  /**
+   * Проходы не накладываются — как у планировщика и у продления.
+   *
+   * Проход идёт по всем ждущим людям и зовёт настоящий разбор, а он
+   * легко переваливает за минуту. Два прохода разом спорили бы за одни и
+   * те же выгрузки: от двойного ответа спасал бы только замок на
+   * человека, а спасать он должен от перезапуска, а не от нас самих.
+   * С уборкой внутри прохода наложение стало ещё и двойным `delete`.
+   */
+  let running = false;
+
   const timer = setInterval(() => {
-    void sweepOnce(deps).catch((error: unknown) => {
-      deps.logger.error({ err: error }, 'Досмотр застрявших выгрузок не удался');
-    });
+    if (running) return;
+    running = true;
+
+    void sweepOnce(deps)
+      .catch((error: unknown) => {
+        deps.logger.error({ err: error }, 'Досмотр застрявших выгрузок не удался');
+      })
+      .finally(() => {
+        running = false;
+      });
   }, intervalMs);
 
   timer.unref();

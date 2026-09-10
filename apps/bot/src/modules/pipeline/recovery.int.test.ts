@@ -5,7 +5,7 @@ import { batches, messagesRaw } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
-import { recoverStuckBatches } from './recovery.js';
+import { recoverAfterRestart, recoverStuckBatches } from './recovery.js';
 
 const T0 = new Date('2026-08-23T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
@@ -168,5 +168,115 @@ describe('восстановление в целом', () => {
     expect(report.requeuedProcessing).toBe(1);
     expect(report.closedOrphanedOpen).toBe(1);
     expect(report.userIds).toEqual([userId]);
+  });
+});
+
+describe('подъём процесса', () => {
+  /**
+   * Ревизия этапов 1–2: разбор возобновлялся через три с лишним минуты,
+   * а не через секунды.
+   *
+   * Подъём звал общее правило досмотра, у которого потолок обработки
+   * три минуты. Порог этот писался для досмотра — чтобы он не трогал
+   * живой разбор, — а на подъёме бессмыслен: воркер в боевой сборке
+   * один, он родился секунду назад, и всё, что висит в `processing`,
+   * осталось от убитого предшественника.
+   *
+   * Цена была не теоретическая: человек, чью выгрузку убила выкладка,
+   * всё это время видел «Слушаю.» и тишину. Сквозная проверка этапа
+   * (`ops/e2e-stage1.sh`) перезапускает бота на 31-й секунде и ждёт
+   * разобранного через тридцать — по арифметике она уложиться не могла.
+   */
+
+  it('возвращает в очередь разбор, убитый секунду назад', async () => {
+    const batchId = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+    await testDb()
+      .update(batches)
+      .set({ status: 'processing', processingAt: at(31_000) })
+      .where(eq(batches.id, batchId));
+
+    // Секунда, а не три минуты.
+    const report = await recoverAfterRestart(testDb(), { now: at(32_000) });
+
+    expect(report.requeuedProcessing, 'подъём ждал потолка досмотра').toBe(1);
+    expect(await statusOf(batchId)).toBe('queued');
+    expect(report.userIds).toEqual([userId]);
+  });
+
+  it('досмотр при этом свой потолок сохраняет', async () => {
+    // Тот же случай общим правилом: живой разбор трогать нельзя, иначе
+    // вернётся боевое 04.09.2026 — досмотр счёл идущий разбор умершим.
+    const batchId = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+    await testDb()
+      .update(batches)
+      .set({ status: 'processing', processingAt: at(31_000) })
+      .where(eq(batches.id, batchId));
+
+    const report = await recoverStuckBatches(testDb(), { now: at(32_000) });
+
+    expect(report.requeuedProcessing).toBe(0);
+    expect(await statusOf(batchId)).toBe('processing');
+  });
+
+  it('подбирает выгрузку, ждавшую в очереди ещё до перезапуска', async () => {
+    /**
+     * Статус у неё верный — потерялось задание. В отчёт правок такая не
+     * попадала, и на подъёме её не подбирал никто: она лежала до первого
+     * прохода досмотра, то есть ещё минуту сверху.
+     */
+    const batchId = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+
+    const report = await recoverAfterRestart(testDb(), { now: at(32_000) });
+
+    expect(report.awaitingUsers).toBe(1);
+    expect(report.userIds).toEqual([userId]);
+  });
+
+  it('одного человека не считает дважды', async () => {
+    // Возвращённый в очередь и ждущий — один и тот же человек. Без
+    // вычитания он уехал бы в журнал двумя числами и получил бы два
+    // задания на разбор.
+    const stuck = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), stuck, { now: at(31_000) });
+    await testDb()
+      .update(batches)
+      .set({ status: 'processing', processingAt: at(31_000) })
+      .where(eq(batches.id, stuck));
+
+    const waiting = await openBatchAt(60_000);
+    await closeBatchOnSilence(testDb(), waiting, { now: at(95_000) });
+
+    const report = await recoverAfterRestart(testDb(), { now: at(120_000) });
+
+    expect(report.userIds).toEqual([userId]);
+    expect(report.awaitingUsers, 'ждущий и возвращённый посчитаны порознь').toBe(0);
+  });
+
+  it('живой разбор, взятый секунду назад, досмотр не трогает — даже если выгрузка ждала час', async () => {
+    /**
+     * Порог считался от закрытия, а не от начала работы. Выгрузка,
+     * пролежавшая в очереди час — так бывает, когда у нас кончился
+     * доступ к модели и попытка нарочно не тратится, — выглядела
+     * застрявшей в первую же миллисекунду разбора: досмотр возвращал
+     * живой разбор в очередь и писал «Подобрал выгрузки, о которых
+     * очередь забыла», обвиняя очередь в чужой ошибке.
+     */
+    const batchId = await openBatchAt(0);
+    await closeBatchOnSilence(testDb(), batchId, { now: at(31_000) });
+
+    // Час пролежала, взяли в работу секунду назад.
+    const HOUR = 60 * 60_000;
+    await testDb()
+      .update(batches)
+      .set({ status: 'processing', processingAt: at(HOUR) })
+      .where(eq(batches.id, batchId));
+
+    const report = await recoverStuckBatches(testDb(), { now: at(HOUR + 1_000) });
+
+    expect(report.requeuedProcessing, 'досмотр вернул в очередь живой разбор').toBe(0);
+    expect(await statusOf(batchId)).toBe('processing');
   });
 });

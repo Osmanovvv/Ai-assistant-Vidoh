@@ -74,7 +74,7 @@ import { modelsWithoutPrice } from './modules/metering/pricing.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { startScheduler } from './modules/scheduler/scheduler.service.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
-import { recoverStuckBatches } from './modules/pipeline/recovery.js';
+import { recoverAfterRestart } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
 import { createDumpHandler } from './modules/pipeline/dump.handler.js';
 import { createFailureReporter } from './modules/pipeline/failure-notice.js';
@@ -453,13 +453,27 @@ async function main(): Promise<void> {
   const queue = createQueue(queueConnection);
   const lock = new RedisLock(getRedis());
 
-  // §9.1 правило 4 ТЗ: незавершённая обработка возобновляется, а не теряется.
-  const recovery = await recoverStuckBatches(db);
+  /**
+   * §9.1 правило 4 ТЗ: незавершённая обработка возобновляется, а не теряется.
+   *
+   * Своим входом, а не общим правилом досмотра: у того потолок обработки
+   * три минуты, писавшиеся, чтобы не трогать идущий разбор. При подъёме
+   * идущего разбора нет, и с общим порогом человек, чью выгрузку убила
+   * выкладка, ждал бы ответа три минуты вместо секунд.
+   *
+   * Окно тишины — из панели, тем же сборщиком, что у досмотра ниже:
+   * иначе восстановление закрывало бы забытые выгрузки по числу из кода,
+   * а закрытие по тишине — по числу из админки.
+   */
+  const recovery = await recoverAfterRestart(db, {
+    limits: await effectiveLimits(settings, DEFAULT_LIMITS),
+  });
   if (recovery.userIds.length > 0) {
     logger.warn(
       {
         requeued: recovery.requeuedProcessing,
         closedOrphaned: recovery.closedOrphanedOpen,
+        awaiting: recovery.awaitingUsers,
         users: recovery.userIds.length,
       },
       'Подхватываю незавершённые выгрузки после перезапуска',

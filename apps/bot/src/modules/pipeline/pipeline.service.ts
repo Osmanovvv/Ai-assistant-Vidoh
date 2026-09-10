@@ -92,7 +92,18 @@ export async function processUserBatches(
         const batch = await nextQueuedBatch(db, userId);
         if (!batch) break;
 
-        await db.update(batches).set({ status: 'processing' }).where(eq(batches.id, batch.id));
+        /**
+         * Вместе со статусом — отметка о начале работы.
+         *
+         * По ней досмотр отличает живой разбор от застрявшего. От
+         * закрытия он этого отличить не мог: выгрузка, пролежавшая в
+         * очереди час из-за нашего же простоя, выглядела застрявшей
+         * сразу, и досмотр возвращал в очередь то, что шло прямо сейчас.
+         */
+        await db
+          .update(batches)
+          .set({ status: 'processing', processingAt: new Date() })
+          .where(eq(batches.id, batch.id));
 
         try {
           await handle(db, batch);
