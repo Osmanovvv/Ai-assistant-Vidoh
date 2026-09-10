@@ -166,7 +166,7 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
      */
     await signIn(page, 'Ошибки');
 
-    const calls = page.locator('.разрез').filter({ hasText: 'Неуспешные вызовы модели' });
+    const calls = page.locator('.разрез').filter({ hasText: 'Неуспешные отправки к моделям' });
 
     await expect(calls.getByRole('columnheader', { name: 'У кого' })).toBeVisible();
     await expect(calls.getByRole('row', { name: /429 Too Many Requests/u })).toContainText('Аня');
@@ -303,7 +303,7 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
     await expect(page.getByTestId('no-failed-payments')).toBeVisible();
     await expect(page.getByTestId('no-failed-sends')).toBeVisible();
     await expect(page.getByTestId('no-failed-reminders')).toBeVisible();
-    await expect(page.getByText('Неуспешных вызовов за этот срок нет.')).toBeVisible();
+    await expect(page.getByText('Неуспешных отправок за этот срок нет.')).toBeVisible();
 
     // Заголовки на месте: пустой журнал — это ответ, а не отсутствие
     // раздела. И совет про повтор у пустого списка спрятан: повторять

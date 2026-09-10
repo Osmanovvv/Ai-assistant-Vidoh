@@ -3,8 +3,8 @@ import type { Logger } from 'pino';
 
 import { items, type ItemStatusValue } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
-import { meterCall } from '../metering/ai-calls.repo.js';
+import { withTimeout, type RetryOptions } from '../../infra/retry.js';
+import { meterEachSend } from '../metering/metered-send.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import type { EmbeddingProvider, EmbeddingPurpose } from './providers/types.js';
@@ -54,7 +54,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export async function embedText(deps: EmbedDeps, params: EmbedParams): Promise<readonly number[]> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  return await meterCall(
+  return await meterEachSend(
     deps.db,
     {
       stage: 'embedder',
@@ -63,19 +63,15 @@ export async function embedText(deps: EmbedDeps, params: EmbedParams): Promise<r
       batchId: params.batchId,
     },
     async () => {
-      const result = await withRetry(
-        () =>
-          withTimeout(
-            (signal) => deps.provider.embed({ text: params.text, purpose: params.purpose, signal }),
-            timeoutMs,
-            'смысловое представление',
-          ),
-        deps.retry ?? {},
+      const result = await withTimeout(
+        (signal) => deps.provider.embed({ text: params.text, purpose: params.purpose, signal }),
+        timeoutMs,
+        'смысловое представление',
       );
 
       return { value: result.vector, usage: { tokensIn: result.tokens } };
     },
-    { pricing: deps.pricing, guard: deps.spendGuard },
+    { pricing: deps.pricing, guard: deps.spendGuard, retry: deps.retry },
   );
 }
 

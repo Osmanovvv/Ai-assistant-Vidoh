@@ -252,6 +252,72 @@ describe('учёт расхода', () => {
     expect(calls.every((call) => call.ok)).toBe(true);
   });
 
+  it('сорвавшаяся отправка внутри повтора тоже попадает в учёт', async () => {
+    /**
+     * §10.5 ТЗ дословно: «Таблица обращений к моделям заполняется на
+     * каждом вызове, **включая неуспешные**: … задержка, признак успеха,
+     * текст ошибки».
+     *
+     * Учёт стоял снаружи повтора, и внутри одной записи жило до трёх
+     * отправок: сорвалась первая, удалась вторая — в таблицу ложилась
+     * одна строка с «успех». Неуспешной отправки не было ни в учёте, ни
+     * в журнале (`onRetry` не задан нигде), и доля отказов модели в
+     * отчёте оказывалась заниженной.
+     *
+     * Денег это не искажало: 429 и пятисотые не тарифицируются. Но
+     * отчёт о качестве работы модели строится ровно на этом числе.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [VALID, VALID],
+      failFirst: { times: 1, error: new TransientLlmError('модель занята') },
+    });
+
+    await requestStructured(deps(provider, prompts), { stage: 'extractor', input: INPUT });
+
+    const calls = await testDb().select().from(aiCalls).orderBy(asc(aiCalls.createdAt));
+
+    expect(calls).toHaveLength(2);
+
+    // Первая — та самая, которой в учёте не было.
+    expect(calls[0]?.ok).toBe(false);
+    expect(calls[0]?.error).toContain('модель занята');
+
+    expect(calls[1]?.ok).toBe(true);
+  });
+
+  it('задержка успешной отправки не включает паузу повтора', async () => {
+    /**
+     * Прежде задержка считалась от входа в учёт, то есть вместе с
+     * паузами повтора в секунду и две. Это не задержка вызова, а время
+     * ожидания человека — и в отчёте о скорости модели ему не место.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [VALID, VALID],
+      failFirst: { times: 1, error: new TransientLlmError('модель занята') },
+    });
+
+    await requestStructured(
+      {
+        ...deps(provider, prompts),
+        // Пауза настоящая и заметная: с прежним порядком обёрток она
+        // попала бы в задержку успешной отправки.
+        retry: {
+          attempts: 2,
+          sleep: (ms: number) => new Promise((done) => setTimeout(done, ms)),
+          baseDelayMs: 300,
+        },
+      },
+      { stage: 'extractor', input: INPUT },
+    );
+
+    const calls = await testDb().select().from(aiCalls).orderBy(asc(aiCalls.createdAt));
+    const ok = calls.find((call) => call.ok);
+
+    expect(ok?.latencyMs).toBeLessThan(300);
+  });
+
   it('полный отказ модели тоже записывается', async () => {
     // §10.5 ТЗ: пишется каждый вызов, включая неуспешный.
     const prompts = await prepare();

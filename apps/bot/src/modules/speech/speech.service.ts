@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 
 import { messagesRaw } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { meterCall } from '../metering/ai-calls.repo.js';
+import { meterEachSend } from '../metering/metered-send.js';
 import { SPEECH_BILLING_BLOCK_SEC, type ModelPricing } from '../metering/pricing.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import { attribute } from './attribution.js';
@@ -21,7 +21,7 @@ import {
   type VoiceSource,
 } from './audio.service.js';
 import type { RecognizedUtterance, SpeechProvider } from './providers/types.js';
-import { withRetry, withTimeout, type RetryOptions } from '../../infra/retry.js';
+import { withTimeout, type RetryOptions } from '../../infra/retry.js';
 
 /**
  * Расшифровка голосового (задача 1.15).
@@ -106,7 +106,7 @@ export async function transcribeMessage(
 
     const texts: string[] = [];
     for (const part of prepared.parts) {
-      const text = await meterCall(
+      const text = await meterEachSend(
         deps.db,
         {
           stage: 'speech',
@@ -115,19 +115,15 @@ export async function transcribeMessage(
           batchId: params.batchId,
         },
         async () => {
-          const result = await withRetry(
+          const result = await withTimeout(
             () =>
-              withTimeout(
-                () =>
-                  deps.provider.transcribe({
-                    filePath: part.path,
-                    durationSec: part.endSec - part.startSec,
-                    language: deps.language,
-                  }),
-                timeoutMs,
-                'расшифровка',
-              ),
-            deps.retry ?? {},
+              deps.provider.transcribe({
+                filePath: part.path,
+                durationSec: part.endSec - part.startSec,
+                language: deps.language,
+              }),
+            timeoutMs,
+            'расшифровка',
           );
 
           return {
@@ -135,7 +131,7 @@ export async function transcribeMessage(
             usage: { audioSeconds: result.audioSeconds },
           };
         },
-        { pricing: deps.pricing, guard: deps.spendGuard },
+        { pricing: deps.pricing, guard: deps.spendGuard, retry: deps.retry },
       );
 
       texts.push(text.trim());
@@ -229,7 +225,7 @@ async function transcribeGroup(
     const utterances: RecognizedUtterance[] = [];
 
     for (const part of parts) {
-      const recognized = await meterCall(
+      const recognized = await meterEachSend(
         deps.db,
         {
           stage: 'speech',
@@ -238,24 +234,20 @@ async function transcribeGroup(
           batchId: params.batchId,
         },
         async () => {
-          const result = await withRetry(
+          const result = await withTimeout(
             () =>
-              withTimeout(
-                () =>
-                  deps.provider.transcribe({
-                    filePath: part.path,
-                    durationSec: part.endSec - part.startSec,
-                    language: deps.language,
-                  }),
-                timeoutMs,
-                'расшифровка',
-              ),
-            deps.retry ?? {},
+              deps.provider.transcribe({
+                filePath: part.path,
+                durationSec: part.endSec - part.startSec,
+                language: deps.language,
+              }),
+            timeoutMs,
+            'расшифровка',
           );
 
           return { value: result, usage: { audioSeconds: result.audioSeconds } };
         },
-        { pricing: deps.pricing, guard: deps.spendGuard },
+        { pricing: deps.pricing, guard: deps.spendGuard, retry: deps.retry },
       );
 
       // Времена приходят от начала части, а границы сообщений считаны от
