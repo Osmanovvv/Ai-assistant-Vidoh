@@ -3,7 +3,7 @@ import type { z } from 'zod';
 
 import { promptVersions, type AiStage } from '../../../db/schema.js';
 import type { Executor } from '../../../infra/db.js';
-import { canonicalJson, findSchema, toJsonSchema } from '../schemas/index.js';
+import { canonicalJson, findSchema, toJsonSchema, UnknownSchemaError } from '../schemas/index.js';
 
 /**
  * Активная версия промпта (задача 2.1).
@@ -54,6 +54,49 @@ export class SchemaMismatchError extends Error {
     );
     this.name = 'SchemaMismatchError';
   }
+}
+
+/**
+ * Что чинить, когда промпт этапа не поднялся.
+ *
+ * **Найдено ревизией молчаливых отказов.** Сторож выкладки причину не
+ * разбирал: `catch {}` и один совет на все случаи — «залейте промпты».
+ * Для расхождения схемы совет уводит в сторону: залитую версию `seedPrompt`
+ * не переписывает, `activatePrompt` правит только признак активности —
+ * сколько ни перезаливай, схема в базе останется прежней. Для отказа базы
+ * он ещё и лжёт: «промптов нет» вместо «проверить не смогли». Всё это
+ * время бот уже поднят и хоронит выгрузки.
+ *
+ * Совет живёт здесь, рядом с самими причинами, а не в скрипте: скрипт —
+ * верхний уровень с побочными действиями, и проверка его не позовёт.
+ */
+export function promptFailureAdvice(error: unknown): string {
+  if (error instanceof PromptNotFoundError) {
+    return 'Заливки не было: ./ops/seed-prompts.sh --activate';
+  }
+
+  if (error instanceof SchemaMismatchError) {
+    return (
+      'Перезаливка не поможет: залитую версию seedPrompt не переписывает. ' +
+      'Либо завести новую версию под нынешнюю схему, либо выложить тот код, ' +
+      'из которого записана схема в базе.'
+    );
+  }
+
+  if (error instanceof UnknownSchemaError) {
+    return (
+      'Схемы нет в коде: выложен код старше активной версии промпта. ' +
+      'Включить версию со схемой из этой выкладки — или выложить код с той схемой.'
+    );
+  }
+
+  /**
+   * Ноль вместо «не смогли» — та же ложь.
+   *
+   * Пул соединений ленив, и отказ базы прилетает в тот же `catch`: без
+   * этой ветки он выглядел как «промптов нет» и звал заливать залитое.
+   */
+  return 'Причина не из реестра промптов: промпты могут быть на месте. Проверьте доступ к базе.';
 }
 
 export async function loadActivePrompt(db: Executor, stage: AiStage): Promise<ActivePrompt> {

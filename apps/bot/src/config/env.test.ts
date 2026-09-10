@@ -179,22 +179,26 @@ describe('productionWarnings', () => {
    * старте, иначе защита существует только в чьей-то памяти.
    *
    * Поэтому в настройке «всё хорошо» теперь задан и потолок.
+   *
+   * 10.09.2026 к ним добавился журнал в файл — по тому же доводу: без
+   * `LOG_FILE` журнал живёт только в `docker logs`, а тот стирается
+   * каждой выкладкой, и разбирать вчерашнее нечем.
    */
-  const withCeiling = { ACCOUNT_SPEND_DAILY_RUB: '300' };
+  const healthy = { ACCOUNT_SPEND_DAILY_RUB: '300', LOG_FILE: '/app/logs/vydoh.log' };
 
   it('молчит на настоящих адресах и при заданном потолке', () => {
-    expect(productionWarnings(parseWith(withCeiling))).toEqual([]);
+    expect(productionWarnings(parseWith(healthy))).toEqual([]);
   });
 
   it('ловит заглушку из .env.example в публичном адресе', () => {
-    const env = parseWith({ ...withCeiling, PUBLIC_URL: 'https://example.invalid' });
+    const env = parseWith({ ...healthy, PUBLIC_URL: 'https://example.invalid' });
 
     expect(productionWarnings(env)).toContain('PUBLIC_URL указывает на заглушку из .env.example');
   });
 
   it('ловит заглушку в адресе политики', () => {
     const env = parseWith({
-      ...withCeiling,
+      ...healthy,
       PRIVACY_POLICY_URL: 'https://example.invalid/privacy',
     });
 
@@ -203,7 +207,7 @@ describe('productionWarnings', () => {
 
   it('сообщает про обе заглушки сразу', () => {
     const env = parseWith({
-      ...withCeiling,
+      ...healthy,
       PUBLIC_URL: 'https://example.invalid',
       PRIVACY_POLICY_URL: 'https://example.invalid/privacy',
     });
@@ -224,7 +228,11 @@ describe('productionWarnings', () => {
 
   it('одного из двух потолков достаточно, чтобы не ругаться', () => {
     // Суточный и общий — независимые: задан любой, присмотр есть.
-    expect(productionWarnings(parseWith({ ACCOUNT_SPEND_CEILING_RUB: '3000' }))).toEqual([]);
+    expect(
+      productionWarnings(
+        parseWith({ ACCOUNT_SPEND_CEILING_RUB: '3000', LOG_FILE: '/app/logs/vydoh.log' }),
+      ),
+    ).toEqual([]);
   });
 
   it('ловит нарушение паритета: Робокасса есть, звёзд нет', () => {
@@ -235,7 +243,7 @@ describe('productionWarnings', () => {
      * легко, поэтому проверка не глазами.
      */
     const env = parseWith({
-      ...withCeiling,
+      ...healthy,
       RK_MERCHANT_LOGIN: 'vydoh',
       RK_PASSWORD1: 'п1',
       RK_PASSWORD2: 'п2',
@@ -248,7 +256,7 @@ describe('productionWarnings', () => {
   it('без Робокассы выключенные звёзды нарушением не считаются', () => {
     // Паритет — про «продаётся снаружи, а за звёзды нет». Нет ни того,
     // ни другого — нечему и нарушаться.
-    const env = parseWith({ ...withCeiling, STARS: 'off' });
+    const env = parseWith({ ...healthy, STARS: 'off' });
 
     expect(productionWarnings(env)).toEqual([]);
   });
@@ -257,7 +265,7 @@ describe('productionWarnings', () => {
     // Оплата проходит, а денег нет: со стороны человека «я заплатил»,
     // со стороны учёта тишина.
     const env = parseWith({
-      ...withCeiling,
+      ...healthy,
       RK_MERCHANT_LOGIN: 'vydoh',
       RK_PASSWORD1: 'п1',
       RK_PASSWORD2: 'п2',
