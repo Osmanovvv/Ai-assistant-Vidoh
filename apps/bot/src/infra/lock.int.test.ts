@@ -209,3 +209,110 @@ describe('withLock', () => {
     await expect(lock.acquire('user:1')).resolves.not.toBeNull();
   });
 });
+
+describe('потеря замка слышна', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливый отказ.
+   *
+   * `renew` возвращал `false` в пустоту, и работа дорабатывала без замка:
+   * §9.1 — строгая последовательность внутри одного человека — переставал
+   * держаться молча. Цена известна: досмотр возвращает выгрузку в
+   * очередь, второй воркер разбирает её заново, человек получает ответ
+   * дважды, а модель оплачена дважды. В журнале не было ни строки, и
+   * связать жалобу «бот ответил дважды» с причиной было нечем.
+   *
+   * Поведение при этом не изменилось: работа под потерянным замком
+   * по-прежнему дорабатывает до конца — бросить разбор посреди значит
+   * потерять слова человека (§17).
+   */
+
+  it('замок отобрали посреди работы — об этом сказано', async () => {
+    const lost: { name: string; reason: string }[] = [];
+    const watched = new RedisLock(redis, 'test-lock:', (event) => {
+      lost.push({ name: event.name, reason: event.reason });
+    });
+
+    const outcome = await watched.withLock(
+      'user:lost',
+      async () => {
+        // Замок уходит к другому: ключа с нашим токеном больше нет.
+        await redis.del('test-lock:user:lost');
+        await redis.set('test-lock:user:lost', 'чужой-токен', 'PX', 5_000);
+
+        // Ждём удара сердца.
+        await delay(120);
+
+        return 'работа доделана';
+      },
+      { ttlMs: 1_000, renewIntervalMs: 50 },
+    );
+
+    // Работа доделана — это главное: слова человека дороже замка.
+    expect(outcome).toEqual({ acquired: true, result: 'работа доделана' });
+
+    expect(
+      lost.map((one) => one.reason),
+      'потеря замка снова прошла молча',
+    ).toContain('renew-denied');
+    expect(lost[0]?.name).toBe('user:lost');
+  });
+
+  it('о каждом поводе говорится один раз, а не на каждый удар сердца', async () => {
+    // Громкость, повторяющая себя, читается как шум и перестаёт значить
+    // что-либо: продление идёт каждые несколько секунд.
+    const lost: string[] = [];
+    const watched = new RedisLock(redis, 'test-lock:', (event) => {
+      lost.push(event.reason);
+    });
+
+    await watched.withLock(
+      'user:once',
+      async () => {
+        await redis.del('test-lock:user:once');
+        await delay(300);
+      },
+      { ttlMs: 1_000, renewIntervalMs: 40 },
+    );
+
+    expect(lost.filter((one) => one === 'renew-denied')).toHaveLength(1);
+  });
+
+  it('короткая работа, потерявшая замок, тоже не молчит', async () => {
+    /**
+     * До первого продления дело может и не дойти: разбор короче срока
+     * продления. Без проверки на выходе такая потеря не видна вообще
+     * ничем — а последствие у неё то же.
+     */
+    const lost: string[] = [];
+    const watched = new RedisLock(redis, 'test-lock:', (event) => {
+      lost.push(event.reason);
+    });
+
+    await watched.withLock(
+      'user:short',
+      async () => {
+        await redis.del('test-lock:user:short');
+      },
+      { ttlMs: 30_000, renewIntervalMs: 10_000 },
+    );
+
+    expect(lost, 'короткая работа потеряла замок молча').toContain('release-denied');
+  });
+
+  it('на здоровом ходу дела не говорится ничего', async () => {
+    const lost: string[] = [];
+    const watched = new RedisLock(redis, 'test-lock:', (event) => {
+      lost.push(event.reason);
+    });
+
+    await watched.withLock(
+      'user:ok',
+      async () => {
+        await delay(120);
+      },
+      { ttlMs: 1_000, renewIntervalMs: 40 },
+    );
+
+    expect(lost, 'жалоба на обычном ходу дела — это новая слепота').toEqual([]);
+  });
+});

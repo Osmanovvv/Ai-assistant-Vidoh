@@ -18,6 +18,15 @@ import { sweepOnce } from './sweeper.js';
 
 const logger = createLogger({ level: 'silent' });
 
+/**
+ * Исход прохода этой проверке неинтересен — но объявить его надо.
+ *
+ * Поле обязательное нарочно: необязательное означало бы «досмотр умеет
+ * молчать», а это ровно тот отказ, который чинили. Здесь молчание
+ * названо вслух, а не забыто.
+ */
+const ignoreOutcome = (): void => undefined;
+
 const T0 = new Date('2026-08-25T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
 
@@ -72,6 +81,7 @@ describe('sweepOnce', () => {
     const processed: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       // Тишина уже прошла: последнее сообщение было минуту назад.
@@ -93,6 +103,7 @@ describe('sweepOnce', () => {
     const processed: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       now: () => at(5_000),
@@ -112,6 +123,7 @@ describe('sweepOnce', () => {
     await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       // Потолок обработки три минуты; четыре — точно застряла (задача 3.58).
@@ -134,6 +146,7 @@ describe('sweepOnce', () => {
     await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, batchId));
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       now: () => at(60_000),
@@ -148,6 +161,7 @@ describe('sweepOnce', () => {
     const processed: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       process: (id) => {
@@ -194,6 +208,7 @@ describe('sweepOnce', () => {
     const seen: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       now: () => at(60_000),
@@ -218,6 +233,7 @@ describe('sweepOnce', () => {
     const processed: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       process: (id) => {
@@ -263,6 +279,7 @@ describe('уборка за собой', () => {
     // Ни одной выгрузки: проход тихий, и уборка обязана случиться всё
     // равно — иначе она стоит после раннего возврата.
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       now: () => T0,
@@ -324,6 +341,7 @@ describe('уборка за собой', () => {
     });
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
       now: () => T0,
@@ -365,6 +383,7 @@ describe('уборка за собой', () => {
     const processed: string[] = [];
 
     const result = await sweepOnce({
+      onOutcome: ignoreOutcome,
       db: broken,
       logger,
       now: () => T0,
@@ -379,5 +398,110 @@ describe('уборка за собой', () => {
       result.pruned,
       'сорвавшаяся чистка отдана нулём — её не отличить от «нечего чистить»',
     ).toBeNull();
+  });
+});
+
+describe('исход досмотра доезжает до наблюдений §18', () => {
+  /**
+   * Ревизия этапов 1–2, молчаливый отказ.
+   *
+   * Досмотр зовёт разбор **мимо очереди**, а все наблюдения §18 висели на
+   * событиях воркера. Ровно в том состоянии, ради которого досмотр и
+   * написан — Redis перезапустили, воркер отложенные задания не берёт, —
+   * §18 не получал ни одного наблюдения: и рост доли ошибок, и «модель
+   * недоступна» выглядели тихим днём. Пульс при этом зелёный: он
+   * спрашивает Postgres и Redis, а они живы.
+   */
+
+  it('удавшийся разбор — наблюдение', async () => {
+    const batchId = await openBatchAt(0);
+    await testDb().update(batches).set({ status: 'queued' }).where(eq(batches.id, batchId));
+
+    const seen: string[] = [];
+
+    await sweepOnce({
+      db: testDb(),
+      logger,
+      onOutcome: (outcome) => seen.push(outcome),
+      process: () => Promise.resolve(),
+    });
+
+    expect(seen).toEqual(['ok']);
+  });
+
+  it('сорвавшийся разбор — тоже наблюдение, и с причиной', async () => {
+    const batchId = await openBatchAt(0);
+    await testDb().update(batches).set({ status: 'queued' }).where(eq(batches.id, batchId));
+
+    const seen: { outcome: string; message: string }[] = [];
+
+    await sweepOnce({
+      db: testDb(),
+      logger,
+      onOutcome: (outcome, error) =>
+        seen.push({
+          outcome,
+          message: error instanceof Error ? error.message : '',
+        }),
+      process: () => Promise.reject(new Error('модель недоступна')),
+    });
+
+    expect(seen).toEqual([{ outcome: 'failed', message: 'модель недоступна' }]);
+  });
+
+  it('заход с занятым замком успехом не считается', async () => {
+    /**
+     * Разбора не было: замок держит воркер, который минутами тянет
+     * расшифровку того же человека. У досмотра это штатная механика, а не
+     * редкость — считай мы такой заход успехом, доля ошибок §18
+     * разбавлялась бы тем, чего не происходило. «Успех» вместо «не
+     * пробовал» — та же ложь, что ноль вместо «не смогли».
+     */
+    const batchId = await openBatchAt(0);
+    await testDb().update(batches).set({ status: 'queued' }).where(eq(batches.id, batchId));
+
+    const seen: string[] = [];
+
+    await sweepOnce({
+      db: testDb(),
+      logger,
+      onOutcome: (outcome) => seen.push(outcome),
+      process: () => Promise.resolve({ skipped: true }),
+    });
+
+    expect(seen).toEqual(['skipped']);
+  });
+
+  it('брошенное приёмником не обрывает проход', async () => {
+    /**
+     * Приёмник — чужой код. Оборвись на нём проход, и остальные ждущие
+     * остались бы без разбора: ровно от этого тут и стоит `try`.
+     */
+    const first = await openBatchAt(0);
+    await testDb().update(batches).set({ status: 'queued' }).where(eq(batches.id, first));
+
+    const other = await upsertUser(testDb(), { tgId: 801, firstName: 'Оля' });
+    const [second] = await testDb()
+      .insert(batches)
+      .values({ userId: other.id, status: 'queued' })
+      .returning({ id: batches.id });
+    expect(second?.id).toBeDefined();
+
+    const processed: string[] = [];
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      onOutcome: () => {
+        throw new Error('приёмник сломался');
+      },
+      process: (id) => {
+        processed.push(id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(processed, 'сломавшийся приёмник унёс с собой весь проход').toHaveLength(2);
+    expect(result.users).toBe(2);
   });
 });
