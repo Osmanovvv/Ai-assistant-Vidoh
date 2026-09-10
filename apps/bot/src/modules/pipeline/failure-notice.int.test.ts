@@ -46,7 +46,7 @@ function recorder(): { readonly sender: StatusSender; readonly sent: Sent[] } {
       },
       edit: (params) => {
         sent.push({ kind: 'edit', text: params.text, buttons: params.buttons?.length ?? 0 });
-        return Promise.resolve();
+        return Promise.resolve('edited' as const);
       },
     },
   };

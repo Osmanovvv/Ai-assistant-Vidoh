@@ -33,12 +33,19 @@ export interface StatusSender {
     readonly buttons?: readonly StatusButton[] | undefined;
   }): Promise<number>;
 
+  /**
+   * Правка статусного сообщения. Исход называется, а не глотается.
+   *
+   * `gone` — человек удалил сообщение руками (в личном чате Telegram это
+   * разрешено). Тогда правка бьёт в пустоту, а итог разбора уходит ровно
+   * этим путём: человек получает **ничего**.
+   */
   edit(params: {
     readonly chatId: number;
     readonly messageId: number;
     readonly text: string;
     readonly buttons?: readonly StatusButton[] | undefined;
-  }): Promise<void>;
+  }): Promise<'edited' | 'gone' | 'failed'>;
 }
 
 export interface StatusDeps {
@@ -122,13 +129,57 @@ export async function showStatus(
     if (elapsed < minInterval) return false;
   }
 
-  await deps.sender.edit({
+  const edited = await deps.sender.edit({
     chatId: target.chatId,
     messageId: batch.statusMessageId,
     text,
     buttons: options.buttons,
   });
 
+  /**
+   * Сообщение удалил сам человек — шлём новое (ревизия этапов 1–2).
+   *
+   * Прежде отказ правки глотался внутри отправителя, и итог разбора
+   * уходил в пустоту: человек получал **ничего**. Не ошибку, не «попробуй
+   * ещё», а тишину, которую честно читает как поломку. Панель при этом
+   * показывала выгрузку удавшейся — обработчик не бросил, значит `done`,
+   * а раздел ошибок берёт только `failed`; перезапустить её было нечем.
+   *
+   * Тот же приём, что у сводки темы: «править нечего — отправить заново».
+   */
+  if (edited === 'gone') {
+    const messageId = await deps.sender.send({
+      chatId: target.chatId,
+      threadId: target.threadId,
+      text,
+      buttons: options.buttons,
+    });
+
+    if (messageId === 0) return false;
+
+    await deps.db
+      .update(batches)
+      .set({
+        statusMessageId: messageId,
+        statusUpdatedAt: now,
+        ...(options.force === true ? { statusTaken: true } : {}),
+      })
+      .where(eq(batches.id, target.batchId));
+
+    return true;
+  }
+
+  /**
+   * Время правки и занятие слота пишутся **всегда**, даже когда правка
+   * отказала.
+   *
+   * `ECONNRESET` нарочно не повторяется — «он бывает и посреди ответа», —
+   * значит есть достижимый случай, когда Telegram правку применил, а
+   * ответ оборвался. Не пометь мы слот занятым, докладчик о сбое стёр бы
+   * с экрана уже лежащий там ответ вместе с кнопкой «Отменить». А не
+   * обнови время — следующая правка пошла бы сразу после отказа по
+   * частоте, то есть против того, ради чего заведено ограничение.
+   */
   await deps.db
     .update(batches)
     .set({
@@ -136,6 +187,14 @@ export async function showStatus(
       ...(options.force === true ? { statusTaken: true } : {}),
     })
     .where(eq(batches.id, target.batchId));
+
+  /**
+   * Отказ правки — не успех, и вызывающий обязан узнать.
+   *
+   * Прежде отсюда всегда возвращалось `true`: «реплика доставлена» на
+   * недоставленную реплику. Ноль вместо «не смогли» — та же ложь.
+   */
+  if (edited === 'failed') return false;
 
   return true;
 }

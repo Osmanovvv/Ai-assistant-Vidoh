@@ -69,7 +69,7 @@ function recordingStatus(): { sender: StatusSender; said: string[] } {
       },
       edit: ({ text }) => {
         said.push(text);
-        return Promise.resolve();
+        return Promise.resolve('edited' as const);
       },
     },
   };

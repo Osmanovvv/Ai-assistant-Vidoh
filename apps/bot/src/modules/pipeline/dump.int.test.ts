@@ -1980,7 +1980,7 @@ function recordingSender(): {
         all.push(text);
         said.push({ kind: 'edit', text, buttons: labels(keys) });
         remember(keys);
-        return Promise.resolve();
+        return Promise.resolve('edited' as const);
       },
     },
   };
@@ -2086,7 +2086,7 @@ describe('ответ пользователю', () => {
     const silentSender: StatusSender = {
       // Ноль означает «отправить не удалось».
       send: () => Promise.resolve(0),
-      edit: () => Promise.resolve(),
+      edit: () => Promise.resolve('edited' as const),
     };
 
     await processUserBatches(

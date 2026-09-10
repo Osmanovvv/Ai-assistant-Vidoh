@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { GrammyError } from 'grammy';
 import type { Logger } from 'pino';
 
+import { isMessageGone } from '../../bot/message-gone.js';
 import { items, topics, type Item } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDateParts } from '../classifier/dates.js';
@@ -138,17 +139,6 @@ function isUnchanged(error: unknown): boolean {
     error instanceof GrammyError &&
     error.error_code === 400 &&
     error.description.toLowerCase().includes('not modified')
-  );
-}
-
-/** Сообщение исчезло: человек удалил его руками. Тогда шлём новое. */
-function isMessageGone(error: unknown): boolean {
-  if (!(error instanceof GrammyError)) return false;
-  if (error.error_code !== 400) return false;
-
-  const description = error.description.toLowerCase();
-  return (
-    description.includes('message to edit not found') || description.includes('message_id_invalid')
   );
 }
 

@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import type { Executor } from '../../infra/db.js';
 import { isBlockedError } from '../users/blocked.js';
 import { markBlocked } from '../users/users.repo.js';
+import { isMessageGone } from '../../bot/message-gone.js';
 import { fitKeyboard } from './keyboard.js';
 import type { StatusButton, StatusSender } from './status.service.js';
 
@@ -115,8 +116,25 @@ export function createTelegramSender(deps: TelegramSenderDeps): StatusSender {
     async edit({ chatId, messageId, text, buttons }) {
       try {
         await deps.api.editMessageText(chatId, messageId, text, markup(buttons));
+        return 'edited';
       } catch (error) {
+        /**
+         * Сообщение удалил сам человек — в личном чате Telegram это
+         * разрешено, а статусное сообщение выглядит служебным.
+         *
+         * Правка бьёт в пустоту, и человек получает **ничего**: итог
+         * разбора уходит ровно этим путём (§9.2 — одна выгрузка, одна
+         * реплика). Не ошибку, не «попробуй ещё», а тишину, которую он
+         * честно читает как поломку. Сказать об этом наверх — половина
+         * дела; вторая половина там, где решают, что с этим делать.
+         */
+        if (isMessageGone(error)) {
+          deps.logger.info({ chatId }, 'Статусное сообщение удалено человеком');
+          return 'gone';
+        }
+
         await handle(error, chatId, 'edit');
+        return 'failed';
       }
     },
   };
