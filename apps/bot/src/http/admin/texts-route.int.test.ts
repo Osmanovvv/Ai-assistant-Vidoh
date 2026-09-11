@@ -311,6 +311,38 @@ describe('редактор реплик: чего он не пропускает
     expect(await testDb().select().from(textOverrides)).toEqual([]);
   });
 
+  it('реплике рядом с вопросом «?» не даёт: человек читает склейку §13.2', async () => {
+    /**
+     * Дефект ревизии второго этапа. Правило «один „?“ на реплику» смотрело
+     * на реплику, а ответ §13.2 склеивается из нескольких: «Остальное
+     * никуда не убежит, хорошо?» проходило запись и вместе с «С чего
+     * начнём?» давало человеку два вопроса, чего §13.2 запрещает дословно.
+     */
+    const { base } = stand();
+    const at = await base;
+
+    const asked = await save(at, {
+      path: 'answer.restSaved',
+      said: 'Остальное пока никуда не убежит, хорошо?',
+    });
+
+    expect(asked.status).toBe(400);
+    expect(await whyOf(asked)).toMatch(/одном ответе с вопросом/iu);
+
+    // И бот говорит прежними словами: отказ не должен ничего записать.
+    expect(textsFor().answer.restSaved).toBe(defaultTexts.answer.restSaved);
+    expect(await testDb().select().from(textOverrides)).toEqual([]);
+
+    // Без вопроса та же реплика проходит — и действует сразу.
+    const plain = await save(at, {
+      path: 'answer.restSaved',
+      said: 'Остальное пока никуда не убежит, я держу.',
+    });
+
+    expect(plain.status).toBe(200);
+    expect(textsFor().answer.restSaved).toBe('Остальное пока никуда не убежит, я держу.');
+  });
+
   it('годную кризисную реплику принимает: правило не запрещает всё разом', async () => {
     // Обратная сторона: правило, которое не пропускает ничего, кончается
     // тем, что его снимают целиком.

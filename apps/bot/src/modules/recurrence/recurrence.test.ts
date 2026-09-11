@@ -319,6 +319,92 @@ describe('конец месяца', () => {
 
     expect(localDate(at, MOSCOW)).toBe('2029-02-28');
   });
+
+  describe('зажим по краю месяца — на одно повторение, а не навсегда', () => {
+    /**
+     * Ревизия этапов 1–2. Один шаг «31 января → 28 февраля» был верным,
+     * но следующий шаг делался **от уже зажатого** 28-го, и зажим
+     * накапливался: 31.08 → 30.09 → 30.10, а после февраля — 28-е до
+     * конца дней. Состояния для этого не нужно: пересчёт всегда идёт от
+     * якоря, значит промах постоянный. План (2.18а) обещает обратное:
+     * правило на 31-е сдвигается на последний день **короткого** месяца,
+     * а не переезжает на 28-е навсегда. Стражи выше покраснеть не могли —
+     * все три зовут `nextOccurrence` с `after`, равным якорю, то есть
+     * проверяют ровно один шаг: единственный, который был верен.
+     */
+
+    it('31 августа: через сентябрь — 31 октября, а не 30-е', () => {
+      // «Сделано» нажали 15 октября: 31.08 → 30.09 (сентябрь короче) → 31.10.
+      const at = nextOccurrence(rule({ kind: 'monthly', anchor: '2026-08-31' }), {
+        after: new Date('2026-10-15T09:00:00.000Z'),
+        timeZone: MOSCOW,
+      });
+
+      expect(localDate(at, MOSCOW)).toBe('2026-10-31');
+    });
+
+    it('31 января: через февраль — 31 марта, а не 28-е', () => {
+      const at = nextOccurrence(rule({ kind: 'monthly', anchor: '2026-01-31' }), {
+        after: new Date('2026-03-15T09:00:00.000Z'),
+        timeZone: MOSCOW,
+      });
+
+      expect(localDate(at, MOSCOW)).toBe('2026-03-31');
+    });
+
+    it('раз в два месяца с 31-го: февраль пройден — 31-е возвращается', () => {
+      // 31.08.2026 → 31.10 → 31.12 → 28.02.2027 → 30.04 → 30.06 → 31.08.
+      const at = nextOccurrence(rule({ kind: 'monthly', interval: 2, anchor: '2026-08-31' }), {
+        after: new Date('2027-07-01T09:00:00.000Z'),
+        timeZone: MOSCOW,
+      });
+
+      expect(localDate(at, MOSCOW)).toBe('2027-08-31');
+    });
+
+    it('29 февраля раз в год: в следующий високосный — снова 29-е', () => {
+      // 2028-02-29 → 28.02.2029 → 28.02.2030 → 28.02.2031 → 29.02.2032.
+      const at = nextOccurrence(rule({ kind: 'yearly', anchor: '2028-02-29' }), {
+        after: new Date('2031-06-01T09:00:00.000Z'),
+        timeZone: MOSCOW,
+      });
+
+      expect(localDate(at, MOSCOW)).toBe('2032-02-29');
+    });
+
+    it('число повторения — число якоря всюду, где в месяце столько дней есть', () => {
+      /**
+       * Проверка по существу, а не по образцу: у ежемесячного правила с
+       * якорем на 29-е, 30-е или 31-е каждое повторение в достаточно
+       * длинном месяце стоит на числе якоря. Накопленный зажим ломает это
+       * с первого же короткого месяца, а шаг-другой вперёд от якоря —
+       * никогда. Ряд `after` идёт с шагом в две недели на три года: между
+       * соседними точками не больше одного повторения, так что ни одно не
+       * пропущено.
+       */
+      const daysIn = (year: number, month: number): number =>
+        new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+      for (const anchor of ['2026-01-29', '2026-01-30', '2026-01-31', '2026-08-31']) {
+        for (const interval of [1, 2, 3]) {
+          const anchorDay = Number(anchor.slice(8));
+          for (let days = 0; days < 3 * 365; days += 14) {
+            const after = new Date(Date.parse(`${anchor}T09:00:00.000Z`) + days * 24 * 60 * 60_000);
+            const at = nextOccurrence(rule({ kind: 'monthly', interval, anchor }), {
+              after,
+              timeZone: MOSCOW,
+            });
+            const got = localDateParts(at, MOSCOW);
+
+            expect(
+              got.day,
+              `monthly/${String(interval)} от ${anchor} после ${localDate(after, MOSCOW)} дал ${localDate(at, MOSCOW)}`,
+            ).toBe(Math.min(anchorDay, daysIn(got.year, got.month)));
+          }
+        }
+      }
+    });
+  });
 });
 
 describe('часовые пояса', () => {

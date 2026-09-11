@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { applyOverrides, defaultTexts, textsFor } from './index.js';
-import { editableReplies, NOT_EDITABLE, refusalFor, render, repliesOf } from './rules.js';
+import { applyOverrides, defaultTexts, profiles, textsFor } from './index.js';
+import {
+  BESIDE_QUESTION,
+  besideQuestionRefusal,
+  editableReplies,
+  NOT_EDITABLE,
+  refusalFor,
+  render,
+  repliesOf,
+} from './rules.js';
 
 /**
  * Правила §13 на записи и склейка правок со словарём (задача 4.13).
@@ -69,6 +77,54 @@ describe('что боту говорить нельзя (§13 на записи)
 
     expect(refusal).toContain('4200');
     expect(refusal).toContain('4096');
+  });
+});
+
+describe('реплика рядом с вопросом (§13.2 на записи)', () => {
+  it('один «?» не принимает: человек читает склейку, а вопрос там уже есть', () => {
+    /**
+     * Дефект ревизии второго этапа. Правило общего содержания разрешает
+     * реплике один вопрос — и «Остальное никуда не убежит, хорошо?»
+     * проходило запись. А в ответе §13.2 за ней идёт «С чего начнём?»,
+     * и человек получал два вопроса, чего §13.2 запрещает дословно.
+     */
+    const refusal = refusalFor('Остальное никуда не убежит, хорошо?', 0, 'answer.restSaved');
+
+    expect(refusal).toMatch(/одном ответе с вопросом/iu);
+    expect(refusal).toMatch(/13\.2/u);
+  });
+
+  it('без вопроса — принимает: правило не запрещает всё разом', () => {
+    expect(
+      refusalFor('Остальное никуда не убежит, я держу.', 0, 'answer.restSaved'),
+    ).toBeUndefined();
+  });
+
+  it('на реплику вне ответа не тянется: там один вопрос законен', () => {
+    // Правило по роли, а не по всему словарю: «Пробные разборы кончились,
+    // продлить?» — одиночная реплика, и второго вопроса в ней нет.
+    expect(
+      refusalFor('Пробные разборы кончились, продлить?', 0, 'limits.trialOver'),
+    ).toBeUndefined();
+  });
+
+  it('реплики из кода своё же правило проходят, и список не гниёт', () => {
+    /**
+     * Список путей закрытый, значит гниёт первым: реплику переименуют, а
+     * строка останется — и правило будет стеречь пустоту. Плюс правило
+     * одно на запись и на словарь из кода: разойдись они — краснела бы
+     * запись на том, что в коде считается годным.
+     */
+    for (const [name, profile] of Object.entries(profiles)) {
+      const known = new Map(repliesOf(profile).map((one) => [one.path, one]));
+
+      for (const path of BESIDE_QUESTION) {
+        const reply = known.get(path);
+
+        expect(reply, `${name}: реплики «${path}» в словаре нет`).toBeDefined();
+        expect(besideQuestionRefusal(reply?.said ?? '?'), `${name}: ${path}`).toBeUndefined();
+      }
+    }
   });
 });
 
