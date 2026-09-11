@@ -872,6 +872,7 @@ describe('обращение по /paysupport попадает в базу (ре
 
     registerPaySupportCommands(bot, {
       db: testDb(),
+      offerUrl: 'https://vydoh.test/oferta',
       settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
       logger: createLogger({ level: 'silent' }),
       providers: {},
@@ -959,6 +960,7 @@ describe('порядок регистрации: служебное сообще
     // **Тот же порядок, что в сборке**: сперва оплата, потом приём.
     registerBillingHandlers(bot, {
       db: testDb(),
+      offerUrl: 'https://vydoh.test/oferta',
       settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
       logger: createLogger({ level: 'silent' }),
       providers: {},

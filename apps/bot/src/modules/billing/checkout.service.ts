@@ -96,6 +96,16 @@ export interface CheckoutRequest {
    * перед этим вызовом, чтобы между ними не прошло времени.
    */
   readonly promo?: PromoOffer | undefined;
+  /**
+   * Просить ли у провайдера автопродление (§14, оферта п. 2.3 и 7.2).
+   *
+   * Автопродление подключается только по отдельному согласию человека на
+   * экране перед оплатой. Нет согласия — нет и просьбы: платёж уходит
+   * разовым на том же рельсе. Пусто означает «как решит провайдер» — так
+   * ведут себя годовой тариф и прежние вызывающие. Промо-счёт остаётся
+   * разовым независимо от этого поля.
+   */
+  readonly renewable?: boolean | undefined;
 }
 
 export type CheckoutOutcome =
@@ -214,7 +224,11 @@ export async function startCheckout(
      * «Только на первый период» получается отсюда само: следующий период
      * человек покупает обычной кнопкой по полной цене.
      */
-    ...(params.promo === undefined ? {} : { renewable: false }),
+    ...(params.promo !== undefined
+      ? { renewable: false }
+      : params.renewable === undefined
+        ? {}
+        : { renewable: params.renewable }),
   });
 
   /**

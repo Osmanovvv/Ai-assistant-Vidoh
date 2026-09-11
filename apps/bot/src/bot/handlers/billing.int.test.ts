@@ -19,7 +19,8 @@ import {
 } from '../../modules/billing/billing.repo.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import { createStarsProvider } from '../../modules/billing/providers/stars.js';
-import type { Rail } from '../../modules/billing/tariffs.js';
+import { periodEndAfter, RENEWAL_LEAD_MS, type Rail } from '../../modules/billing/tariffs.js';
+import { untilText } from '../../modules/billing/checkout.service.js';
 import { putSetting, SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
@@ -54,6 +55,7 @@ import {
 
 const logger = createLogger({ level: 'silent' });
 const TG_ID = 7480;
+const OFFER_URL = 'https://vydoh.test/oferta';
 
 interface ApiCall {
   readonly method: string;
@@ -128,7 +130,7 @@ function createTestBot(providers: Partial<Record<Rail, PaymentProvider>>): {
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerBillingHandlers(bot, { db: testDb(), settings, logger, providers });
+  registerBillingHandlers(bot, { db: testDb(), settings, logger, providers, offerUrl: OFFER_URL });
 
   /**
    * Команды платёжной платформы регистрируются отдельно (ревизия этапа).
@@ -138,7 +140,13 @@ function createTestBot(providers: Partial<Record<Rail, PaymentProvider>>): {
    * Здесь приёма нет, и порядок ни на что не влияет — но собрать бота
    * без них значило бы проверять не того бота.
    */
-  registerPaySupportCommands(bot, { db: testDb(), settings, logger, providers });
+  registerPaySupportCommands(bot, {
+    db: testDb(),
+    settings,
+    logger,
+    providers,
+    offerUrl: OFFER_URL,
+  });
 
   return { bot, calls };
 }
@@ -176,6 +184,23 @@ function commandUpdate(text: string): Update {
       entities: [{ type: 'bot_command', offset: 0, length: text.length }],
     },
   } as unknown as Update;
+}
+
+/**
+ * Месяц покупается через экран согласия (§14, оферта п. 2.3 и 7.2):
+ * нажатие на тариф показывает экран, а счёт заводит кнопка «Перейти к
+ * оплате» — с отметкой согласия или без неё.
+ */
+async function buyMonthly(bot: Bot, rail: 'r' | 's', consent: 'with' | 'without'): Promise<void> {
+  await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}${rail}:monthly`));
+  await bot.handleUpdate(
+    callbackUpdate(`${BILLING_ACTION.goPrefix}${rail}:${consent === 'with' ? '1' : '0'}`),
+  );
+}
+
+/** Правки сообщения — экран согласия переключается на месте. */
+function edited(calls: readonly ApiCall[]): ApiCall[] {
+  return calls.filter((call) => call.method === 'editMessageText');
 }
 
 function sent(calls: readonly ApiCall[]): ApiCall[] {
@@ -398,7 +423,7 @@ describe('нажатие на тариф', () => {
     const { bot, calls } = createTestBot({ 'robokassa:smz': provider });
     await bot.init();
 
-    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+    await buyMonthly(bot, 'r', 'with');
 
     const [invoice] = await testDb().select().from(billingInvoices);
 
@@ -407,7 +432,8 @@ describe('нажатие на тариф', () => {
     // Номер счёта — только рублёвому рельсу: по нему пойдёт продление.
     expect(invoice?.invId).not.toBeNull();
 
-    const link = buttonsOf(sent(calls)[0])[0];
+    // Первое сообщение — экран согласия, второе — ссылка.
+    const link = buttonsOf(sent(calls)[1])[0];
 
     expect(link?.text).toBe(defaultTexts.billing.buttonPay);
     expect(link?.url).toBe(`https://оплата.тест/${String(invoice?.ref)}`);
@@ -425,7 +451,7 @@ describe('нажатие на тариф', () => {
     });
     await bot.init();
 
-    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+    await buyMonthly(bot, 'r', 'with');
 
     const [invoice] = await testDb().select().from(billingInvoices);
 
@@ -439,10 +465,11 @@ describe('нажатие на тариф', () => {
     });
     await bot.init();
 
-    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+    await buyMonthly(bot, 'r', 'with');
 
-    expect(textOf(sent(calls)[0])).toContain(defaultTexts.billing.renewNote);
-    expect(sent(calls)).toHaveLength(1);
+    expect(textOf(sent(calls)[1])).toContain(defaultTexts.billing.renewNote);
+    // Экран согласия и ссылка — и ничего третьего.
+    expect(sent(calls)).toHaveLength(2);
   });
 
   it('разовый платёж назван разовым', async () => {
@@ -484,9 +511,206 @@ describe('нажатие на тариф', () => {
     const { bot, calls } = createTestBot({ 'robokassa:smz': broken });
     await bot.init();
 
+    await buyMonthly(bot, 'r', 'with');
+
+    // Экран согласия провайдера не трогает; падает только счёт.
+    expect(textOf(sent(calls)[1])).toBe(defaultTexts.billing.checkoutFailed);
+  });
+});
+
+describe('согласие на автосписания — §14, оферта п. 2.3 и 7.2', () => {
+  /**
+   * Требование Робокассы к форме оплаты: отметка согласия, не
+   * проставленная заранее, текст «Я согласен на автоматические списания
+   * согласно условиям оферты», кликабельная ссылка на оферту, сумма и
+   * периодичность. Оферта добавляет дату первого списания и обещает: без
+   * отметки платёж разовый.
+   */
+  beforeEach(async () => {
+    await putSetting(testDb(), { name: 'priceMonthlyRub', value: '39900' });
+    await putSetting(testDb(), { name: 'priceMonthlyStars', value: '250' });
+  });
+
+  it('нажатие на месяц показывает экран согласия, а не счёт', async () => {
+    const provider = fakeProvider({ name: 'robokassa:smz', autoRenews: true });
+    const { bot, calls } = createTestBot({ 'robokassa:smz': provider });
+    await bot.init();
+
     await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
 
-    expect(textOf(sent(calls)[0])).toBe(defaultTexts.billing.checkoutFailed);
+    expect(provider.checkouts, 'счёт выставлен до согласия').toHaveLength(0);
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(0);
+
+    const screen = sent(calls)[0];
+    const text = textOf(screen);
+
+    // Отметка не проставлена заранее — и в тексте, и на кнопке.
+    expect(text).toContain(defaultTexts.billing.consentOff);
+    expect(text).not.toContain(defaultTexts.billing.consentOn);
+    expect(text).toContain('399 ₽');
+    expect(text).toContain('раз в месяц');
+
+    const buttons = buttonsOf(screen);
+
+    expect(buttons.map((b) => b.text)).toEqual([
+      defaultTexts.billing.buttonConsentOff,
+      defaultTexts.billing.buttonPay,
+      defaultTexts.billing.buttonOffer,
+    ]);
+    expect(buttons[0]?.callback_data).toBe(`${BILLING_ACTION.consentPrefix}r:1`);
+    expect(buttons[1]?.callback_data).toBe(`${BILLING_ACTION.goPrefix}r:0`);
+    // Кликабельная ссылка на оферту — кнопкой, она ведёт на OFFER_URL.
+    expect(buttons[2]?.url).toBe(OFFER_URL);
+  });
+
+  it('экран называет дату первого списания — ту, в которую спишет проход', async () => {
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+
+    /**
+     * Ожидание считается **не той же функцией**, что в коде, а из двух
+     * её составляющих порознь: конец первого периода и отступ списания.
+     * Первый вариант этого стража брал `firstRenewalChargeAt` — и остался
+     * зелёным, когда из неё убрали отступ: обе стороны сломались
+     * одинаково. Страж, который не отличает починенное от сломанного,
+     * хуже отсутствующего.
+     */
+    const periodEnd = periodEndAfter(new Date(), 'monthly');
+    const charge = untilText(new Date(periodEnd.getTime() - RENEWAL_LEAD_MS));
+
+    expect(textOf(sent(calls)[0])).toContain(charge);
+    // И это именно день списания, а не конец периода.
+    expect(textOf(sent(calls)[0])).not.toContain(untilText(periodEnd));
+  });
+
+  it('у платящего первое списание считается от конца оплаченного, а не от сегодня', async () => {
+    /**
+     * Оферта п. 7.3.5: новый период идёт от конца предыдущего — оплаченные
+     * дни не теряются. Значит и дата на экране обязана считаться от конца
+     * нынешнего периода; «сегодня плюс месяц» назвало бы списание на три
+     * недели раньше настоящего.
+     */
+    const until = new Date(Date.now() + 20 * 24 * 3_600_000);
+    await payingPerson({ autoRenew: false, until, ref: 'платящий' });
+
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+
+    const fromPeriodEnd = new Date(periodEndAfter(until, 'monthly').getTime() - RENEWAL_LEAD_MS);
+    const fromToday = new Date(periodEndAfter(new Date(), 'monthly').getTime() - RENEWAL_LEAD_MS);
+
+    expect(textOf(sent(calls)[0])).toContain(untilText(fromPeriodEnd));
+    expect(textOf(sent(calls)[0])).not.toContain(untilText(fromToday));
+  });
+
+  it('переключатель правит тот же экран: отметка ставится и снимается', async () => {
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:monthly`));
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.consentPrefix}r:1`));
+
+    // Нового сообщения нет — правится прежнее.
+    expect(sent(calls)).toHaveLength(1);
+
+    const on = edited(calls)[0];
+
+    expect(textOf(on)).toContain(defaultTexts.billing.consentOn);
+    expect(buttonsOf(on)[0]?.text).toBe(defaultTexts.billing.buttonConsentOn);
+    // Кнопка оплаты теперь несёт согласие, кнопка отметки — снятие.
+    expect(buttonsOf(on)[1]?.callback_data).toBe(`${BILLING_ACTION.goPrefix}r:1`);
+    expect(buttonsOf(on)[0]?.callback_data).toBe(`${BILLING_ACTION.consentPrefix}r:0`);
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.consentPrefix}r:0`));
+
+    const off = edited(calls)[1];
+
+    expect(textOf(off)).toContain(defaultTexts.billing.consentOff);
+    expect(buttonsOf(off)[1]?.callback_data).toBe(`${BILLING_ACTION.goPrefix}r:0`);
+  });
+
+  it('с отметкой счёт просит автопродление, без отметки — разовый', async () => {
+    const provider = fakeProvider({ name: 'robokassa:smz', autoRenews: true });
+    const { bot } = createTestBot({ 'robokassa:smz': provider });
+    await bot.init();
+
+    await buyMonthly(bot, 'r', 'with');
+    await buyMonthly(bot, 'r', 'without');
+
+    const asked = provider.checkouts as { renewable?: boolean }[];
+
+    expect(asked[0]?.renewable, 'согласие не дошло до провайдера').toBe(true);
+    expect(asked[1]?.renewable, 'без отметки платёж обязан быть разовым').toBe(false);
+  });
+
+  it('без отметки человеку сказано, что платёж разовый', async () => {
+    /**
+     * Провайдер-заглушка отвечает «продлевается» на всё подряд — как и
+     * настоящий, которому не сказали «не проси». Оговорка обязана идти от
+     * решения человека, а не от того, что рельс умеет.
+     */
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: false }),
+    });
+    await bot.init();
+
+    await buyMonthly(bot, 'r', 'without');
+
+    expect(textOf(sent(calls)[1])).toContain(defaultTexts.billing.oneTimeNote);
+    expect(textOf(sent(calls)[1])).not.toContain(defaultTexts.billing.renewNote);
+  });
+
+  it('звёзды идут тем же путём', async () => {
+    const provider = fakeProvider({ name: 'telegram:stars', autoRenews: true });
+    const { bot, calls } = createTestBot({ 'telegram:stars': provider });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}s:monthly`));
+
+    expect(textOf(sent(calls)[0])).toContain(defaultTexts.billing.consentOff);
+    expect(textOf(sent(calls)[0])).toContain('250 ⭐');
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.goPrefix}s:0`));
+
+    expect((provider.checkouts as { renewable?: boolean }[])[0]?.renewable).toBe(false);
+  });
+
+  it('годовой тариф согласия не спрашивает: он разовый по устройству', async () => {
+    await putSetting(testDb(), { name: 'priceYearlyRub', value: '299900' });
+    const provider = fakeProvider({ name: 'robokassa:smz', autoRenews: false });
+    const { bot, calls } = createTestBot({ 'robokassa:smz': provider });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.buyPrefix}r:yearly`));
+
+    expect(provider.checkouts).toHaveLength(1);
+    expect(textOf(sent(calls)[0])).not.toContain(defaultTexts.billing.consentOff);
+    expect(textOf(sent(calls)[0])).toContain(defaultTexts.billing.oneTimeNote);
+  });
+
+  it('кнопка согласия выключенного рельса не молчит', async () => {
+    const { bot, calls } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.consentPrefix}s:1`));
+    await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.goPrefix}s:1`));
+
+    expect(sent(calls).map(textOf)).toEqual([
+      defaultTexts.billing.checkoutFailed,
+      defaultTexts.billing.checkoutFailed,
+    ]);
   });
 });
 
@@ -896,6 +1120,7 @@ describe('промокод (§14, задача 4.4)', () => {
      */
     const consume = createPromoConsumer({
       db: testDb(),
+      offerUrl: OFFER_URL,
       settings,
       logger,
       providers: {
@@ -929,6 +1154,7 @@ describe('промокод (§14, задача 4.4)', () => {
      */
     const consume = createPromoConsumer({
       db: testDb(),
+      offerUrl: OFFER_URL,
       settings,
       logger,
       providers: { 'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }) },

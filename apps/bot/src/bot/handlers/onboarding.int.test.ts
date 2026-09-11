@@ -1526,6 +1526,7 @@ describe('сбой отправки «не понял» не оставляет 
     };
     const promo = createPromoConsumer({
       db: testDb(),
+      offerUrl: 'https://vydoh.test/oferta',
       settings: new SettingsRegistry({ db: testDb(), logger: log, ttlMs: 0 }),
       logger: log,
       providers: { 'robokassa:smz': provider },

@@ -15,7 +15,7 @@ import { chargeRecurring, type RobokassaDeps } from './providers/robokassa.js';
 import type { PaymentProvider } from './provider.js';
 import { applyPaymentEvent } from './subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
-import { priceOf, type Rail } from './tariffs.js';
+import { RENEWAL_LEAD_MS, priceOf, type Rail } from './tariffs.js';
 
 /**
  * Продление рублёвой подписки (§14 ТЗ, задача 4.2).
@@ -43,8 +43,9 @@ import { priceOf, type Rail } from './tariffs.js';
  * оплаченного, а не от «сейчас».
  */
 
-/** За сколько до конца периода уходит списание. */
-export const RENEWAL_LEAD_MS = 24 * 3_600_000;
+// Отступ списания живёт в tariffs.ts: он нужен и экрану согласия, чтобы
+// назвать дату первого автосписания тем же числом, каким списывает проход.
+export { RENEWAL_LEAD_MS };
 
 /** Сколько подписок берём за проход. */
 const BATCH = 50;

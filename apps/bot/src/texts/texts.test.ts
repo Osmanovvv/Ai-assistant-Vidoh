@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { defaultTexts } from './index.js';
-import { forbiddenPhraseIn, repliesOf, saidBy, type Reply } from './rules.js';
+import { forbiddenPhraseIn, repliesOf, saidBy, type Reply, ALLOWED_EMOJI } from './rules.js';
 
 /**
  * Обход словаря и добыча слов живут в `rules.ts` — вместе с правилами.
@@ -133,17 +133,17 @@ describe('запрещённые шаблоны словаря (§13, задач
     /**
      * §13.9: «эмодзи только как маркеры приоритета и статуса».
      *
-     * Сегодня в словаре нет ни одного: маркеры тем и звезда тарифа
-     * живут в коде, а не в тексте. Список разрешённых всё равно нужен —
-     * звезда Telegram законна как обозначение валюты и однажды может
-     * переехать сюда. Всё украшательское краснеет.
+     * Список разрешённых — тот же, что у правила словаря в `rules.ts`, а
+     * не своя копия: две копии одного правила разошлись бы в первый же
+     * раз, когда маркер добавят в одну из них. Так и случилось с
+     * отмеченным квадратом согласия на автосписания (§14) — здесь он
+     * краснел как украшение, пока правило его уже разрешало.
      */
-    const ALLOWED = new Set(['⭐']);
     const decorated: string[] = [];
 
     for (const one of replies()) {
       for (const symbol of one.said.match(/\p{Extended_Pictographic}/gu) ?? []) {
-        if (!ALLOWED.has(symbol)) decorated.push(`${one.path}: ${symbol}`);
+        if (!ALLOWED_EMOJI.has(symbol)) decorated.push(`${one.path}: ${symbol}`);
       }
     }
 

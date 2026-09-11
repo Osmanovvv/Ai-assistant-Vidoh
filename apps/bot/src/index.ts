@@ -821,7 +821,7 @@ async function main(): Promise<void> {
    * `pre_checkout_query` ждать нельзя вовсе — на него надо ответить за
    * десять секунд, иначе платёж не состоится.
    */
-  registerBillingHandlers(bot, { db, settings, logger, providers });
+  registerBillingHandlers(bot, { db, settings, logger, providers, offerUrl: env.OFFER_URL });
 
   /**
    * Команды `/paysupport`, `/terms` и `/support` — **после** приёма.
@@ -855,7 +855,7 @@ async function main(): Promise<void> {
          * перебор кодов, а публикация в списке команд объявляет о
          * скидках всем.
          */
-        promo: createPromoConsumer({ db, settings, logger, providers }),
+        promo: createPromoConsumer({ db, settings, logger, providers, offerUrl: env.OFFER_URL }),
       }),
       // §14: размер пробного периода задаётся без выкладки (4.3).
       settings,
@@ -890,6 +890,7 @@ async function main(): Promise<void> {
     db,
     settings,
     logger,
+    offerUrl: env.OFFER_URL,
     providers,
     /**
      * Обращение по оплате уходит оповещением (ревизия четвёртого этапа).
