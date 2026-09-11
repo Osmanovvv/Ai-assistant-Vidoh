@@ -98,6 +98,35 @@ export function consumeAwaited(deps: AwaitingDeps) {
     await ctx.reply(question.text, { reply_markup: keyboardOf(question) });
   }
 
+  /**
+   * «Не понял» — вежливость на дороге к буферу, а не решение.
+   *
+   * Решение уже принято: ожидание снято, присланное — мысль, и дальше
+   * оно идёт обычным путём (страховка 3 задачи 3.61). Но сама реплика —
+   * отправка в Telegram, а сообщение к этому моменту уже сохранено и
+   * ещё не привязано к выгрузке. Упади отправка — 429, 5xx, обрыв
+   * посреди ответа; `retryOnConnectFailure` повторяет только отказ
+   * соединения, — исключение уходило из приёма **до** привязки, и мысль
+   * оставалась сиротой навсегда: повтор того же апдейта от Telegram
+   * отбрасывается как дубль, потому что сообщение уже в базе (ревизия
+   * этапов 1–2). Человек не получал ни «не понял», ни разбора, а в
+   * журнале была одна общая строка «Сбой обработки апдейта».
+   *
+   * Поэтому отказ отправки здесь — строка в журнале с причиной, а не
+   * исключение: мысль уходит в разбор, и «Слушаю» под выгрузкой скажет
+   * человеку, что его услышали. Ловится только эта реплика, а не весь
+   * приём ответа: сбой **после** того, как ответ принят, — имя сохранено,
+   * а сказать об этом не вышло, — в буфер вести нельзя, иначе имя
+   * станет выгрузкой и уйдёт модели за деньги.
+   */
+  async function sayNotUnderstood(ctx: Context, userId: string, text: string): Promise<void> {
+    try {
+      await ctx.reply(text);
+    } catch (error) {
+      logger.warn({ err: error, userId }, 'Не удалось сказать «не понял», мысль идёт в разбор');
+    }
+  }
+
   return async (ctx: Context, userId: string): Promise<boolean> => {
     const text = ctx.message?.text?.trim();
     if (text === undefined || text === '') return false;
@@ -121,7 +150,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
       if (name === undefined) {
         await setAwaiting(db, userId, null);
-        await ctx.reply(texts.onboarding.nameNotUnderstood);
+        await sayNotUnderstood(ctx, userId, texts.onboarding.nameNotUnderstood);
         return false;
       }
 
@@ -203,7 +232,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
       if (time === undefined) {
         await setAwaiting(db, userId, null);
-        await ctx.reply(texts.onboarding.timeNotUnderstood);
+        await sayNotUnderstood(ctx, userId, texts.onboarding.timeNotUnderstood);
         return false;
       }
 
@@ -244,7 +273,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
         const name = parseName(text);
 
         if (name === undefined) {
-          await ctx.reply(texts.onboarding.nameNotUnderstood);
+          await sayNotUnderstood(ctx, userId, texts.onboarding.nameNotUnderstood);
           return false;
         }
 
@@ -290,7 +319,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
       const time = parseTime(text);
 
       if (time === undefined) {
-        await ctx.reply(texts.onboarding.timeNotUnderstood);
+        await sayNotUnderstood(ctx, userId, texts.onboarding.timeNotUnderstood);
         return false;
       }
 
