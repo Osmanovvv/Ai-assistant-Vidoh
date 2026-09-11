@@ -643,17 +643,27 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
      *
      * Персональные данные многих сразу: имена, телеграмные имена,
      * источник перехода. Каждое открытие списка — запись в журнал (§16).
+     *
+     * **POST-ом с телом, а не GET-ом с `?q=`** (ревизия этапов 1–2).
+     * Набранное в поиске имя уезжало строкой запроса, а Caddy пишет
+     * `request.uri` целиком: в журнал доступа — на каждый запрос, в
+     * журнал ошибок прокси — на каждый отказ (502, пока бот
+     * перезапускается на выкладке). Журнал доступа для панели выключен
+     * (`log_skip` в Caddyfile), но журнал ошибок он не глушит — проверено
+     * на caddy v2.11.4. Тела запроса Caddy не пишет никогда, поэтому имя
+     * едет в теле, а в строке запроса его нет ни при каком исходе.
      */
     closed(
-      'get',
+      'post',
       '/api/people',
       // `rows` — по строке на человека: журнал получит настоящее число
       // выданных людей вместо прежней выдуманной единицы.
       { personal: true, subjects: 'many', rows: 'rows' },
       (req: Request, res: Response) => {
-        const limit = boundedNumber(req.query['limit'], { fallback: 20, min: 1, max: 100 });
-        const offset = boundedNumber(req.query['offset'], { fallback: 0, min: 0, max: 1_000_000 });
-        const query = req.query['q'];
+        const body = (req.body ?? {}) as { limit?: unknown; offset?: unknown; q?: unknown };
+        const limit = boundedNumber(body.limit, { fallback: 20, min: 1, max: 100 });
+        const offset = boundedNumber(body.offset, { fallback: 0, min: 0, max: 1_000_000 });
+        const query = body.q;
 
         void people(db, {
           limit,
