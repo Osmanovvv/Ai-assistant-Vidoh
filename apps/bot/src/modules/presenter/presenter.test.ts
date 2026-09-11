@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { applyOverrides, defaultTexts, profiles, textsFor } from '../../texts/index.js';
-import { editableReplies, refusalFor, type Reply as DictionaryReply } from '../../texts/rules.js';
+import {
+  contentRefusal,
+  editableReplies,
+  refusalFor,
+  type Reply as DictionaryReply,
+} from '../../texts/rules.js';
 import {
   buildReply,
   composeOf,
@@ -347,6 +352,47 @@ describe('sanitizeAcknowledgement', () => {
     expect(sanitizeAcknowledgement('Первая\nвторая', texts, { tired: false }).replaced).toBe(true);
     expect(sanitizeAcknowledgement('а'.repeat(201), texts, { tired: false }).replaced).toBe(true);
     expect(sanitizeAcknowledgement('Услышала 🙂', texts, { tired: false }).replaced).toBe(true);
+  });
+
+  it('серия восклицательных заменяется, один восклицательный — нет', () => {
+    /**
+     * Дефект ревизии второго этапа. §13.9 «восклицательные не идут
+     * сериями» стерёг словарь и правку из панели, а признание — тот
+     * единственный кусок ответа, который пишет модель, — нет:
+     * «Услышала!! Ну и денёк.» уходило человеку. Причина названа тем же
+     * параграфом, что и в отказе на записи, — так у правила один дом.
+     */
+    const shouted = sanitizeAcknowledgement('Услышала!! Ну и денёк.', texts, { tired: false });
+
+    expect(shouted.replaced).toBe(true);
+    expect(shouted.text).toBe(texts.answer.acknowledgementFallback);
+    expect(shouted.reason).toContain('§13.9');
+
+    // Один восклицательный законен: правило про серии, а не про знак.
+    expect(sanitizeAcknowledgement('Услышала! Три дела.', texts, { tired: false }).replaced).toBe(
+      false,
+    );
+  });
+
+  it('общее правило §13 — то же, что судит правку в панели, слово в слово', () => {
+    /**
+     * Связка, а не наличие строки. Презентер обязан **звать** общее
+     * правило, а не переписывать его своими словами: иначе следующее
+     * правило §13 приедет в панель и не приедет сюда — ровно так
+     * потерялась серия восклицательных. Если презентер заведёт свою
+     * копию, причина разойдётся с панельной — и здесь покраснеет.
+     */
+    for (const raw of [
+      'Услышала!! Ну и денёк.',
+      'Поняла. Тебе бы отдохнуть.',
+      'Услышала 🙂',
+      'Разобрать дела? Или хватит?',
+    ]) {
+      const shared = contentRefusal(raw);
+
+      expect(shared, raw).toBeDefined();
+      expect(sanitizeAcknowledgement(raw, texts, { tired: false }).reason, raw).toBe(shared);
+    }
   });
 
   it('«ванна» в деле законна, «прими ванну» — нет', () => {
