@@ -689,6 +689,12 @@ export interface TextProfile {
     readonly buttonConsentOn: string;
     /** Кнопка-ссылка на оферту. */
     readonly buttonOffer: string;
+    /**
+     * Иностранная карта (оферта п. 7.10). Платёжная система не проводит
+     * автосписания по картам иностранных банков; сказать об этом надо до
+     * оплаты и только на экране карты — у звёзд карты нет.
+     */
+    readonly foreignCardNote: string;
     /** Оплата прошла. */
     readonly paid: (until: string) => string;
     /** Продление отключено, доступ до конца оплаченного. */
