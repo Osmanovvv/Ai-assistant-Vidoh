@@ -1,4 +1,5 @@
 import type { Bot, Context } from 'grammy';
+import type { InlineKeyboardMarkup } from 'grammy/types';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
@@ -18,7 +19,13 @@ import { normalizeCode, promoFor, type PromoOffer } from '../../modules/billing/
 import type { PaymentProvider, PlanKind } from '../../modules/billing/provider.js';
 import { readStarsEvent } from '../../modules/billing/providers/stars.js';
 import { applyPaymentEvent, cancelRenewal } from '../../modules/billing/subscription.service.js';
-import { PLANS, RAILS, type Rail } from '../../modules/billing/tariffs.js';
+import {
+  firstRenewalChargeAt,
+  PLANS,
+  priceOf,
+  RAILS,
+  type Rail,
+} from '../../modules/billing/tariffs.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
@@ -59,6 +66,18 @@ export const BILLING_ACTION = {
   open: 'pay:open',
   /** `pay:b:<код рельса>:<тариф>` — купить. */
   buyPrefix: 'pay:b:',
+  /**
+   * `pay:c:<код рельса>:<0|1>` — переключить согласие на автосписания
+   * (§14, оферта п. 2.3 и 7.2). Число — состояние, в которое перейти.
+   *
+   * Состояние живёт в самой кнопке, а не в базе: у переключателя нет
+   * второго читателя, а строка «ожидающее согласие» в базе означала бы
+   * ещё один срок жизни и ещё один способ разойтись с тем, что человек
+   * видит на экране. Согласие становится фактом только вместе со счётом.
+   */
+  consentPrefix: 'pay:c:',
+  /** `pay:go:<код рельса>:<0|1>` — к оплате месяца с согласием или без. */
+  goPrefix: 'pay:go:',
   cancel: 'pay:stop',
   /** Спросить промокод словами (§14, задача 4.4). */
   promo: 'pay:promo',
@@ -107,6 +126,14 @@ export interface BillingHandlerDeps {
   readonly db: Database;
   readonly settings: SettingsRegistry;
   readonly logger: Logger;
+  /**
+   * Куда ведёт кнопка «Оферта» на экране согласия (§14).
+   *
+   * Робокасса требует кликабельную ссылку на оферту рядом с отметкой
+   * согласия. Адрес приходит из `OFFER_URL`; заглушка в бою ловится при
+   * подъёме, как у политики.
+   */
+  readonly offerUrl: string;
   /**
    * Провайдеры по рельсам. Рельс без провайдера просто не показывается:
    * кнопка, за которой нет провайдера, обманывает.
@@ -234,6 +261,8 @@ async function sendCheckout(
     readonly provider: PaymentProvider;
     readonly texts: TextProfile;
     readonly promo?: PromoOffer | undefined;
+    /** Решение человека с экрана согласия; пусто — как решит провайдер. */
+    readonly renewable?: boolean | undefined;
   },
 ): Promise<void> {
   const { texts } = params;
@@ -255,6 +284,7 @@ async function sendCheckout(
       title: `ВЫДОХ, ${planName.toLowerCase()}`,
       description: `Подписка на ВЫДОХ: разбор новых записей, ${planName.toLowerCase()}.`,
       ...(params.promo === undefined ? {} : { promo: params.promo }),
+      ...(params.renewable === undefined ? {} : { renewable: params.renewable }),
     });
 
     if (!outcome.ok) {
@@ -284,6 +314,78 @@ async function sendCheckout(
     );
     await ctx.reply(texts.billing.checkoutFailed);
   }
+}
+
+/**
+ * Экран согласия на автосписания перед оплатой месяца (§14; оферта
+ * п. 2.3, 7.2; требование Робокассы к форме оплаты).
+ *
+ * **Отметка не проставлена заранее, и это условие, а не вкус.** Робокасса
+ * согласовывает автосписания только с чекбоксом, который человек ставит
+ * сам; оферта обещает то же. Без отметки кнопка оплаты всё равно есть —
+ * платёж уходит разовым: человек, который не хочет автосписаний, не
+ * должен ради этого искать другой тариф.
+ *
+ * **Дата первого списания считается тем же кодом, каким списывает проход
+ * продления** (`firstRenewalChargeAt`): назвать одну дату, а списать в
+ * другую — ровно то, что письмо Робокассы называет «автопродлением без
+ * уведомления».
+ *
+ * Годовой тариф и промо-счёт сюда не попадают: они разовые по
+ * устройству, и спрашивать согласие на списания, которых не будет,
+ * значило бы пугать.
+ */
+async function consentView(
+  deps: BillingHandlerDeps,
+  params: {
+    readonly userId: string;
+    readonly rail: Rail;
+    readonly consented: boolean;
+    readonly texts: TextProfile;
+  },
+): Promise<
+  | { readonly ok: true; readonly text: string; readonly keyboard: InlineKeyboardMarkup }
+  | { readonly ok: false }
+> {
+  const { texts } = params;
+  const price = await priceOf(deps.settings, { plan: 'monthly', rail: params.rail });
+
+  if (price === undefined) return { ok: false };
+
+  const now = new Date();
+  const live = liveOne(await subscriptionsOf(deps.db, params.userId), now.getTime());
+  const firstCharge = firstRenewalChargeAt({
+    now,
+    ...(live === undefined ? {} : { currentPeriodEnd: live.currentPeriodEnd }),
+  });
+
+  const code = CODE_OF_RAIL[params.rail];
+  const flag = params.consented ? '1' : '0';
+
+  return {
+    ok: true,
+    text: `${texts.billing.consentScreen(priceText(price), untilText(firstCharge))}
+
+${params.consented ? texts.billing.consentOn : texts.billing.consentOff}`,
+    keyboard: {
+      inline_keyboard: [
+        [
+          {
+            text: params.consented ? texts.billing.buttonConsentOn : texts.billing.buttonConsentOff,
+            // Нажатие переводит в противоположное состояние.
+            callback_data: `${BILLING_ACTION.consentPrefix}${code}:${params.consented ? '0' : '1'}`,
+          },
+        ],
+        [
+          {
+            text: texts.billing.buttonPay,
+            callback_data: `${BILLING_ACTION.goPrefix}${code}:${flag}`,
+          },
+        ],
+        [{ text: texts.billing.buttonOffer, url: deps.offerUrl }],
+      ],
+    },
+  };
 }
 
 /**
@@ -475,16 +577,94 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
         return;
       }
 
+      if (plan === 'monthly') {
+        // Месяц умеет продлеваться — значит сперва согласие, потом счёт.
+        const view = await consentView(deps, { userId: user.id, rail, consented: false, texts });
+
+        await ctx.reply(view.ok ? view.text : texts.billing.noPrice, {
+          ...(view.ok ? { reply_markup: view.keyboard } : {}),
+        });
+        return;
+      }
+
       await sendCheckout(deps, ctx, {
         userId: user.id,
         tgId: ctx.from.id,
-        plan: plan === 'monthly' ? 'monthly' : 'yearly',
+        plan: 'yearly',
         rail,
         provider,
         texts,
       });
     },
   );
+
+  bot.callbackQuery(
+    new RegExp(`^${BILLING_ACTION.consentPrefix}([a-z]):([01])$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+
+      const user = await findByTgId(deps.db, ctx.from.id);
+      if (user === undefined) return;
+
+      const texts = await textsOf(deps, user.id);
+      const [code, flag] = ctx.callbackQuery.data
+        .slice(BILLING_ACTION.consentPrefix.length)
+        .split(':');
+      const rail = code === undefined ? undefined : RAIL_OF_CODE.get(code);
+
+      if (rail === undefined || deps.providers[rail] === undefined) {
+        await ctx.reply(texts.billing.checkoutFailed);
+        return;
+      }
+
+      const view = await consentView(deps, {
+        userId: user.id,
+        rail,
+        consented: flag === '1',
+        texts,
+      });
+
+      if (!view.ok) {
+        await ctx.reply(texts.billing.noPrice);
+        return;
+      }
+
+      /**
+       * Правится то же сообщение, а не шлётся новое: два экрана согласия
+       * с разными отметками — это два разных ответа на один вопрос, и
+       * человек не поймёт, который из них бот считает его решением.
+       */
+      await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
+    },
+  );
+
+  bot.callbackQuery(new RegExp(`^${BILLING_ACTION.goPrefix}([a-z]):([01])$`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const user = await findByTgId(deps.db, ctx.from.id);
+    if (user === undefined) return;
+
+    const texts = await textsOf(deps, user.id);
+    const [code, flag] = ctx.callbackQuery.data.slice(BILLING_ACTION.goPrefix.length).split(':');
+    const rail = code === undefined ? undefined : RAIL_OF_CODE.get(code);
+    const provider = rail === undefined ? undefined : deps.providers[rail];
+
+    if (rail === undefined || provider === undefined) {
+      await ctx.reply(texts.billing.checkoutFailed);
+      return;
+    }
+
+    await sendCheckout(deps, ctx, {
+      userId: user.id,
+      tgId: ctx.from.id,
+      plan: 'monthly',
+      rail,
+      provider,
+      texts,
+      // Решение человека едет в кнопке: «1» — согласился на автосписания.
+      renewable: flag === '1',
+    });
+  });
 
   bot.callbackQuery(BILLING_ACTION.cancel, async (ctx) => {
     await ctx.answerCallbackQuery();

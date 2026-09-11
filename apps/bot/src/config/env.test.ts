@@ -15,6 +15,7 @@ const valid: Record<string, string> = {
   NODE_ENV: 'test',
   PUBLIC_URL: 'https://bot.vydoh.test',
   PRIVACY_POLICY_URL: 'https://vydoh.test/privacy',
+  OFFER_URL: 'https://vydoh.test/oferta',
   BOT_TOKEN: FAKE_TOKEN,
   BOT_WEBHOOK_SECRET: 'a'.repeat(32),
   DATABASE_URL: 'postgres://vydoh:vydoh@localhost:5434/vydoh',
@@ -162,6 +163,28 @@ describe('адрес политики конфиденциальности', () 
     expect(() => parseWith({ PRIVACY_POLICY_URL: 'http://vydoh.test/privacy' })).toThrow(
       EnvValidationError,
     );
+  });
+});
+
+describe('адрес оферты', () => {
+  it('без переменной берётся заглушка — выкладка на боевом .env без неё не падает', () => {
+    expect(parseWith({ OFFER_URL: undefined }).OFFER_URL).toBe('https://example.invalid/oferta');
+  });
+
+  it('должен быть по https', () => {
+    expect(() => parseWith({ OFFER_URL: 'http://vydoh.test/oferta' })).toThrow(EnvValidationError);
+  });
+
+  it('заглушка в бою ловится тем же предупреждением, что у политики', () => {
+    const warnings = productionWarnings(
+      parseWith({
+        ACCOUNT_SPEND_DAILY_RUB: '300',
+        LOG_FILE: '/app/logs/vydoh.log',
+        OFFER_URL: undefined,
+      }),
+    );
+
+    expect(warnings).toContain('OFFER_URL указывает на заглушку из .env.example');
   });
 });
 

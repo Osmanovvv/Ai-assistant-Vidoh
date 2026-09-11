@@ -151,6 +151,18 @@ export const envSchema = z.object({
   PRIVACY_POLICY_URL: httpsUrl,
 
   /**
+   * Адрес публичной оферты (§14, требование Робокассы к автосписаниям).
+   *
+   * Экран согласия на автосписания обязан вести на оферту кликабельной
+   * ссылкой. Переменная **с заглушкой по умолчанию, а не обязательная**,
+   * и это осознанно: оферта появится позже кода, а обязательная
+   * переменная уронила бы первую же выкладку на боевом `.env`, где её
+   * ещё нет. В бою заглушка попадает в `productionWarnings` — как у
+   * политики.
+   */
+  OFFER_URL: httpsUrl.default('https://example.invalid/oferta'),
+
+  /**
    * Админ-панель (§15 ТЗ, задача 4.5).
    *
    * Все четыре необязательны — и все четыре нужны вместе. Нет хотя бы
@@ -560,6 +572,7 @@ export function productionWarnings(env: Env): readonly string[] {
   for (const [name, value] of [
     ['PUBLIC_URL', env.PUBLIC_URL],
     ['PRIVACY_POLICY_URL', env.PRIVACY_POLICY_URL],
+    ['OFFER_URL', env.OFFER_URL],
   ] as const) {
     if (PLACEHOLDER_HOSTS.has(new URL(value).hostname)) {
       warnings.push(`${name} указывает на заглушку из .env.example`);

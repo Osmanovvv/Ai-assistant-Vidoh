@@ -147,3 +147,40 @@ const RENEWAL_GRACE_MS = 7 * 24 * 60 * 60_000;
 export function renewFrom(currentPeriodEnd: Date, now: Date): Date {
   return currentPeriodEnd.getTime() + RENEWAL_GRACE_MS >= now.getTime() ? currentPeriodEnd : now;
 }
+
+/**
+ * За сколько до конца периода уходит списание.
+ *
+ * Живёт здесь, а не в проходе продления, потому что нужна двоим: проходу
+ * — чтобы списать, и экрану согласия — чтобы назвать человеку дату
+ * первого автосписания **до** оплаты (оферта, п. 7.2–7.3). Одно число в
+ * двух местах считалось бы двумя способами; здесь оно одно.
+ *
+ * Сутки — не для запаса скорости: неудачное списание оставляет человеку
+ * день, чтобы заплатить руками и не потерять доступ ни на час.
+ */
+export const RENEWAL_LEAD_MS = 24 * 3_600_000;
+
+/**
+ * Когда уйдёт первое автосписание, если человек оплатит месяц сейчас.
+ *
+ * Считается тем же путём, каким приём оплаты назначит период
+ * (`renewFrom` + `periodEndAfter`), и тем же отступом, каким проход
+ * продления выберет день списания (`RENEWAL_LEAD_MS`). Экран согласия
+ * обязан называть ту дату, в которую списание действительно случится —
+ * иначе оферта обещала бы одно, а бот делал другое.
+ *
+ * `currentPeriodEnd` — конец нынешнего оплаченного периода, если он есть:
+ * у платящего новый период начинается с конца прежнего, а не с сегодня.
+ */
+export function firstRenewalChargeAt(params: {
+  readonly now: Date;
+  readonly currentPeriodEnd?: Date | undefined;
+}): Date {
+  const from =
+    params.currentPeriodEnd === undefined
+      ? params.now
+      : renewFrom(params.currentPeriodEnd, params.now);
+
+  return new Date(periodEndAfter(from, 'monthly').getTime() - RENEWAL_LEAD_MS);
+}

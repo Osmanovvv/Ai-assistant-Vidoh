@@ -169,6 +169,12 @@ function everyCallbackData(): { where: string; data: string }[] {
     found.push({ where: 'billing:action', data });
   }
 
+  // Экран согласия на автосписания (§14): переключатель и переход к оплате.
+  for (const code of ['r', 's']) {
+    found.push({ where: 'billing:consent', data: `${BILLING_ACTION.consentPrefix}${code}:1` });
+    found.push({ where: 'billing:go', data: `${BILLING_ACTION.goPrefix}${code}:1` });
+  }
+
   // Худший случай покупки: длинное имя рельса и годовой тариф.
   for (const rail of RAILS) {
     for (const plan of PLANS) {
@@ -261,6 +267,8 @@ describe('идентификаторы действий не пересекаю�
       ONBOARDING.topicPrefix,
       BILLING_ACTION.buyPrefix,
       BILLING_ACTION.promoBuyPrefix,
+      BILLING_ACTION.consentPrefix,
+      BILLING_ACTION.goPrefix,
     ];
 
     const exact = [
@@ -452,6 +460,18 @@ function everyRow(): { where: string; labels: string[] }[] {
   fromKeyboard(
     'billing:promo',
     fitKeyboard([[{ label: texts.billing.buttonPromo, action: 'pay:promo' }]]),
+  );
+
+  // Экран согласия на автосписания (§14): отметка в обоих состояниях,
+  // оплата и оферта — человек держит палец над ними, читая подпись.
+  fromKeyboard(
+    'billing:consent',
+    fitKeyboard([
+      [{ label: texts.billing.buttonConsentOn, action: 'pay:c:r:0' }],
+      [{ label: texts.billing.buttonConsentOff, action: 'pay:c:r:1' }],
+      [{ label: texts.billing.buttonPay, action: 'pay:go:r:1' }],
+      [{ label: texts.billing.buttonOffer, action: 'pay:open' }],
+    ]),
   );
 
   fromKeyboard(
