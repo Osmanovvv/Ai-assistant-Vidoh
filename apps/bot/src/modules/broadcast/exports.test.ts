@@ -45,6 +45,15 @@ const MODULES = [
    * нечем.
    */
   'src/modules/users/users.repo.ts',
+  /**
+   * Блокировка — с ревизии этапов 1–2. Там нашлась `isRetryableSendError`:
+   * написана, покрыта семью проверками, вызывающих нет, а её же
+   * комментарий обещал, что позовут напоминания третьего этапа. Этап
+   * пришёл, и повтор там устроен иначе — счётом попыток и пометкой
+   * `isBlocked`, без вопроса о виде ошибки. Обещание в комментарии
+   * стражем не работает: файла в списке не было.
+   */
+  'src/modules/users/blocked.ts',
   'src/modules/billing/billing.repo.ts',
   'src/modules/billing/tariffs.ts',
   'src/modules/billing/promo.service.ts',
