@@ -5,7 +5,10 @@ import { loadDataset } from '../eval/dataset.js';
 import { parsePins } from '../eval/pins.js';
 import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
 import { runDataset } from '../eval/runner.js';
+import { anchorLine } from '../eval/unverified-anchor.js';
 import { modelEnvSchema } from '../config/env.js';
+import { PENDING_FIXES, pendingFixesLine } from '../config/pending-fixes.js';
+import { flushCassette } from '../modules/ai/cassette/session.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { ceilingFromEnv } from '../modules/metering/account-spend.js';
 import { costLine, runCost } from '../modules/metering/run-cost.js';
@@ -130,10 +133,21 @@ try {
     );
   }
 
-  const full = createLlmProvider(env);
-  const light = createLlmProvider(env, { light: true });
+  /**
+   * `clock: 'recorded'` — не украшение, а условие годности замера.
+   *
+   * У набора «сегодня» задано в самом случае и не двигается: случаи
+   * стоят на 26 августа 2026 и будут стоять там всегда. Разверни ответ
+   * записи по сегодняшнему дню — и записанный срок «2026-09-01» назавтра
+   * станет вторым сентября, а ожидание останется первым. Прогон покажет
+   * промах по дате, которого не было. Живому провайдеру всё равно: он
+   * записи не читает.
+   */
+  const full = createLlmProvider(env, { clock: 'recorded' });
+  const light = createLlmProvider(env, { light: true, clock: 'recorded' });
 
   logger.info({ полная: full.name, лёгкая: light.name }, 'Провайдеры выбраны');
+  logger.info({ правки: pendingFixesLine() }, 'Правки, ждущие замера');
 
   /**
    * Пользователь стенда: от его имени открываются выгрузки, к которым
@@ -157,7 +171,14 @@ try {
 
   // Модели пишутся в отчёт вместе с версиями промптов: разница между
   // двумя прогонами может быть не в промпте, а в поколении модели.
-  const report = { ...collect(outcomes), models: { полная: full.name, лёгкая: light.name } };
+  const report = {
+    ...collect(outcomes),
+    models: { полная: full.name, лёгкая: light.name },
+    // Флаги ложатся в отчёт рядом с моделями и по той же причине: без них
+    // два прогона в истории неразличимы, а разница между ними — как раз
+    // в них.
+    fixes: { ...PENDING_FIXES },
+  };
   const runs = join(directory, 'runs');
   const previous = await previousRun(runs);
 
@@ -283,6 +304,18 @@ try {
     for (const item of outcome.result.extra) {
       process.stdout.write(`  лишнее [${outcome.id}] «${item.text}»\n`);
     }
+    /**
+     * Правила на непроверенном якоре — поимённо, а не только числом.
+     *
+     * Правило проекта, выученное дважды за один день 05.09.2026: добавил
+     * число — добавь строку. Иначе отчёт скажет «таких три», а какие
+     * именно записи потеряют правило от предложенной строгости, узнать
+     * будет нечем — и решение снова придётся принимать вслепую.
+     */
+    for (const anchor of outcome.unverifiedAnchors) {
+      process.stdout.write(`${anchorLine(outcome.id, anchor)}
+`);
+    }
     // Двоякое ожидание — это наша ошибка разметки, и она искажает счёт:
     // одно ожидание забирает запись, которую ждало другое, и второе
     // считается потерянным. Поэтому надо назвать виновника, а не только
@@ -366,6 +399,52 @@ try {
    * бы про **качество** из-за строчки про деньги. Тот же довод, что в
    * сквозном; здесь обёртку сперва забыли, нашла встречная проверка.
    */
+  /**
+   * Запись ответов сохраняется здесь, а не сама собой (задача 3.80).
+   *
+   * Копилка живёт в памяти и ложится на диск один раз в конце: без этого
+   * вызова прогон с `CASSETTE_MODE=record` спросил бы живую модель,
+   * заплатил и **не сохранил ни строки**. Ровно так связка и стояла до
+   * 10.09.2026: `flushCassette` звали бот и сквозной прогон, а прогон
+   * набора — нет.
+   *
+   * В своём try/catch по тому же доводу, что цена ниже: отвались диск —
+   * и код выхода соврал бы про качество из-за неудачного сохранения.
+   */
+  try {
+    const cassette = await flushCassette();
+
+    if (cassette !== undefined) {
+      logger.info(
+        {
+          файл: cassette.path,
+          режим: cassette.mode,
+          ответов: cassette.answers,
+          промахов: cassette.misses,
+          расхождений: cassette.collisions,
+        },
+        cassette.mode === 'record'
+          ? 'Ответы модели записаны — дальше прогоны по ним бесплатны'
+          : 'Прогон сделан по записи: модель не спрашивалась',
+      );
+
+      /**
+       * Промах воспроизведения означает, что часть случаев не
+       * разобралась вовсе, — а отчёт при этом уже сохранён. Сказать об
+       * этом надо громко: молчаливый промах превращает замер в
+       * измерение записи, а не разбора.
+       */
+      if (cassette.misses > 0) {
+        logger.warn(
+          { промахов: cassette.misses },
+          'В записи не нашлось ответов на часть запросов — замер неполон, запись устарела',
+        );
+      }
+    }
+  } catch (error) {
+    logger.warn({ err: error }, 'Запись ответов сохранить не удалось');
+  }
+
   try {
     const cost = await runCost(db, { startedAt, now: new Date() });
     process.stdout.write(['', costLine(cost, ceilings), '', ''].join('\n'));

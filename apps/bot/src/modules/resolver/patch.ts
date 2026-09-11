@@ -7,7 +7,7 @@ import { isoDateIn, nearestWeekday, resolveDeadline } from '../classifier/dates.
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
-import { resolveRecurrence } from '../recurrence/recurrence.js';
+import { recurrenceAnchor, resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
 import { recordRevision } from './revisions.repo.js';
@@ -271,8 +271,14 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
      * `weekdays` у «по будням» — цену такой замены без прогона набора не
      * измерить, а `resolveRecurrence` и сам откажет, если опереться не на
      * что.
+     *
+     * Выбор общий с разбором (`recurrenceAnchor`): две одинаковые строки
+     * в двух местах — это и есть та пара, в которой жила регрессия.
      */
-    const anchor = at === null ? deadline : isoDateIn(at, params.timeZone);
+    const anchor = recurrenceAnchor({
+      ...(at === null ? {} : { verified: isoDateIn(at, params.timeZone) }),
+      fromModel: deadline,
+    });
 
     const resolved = resolveRecurrence({
       kind: params.changes.recurrenceKind,

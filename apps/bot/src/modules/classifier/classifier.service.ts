@@ -9,7 +9,11 @@ import type {
 } from '../ai/schemas/classifier.js';
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
-import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
+import {
+  recurrenceAnchor,
+  resolveRecurrence,
+  type ResolvedRecurrence,
+} from '../recurrence/recurrence.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
 
@@ -412,8 +416,16 @@ export function correctItems(
        * `weekdays` без всякого срока. Выбросить правило здесь значило бы
        * лечить один промах другим, и цену этого без прогона набора не
        * измерить.
+       *
+       * **Сам выбор — в `recurrenceAnchor`, одним местом на обе дороги.**
+       * Здесь и в правке записи (`resolver/patch.ts`) стояли две
+       * одинаковые строки, а исходная регрессия жила ровно в такой паре:
+       * два места принимают одно решение до первой правки в одном из них.
        */
-      const anchor = deadline === undefined ? item.deadline : isoDateIn(deadline.at, ctx.timeZone);
+      const anchor = recurrenceAnchor({
+        ...(deadline === undefined ? {} : { verified: isoDateIn(deadline.at, ctx.timeZone) }),
+        fromModel: item.deadline,
+      });
 
       const resolvedRecurrence = resolveRecurrence({
         kind: item.recurrenceKind,
