@@ -5,8 +5,10 @@ import type { Logger } from 'pino';
 import type { Database } from '../../infra/db.js';
 import type { BillingSubscription } from '../../db/schema.js';
 import {
+  attachRenewalConsentInvoice,
   invoiceByRef,
   paidInvoicesCount,
+  recordRenewalConsent,
   subscriptionsOf,
 } from '../../modules/billing/billing.repo.js';
 import {
@@ -263,6 +265,8 @@ async function sendCheckout(
     readonly promo?: PromoOffer | undefined;
     /** Решение человека с экрана согласия; пусто — как решит провайдер. */
     readonly renewable?: boolean | undefined;
+    /** Записанное согласие, к которому привязать счёт. */
+    readonly consentId?: string | undefined;
   },
 ): Promise<void> {
   const { texts } = params;
@@ -290,6 +294,13 @@ async function sendCheckout(
     if (!outcome.ok) {
       await ctx.reply(texts.billing.noPrice);
       return;
+    }
+
+    if (params.consentId !== undefined) {
+      await attachRenewalConsentInvoice(deps.db, {
+        consentId: params.consentId,
+        invoiceId: outcome.invoiceId,
+      });
     }
 
     /**
@@ -662,6 +673,31 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
       return;
     }
 
+    // Решение человека едет в кнопке: «1» — согласился на автосписания.
+    const consented = flag === '1';
+
+    /**
+     * Согласие записывается **до** счёта (оферта п. 7.2.2).
+     *
+     * Провайдер может отказать, и счёта не будет, — а согласие уже дано,
+     * и Робокасса требует хранить его историю. Сумма и валюта берутся те
+     * же, что человек видел на экране: цена тарифа на этом рельсе сейчас.
+     * Нет цены — нет и экрана, значит и согласия быть не могло.
+     */
+    const price = consented ? await priceOf(deps.settings, { plan: 'monthly', rail }) : undefined;
+
+    const consentId =
+      price === undefined
+        ? undefined
+        : await recordRenewalConsent(deps.db, {
+            userId: user.id,
+            rail,
+            plan: 'monthly',
+            amountMinor: price.amountMinor,
+            currency: price.currency,
+            offerUrl: deps.offerUrl,
+          });
+
     await sendCheckout(deps, ctx, {
       userId: user.id,
       tgId: ctx.from.id,
@@ -669,8 +705,8 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
       rail,
       provider,
       texts,
-      // Решение человека едет в кнопке: «1» — согласился на автосписания.
-      renewable: flag === '1',
+      renewable: consented,
+      ...(consentId === undefined ? {} : { consentId }),
     });
   });
 

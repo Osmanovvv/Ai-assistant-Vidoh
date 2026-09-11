@@ -1,6 +1,7 @@
 import { and, count, desc, eq, gt, isNotNull, notInArray, sql } from 'drizzle-orm';
 
 import {
+  billingConsents,
   billingEvents,
   billingInvoices,
   billingSubscriptions,
@@ -19,6 +20,52 @@ import type { Rail } from './tariffs.js';
  * Разделение не для красоты — идемпотентность держится **уникальным
  * индексом**, и место, где это происходит, должно быть одно и на виду.
  */
+
+/**
+ * Согласие на автосписания записано (§14, оферта п. 7.2.2).
+ *
+ * Пишется в момент, когда человек нажал «Перейти к оплате» с включённой
+ * отметкой, — до счёта: провайдер может отказать, а согласие уже дано.
+ * Возвращает идентификатор, чтобы привязать счёт, когда он появится.
+ */
+export async function recordRenewalConsent(
+  db: Executor,
+  params: {
+    readonly userId: string;
+    readonly rail: Rail;
+    readonly plan: PlanKind;
+    readonly amountMinor: number;
+    readonly currency: string;
+    readonly offerUrl: string;
+  },
+): Promise<string> {
+  const [row] = await db
+    .insert(billingConsents)
+    .values({
+      userId: params.userId,
+      rail: params.rail,
+      plan: params.plan,
+      amountMinor: params.amountMinor,
+      currency: params.currency,
+      offerUrl: params.offerUrl,
+    })
+    .returning({ id: billingConsents.id });
+
+  if (row === undefined) throw new Error('согласие не записано: база не вернула строку');
+
+  return row.id;
+}
+
+/** Согласие получило свой счёт. */
+export async function attachRenewalConsentInvoice(
+  db: Executor,
+  params: { readonly consentId: string; readonly invoiceId: string },
+): Promise<void> {
+  await db
+    .update(billingConsents)
+    .set({ invoiceId: params.invoiceId })
+    .where(eq(billingConsents.id, params.consentId));
+}
 
 /**
  * Номер счёта для Робокассы — из последовательности базы.
