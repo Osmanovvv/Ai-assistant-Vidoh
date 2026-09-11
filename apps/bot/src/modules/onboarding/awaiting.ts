@@ -89,16 +89,28 @@ export function parseAwaiting(value: string | null): Awaiting | undefined {
   return known.includes(value) ? { kind: value } : undefined;
 }
 
+/**
+ * Поставить или снять ожидание.
+ *
+ * Момент нажатия пишется рядом со значением, и это **единственное**
+ * место, где значение появляется: по моменту считается окно жизни
+ * ожидания (`awaitingOf`), и значение без момента — просроченное
+ * ожидание. Снимает ожидание ещё `setPreferredName` — вместе с моментом,
+ * чтобы тот не пережил своё нажатие. Прежде окно считалось от
+ * `updatedAt`, а его двигает любая правка строки настроек —
+ * переключатель напоминаний, шаг опроса, — и каждая такая правка
+ * продлевала окно (ревизия этапов 1–2, дефект 28).
+ */
 export async function setAwaiting(
   db: Executor,
   userId: string,
   value: string | null,
 ): Promise<void> {
+  const now = new Date();
+
   await db
     .update(userSettings)
-    // `updatedAt` здесь не косметика: по нему считается окно жизни
-    // ожидания, см. `awaitingOf`.
-    .set({ awaitingInput: value, updatedAt: new Date() })
+    .set({ awaitingInput: value, awaitingSince: value === null ? null : now, updatedAt: now })
     .where(eq(userSettings.userId, userId));
 }
 
@@ -115,16 +127,27 @@ export async function awaitingOf(
   now: Date = new Date(),
 ): Promise<AwaitingState> {
   const [row] = await db
-    .select({ value: userSettings.awaitingInput, updatedAt: userSettings.updatedAt })
+    .select({ value: userSettings.awaitingInput, since: userSettings.awaitingSince })
     .from(userSettings)
     .where(eq(userSettings.userId, userId))
     .limit(1);
 
-  const awaiting = parseAwaiting(row?.value ?? null);
+  if (row === undefined) return { expired: false };
+
+  const awaiting = parseAwaiting(row.value);
   if (awaiting === undefined) return { expired: false };
 
-  const since = row === undefined ? 0 : row.updatedAt.getTime();
-  if (now.getTime() - since > AWAITING_TTL_MS) return { expired: true };
+  /**
+   * Момента нет — нажали до миграции 0044, когда он ещё не записывался.
+   *
+   * Обещать окно нечем, а стороны ошибки неравны: принять запоздавшую
+   * мысль за ответ — потерять её, а лишний раз отправить ответ в разбор
+   * — одно лишнее сообщение. Значит, просрочено. Ноль вместо «не знаем»
+   * дал бы тот же исход, но читался бы как факт.
+   */
+  if (row.since === null) return { expired: true };
+
+  if (now.getTime() - row.since.getTime() > AWAITING_TTL_MS) return { expired: true };
 
   return { awaiting, expired: false };
 }
@@ -223,6 +246,6 @@ export function parseName(text: string): string | undefined {
 export async function setPreferredName(db: Executor, userId: string, name: string): Promise<void> {
   await db
     .update(userSettings)
-    .set({ preferredName: name, awaitingInput: null, updatedAt: new Date() })
+    .set({ preferredName: name, awaitingInput: null, awaitingSince: null, updatedAt: new Date() })
     .where(eq(userSettings.userId, userId));
 }
