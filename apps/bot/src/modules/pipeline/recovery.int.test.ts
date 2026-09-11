@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, messagesRaw } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
-import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
+import {
+  DEFAULT_LIMITS,
+  attachMessageToBatch,
+  closeBatchOnSilence,
+} from '../buffer/buffer.service.js';
+import { SETTINGS, checkValue } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import { recoverAfterRestart, recoverStuckBatches } from './recovery.js';
 
@@ -121,6 +126,45 @@ describe('открытая выгрузка с потерянным задани
 
     expect(report.closedOrphanedOpen).toBe(0);
     expect(await statusOf(batchId)).toBe('open');
+  });
+});
+
+describe('окно тишины из панели против потолка возраста', () => {
+  /**
+   * Панель принимала окно до десяти минут, а жёсткий потолок открытой
+   * выгрузки — пять (ревизия этапов 1–2, дефект 15). Любое окно длиннее
+   * потолка молча вырождалось в пятиминутное: досмотр закрывал выгрузку
+   * по возрасту раньше, чем задание закрытия дожидалось тишины. Человек
+   * ставил семь минут, видел «Сохранено» — и ничего не менялось.
+   *
+   * Поведением, а не числом: самое длинное окно берётся у самой проверки
+   * записи — той, что отвечает панели «Сохранено», — выгрузка с одним
+   * сообщением проходит досмотр за миллисекунду до конца окна открытой и
+   * закрывается тишиной, а не возрастом.
+   */
+  it('самое длинное окно, которое принимает панель, успевает сработать раньше потолка', async () => {
+    const accepted = checkValue('silenceWindowMs', String(SETTINGS.silenceWindowMs.max));
+
+    if (!accepted.ok) throw new Error(`предел окна тишины сам себя не проходит: ${accepted.why}`);
+
+    const windowMs = Number(accepted.value);
+    const limits = { ...DEFAULT_LIMITS, silenceWindowMs: windowMs };
+    const batchId = await openBatchAt(0);
+
+    // Досмотр за миллисекунду до конца окна: закрыл — значит окно не
+    // действует, его обрывает потолок возраста.
+    const sweep = await recoverStuckBatches(testDb(), { now: at(windowMs - 1), limits });
+
+    expect(sweep.closedOrphanedOpen, 'досмотр закрыл выгрузку раньше конца окна').toBe(0);
+    expect(await statusOf(batchId)).toBe('open');
+
+    // А в конце окна выгрузку закрывает тишина.
+    const outcome = await closeBatchOnSilence(testDb(), batchId, {
+      now: at(windowMs),
+      silenceWindowMs: windowMs,
+    });
+
+    expect(outcome).toEqual({ closed: true });
   });
 });
 

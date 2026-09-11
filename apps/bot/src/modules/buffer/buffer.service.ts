@@ -3,6 +3,7 @@ import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
 import { batches, messagesRaw, type Batch } from '../../db/schema.js';
+import { MAX_BATCH_AGE_MS } from './batch-age.js';
 
 /**
  * Буфер выгрузки и окно тишины (задачи 1.12 и 1.13).
@@ -40,12 +41,18 @@ export interface BufferLimits {
  * «По умолчанию» в панели разошёлся бы с поведением от любой правки
  * одного из двух мест, и заметить это было бы нечем.
  *
- * Остальные три настройкой не объявлены (§15 их не просит) и живут
+ * **Потолок возраста — из `batch-age.ts`, потому что читателей у него
+ * двое** (ревизия этапов 1–2, дефект 15): этот набор и предел окна
+ * тишины в реестре настроек. Окно длиннее потолка не действует вовсе —
+ * досмотр закрывает выгрузку по возрасту раньше, чем задание дождётся
+ * тишины, — и предел в реестре обязан быть тем же числом.
+ *
+ * Остальные два настройкой не объявлены (§15 их не просит) и живут
  * здесь: у них нет второго экземпляра, значит и расходиться нечему.
  */
 export const DEFAULT_LIMITS: BufferLimits = {
   silenceWindowMs: SETTINGS.silenceWindowMs.fallback,
-  maxBatchAgeMs: 5 * 60_000,
+  maxBatchAgeMs: MAX_BATCH_AGE_MS,
   // Втрое дольше обычного разбора и короче потолка открытой выгрузки.
   maxProcessingMs: 3 * 60_000,
   maxMessagesPerBatch: 15,
