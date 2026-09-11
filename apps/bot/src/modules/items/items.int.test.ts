@@ -5,7 +5,8 @@ import { batches, items, type ItemTypeValue } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
-import { itemsForBatch, saveDraft, saveItems } from './items.repo.js';
+import { itemsForBatch, openItemsFor, saveDraft, saveItems } from './items.repo.js';
+import { knownByText, splitKnown } from './same-text.js';
 
 /**
  * Сохранение записей на живой базе.
@@ -90,6 +91,29 @@ describe('saveItems', () => {
 
     expect(saved).toEqual([]);
     expect(await itemsForBatch(testDb(), batchId)).toEqual([]);
+  });
+
+  it('сохранённое узнаётся отсевом повторов по сырому тексту модели', async () => {
+    /**
+     * Связка задач 3.62 и 3.22: в базу текст уходит без полей карточки,
+     * а отсев повторной выгрузки сверяет сырой текст модели с тем, что
+     * лежит в базе. Пока преобразования жили порознь, сверка мерила не
+     * то значение, что хранится, и повтор заводил вторую копию именно
+     * тех записей, куда модель вписала «Срок 07.09». Здесь сохранение
+     * настоящее: расхождение между тем, что пишет `saveItems`, и тем, что
+     * считает ключом `sameTextKey`, красит этот тест, а не бой.
+     */
+    const raw = 'позвонить бабушке. Срок 07.09\nСтатус ждет';
+
+    await saveItems(testDb(), { userId, batchId, items: [item({ text: raw })] });
+    const open = await openItemsFor(testDb(), userId);
+
+    expect(open.map((row) => row.text)).toEqual(['Позвонить бабушке']);
+
+    const split = splitKnown([{ text: raw }], knownByText(open));
+
+    expect(split.fresh).toEqual([]);
+    expect(split.known.map((row) => row.text)).toEqual(['Позвонить бабушке']);
   });
 
   it('частичный сбой не оставляет половину разбора', async () => {
