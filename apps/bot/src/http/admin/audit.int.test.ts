@@ -455,8 +455,10 @@ describe('число людей в ответе — настоящее, а не 
       }),
     );
 
-    const response = await fetch(`${base}/admin/api/people?limit=2`, {
-      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    const response = await fetch(`${base}/admin/api/people`, {
+      method: 'POST',
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ limit: 2 }),
     });
 
     expect(response.status).toBe(200);
