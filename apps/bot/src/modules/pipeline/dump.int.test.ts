@@ -3737,13 +3737,18 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
       ]);
   }
 
-  async function dump(sender: StatusSender, prompts: PromptRegistry): Promise<void> {
-    await queuedBatchOf([{ kind: 'text', text: SAID.join(NEWLINE), offsetMs: 0 }]);
+  async function dump(
+    sender: StatusSender,
+    prompts: PromptRegistry,
+    embedder?: MockEmbeddingProvider,
+    said: readonly string[] = SAID,
+  ): Promise<void> {
+    await queuedBatchOf([{ kind: 'text', text: said.join(NEWLINE), offsetMs: 0 }]);
     await processUserBatches(
       {
         db: testDb(),
         lock,
-        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, embedder }),
       },
       userId,
     );
@@ -3831,6 +3836,41 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
 
     expect((await openTexts()).map((one) => one.toLowerCase())).toContain('забрать права');
     expect(await openTexts()).toHaveLength(SAID.length + 1);
+  });
+
+  it('за вектор повтора не платят: считается только то, что будет сохранено', async () => {
+    /**
+     * Ревизия этапов 1–2, дефект 32. Вектор считался по всем единицам
+     * выгрузки, а отсев повторов шёл следующей строкой. Повтору запись не
+     * нужна — значит не нужен и вектор: свежий никуда не записывался, а у
+     * существующей записи он посчитан при создании или досчитывается
+     * отдельно. Тот самый боевой случай — одно голосовое трижды —
+     * оплачивал векторы трижды. Учёт при этом был верен, деньги просто
+     * уходили в никуда: платит отправка, а не результат.
+     *
+     * Считаются отправки провайдеру, а не строки учёта: черта оплаты
+     * проходит по отправке. Только `document`: вектор запроса (`query`)
+     * считает резолвер, и к сохранению он отношения не имеет.
+     */
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender } = recordingSender();
+    const embedder = new MockEmbeddingProvider();
+
+    const documents = (): number =>
+      embedder.requests.filter((one) => one.purpose === 'document').length;
+
+    await dump(sender, prompts, embedder);
+    const paidOnce = documents();
+    // Новых записей шесть — и за вектор заплачено ровно шесть раз.
+    expect(paidOnce, 'первая выгрузка платит за вектор каждой новой записи').toBe(SAID.length);
+
+    await dump(sender, prompts, embedder);
+    expect(documents() - paidOnce, 'повтор оплатил векторы заново').toBe(0);
+
+    // Одно новое дело среди повторов — один вектор, а не семь и не ноль.
+    await dump(sender, prompts, embedder, [...SAID, 'забрать права']);
+    expect(documents() - paidOnce, 'за новое дело среди повторов платят ровно раз').toBe(1);
   });
 
   it('повтор не заводит копию записи, куда модель вписала поля карточки', async () => {
