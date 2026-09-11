@@ -117,8 +117,35 @@ export async function attachMessageToBatch(
       .set({ batchId: batch.id })
       .where(eq(messagesRaw.id, params.messageId));
 
-    const messageCount = batch.messageCount + 1;
-    const ageMs = now.getTime() - batch.openedAt.getTime();
+    /**
+     * Счёт ведёт база, а не код: `message_count + 1` внутри самого UPDATE,
+     * и наружу идёт то число, которое база вернула.
+     *
+     * Прежде число читалось из строки, прибавлялось в памяти и писалось
+     * обратно готовым. Для **уже открытой** выгрузки `openBatchFor`
+     * никого не ждёт — вставка на закреплённой строке отдаёт ноль строк
+     * без замка, чтение идёт без замка, — и два сообщения, пришедшие
+     * одновременно, читали одно и то же число и писали одно и то же:
+     * прибавка терялась, потолок `maxMessagesPerBatch` пропускал лишние
+     * сообщения (ревизия этапов 1–2, дефект 14). UPDATE берёт замок
+     * строки, и второй прибавляет уже к тому, что записал первый.
+     */
+    const [updated] = await tx
+      .update(batches)
+      .set({ messageCount: sql`${batches.messageCount} + 1`, lastMessageAt: now })
+      .where(eq(batches.id, batch.id))
+      .returning({ messageCount: batches.messageCount, openedAt: batches.openedAt });
+
+    // Строки может не стать между чтением и прибавкой только одним путём —
+    // удалением данных человека по §16. Тогда и сообщение уже удалено
+    // каскадом, и считать нечего; молчать об этом — значит поставить
+    // задание закрытия на выгрузку, которой нет.
+    if (!updated) {
+      throw new Error(`Выгрузка ${batch.id} исчезла между чтением и прибавкой счётчика`);
+    }
+
+    const { messageCount } = updated;
+    const ageMs = now.getTime() - updated.openedAt.getTime();
 
     const closeReason: CloseReason | undefined =
       messageCount >= limits.maxMessagesPerBatch
@@ -127,14 +154,16 @@ export async function attachMessageToBatch(
           ? 'age_limit'
           : undefined;
 
-    await tx
-      .update(batches)
-      .set({
-        messageCount,
-        lastMessageAt: now,
-        ...(closeReason ? { status: 'queued' as const, closedAt: now } : {}),
-      })
-      .where(eq(batches.id, batch.id));
+    if (closeReason) {
+      // Отдельным запросом, потому что решение о закрытии принимается
+      // по числу, которое известно только после прибавки. Строка уже под
+      // замком этой транзакции: между прибавкой и закрытием никто не
+      // вклинится.
+      await tx
+        .update(batches)
+        .set({ status: 'queued', closedAt: now })
+        .where(eq(batches.id, batch.id));
+    }
 
     return {
       batchId: batch.id,

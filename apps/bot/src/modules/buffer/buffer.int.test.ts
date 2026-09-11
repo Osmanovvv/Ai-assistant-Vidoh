@@ -1,7 +1,8 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, messagesRaw } from '../../db/schema.js';
+import type { Transaction } from '../../infra/db.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
@@ -10,6 +11,7 @@ import {
   closeBatchOnSilence,
   combineBatch,
   isOverDumpLimit,
+  type AttachResult,
 } from './buffer.service.js';
 
 const T0 = new Date('2026-08-23T10:00:00.000Z');
@@ -50,6 +52,64 @@ async function putMessage(
 async function currentBatch() {
   const [batch] = await testDb().select().from(batches).where(eq(batches.userId, userId));
   return batch;
+}
+
+/**
+ * Ждёт, пока `expected` соединений этой базы не встанут в очередь за
+ * замком. Спрашивается у самого Postgres, а не выжидается таймером:
+ * тест с «подождём двести миллисекунд» зеленеет на быстрой машине и
+ * краснеет на занятой, и ни то ни другое ничего не доказывает.
+ *
+ * `pg_stat_clear_snapshot()` перед каждым опросом обязателен: внутри
+ * транзакции `pg_stat_activity` замораживается на первом обращении, и
+ * без сброса опрос десять секунд видел бы одну картину — ту, что застал
+ * первый заход, когда за замком ещё не все, — и валил бы тест на
+ * собранной гонке (проверено: без сброса — «ждут 1 вместо 2» через 10 с).
+ */
+async function waitUntilBlockedOnLock(tx: Transaction, expected: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    await tx.execute(sql`select pg_stat_clear_snapshot()`);
+    const result = await tx.execute<{ waiting: number }>(sql`
+      select count(*)::int as waiting from pg_stat_activity
+      where datname = current_database() and wait_event_type = 'Lock'
+    `);
+    const waiting = result.rows[0]?.waiting ?? 0;
+    if (waiting >= expected) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `за замком ждут ${String(waiting)} соединений вместо ${String(expected)}: гонка не собралась`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * Присоединяет сообщения к выгрузке **одновременно**, и обстановка гонки
+ * собирается, а не ловится случайно: сторонняя транзакция держит строку
+ * выгрузки под замком, все присоединяющие успевают прочитать её и
+ * встают в очередь на UPDATE — и только тогда замок отпускается. Это
+ * ровно то чередование, на котором прибавка счётчика терялась.
+ */
+async function attachConcurrently(
+  batchId: string,
+  messageIds: readonly string[],
+  firstNow: Date,
+): Promise<AttachResult[]> {
+  let pending: readonly Promise<AttachResult>[] = [];
+  await testDb().transaction(async (tx) => {
+    await tx.execute(sql`select 1 from ${batches} where ${batches.id} = ${batchId} for update`);
+    pending = messageIds.map((messageId, i) =>
+      attachMessageToBatch(testDb(), {
+        userId,
+        messageId,
+        now: new Date(firstNow.getTime() + i * 1_000),
+      }),
+    );
+    await waitUntilBlockedOnLock(tx, messageIds.length);
+  });
+  return await Promise.all(pending);
 }
 
 describe('attachMessageToBatch', () => {
@@ -130,6 +190,34 @@ describe('attachMessageToBatch', () => {
     expect(await testDb().select().from(batches)).toHaveLength(1);
   });
 
+  /**
+   * Гонка не на создании, а на **уже открытой** выгрузке. На создании
+   * проигравший ждёт фиксации победителя — за него это делает уникальный
+   * индекс. На открытой ждать некому: вставка на закреплённой строке
+   * отдаёт ноль строк без замка, чтение идёт без замка, и два сообщения,
+   * пришедшие одновременно, читали одно и то же число и писали одно и то
+   * же — прибавка терялась (ревизия этапов 1–2, дефект 14).
+   */
+  it('одновременные сообщения в открытую выгрузку не теряют прибавку счётчика', async () => {
+    const first = await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text: 'раз' }),
+      now: at(0),
+    });
+
+    const later = await attachConcurrently(
+      first.batchId,
+      [await putMessage({ text: 'два' }), await putMessage({ text: 'три' })],
+      at(1_000),
+    );
+
+    expect(later.map((r) => r.batchId)).toEqual([first.batchId, first.batchId]);
+    // Три сообщения — три в счётчике, и ответы несут разные числа: второй
+    // присоединившийся считал уже после первого, а не вместе с ним.
+    expect((await currentBatch())?.messageCount).toBe(3);
+    expect(later.map((r) => r.messageCount).sort()).toEqual([2, 3]);
+  });
+
   describe('жёсткие потолки', () => {
     it('выгрузка закрывается на пятнадцатом сообщении', async () => {
       let last;
@@ -144,6 +232,35 @@ describe('attachMessageToBatch', () => {
       expect(last?.closed).toBe(true);
       expect(last?.closeReason).toBe('message_limit');
       expect((await currentBatch())?.status).toBe('queued');
+    });
+
+    /**
+     * Цена потерянной прибавки — здесь: два последних сообщения серии
+     * приходят вместе, оба считают четырнадцать, и пятнадцатое не
+     * закрывает выгрузку. Потолок, который иногда пропускает, — не
+     * потолок.
+     */
+    it('потолок держит и когда последние сообщения пришли одновременно', async () => {
+      const before = DEFAULT_LIMITS.maxMessagesPerBatch - 2;
+      let batchId = '';
+      for (let i = 0; i < before; i++) {
+        ({ batchId } = await attachMessageToBatch(testDb(), {
+          userId,
+          messageId: await putMessage({ text: `сообщение ${String(i)}` }),
+          now: at(i * 1_000),
+        }));
+      }
+
+      const last = await attachConcurrently(
+        batchId,
+        [await putMessage({ text: 'предпоследнее' }), await putMessage({ text: 'последнее' })],
+        at(before * 1_000),
+      );
+
+      expect(last.filter((r) => r.closed).map((r) => r.closeReason)).toEqual(['message_limit']);
+      const batch = await currentBatch();
+      expect(batch?.messageCount).toBe(DEFAULT_LIMITS.maxMessagesPerBatch);
+      expect(batch?.status).toBe('queued');
     });
 
     it('выгрузка закрывается по возрасту, даже если человек говорит без пауз', async () => {
