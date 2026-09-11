@@ -1,7 +1,8 @@
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import { asc, eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
@@ -38,6 +39,8 @@ import { transcribeVoices } from './speech.service.js';
  * сообщение. На ней держатся выгрузка данных по §16, повторный заход
  * после сбоя и порядок текста выгрузки.
  */
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 /** Длительности трёх записей, из которых считаются границы внутри склейки. */
 const SECONDS = [2, 3, 4] as const;
@@ -277,6 +280,54 @@ describe('расшифровка выгрузки одним запросом', 
     const calls = await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId));
     expect(calls).toHaveLength(1);
     expect(calls[0]?.audioSeconds).toBe(11);
+  });
+
+  it('скрипт ручной проверки обещает человеку ту же одну строку, а не три', async () => {
+    /**
+     * `ops/check-voice.sh` — единственная проверка голосового пути на
+     * живом боте: ссылка на файл живёт у Telegram, и автотесту её не
+     * получить. В конце скрипт говорит человеку, что должно получиться.
+     * До склейки там стояло «по строке на каждое голосовое», и после неё
+     * это осталось (ревизия этапов 1–2, дефект 17): человек, идущий по
+     * рантбуку перед сдачей, увидел бы одну строку вместо трёх и пошёл бы
+     * искать поломку там, где всё в порядке.
+     *
+     * Страж читает текст, потому что ничего другого о скрипте прочесть
+     * нельзя: сам он ходит по ssh на боевой сервер. Читается только блок
+     * «Что должно получиться» — ровно то, что видит человек, — поэтому
+     * комментарий скрипта, вспомнивший старую формулировку, стража не
+     * обманет. Число строк здесь не переписано из соседа, а сосчитано
+     * заново тем же прогоном: уберут склейку — покраснеет и он, и сосед,
+     * и текст скрипта придётся править вместе с кодом.
+     */
+    const bounds = intervals();
+    const provider = new TimedProvider([utteranceAt('Одна фраза.', bounds[0]?.startSec ?? 0)]);
+
+    await transcribeVoices(
+      { db: testDb(), provider, download },
+      { messages: voices(), userId, batchId: batch.id },
+    );
+
+    const speechRows = (
+      await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId))
+    ).filter((row) => row.stage === 'speech');
+    expect(speechRows).toHaveLength(1);
+    expect(voices()).toHaveLength(3);
+
+    const script = await readFile(resolve(root, 'ops/check-voice.sh'), 'utf8');
+    const block = /say "Что должно получиться"[\s\S]*?cat <<'EOF'\n([\s\S]*?)\nEOF/u.exec(
+      script,
+    )?.[1];
+    // Пропади блок — стеречь было бы нечего, и пусть краснеет страж, а не человек.
+    expect(block, 'в скрипте нет блока «Что должно получиться»').toBeDefined();
+
+    const sentence = /В ai_calls[^.]*\./u.exec((block ?? '').replace(/\s+/gu, ' '))?.[0];
+    expect(sentence, 'скрипт ничего не обещает про ai_calls').toBeDefined();
+
+    // Одна строка на три голосовых — то, что только что сосчитано выше.
+    expect(sentence).toMatch(/одна строка/u);
+    expect(sentence).toMatch(/три голосовых/u);
+    expect(sentence).not.toMatch(/каждое голосовое/u);
   });
 
   it('ссылка на файл снимается: держать её дольше обработки нельзя', async () => {
