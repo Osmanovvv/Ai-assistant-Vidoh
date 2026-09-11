@@ -183,7 +183,8 @@ describe('повторная доставка — условие готовно�
     const second = await applyPaymentEvent(testDb(), {
       provider: RAIL,
       event: paid({ ref: 'r-4', externalId: '1004', renewal: true }),
-      now: new Date('2026-10-07T10:05:00.000Z'),
+      // Продление приходит за сутки до конца, как и списывается.
+      now: new Date('2026-10-06T10:05:00.000Z'),
     });
 
     expect(first.kind).toBe('applied');
@@ -205,11 +206,12 @@ describe('повторная доставка — условие готовно�
 });
 
 describe('срок оплаченного периода', () => {
-  it('продление считается от конца периода, а не от «сейчас»', async () => {
+  it('продление до конца периода считается от конца, а не от «сейчас»', async () => {
     /**
-     * Списание не мгновенно: продление приходит на день-два позже. Считай
-     * мы от «сейчас», человек терял бы по дню каждый месяц — двенадцать
-     * дней в год, которые он оплатил.
+     * Автосписание уходит за сутки до конца периода, и его уведомление
+     * приходит, пока период ещё идёт. Считай мы от «сейчас», человек
+     * терял бы этот день каждый месяц — двенадцать дней в год, которые
+     * он оплатил.
      */
     await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'p-1' });
     await applyPaymentEvent(testDb(), {
@@ -222,37 +224,59 @@ describe('срок оплаченного периода', () => {
     await applyPaymentEvent(testDb(), {
       provider: RAIL,
       event: paid({ ref: 'p-2', externalId: '2002', renewal: true }),
-      // Продление пришло на два дня позже конца периода.
-      now: new Date('2026-10-09T03:00:00.000Z'),
+      // Продление пришло за сутки до конца периода — как и списывается.
+      now: new Date('2026-10-06T10:00:00.000Z'),
     });
 
     const subscription = await subscriptionOf(testDb(), { userId, provider: RAIL });
 
-    // Не 9 ноября: месяц прибавлен к концу оплаченного, а не к «сейчас».
+    // Не 6 ноября: месяц прибавлен к концу оплаченного, а не к «сейчас».
     expect(subscription?.currentPeriodEnd.toISOString()).toBe('2026-11-07T10:00:00.000Z');
   });
 
-  it('а сильно просроченное продление — от «сейчас»', () => {
+  it('оплата после окончания подписки считается от оплаты — сколько бы дней ни прошло', async () => {
     /**
-     * Иначе оплата после месяца простоя дарила бы время задним числом:
-     * человек заплатил бы и получил период, кончившийся в прошлом.
-     *
-     * Порог — неделя: внутрь недели укладываются задержка списания и
-     * повторы, всё дольше — уже не опоздание, а простой.
+     * Решение заказчицы (12.09.2026). Прежде внутри недели после конца
+     * период считался от конца: заплатила на три дня позже — получила
+     * период на три дня короче. «Нам не нужен спор с женщиной из-за
+     * трёх „съеденных“ дней». Доступа в те дни у неё не было — платить
+     * за них не за что.
      */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'p-1' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'p-1', externalId: '2001' }),
+      now: new Date('2026-09-07T10:00:00.000Z'),
+    });
+
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'p-2' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'p-2', externalId: '2002' }),
+      // Заплатила на три дня позже конца периода (7 октября).
+      now: new Date('2026-10-10T09:00:00.000Z'),
+    });
+
+    const subscription = await subscriptionOf(testDb(), { userId, provider: RAIL });
+
+    // Полный месяц с оплаты, а не 7 ноября.
+    expect(subscription?.currentPeriodEnd.toISOString()).toBe('2026-11-10T09:00:00.000Z');
+  });
+
+  it('правило одно: до конца — от конца, после — от «сейчас»', () => {
     const end = new Date('2026-09-07T10:00:00.000Z');
 
-    // Полтора месяца простоя — считаем от «сейчас».
+    // Полтора месяца простоя — от «сейчас».
     const late = new Date('2026-11-01T10:00:00.000Z');
     expect(renewFrom(end, late).toISOString()).toBe(late.toISOString());
 
-    // А два дня опоздания — от конца периода: их человек оплатил.
+    // Два дня после конца — тоже от «сейчас»: порога в неделю больше нет.
     const slightly = new Date('2026-09-09T03:00:00.000Z');
-    expect(renewFrom(end, slightly).toISOString()).toBe(end.toISOString());
+    expect(renewFrom(end, slightly).toISOString()).toBe(slightly.toISOString());
 
-    // И ровно на границе недели — ещё опоздание, а не простой.
-    const edge = new Date(end.getTime() + 7 * 24 * 60 * 60_000);
-    expect(renewFrom(end, edge).toISOString()).toBe(end.toISOString());
+    // А за сутки до конца — от конца: оплаченные дни не теряются.
+    const early = new Date('2026-09-06T10:00:00.000Z');
+    expect(renewFrom(end, early).toISOString()).toBe(end.toISOString());
   });
 
   it('месяц календарный, а не тридцать дней', () => {
