@@ -14,6 +14,7 @@ import { YandexLlmProvider } from './yandex.js';
  */
 
 const request = () => ({
+  stage: 'extractor' as const,
   prompt: 'Разбери поток мыслей на дела.',
   input: 'надо к врачу и купить продукты',
   jsonSchema: { type: 'object', properties: { units: { type: 'array' } } },
@@ -98,6 +99,9 @@ describe('успешный вызов', () => {
 
     expect(captured['jsonSchema']).toEqual({ schema: request().jsonSchema });
     expect(captured['completionOptions']).not.toHaveProperty('jsonSchema');
+    // Этап в запросе — для записи ответов, а не для модели: лишний ключ в
+    // корне — лишний повод получить отказ на ровном месте.
+    expect(captured).not.toHaveProperty('stage');
   });
 
   it('температура по умолчанию близка к нулю: нужен разбор, а не творчество', async () => {

@@ -56,7 +56,7 @@ export class RecordingLlmProvider implements LlmProvider {
 
     this.deps.recorder.add({
       key: keyOf({ ...requestParts(request), recordedAt: this.deps.recordedAt }),
-      stage: stageOf(request),
+      stage: request.stage,
       input: relativise(request.input, this.deps.recordedAt),
       answer: relativise(result.text, this.deps.recordedAt),
       tokensIn: result.tokensIn,
@@ -178,7 +178,15 @@ export class ReplayEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
-/** Что из запроса влияет на ответ. Вынесено, чтобы ключ считался одинаково. */
+/**
+ * Что из запроса влияет на ответ. Вынесено, чтобы ключ считался одинаково.
+ *
+ * Этап берётся из запроса, а не угадывается по схеме. Прежде провайдер
+ * читал его из `title` схемы, но боевая схема (`toJsonSchema`) имени не
+ * несёт — и в настоящей записи у каждой строки стоял «неизвестный», а
+ * разбирать промахи по этапам, ради чего поле и заведено, было нельзя.
+ * Проверки этого не видели: задавали схему руками, с `title`.
+ */
 function requestParts(request: CompletionRequest): {
   stage: string;
   prompt: string;
@@ -188,25 +196,11 @@ function requestParts(request: CompletionRequest): {
   schema?: unknown;
 } {
   return {
-    stage: stageOf(request),
+    stage: request.stage,
     prompt: request.prompt,
     input: request.input,
     ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
     ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
     schema: request.jsonSchema,
   };
-}
-
-/**
- * Этап по схеме ответа — единственное, что о нём знает провайдер.
- *
- * Провайдер этапа не получает: он видит промпт, вход и схему. Схема у
- * каждого этапа своя, и её имени достаточно, чтобы промахи было видно
- * человеку. В ключ она входит целиком, так что различение здесь — только
- * для читаемости записи.
- */
-function stageOf(request: CompletionRequest): string {
-  const schema = request.jsonSchema as { title?: unknown } | undefined;
-
-  return typeof schema?.title === 'string' ? schema.title : 'неизвестный';
 }

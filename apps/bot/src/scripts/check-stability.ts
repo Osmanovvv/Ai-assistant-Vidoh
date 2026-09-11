@@ -155,6 +155,7 @@ async function once(when: Date, temperature: number): Promise<Answer | undefined
       const result = await withRetry(
         () =>
           provider.complete({
+            stage: 'classifier',
             prompt,
             input: inputAt(when),
             jsonSchema: toJsonSchema(classifierSchema),

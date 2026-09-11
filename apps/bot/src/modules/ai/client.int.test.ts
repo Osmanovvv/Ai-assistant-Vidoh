@@ -89,6 +89,9 @@ describe('успешный разбор', () => {
     expect(sent?.prompt).toBe(PROMPT);
     expect(sent?.input).toBe(INPUT);
     expect(sent?.jsonSchema).toMatchObject({ type: 'object' });
+    // Этап доезжает до провайдера от вызывающего: запись ответов ставит
+    // его в файл, а угадать по схеме нельзя — схема имени не несёт.
+    expect(sent?.stage).toBe('extractor');
   });
 
   it('снимает обрамление в кодовый блок', async () => {

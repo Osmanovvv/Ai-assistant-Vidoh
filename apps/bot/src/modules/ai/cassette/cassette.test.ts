@@ -10,6 +10,7 @@ import {
   ReplayLlmProvider,
   CASSETTE_LLM_MODEL,
 } from './provider.js';
+import { extractorSchema, routerSchema, toJsonSchema } from '../schemas/index.js';
 import { CassettePlayer, CassetteRecorder, keyOf, vectorKeyOf, parseCassette } from './store.js';
 import type { CompletionRequest, CompletionResult, LlmProvider } from '../providers/types.js';
 import type { EmbedResult, EmbeddingProvider } from '../../embedder/providers/types.js';
@@ -29,7 +30,16 @@ import type { EmbedResult, EmbeddingProvider } from '../../embedder/providers/ty
 const RECORDED = new Date('2026-09-06T12:00:00.000Z');
 /** Полдень нарочно: у полуночных часов день в поясе и день по UTC разные. */
 const READ_LATER = new Date('2026-09-09T12:00:00.000Z');
-const SCHEMA = { title: 'extractor', type: 'object' };
+/**
+ * Схема — та, что собирает бой, а не рукописная.
+ *
+ * Прежняя рукописная несла `title: 'extractor'`, и по нему запись
+ * узнавала этап. Боевая схема из `toJsonSchema` имени не несёт вовсе —
+ * ни одна схема не объявляет `.meta`, — так что в настоящей записи у
+ * каждой строки стоял бы этап «неизвестный», а проверки этого не видели.
+ * Тот же образец расхождения стенда с боем, что и с датами ниже.
+ */
+const SCHEMA = toJsonSchema(extractorSchema);
 
 /**
  * Вход классификатора так, как его собирает бой (`buildInput`): первой
@@ -47,6 +57,7 @@ function classifierInput(now: Date): string {
 
 function request(overrides: Partial<CompletionRequest> = {}): CompletionRequest {
   return {
+    stage: 'extractor',
     prompt: 'Разбери поток мыслей на дела.',
     input: classifierInput(RECORDED),
     jsonSchema: SCHEMA,
@@ -118,6 +129,26 @@ describe('запись', () => {
     const recorder = new CassetteRecorder(RECORDED, 'yandexgpt/latest');
 
     expect(new RecordingLlmProvider({ live, recorder, recordedAt: RECORDED }).name).toBe(live.name);
+  });
+
+  it('этап в записи — тот, что назвал вызывающий: схема боя имени не несёт', async () => {
+    /**
+     * Поле `stage` в записи заведено, чтобы разбирать промахи по этапам.
+     * Пока этап брался из `title` схемы, оно было бесполезно: боевая схема
+     * `title` не несёт, и каждая строка получала «неизвестный». Проверка
+     * зеленела на рукописной схеме с `title` — то есть на форме, которой
+     * в бою нет. Здесь схема боевая, и этап обязан прийти от вызывающего.
+     */
+    expect(SCHEMA).not.toHaveProperty('title');
+
+    const live = liveLlm('{"units":[]}');
+    const recorder = new CassetteRecorder(RECORDED, 'yandexgpt/latest');
+
+    await new RecordingLlmProvider({ live, recorder, recordedAt: RECORDED }).complete(
+      request({ stage: 'classifier' }),
+    );
+
+    expect(recorder.toFile().entries[0]?.stage).toBe('classifier');
   });
 
   it('даты в ответе записываются относительными', async () => {
@@ -264,7 +295,7 @@ describe('воспроизведение', () => {
       const provider = new ReplayLlmProvider(filled('{}'), () => RECORDED);
 
       await expect(
-        provider.complete(request({ jsonSchema: { title: 'extractor', type: 'array' } })),
+        provider.complete(request({ jsonSchema: toJsonSchema(routerSchema) })),
       ).rejects.toBeInstanceOf(PermanentLlmError);
     });
 
