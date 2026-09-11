@@ -25,6 +25,27 @@ export type Rail = 'robokassa:smz' | 'telegram:stars';
 
 export const RAILS = ['robokassa:smz', 'telegram:stars'] as const;
 
+/**
+ * Кто снимает деньги за продление на рельсе — и, значит, чем оно
+ * отменяется.
+ *
+ * У звёзд подписку держит Telegram: списывает сам, по своему ключу
+ * (`subscriptionRef`), и без этого ключа отменить нечем. У Робокассы
+ * дочернее списание уходит **от нас**, по строке `billing_subscriptions`
+ * с включённым продлением: не списываем — продления нет, и удалённо
+ * отменять нечего. Ключа отмены у неё поэтому нет и не бывает —
+ * `readEvent` его не отдаёт.
+ *
+ * Запись исчерпывающая нарочно: третий рельс не соберётся, пока не
+ * скажет, кто у него списывает. Иначе он молча унаследовал бы чужое —
+ * ровно так робокассный подписчик после удаления данных читал
+ * инструкцию про звёзды (дефект №20 ревизии).
+ */
+export const RENEWAL_CHARGED_BY: Readonly<Record<Rail, 'us' | 'provider'>> = {
+  'robokassa:smz': 'us',
+  'telegram:stars': 'provider',
+};
+
 export const PLANS = ['monthly', 'yearly'] as const;
 
 export interface Price {
