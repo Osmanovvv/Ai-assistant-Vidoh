@@ -73,7 +73,17 @@ function embedCallsWithoutGuard(source: string): boolean {
   return EMBED_CALLS.test(source) && !source.includes('spendGuard');
 }
 
-async function sourceFiles(): Promise<string[]> {
+// Обход дерева — один раз на файл: под полным набором повторный обход
+// выходил за пять секунд и краснел без причины (та же беда, что у
+// settings/wiring.test.ts, починена там же 11.09.2026).
+let filesOnce: Promise<string[]> | undefined;
+
+function sourceFiles(): Promise<string[]> {
+  filesOnce ??= walkSourceFiles();
+  return filesOnce;
+}
+
+async function walkSourceFiles(): Promise<string[]> {
   const found: string[] = [];
 
   for await (const entry of glob('src/**/*.ts')) {

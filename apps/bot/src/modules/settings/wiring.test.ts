@@ -89,7 +89,23 @@ function withoutComments(text: string): string {
 }
 
 /** Все исходники продукта: без проверок и без объявления `SETTINGS`. */
-async function allSources(): Promise<readonly Source[]> {
+/**
+ * Исходники читаются один раз на файл, а не в каждом тесте.
+ *
+ * Шесть проверок ниже звали обход заново — по двести файлов каждая, — и
+ * под полным набором на загруженной машине любая из них выходила за
+ * пять секунд и краснела без причины (11.09.2026, дважды в разных
+ * тестах). Ложная тревога приучает не смотреть на красное. Дерево за
+ * время прогона не меняется, значит и перечитывать его незачем.
+ */
+let sourcesOnce: Promise<readonly Source[]> | undefined;
+
+function allSources(): Promise<readonly Source[]> {
+  sourcesOnce ??= walkSources();
+  return sourcesOnce;
+}
+
+async function walkSources(): Promise<readonly Source[]> {
   const found: Source[] = [];
 
   for await (const entry of glob('src/**/*.ts')) {
