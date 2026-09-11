@@ -217,6 +217,16 @@ export function sanitizeAcknowledgement(
   texts: TextProfile,
   options: { readonly tired: boolean },
 ): SanitizedAcknowledgement {
+  /**
+   * Замена здесь не перепроверяется, и это не пробел.
+   *
+   * Правила ниже — про ответ модели. Словарная замена приходит либо из
+   * кода, где её стерегут проверки словаря, либо из правки в панели —
+   * а правку судят на записи тем же §13, и вопроса в ней быть не может:
+   * она стоит в одном ответе с нашим вопросом (`BESIDE_QUESTION` в
+   * `texts/rules.ts`). Второй судья на выходе считал бы одно и то же
+   * дважды и однажды разошёлся бы с первым молча.
+   */
   const fallback = options.tired
     ? texts.answer.acknowledgementTiredFallback
     : texts.answer.acknowledgementFallback;
