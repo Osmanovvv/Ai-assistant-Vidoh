@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { defaultTexts, profiles, textsFor } from '../../texts/index.js';
+import { applyOverrides, defaultTexts, profiles, textsFor } from '../../texts/index.js';
+import { editableReplies, refusalFor, type Reply as DictionaryReply } from '../../texts/rules.js';
 import {
   buildReply,
   composeOf,
@@ -203,6 +204,104 @@ describe('buildReply', () => {
         }
       }
     }
+  });
+});
+
+describe('правка из панели и склейка §13.2', () => {
+  afterEach(() => {
+    // Склейка живёт в модуле: не вернёшь — соседние проверки будут мерить
+    // правку вместо словаря из кода.
+    applyOverrides(new Map());
+  });
+
+  /** Та же реплика, но с вопросом на конце — и со всеми её подстановками. */
+  const askedVersionOf = (reply: DictionaryReply): string =>
+    [
+      reply.said.trim(),
+      ...Array.from({ length: reply.places }, (_unused, index) => `{${String(index + 1)}}`),
+      'Хорошо?',
+    ].join(' ');
+
+  /** Сколько вопросов самое большее даёт сборка на словаре с правкой. */
+  const mostQuestions = (): number => {
+    const texts = textsFor();
+    let most = 0;
+
+    for (const actions of [[], ['Одно'], ['Одно', 'Два'], ['Одно', 'Два', 'Три']]) {
+      for (const hidden of [0, 1, 7]) {
+        for (const tired of [false, true]) {
+          // Признание — то, что уйдёт при молчании модели: словарная замена.
+          const acknowledgement = sanitizeAcknowledgement('', texts, { tired }).text;
+          const built = buildReply({ texts, acknowledgement, actions, hidden, tired });
+
+          most = Math.max(most, countQuestions(built.text));
+        }
+      }
+    }
+
+    return most;
+  };
+
+  it('всё, что запись пропускает, в собранном ответе не даёт двух вопросов', () => {
+    /**
+     * Дефект ревизии второго этапа. Правило «один „?“ на реплику»
+     * смотрело на реплику, а человек читает склейку: «Остальное никуда не
+     * убежит, хорошо?» проходило запись и вместе с «С чего начнём?»
+     * давало два вопроса. Перебор выше этого поймать не мог — он мерил
+     * словарь из кода, а правок к нему никто не применял.
+     *
+     * Здесь перебор идёт по словарю **с правкой**, и он двусторонний:
+     * каждой правимой реплике ответа дописывается вопрос, правка кладётся
+     * в словарь **мимо** записи, и если хоть в одной сборке вопросов
+     * стало два — запись обязана была эту правку отвергнуть. Так список
+     * реплик, стоящих рядом с вопросом, сверяется с самой сборкой, а не с
+     * памятью того, кто его составлял: появись в ответе новая реплика без
+     * правила — покраснеет здесь.
+     */
+    const checked: string[] = [];
+
+    for (const reply of editableReplies(defaultTexts)) {
+      if (!reply.path.startsWith('answer.')) continue;
+
+      const asked = askedVersionOf(reply);
+
+      applyOverrides(new Map([[reply.path, asked]]));
+
+      const most = mostQuestions();
+      const refusal = refusalFor(asked, reply.places, reply.path);
+
+      if (most > 1) {
+        const blame = `${reply.path}: «${asked}» даёт ${String(most)} вопроса в ответе, а запись её пропускает`;
+
+        expect(refusal, blame).toBeDefined();
+        expect(refusal ?? '', blame).toMatch(/13\.2/u);
+        checked.push(reply.path);
+      }
+    }
+
+    // Перебор не пустой: та самая реплика из дефекта в нём есть.
+    expect(checked).toContain('answer.restSaved');
+  });
+
+  it('правка без вопроса проходит запись и в ответе остаётся один вопрос', () => {
+    // Обратная сторона: правило, которое не пропускает ничего, кончается
+    // тем, что его снимают целиком.
+    const said = 'Остальное пока никуда не убежит, я держу.';
+
+    expect(refusalFor(said, 0, 'answer.restSaved')).toBeUndefined();
+
+    applyOverrides(new Map([['answer.restSaved', said]]));
+
+    const built = buildReply({
+      texts: textsFor(),
+      acknowledgement: ack,
+      actions: ['Одно', 'Два'],
+      hidden: 3,
+      tired: false,
+    });
+
+    expect(built.text).toContain(said);
+    expect(countQuestions(built.text)).toBe(1);
   });
 });
 
