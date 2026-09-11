@@ -490,3 +490,88 @@ describe('потолок на выгрузку (§10.5 ТЗ)', () => {
     expect(result.truncated).toBe(true);
   });
 });
+
+describe('откат от склейки после сорвавшейся группы', () => {
+  /**
+   * Провайдер, у которого времена слов есть только в первом ответе.
+   *
+   * Первая группа раскладывается и записывается; вторая приходит без
+   * времён, и раскладка отказывается от неё. Дальше — запросы по одному
+   * сообщению, в которых времена не нужны.
+   */
+  class TimesOnceProvider implements SpeechProvider {
+    readonly name = 'fake-times-once';
+    readonly timeline = true;
+    calls = 0;
+
+    constructor(private readonly first: readonly RecognizedUtterance[]) {}
+
+    transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+      this.calls++;
+
+      const utterances = this.calls === 1 ? this.first : [{ text: 'по одному', words: [] }];
+
+      return Promise.resolve({
+        text: utterances.map((utterance) => utterance.text).join(' '),
+        model: 'fake',
+        audioSeconds: Math.round(request.durationSec),
+        utterances,
+      });
+    }
+  }
+
+  /** Длительность четвёртой записи: файл тот же, что у второй. */
+  const FOURTH_SEC = SECONDS[1];
+
+  beforeEach(async () => {
+    // Четвёртая запись — чтобы групп вышло две и обе клеились: на трёх
+    // записях вторая группа всегда одиночная, а одиночная не срывается.
+    const [row] = await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_000 + seq * 100 + SECONDS.length,
+        tgChatId: 9100 + seq,
+        tgMessageId: SECONDS.length + 1,
+        kind: 'voice',
+        fileId: 'v1',
+        audioDurationSec: FOURTH_SEC,
+      })
+      .returning({ id: messagesRaw.id });
+
+    messageIds.push(row?.id ?? '');
+    await attachMessageToBatch(testDb(), { userId, messageId: row?.id ?? '' });
+  });
+
+  it('уже записанные группы второй раз не оплачиваются и не переписываются', async () => {
+    // Склейка пишет расшифровки в базу группа за группой — нарочно,
+    // чтобы повторный заход добирал только нерасшифрованное. Откат по
+    // списку, снятому до склейки, этого не знал: качал и оплачивал все
+    // записи заново, а верную расшифровку первой группы затирал новым
+    // распознаванием того же звука.
+    const bounds = intervals();
+    const provider = new TimesOnceProvider([
+      utteranceAt('Первое.', bounds[0]?.startSec ?? 0),
+      utteranceAt('Второе.', bounds[1]?.startSec ?? 0),
+    ]);
+
+    // Потолок запроса девять секунд: 2 + 3 + пауза влезают, 4 + 3 + пауза
+    // влезают, все четыре — нет. Две группы, обе склеиваются.
+    await transcribeBatch(testDb(), batch, {
+      provider,
+      download,
+      limits: { maxSegmentSec: 9, maxSingleDurationSec: 600 },
+    });
+
+    // Первая группа осталась тем, что дала склейка; по одному
+    // расшифрованы только две записи сорвавшейся группы.
+    expect(await transcriptsInOrder()).toEqual(['Первое.', 'Второе.', 'по одному', 'по одному']);
+
+    // Счёт: удавшаяся склейка, сорвавшаяся и две по одному. Каждая
+    // отправка — строка учёта, и лишних строк быть не должно: до починки
+    // их выходило шесть.
+    const calls = await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId));
+    expect(calls, 'строк учёта').toHaveLength(4);
+    expect(provider.calls).toBe(4);
+  });
+});
