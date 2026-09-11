@@ -2,17 +2,18 @@ import type { Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { itemRevisions, items, userSettings } from '../../db/schema.js';
+import { itemRevisions, items, messagesRaw, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import type { PipelineJob } from '../../infra/queue.js';
+import { AWAITING_TTL_MS } from '../../modules/onboarding/awaiting.js';
 import { toShortId } from '../../modules/shared/short-id.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited } from './awaiting.js';
-import { MENU_ACTION } from './menu.js';
+import { MENU_ACTION, registerMenuHandlers } from './menu.js';
 import { registerCardHandlers } from './card.js';
 import { incomingMiddleware } from './incoming.js';
 
@@ -77,6 +78,9 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
     }),
   );
   registerCardHandlers(bot, { db: testDb(), logger }, MENU_ACTION.root);
+  // Настройки — сосед ожидания: их переключатели правят ту же строку
+  // `user_settings`, и окно ожидания обязано этого не замечать.
+  registerMenuHandlers(bot, testDb(), logger);
 
   return { bot, calls };
 }
@@ -159,6 +163,20 @@ beforeEach(async () => {
   userId = (await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' })).id;
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** Ушла ли реплика в разбор: сообщение привязано к выгрузке. */
+async function wentToDump(text: string): Promise<boolean> {
+  const [row] = await testDb()
+    .select({ batchId: messagesRaw.batchId })
+    .from(messagesRaw)
+    .where(eq(messagesRaw.text, text));
+
+  return row?.batchId != null;
+}
+
 describe('правка записи словами', () => {
   it('нажал, написал — запись переписана, и есть чем отменить', async () => {
     const { bot, calls } = createTestBot();
@@ -233,5 +251,66 @@ describe('правка записи словами', () => {
 
     expect(await textOfItem(itemId)).toBe('к врачу');
     expect(await awaitingOfUser()).toBeNull();
+  });
+});
+
+/**
+ * Окно в четверть часа (задача 3.61, вторая страховка).
+ *
+ * «Нажал и отвлёкся на день, а вернувшись сказал мысль — мысль уйдёт в
+ * разбор, а не в имя». Обещание держится на моменте нажатия, и мерить
+ * его надо от самого нажатия, а не от последней правки строки настроек:
+ * ту же строку правят переключатели меню и шаги опроса, и каждая такая
+ * правка продлевала бы окно (ревизия этапов 1–2, дефект 28).
+ *
+ * Часы подменяются только у `Date`: таймеры драйвера базы и очереди
+ * остаются настоящими, иначе запрос к базе повис бы на подменённом
+ * `setTimeout`.
+ */
+describe('окно ожидания', () => {
+  const pressedAt = new Date('2026-09-04T10:00:00Z');
+
+  it('нажал и вернулся через час — запись цела, мысль ушла в разбор', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: pressedAt });
+
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem('К врачу');
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+
+    vi.setSystemTime(new Date(pressedAt.getTime() + AWAITING_TTL_MS + 60_000));
+    await bot.handleUpdate(textUpdate('Позвонить бабушке'));
+
+    expect(await textOfItem(itemId)).toBe('К врачу');
+    expect(await awaitingOfUser()).toBeNull();
+    expect(await wentToDump('Позвонить бабушке')).toBe(true);
+  });
+
+  it('переключатель настроек в промежутке окно не продлевает', async () => {
+    /**
+     * Нажал «Изменить», через пятьдесят пять минут зашёл в настройки и
+     * выключил напоминания, ещё через пять минут сказал мысль. По
+     * `updated_at` строки настроек мысль сказана «через пять минут после
+     * нажатия» — и переписала бы запись.
+     */
+    vi.useFakeTimers({ toFake: ['Date'], now: pressedAt });
+
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem('К врачу');
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+    expect(await awaitingOfUser()).toBe(`edit:${itemId}`);
+
+    vi.setSystemTime(new Date(pressedAt.getTime() + 55 * 60_000));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
+
+    vi.setSystemTime(new Date(pressedAt.getTime() + 60 * 60_000));
+    await bot.handleUpdate(textUpdate('Позвонить бабушке'));
+
+    expect(await textOfItem(itemId)).toBe('К врачу');
+    expect(await awaitingOfUser()).toBeNull();
+    expect(await wentToDump('Позвонить бабушке')).toBe(true);
   });
 });
