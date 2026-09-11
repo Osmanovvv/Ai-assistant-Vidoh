@@ -10,6 +10,7 @@ import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
 import { routeIntents } from '../modules/router/router.service.js';
 import type { EvalCase } from './dataset.js';
 import { match, type MatchResult } from './matcher.js';
+import { unverifiedAnchorsIn, type UnverifiedAnchor } from './unverified-anchor.js';
 
 /**
  * Прогон контрольного набора (задача 2.19).
@@ -33,6 +34,14 @@ export interface CaseOutcome {
   readonly result: MatchResult;
   /** §13.7: сработал ли кризисный контур и ожидалось ли это. */
   readonly crisis: { readonly detected: boolean; readonly expected: boolean };
+  /**
+   * Правила повторения на непроверенном якоре (находка 10.09.2026).
+   *
+   * Считается ради одного вопроса: во сколько обойдётся строгость,
+   * выбрасывающая правило вместе с отвергнутым сроком. Ноль — и она не
+   * стоит ничего. Подробности — в `unverified-anchor.ts`.
+   */
+  readonly unverifiedAnchors: readonly UnverifiedAnchor[];
   /** Разбор не удался целиком — считается отдельно от промахов. */
   readonly failed?: string | undefined;
   readonly promptVersions: {
@@ -101,6 +110,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       retracted: [],
     },
     crisis: { detected: true, expected: item.expected.crisis },
+    unverifiedAnchors: [],
     promptVersions: versions,
   });
 
@@ -151,6 +161,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
           retracted: [],
         },
         crisis: { detected: false, expected: item.expected.crisis },
+        unverifiedAnchors: [],
         failed: `извлечение: ${extracted.problem}`,
         promptVersions: versions,
       };
@@ -208,6 +219,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
           retracted: [],
         },
         crisis: { detected: false, expected: item.expected.crisis },
+        unverifiedAnchors: [],
         failed: `классификация: ${classified.problem}`,
         promptVersions: versions,
       };
@@ -219,6 +231,9 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       timeZone: item.timeZone,
       result: match(item.expected.units, classified.items, item.expected.retracted),
       crisis: { detected: false, expected: item.expected.crisis },
+      // Считается по **всем** записям разбора, а не только по совпавшим с
+      // разметкой: строгость коснётся и лишних тоже.
+      unverifiedAnchors: unverifiedAnchorsIn(classified.items),
       promptVersions: versions,
     };
   } catch (error) {
@@ -236,6 +251,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
         retracted: [],
       },
       crisis: { detected: false, expected: item.expected.crisis },
+      unverifiedAnchors: [],
       failed: error instanceof Error ? error.message : 'неизвестный отказ',
       promptVersions: versions,
     };

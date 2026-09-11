@@ -13,6 +13,7 @@ import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
 import type { EvalCase } from './dataset.js';
 import { match, type MatchResult } from './matcher.js';
 import type { CaseOutcome } from './runner.js';
+import { unverifiedAnchorsIn } from './unverified-anchor.js';
 import { temperatureFor } from '../modules/ai/temperature.js';
 
 /**
@@ -105,6 +106,7 @@ function stopped(item: EvalCase, version: string): MergedOutcome {
       retracted: [],
     },
     crisis: { detected: true, expected: item.expected.crisis },
+    unverifiedAnchors: [],
     promptVersions: { classifier: version },
     tokensIn: 0,
     tokensOut: 0,
@@ -129,6 +131,7 @@ function failed(
       retracted: [],
     },
     crisis: { detected: false, expected: item.expected.crisis },
+    unverifiedAnchors: [],
     failed: problem,
     promptVersions: { classifier: version },
     tokensIn: used.tokensIn,
@@ -251,6 +254,7 @@ export async function runMergedCase(
       timeZone: item.timeZone,
       result: matchItems(item, items),
       crisis: { detected: detectCrisis(item.text, false).detected, expected: item.expected.crisis },
+      unverifiedAnchors: unverifiedAnchorsIn(items),
       promptVersions: { classifier: version },
       tokensIn: usage.tokensIn,
       tokensOut: usage.tokensOut,

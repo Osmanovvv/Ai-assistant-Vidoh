@@ -109,6 +109,7 @@ function outcome(result: CaseOutcome['result']): CaseOutcome {
     timeZone: 'Europe/Moscow',
     result,
     crisis: { detected: false, expected: false },
+    unverifiedAnchors: [],
     promptVersions: {},
   };
 }
@@ -154,6 +155,7 @@ describe('отчёт и порог', () => {
       falseTasksFromDesires: 0,
       falseTasksFromEmotions: 0,
       retractedKept: 0,
+      unverifiedAnchors: 0,
       crisisExpected: 0,
       crisisDetected: 0,
       crisisFalse: 0,

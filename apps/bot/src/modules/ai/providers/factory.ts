@@ -28,6 +28,22 @@ export interface ProviderChoice {
    * модели то, что считала лёгкая.
    */
   readonly light?: boolean;
+
+  /**
+   * Каким «сегодня» разворачивать даты записи ответов (задача 3.80).
+   *
+   * `now` — сегодняшним днём, и это верно для сквозного прогона: он
+   * живёт в настоящем времени, а без разворота запись жила бы одни сутки.
+   *
+   * `recorded` — днём записи, то есть ответ возвращается буква в букву.
+   * Нужен контрольному набору: у него «сегодня» задано в самом случае
+   * (`now` в файле набора) и не двигается никогда. Разверни ответ по
+   * сегодняшнему дню — и записанный срок «2026-09-01» назавтра станет
+   * вторым сентября, ожидание останется первым, и прогон покажет промах
+   * по дате, которого не было. Стенд, мерящий не то, — худшее, что с ним
+   * может случиться.
+   */
+  readonly clock?: 'now' | 'recorded';
 }
 
 export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): LlmProvider {
@@ -63,8 +79,12 @@ export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): L
       const session = cassetteSession(env);
 
       if (session.mode === 'replay') {
-        if (session.player === undefined) throw new Error('запись открыта без читалки');
-        return new ReplayLlmProvider(session.player);
+        const player = session.player;
+        if (player === undefined) throw new Error('запись открыта без читалки');
+
+        return choice.clock === 'recorded'
+          ? new ReplayLlmProvider(player, () => player.recordedAt)
+          : new ReplayLlmProvider(player);
       }
 
       if (session.recorder === undefined) throw new Error('запись открыта без копилки');

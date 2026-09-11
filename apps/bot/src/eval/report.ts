@@ -88,6 +88,17 @@ export interface EvalReport {
   readonly crisisFalse: number;
   readonly crisisMissed: number;
 
+  /**
+   * Правила повторения, стоящие на непроверенном якоре (находка
+   * 10.09.2026).
+   *
+   * Не порог, а цена решения: столько записей потеряет правило, если
+   * выбрасывать его вместе с отвергнутым сроком. Ноль означает, что
+   * такая строгость на этом наборе не стоит ничего, и спор закрыт
+   * бесплатно.
+   */
+  readonly unverifiedAnchors: number;
+
   /** Случаи, где разбор не удался целиком. */
   readonly failed: number;
   /** Ожидания, поймавшие несколько записей: разметку надо править. */
@@ -104,6 +115,15 @@ export interface EvalReport {
    * которому нельзя сказать, что именно сравнивали, сравнивать нельзя.
    */
   readonly models?: Readonly<Record<string, string>> | undefined;
+
+  /**
+   * Какие правки, ждущие замера, были включены в этом прогоне.
+   *
+   * По той же причине, что и модели: два отчёта в истории иначе
+   * неразличимы, а разница между ними — как раз в этих флагах. Отчёт, по
+   * которому нельзя сказать, что именно сравнивали, сравнивать нельзя.
+   */
+  readonly fixes?: Readonly<Record<string, boolean>> | undefined;
 }
 
 export interface Shares {
@@ -148,6 +168,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
   let deadlineCorrect = 0;
   let falseDeadlines = 0;
   let retractedKept = 0;
+  let unverifiedAnchors = 0;
 
   const versions: Record<string, string> = {};
 
@@ -158,6 +179,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     extra += outcome.result.extra.length;
     ambiguous += outcome.result.ambiguous.length;
     retractedKept += outcome.result.retracted.length;
+    unverifiedAnchors += outcome.unverifiedAnchors.length;
     if (outcome.failed !== undefined) failed++;
 
     if (outcome.crisis.expected) crisisExpected++;
@@ -233,6 +255,7 @@ export function collect(outcomes: readonly CaseOutcome[]): EvalReport {
     falseTasksFromDesires,
     falseTasksFromEmotions,
     retractedKept,
+    unverifiedAnchors,
     crisisExpected,
     crisisDetected,
     crisisFalse,
@@ -301,6 +324,16 @@ export function format(report: EvalReport, previous?: EvalReport): string {
             .map(([kind, model]) => `${kind}=${model}`)
             .join(', ')}`,
         ]),
+    ...(report.fixes === undefined
+      ? []
+      : [
+          `Правки под замером: ${
+            Object.entries(report.fixes)
+              .filter(([, on]) => on)
+              .map(([name]) => name)
+              .join(', ') || 'ни одной (поведение как в бою)'
+          }`,
+        ]),
     '',
     `Найдено единиц:      ${percent(now.recall)}${delta(now.recall, was?.recall)}   (${String(report.found)} из ${String(report.expected)})`,
     `Потеряно:            ${String(report.missed)}${deltaCount(report.missed, previous?.missed)}`,
@@ -322,6 +355,15 @@ export function format(report: EvalReport, previous?: EvalReport): string {
     `Ложных задач из эмоций:  ${String(report.falseTasksFromEmotions)}${deltaCount(report.falseTasksFromEmotions, previous?.falseTasksFromEmotions)}`,
     `Выдуманных сроков:       ${String(report.falseDeadlines)}${deltaCount(report.falseDeadlines, previous?.falseDeadlines)}`,
     `Отменённого в записях:   ${String(report.retractedKept)}${deltaCount(report.retractedKept, previous?.retractedKept)}`,
+    /**
+     * Число печатается **всегда**, в том числе нулём.
+     *
+     * Урок «процент без строки»: число, которое показывают только при
+     * промахе, читается как «промаха нет» и тогда, когда его просто
+     * забыли посчитать. Ноль, сказанный вслух, — это измерение; молчание
+     * — нет.
+     */
+    `Правил на непроверенном якоре: ${String(report.unverifiedAnchors)}${deltaCount(report.unverifiedAnchors, previous?.unverifiedAnchors)}`,
     '',
     `Кризис: ожидался ${String(report.crisisExpected)}, сработал ${String(report.crisisDetected)}, ложных ${String(report.crisisFalse)}, пропущено ${String(report.crisisMissed)}`,
     `Разбор не удался: ${String(report.failed)}`,
