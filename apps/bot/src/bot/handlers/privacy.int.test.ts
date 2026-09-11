@@ -11,6 +11,8 @@ import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import { billingSubscriptions } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
+import { createInvoice, nextInvId } from '../../modules/billing/billing.repo.js';
+import { applyPaymentEvent } from '../../modules/billing/subscription.service.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -493,6 +495,64 @@ describe('удаление и подписка (§16 и §14, ревизия ч�
     expect(said.at(-1)).toContain('Подписки');
 
     // И данные всё равно удалены: право исполнено.
+    expect(await findByTgId(testDb(), TG_ID)).toBeUndefined();
+  });
+
+  it('робокассному подписчику не рассказывают про звёзды', async () => {
+    /**
+     * Дефект №20 ревизии. У Робокассы ключа отмены нет и не бывает:
+     * дочернее списание уходит от нас по строке подписки, и после
+     * удаления списывать нечем. Прежде пустой ключ считался отказом, и
+     * человек с рублёвой подпиской читал «подписку за звёзды отменяет
+     * Telegram… иначе списания продолжатся» — обе половины ложь.
+     *
+     * Подписка — настоящим путём (счёт и событие оплаты), а рядом —
+     * живые звёзды с ответившим провайдером: удаление у человека с двумя
+     * рельсами должно закончиться одним «Готово».
+     */
+    const { bot, calls } = createTestBot({
+      providers: {
+        'telegram:stars': provider(false),
+        'robokassa:smz': { ...provider(false), name: 'robokassa:smz' },
+      },
+    });
+    await bot.init();
+
+    const person = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
+    await liveStars(person.id);
+
+    await createInvoice(testDb(), {
+      provider: 'robokassa:smz',
+      userId: person.id,
+      plan: 'monthly',
+      kind: 'initial',
+      amountMinor: 39_900,
+      currency: 'RUB',
+      ref: 'рк-удаление',
+      invId: await nextInvId(testDb()),
+      autoRenew: true,
+    });
+    await applyPaymentEvent(testDb(), {
+      provider: 'robokassa:smz',
+      event: {
+        kind: 'paid',
+        externalId: '9103',
+        ref: 'рк-удаление',
+        amount: 39_900,
+        currency: 'RUB',
+        renewal: false,
+      },
+    });
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_ONE));
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const said = calls
+      .filter((call) => call.method === 'editMessageText')
+      .map((call) => String(call.payload['text']));
+
+    expect(said.at(-1)).toBe(defaultTexts.privacy.deleteDone);
+    expect(said.at(-1)).not.toContain('звёзд');
     expect(await findByTgId(testDb(), TG_ID)).toBeUndefined();
   });
 });
