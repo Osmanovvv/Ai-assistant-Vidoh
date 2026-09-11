@@ -1962,6 +1962,56 @@ export type NewBroadcast = typeof broadcasts.$inferInsert;
 export type BroadcastDelivery = typeof broadcastDeliveries.$inferSelect;
 export type BillingInvoice = typeof billingInvoices.$inferSelect;
 export type NewBillingInvoice = typeof billingInvoices.$inferInsert;
+
+/**
+ * Согласия на автосписания (§14, оферта п. 7.2.2; требование Робокассы
+ * «сохраняйте историю согласий»).
+ *
+ * Одна строка — одно нажатие «Перейти к оплате» с включённой отметкой:
+ * что человеку показали (сумма, периодичность, адрес оферты, по которому
+ * он мог её прочесть) и когда он согласился. Счёт привязывается сразу,
+ * как заведён, — по нему видно, во что согласие вылилось; счёт может не
+ * появиться вовсе (провайдер отказал), и тогда согласие всё равно
+ * записано: оно дано.
+ *
+ * **Как счёт: при удалении данных обезличивается, а не удаляется.**
+ * История согласий — наша обязанность перед платёжной системой, а не
+ * данные человека о себе; строка без `user_id` не говорит ни о ком.
+ * Личного в ней и так нет: ни имени, ни телеграм-номера, ни текста.
+ *
+ * `offer_url` вместо «номера редакции»: номер пришлось бы выдумать, а
+ * адрес — то, что человек видел на кнопке; редакция оферты живёт по
+ * своему адресу.
+ */
+export const billingConsents = pgTable(
+  'billing_consents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+
+    /** Рельс, на котором дано согласие: у звёзд продлевает Telegram. */
+    rail: text('rail').notNull(),
+    plan: billingPlan('plan').notNull(),
+
+    /** Сумма и валюта, которые человек видел на экране. */
+    amountMinor: integer('amount_minor').notNull(),
+    currency: text('currency').notNull(),
+
+    /** Адрес оферты, на который вела кнопка в момент согласия. */
+    offerUrl: text('offer_url').notNull(),
+
+    /** Счёт, заведённый по этому согласию; пусто — счёт не удался. */
+    invoiceId: uuid('invoice_id').references(() => billingInvoices.id, {
+      onDelete: 'set null',
+    }),
+
+    consentedAt: timestamp('consented_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('billing_consents_user_idx').on(table.userId)],
+);
+
+export type BillingConsent = typeof billingConsents.$inferSelect;
 export type BillingSubscription = typeof billingSubscriptions.$inferSelect;
 export type BillingEvent = typeof billingEvents.$inferSelect;
 export type BillingPlanValue = (typeof billingPlan.enumValues)[number];

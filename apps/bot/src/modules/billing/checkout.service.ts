@@ -109,7 +109,13 @@ export interface CheckoutRequest {
 }
 
 export type CheckoutOutcome =
-  | { readonly ok: true; readonly checkout: Checkout; readonly ref: string }
+  | {
+      readonly ok: true;
+      readonly checkout: Checkout;
+      readonly ref: string;
+      /** Чтобы привязать счёт к согласию на автосписания. */
+      readonly invoiceId: string;
+    }
   /** Цена не задана: продавать нечего, и кнопку показывать не надо. */
   | { readonly ok: false; readonly why: 'no-price' };
 
@@ -166,7 +172,7 @@ export async function startCheckout(
       ...(existing.invId === null ? {} : { invoiceNumber: existing.invId }),
     });
 
-    return { ok: true, checkout: again, ref: existing.ref };
+    return { ok: true, checkout: again, ref: existing.ref, invoiceId: existing.id };
   }
 
   const ref = newRef();
@@ -244,7 +250,7 @@ export async function startCheckout(
    */
   await noteAutoRenew(db, { id: invoice.id, autoRenew: checkout.autoRenews });
 
-  return { ok: true, checkout, ref };
+  return { ok: true, checkout, ref, invoiceId: invoice.id };
 }
 
 /** Цена словами: «399 ₽» или «150 ⭐». */

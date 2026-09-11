@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   adminAccessLog,
+  billingConsents,
   billingInvoices,
   billingSubscriptions,
   broadcastDeliveries,
@@ -248,6 +249,17 @@ async function seedUser(tgId: number): Promise<string> {
       subscriptionRef: 'charge-777',
     });
 
+  // Согласие на автосписания (§14, оферта п. 7.2.2): как счёт, переживает
+  // удаление обезличенным — история согласий нужна платёжной системе.
+  await testDb().insert(billingConsents).values({
+    userId: user.id,
+    rail: 'robokassa:smz',
+    plan: 'monthly',
+    amountMinor: 39_900,
+    currency: 'rub',
+    offerUrl: 'https://vydoh.test/oferta',
+  });
+
   return user.id;
 }
 
@@ -394,6 +406,20 @@ describe('deleteUserData', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.userId).toBeNull();
     expect(calls[0]?.audioSeconds).toBe(30);
+  });
+
+  it('обезличивает согласия на автосписания, но не удаляет их', async () => {
+    /**
+     * Робокасса требует хранить историю согласий; оферта п. 7.2.2 это
+     * обещает. Строка без человека не говорит ни о ком: в ней тариф,
+     * сумма, адрес оферты и время — ни имени, ни телеграм-номера.
+     */
+    await deleteUserData(testDb(), userId);
+
+    const consents = await testDb().select().from(billingConsents);
+    expect(consents).toHaveLength(1);
+    expect(consents[0]?.userId).toBeNull();
+    expect(consents[0]?.amountMinor).toBe(39_900);
   });
 
   it('не задевает данные другого пользователя', async () => {

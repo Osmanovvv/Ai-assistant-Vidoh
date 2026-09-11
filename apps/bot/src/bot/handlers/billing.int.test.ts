@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   appSettings,
+  billingConsents,
   billingEvents,
   billingInvoices,
   billingSubscriptions,
@@ -280,6 +281,7 @@ function keyboardIn(markup: unknown): { text: string; callback_data?: string }[]
 }
 
 beforeEach(async () => {
+  await testDb().delete(billingConsents);
   await testDb().delete(billingEvents);
   await testDb().delete(billingSubscriptions);
   await testDb().delete(billingInvoices);
@@ -653,6 +655,67 @@ describe('согласие на автосписания — §14, оферта 
 
     expect(asked[0]?.renewable, 'согласие не дошло до провайдера').toBe(true);
     expect(asked[1]?.renewable, 'без отметки платёж обязан быть разовым').toBe(false);
+  });
+
+  it('согласие записывается с тем, что человек видел, и привязывается к счёту', async () => {
+    /**
+     * Оферта п. 7.2.2 и требование Робокассы «сохраняйте историю
+     * согласий»: дата, тариф, сумма, адрес оферты — и счёт, в который
+     * согласие вылилось.
+     */
+    const { bot } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await buyMonthly(bot, 'r', 'with');
+
+    const consents = await testDb().select().from(billingConsents);
+    const [invoice] = await testDb().select().from(billingInvoices);
+
+    expect(consents).toHaveLength(1);
+    expect(consents[0]).toMatchObject({
+      userId,
+      rail: 'robokassa:smz',
+      plan: 'monthly',
+      amountMinor: 39_900,
+      // Валюта — как её пишет цена тарифа, а не как удобно тесту.
+      currency: 'RUB',
+      offerUrl: OFFER_URL,
+    });
+    expect(consents[0]?.invoiceId, 'согласие не привязано к счёту').toBe(invoice?.id);
+  });
+
+  it('без отметки согласие не пишется', async () => {
+    const { bot } = createTestBot({
+      'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
+    });
+    await bot.init();
+
+    await buyMonthly(bot, 'r', 'without');
+
+    expect(await testDb().select().from(billingConsents)).toHaveLength(0);
+    expect(await testDb().select().from(billingInvoices)).toHaveLength(1);
+  });
+
+  it('провайдер отказал — согласие остаётся, но без счёта', async () => {
+    // Согласие дано до счёта; отказ провайдера его не отменяет.
+    const broken: PaymentProvider = {
+      name: 'robokassa:smz',
+      createCheckout: () => Promise.reject(new Error('Робокасса молчит')),
+      readEvent: () => Promise.resolve(undefined),
+      stopRenewal: () => Promise.resolve(),
+      statusOf: () => Promise.resolve(undefined),
+    };
+    const { bot } = createTestBot({ 'robokassa:smz': broken });
+    await bot.init();
+
+    await buyMonthly(bot, 'r', 'with');
+
+    const consents = await testDb().select().from(billingConsents);
+
+    expect(consents).toHaveLength(1);
+    expect(consents[0]?.invoiceId).toBeNull();
   });
 
   it('без отметки человеку сказано, что платёж разовый', async () => {
