@@ -4,7 +4,7 @@ import { items, topics, type Item, type NewItem } from '../../db/schema.js';
 import type { Database, Executor } from '../../infra/db.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
 import { normalizeTopicName } from '../topics/topics.repo.js';
-import { withCapital, withoutCardFields } from './item-text.js';
+import { storedTitle } from './item-text.js';
 
 /**
  * Сохранение записей (задача 2.8).
@@ -73,10 +73,10 @@ function toRow(
     /**
      * Заглавная в начале — задача 3.25; поля карточки долой — задача 3.62.
      *
-     * Порядок важен: сперва убираем «Срок 07.09» и «Статус ждет», иначе
-     * заглавная встала бы у мусора, а не у дела.
+     * Тем же преобразованием, что и ключ отсева повторов: сверка обязана
+     * мерить ровно то значение, которое лежит в базе.
      */
-    text: withCapital(withoutCardFields(item.text)),
+    text: storedTitle(item.text),
     type: item.type,
     priority: item.priority,
     topic: item.topic,
@@ -186,9 +186,15 @@ export const OPEN_STATUSES = ['new', 'active', 'in_progress', 'waiting'] as cons
  * появлением фона (§13.6) копия стала опасной — забыть про фон в одном из
  * четырёх мест значит показать в выдаче то, что человек убрал с глаз.
  *
- * Сводки тем сюда не входят намеренно: §13.6 требует, чтобы ушедшее в фон
- * **осталось доступно через бэклог**. Там у списка своё условие, и это
- * разница по смыслу, а не забытая копия.
+ * Две копии пережили ту уборку — в выдаче и в сводках тем — и сходили с
+ * рук только потому, что наборы совпадали: ни один тест их не сверял.
+ * С 11.09.2026 список один — `OPEN_STATUSES` выше, — и выдача со сводками
+ * берут его отсюда; страж в `items.int.test.ts` сверяет все три места
+ * по поведению, а не по тексту.
+ *
+ * Сводки тем берут список, но не условие, и это намеренно: §13.6 требует,
+ * чтобы ушедшее в фон **осталось доступно через бэклог**. Там своё
+ * условие без фона — разница по смыслу, а не забытая копия.
  */
 export function openItemsWhere(userId: string) {
   return and(

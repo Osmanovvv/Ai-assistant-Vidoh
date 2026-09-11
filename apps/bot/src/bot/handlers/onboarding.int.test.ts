@@ -1,13 +1,17 @@
+import { Writable } from 'node:stream';
+
 import type { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
-import { Bot } from 'grammy';
+import { desc, eq } from 'drizzle-orm';
+import { Bot, GrammyError } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
+import type { Logger } from 'pino';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, topics, users, userSettings } from '../../db/schema.js';
+import { items, messagesRaw, topics, users, userSettings } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
 import type { PipelineJob } from '../../infra/queue.js';
+import type { PaymentProvider } from '../../modules/billing/provider.js';
 import {
   ACTION,
   onboardingStateOf,
@@ -16,12 +20,14 @@ import {
   type Button,
 } from '../../modules/onboarding/onboarding.service.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
-import { consumeAwaited } from './awaiting.js';
+import { consumeAwaited, type AwaitingDeps } from './awaiting.js';
+import { createPromoConsumer } from './billing.js';
 import { incomingMiddleware } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
 import { registerStartHandlers } from './start.js';
@@ -81,6 +87,10 @@ function recordingQuestions(): {
 function createTestBot(
   questions?: QuestionSender,
   gateway?: FakeTopicGateway,
+  /** Журнал приёма ответа: там, где проверяется, что отказ назван. */
+  log: Logger = logger,
+  /** Приём промокода словами — как в бою, обратным вызовом (§14). */
+  promo?: AwaitingDeps['promo'],
 ): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
@@ -112,7 +122,7 @@ function createTestBot(
       queue: stubQueue,
       // Ответ словами (задача 3.61): без этого текстовая реплика
       // уходит в буфер выгрузки, как было до задачи.
-      consume: consumeAwaited({ db: testDb(), logger }),
+      consume: consumeAwaited({ db: testDb(), logger: log, promo }),
     }),
   );
   registerStartHandlers(bot, {
@@ -1366,5 +1376,175 @@ describe('правка настроек словами не двигает оп�
     expect(calls.some((call) => textOf(call) === defaultTexts.onboarding.timeNotUnderstood)).toBe(
       true,
     );
+  });
+});
+
+/**
+ * Сбой отправки «не понял» не оставляет мысль сиротой (ревизия этапов 1–2).
+ *
+ * Приём сохраняет сообщение и фиксирует транзакцию раньше, чем привяжет
+ * его к выгрузке, а между этими шагами стоит приём ответа словами. На
+ * пути «не подошло — сказали и пустили в разбор» есть отправка в
+ * Telegram. Упади она — 429, 5xx, обрыв посреди ответа, — исключение
+ * уходило из приёма до привязки, и сообщение оставалось с пустой
+ * выгрузкой навсегда: повтор того же апдейта от Telegram отбрасывается
+ * как дубль, потому что сообщение уже сохранено. Человек, сказавший
+ * мысль в ответ на вопрос бота, не получал ни «не понял», ни разбора, а
+ * в журнале была только общая строка «Сбой обработки апдейта».
+ *
+ * Здесь Telegram отвергает ровно эту реплику, и проверяется то, что
+ * обещано страховкой 3 задачи 3.61: сообщение всё равно идёт обычным
+ * путём — то есть привязано к выгрузке, — а отказ назван в журнале.
+ */
+describe('сбой отправки «не понял» не оставляет мысль сиротой', () => {
+  interface LogRecord {
+    readonly level: number;
+    readonly msg?: string;
+    readonly [key: string]: unknown;
+  }
+
+  /** Журнал в память: проверяется то, что действительно попало в поток. */
+  function loggerWithSink(): { logger: Logger; records: LogRecord[] } {
+    const records: LogRecord[] = [];
+    const sink = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        for (const line of chunk.toString('utf8').split('\n')) {
+          if (line.trim() !== '') records.push(JSON.parse(line) as LogRecord);
+        }
+        callback();
+      },
+    });
+
+    return { logger: createLogger({ level: 'warn' }, sink), records };
+  }
+
+  /** Telegram отвергает одну реплику — ту, что названа. */
+  function refuseReply(bot: Bot, refused: string): { refusals: number } {
+    const seen = { refusals: 0 };
+
+    bot.api.config.use((prev, method, payload, signal) => {
+      if (method === 'sendMessage' && (payload as { text?: unknown }).text === refused) {
+        seen.refusals++;
+        throw new GrammyError(
+          'Call to sendMessage failed',
+          { ok: false, error_code: 429, description: 'Too Many Requests', parameters: {} },
+          method,
+          {},
+        );
+      }
+
+      return prev(method, payload, signal);
+    });
+
+    return seen;
+  }
+
+  async function batchOfLastMessage(): Promise<string | null | undefined> {
+    const [row] = await testDb()
+      .select({ batchId: messagesRaw.batchId })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.userId, userId))
+      .orderBy(desc(messagesRaw.receivedAt))
+      .limit(1);
+
+    return row?.batchId;
+  }
+
+  const THOUGHT = 'надо купить продукты и позвонить бабушке';
+
+  it('мысль вместо имени на опросе: реплика отвергнута, а выгрузка есть', async () => {
+    const { logger: log, records } = loggerWithSink();
+    const { bot } = createTestBot(recordingQuestions().sender, undefined, log);
+    await bot.init();
+    const seen = refuseReply(bot, defaultTexts.onboarding.nameNotUnderstood);
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+
+    // Отказ Telegram не выходит из приёма: иначе повтор апдейта уже дубль.
+    await bot.handleUpdate(textUpdate(THOUGHT));
+
+    expect(seen.refusals).toBe(1);
+    expect((await settingsOf())?.preferredName).toBeNull();
+    expect((await settingsOf())?.awaitingInput).toBeNull();
+    // Мысль пошла обычным путём — привязана к выгрузке, а не осталась сиротой.
+    expect(await batchOfLastMessage()).toEqual(expect.any(String));
+    // И отказ назван, а не проглочен: строка с причиной, без текста человека.
+    const warned = records.filter((record) => record.level === 40);
+    expect(warned.map((record) => record.msg)).toContainEqual(expect.stringContaining('не понял'));
+    expect(JSON.stringify(warned)).toContain('429');
+    expect(JSON.stringify(warned)).not.toContain(THOUGHT);
+  });
+
+  it('не время на опросе: то же', async () => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.morning);
+    const seen = refuseReply(bot, defaultTexts.onboarding.timeNotUnderstood);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.morningOwn));
+    await bot.handleUpdate(textUpdate('когда получится'));
+
+    expect(seen.refusals).toBe(1);
+    expect((await settingsOf())?.awaitingInput).toBeNull();
+    expect(await batchOfLastMessage()).toEqual(expect.any(String));
+  });
+
+  it.each([
+    [AWAITING.setName, defaultTexts.onboarding.nameNotUnderstood, THOUGHT],
+    [AWAITING.setEvening, defaultTexts.onboarding.timeNotUnderstood, 'когда-нибудь вечером'],
+  ])('правка настроек словами (%s): то же', async (awaiting, refused, said) => {
+    const { bot } = createTestBot();
+    await bot.init();
+    const seen = refuseReply(bot, refused);
+
+    await setAwaiting(testDb(), userId, awaiting);
+    await bot.handleUpdate(textUpdate(said));
+
+    expect(seen.refusals).toBe(1);
+    expect((await settingsOf())?.awaitingInput).toBeNull();
+    expect(await batchOfLastMessage()).toEqual(expect.any(String));
+  });
+
+  it('мысль вместо промокода (§14): «не похоже на код» отвергнута, а выгрузка есть', async () => {
+    /**
+     * Пятая отправка на той же дороге к буферу живёт не в приёме ответа,
+     * а в приёме промокода (`billing.ts`), подключённом обратным вызовом —
+     * как в бою. Ожидание кода снимается до разбора, значит присланное —
+     * мысль, и терять её из-за отказа Telegram нельзя так же, как имя
+     * или время.
+     */
+    const { logger: log, records } = loggerWithSink();
+    // Провайдер есть, как в бою: без единого рельса кнопка промокода не
+    // показывается вовсе, и стенд без него мерил бы недостижимое.
+    const provider: PaymentProvider = {
+      name: 'robokassa:smz',
+      createCheckout: () => Promise.reject(new Error('в этом страже счёт не выставляется')),
+      readEvent: () => Promise.resolve(undefined),
+      stopRenewal: () => Promise.resolve(),
+      statusOf: () => Promise.resolve(undefined),
+    };
+    const promo = createPromoConsumer({
+      db: testDb(),
+      settings: new SettingsRegistry({ db: testDb(), logger: log, ttlMs: 0 }),
+      logger: log,
+      providers: { 'robokassa:smz': provider },
+    });
+    const { bot } = createTestBot(undefined, undefined, log, promo);
+    await bot.init();
+    const seen = refuseReply(bot, defaultTexts.billing.promoUnknown);
+
+    await setAwaiting(testDb(), userId, AWAITING.promo);
+    await bot.handleUpdate(textUpdate(THOUGHT));
+
+    expect(seen.refusals).toBe(1);
+    expect((await settingsOf())?.awaitingInput).toBeNull();
+    // Мысль привязана к выгрузке, а не осталась сиротой.
+    expect(await batchOfLastMessage()).toEqual(expect.any(String));
+    // Отказ назван в журнале с причиной и без текста человека.
+    const warned = records.filter((record) => record.level === 40);
+    expect(warned.map((record) => record.msg)).toContainEqual(expect.stringContaining('не понял'));
+    expect(JSON.stringify(warned)).toContain('429');
+    expect(JSON.stringify(warned)).not.toContain(THOUGHT);
   });
 });

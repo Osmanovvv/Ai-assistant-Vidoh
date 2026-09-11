@@ -77,6 +77,17 @@ function withoutDeclaration(text: string): string {
   return end === -1 ? text : text.slice(0, start) + text.slice(end);
 }
 
+/**
+ * Текст без комментариев — для стражей, ищущих связку по исходнику.
+ *
+ * Иначе страж ловит собственную цитату: имя сборщика или константы
+ * стоит в пояснении рядом с тем самым местом, где его может не оказаться
+ * в коде.
+ */
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '');
+}
+
 /** Все исходники продукта: без проверок и без объявления `SETTINGS`. */
 async function allSources(): Promise<readonly Source[]> {
   const found: Source[] = [];
@@ -304,6 +315,52 @@ describe('умолчания не набраны дважды', () => {
   });
 });
 
+describe('предел окна тишины не обещает больше, чем держит потолок выгрузки', () => {
+  /**
+   * Панель принимала окно до десяти минут, а жёсткий потолок открытой
+   * выгрузки — пять (ревизия этапов 1–2, дефект 15). Окно длиннее потолка
+   * не действует вовсе: досмотр закрывает выгрузку по возрасту раньше,
+   * чем задание дождётся тишины. Человек ставил семь минут, видел
+   * «Сохранено» — и ничего не менялось.
+   *
+   * Поведение — в `recovery.int.test.ts`: самое длинное принятое окно
+   * доживает до конца под досмотром. Здесь — связка двух чисел.
+   */
+  it('самое длинное окно из панели не длиннее потолка возраста выгрузки', async () => {
+    const { DEFAULT_LIMITS } = await import('../buffer/buffer.service.js');
+
+    expect(SETTINGS.silenceWindowMs.max).toBeLessThanOrEqual(DEFAULT_LIMITS.maxBatchAgeMs);
+  });
+
+  it('связь одним числом, а не совпадением двух', async () => {
+    /**
+     * Сверка «300 000 не больше 300 000» прошла бы и на двух независимо
+     * набранных числах — ровно на том состоянии, из которого дефект и
+     * вырос. Здесь читаются исходники: оба места обязаны брать
+     * `MAX_BATCH_AGE_MS` — саму константу, до запятой, а не выражение от
+     * неё: `MAX_BATCH_AGE_MS / 2` тоже «упоминает» константу, а держит
+     * другое число.
+     *
+     * Без комментариев — иначе страж поймал бы собственную цитату:
+     * имя константы стоит в пояснениях рядом с обоими числами.
+     */
+    const buffer = withoutComments(await readFile('src/modules/buffer/buffer.service.ts', 'utf8'));
+    const repo = withoutComments(await readFile('src/modules/settings/settings.repo.ts', 'utf8'));
+
+    expect(buffer).toMatch(/\bmaxBatchAgeMs:\s*MAX_BATCH_AGE_MS\s*,/u);
+
+    // Именно у окна тишины, а не у какой-нибудь другой настройки.
+    const start = repo.indexOf('silenceWindowMs: {');
+
+    expect(start, 'объявления окна тишины в реестре не найдено').toBeGreaterThan(-1);
+
+    const end = repo.indexOf('\n  },', start);
+
+    expect(end, 'объявление окна тишины не закрыто').toBeGreaterThan(start);
+    expect(repo.slice(start, end)).toMatch(/\bmax:\s*MAX_BATCH_AGE_MS\s*,/u);
+  });
+});
+
 describe('предел числа тем доезжает до опроса', () => {
   /**
    * Реестр настроек доезжает до обработчика опроса **пятым, необязательным
@@ -330,6 +387,78 @@ describe('предел числа тем доезжает до опроса', ()
       call,
       'в src/index.ts обработчику опроса не передан реестр настроек: предел числа тем молча станет константой из кода.',
     ).toContain('settings');
+  });
+});
+
+describe('окно тишины доезжает до подъёма процесса', () => {
+  /**
+   * Ревизия этапов 1–2, дефект 19. Читателей у окна тишины четыре, и
+   * трое зовут `effectiveLimits` у себя в модуле. Подъём процесса —
+   * иначе: `recoverAfterRestart` получает окно **необязательным
+   * аргументом** из `src/index.ts`, а без него молча берёт умолчание
+   * из кода. Ровно так дефект и жил: закрытие по заданию и досмотр
+   * закрывали по панели, подъём — по константе, и перезапуск посреди
+   * диктовки при окне длиннее умолчания резал серию пополам — два
+   * разбора вместо одного и мысль, разрезанная посередине (§9.1
+   * правило 2).
+   *
+   * Страж «у сборщика есть вызывающий» выше этого не видит: пропадает
+   * один вызывающий из нескольких, и у `effectiveLimits` остаются
+   * другие. Поведение самого подъёма — в `recovery.int.test.ts`; здесь
+   * связка, которую можно снять одной строкой, не задев ни одну
+   * проверку.
+   *
+   * По исходнику `src/index.ts` (поднять запуск — значит поднять базу,
+   * Redis, Telegram и модель) и без комментариев: пояснение над вызовом
+   * само говорит про сборщик, и страж поймал бы собственную цитату.
+   */
+
+  /** Вызов целиком, со скобками в счёт: внутри лежит вызов сборщика. */
+  function callOf(source: string, name: string): string | undefined {
+    const start = source.indexOf(`${name}(`);
+
+    if (start === -1) return undefined;
+
+    let depth = 0;
+
+    for (let index = start + name.length; index < source.length; index += 1) {
+      if (source[index] === '(') depth += 1;
+      if (source[index] === ')') {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, index + 1);
+      }
+    }
+
+    return undefined;
+  }
+
+  it('подъём процесса получает окно из сборщика настроек, а не умолчание из кода', async () => {
+    const index = withoutComments(await readFile('src/index.ts', 'utf8'));
+    const call = callOf(index, 'recoverAfterRestart');
+
+    expect(call, 'вызова recoverAfterRestart в src/index.ts не найдено').toBeDefined();
+
+    expect(
+      call,
+      'в src/index.ts подъём процесса зовёт recoverAfterRestart без окна из настроек: ' +
+        'забытые выгрузки закроются по числу из кода, а не по панели, и перезапуск ' +
+        'посреди диктовки разрежет серию пополам — при том что панель скажет «Сохранено».',
+    ).toContain('effectiveLimits(');
+  });
+
+  it('страж читает код, а не пояснение к нему', async () => {
+    // Снятие комментариев обязано срабатывать: над вызовом стоит
+    // пояснение про сборщик, и без вычета страж выше был бы зелёным на
+    // одном пояснении.
+    const index = withoutComments(await readFile('src/index.ts', 'utf8'));
+
+    expect(index).not.toContain('/**');
+    expect(index).not.toContain('// ');
+
+    // И вызов в выборке правда есть — иначе первая проверка держалась бы
+    // на `toBeDefined` одной, а `toContain` на `undefined` не доказывал
+    // бы ничего.
+    expect(callOf(index, 'recoverAfterRestart')).toContain('recoverAfterRestart(db');
   });
 });
 

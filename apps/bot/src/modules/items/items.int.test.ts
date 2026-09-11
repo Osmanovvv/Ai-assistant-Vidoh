@@ -1,11 +1,14 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, items, type ItemTypeValue } from '../../db/schema.js';
+import { batches, itemStatus, items, type Item, type ItemTypeValue } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
-import { itemsForBatch, saveDraft, saveItems } from './items.repo.js';
+import { isShowable } from '../output/filter.js';
+import { itemsOfTopic } from '../topics/summary.service.js';
+import { itemsForBatch, openItemsFor, saveDraft, saveItems } from './items.repo.js';
+import { knownByText, splitKnown } from './same-text.js';
 
 /**
  * Сохранение записей на живой базе.
@@ -90,6 +93,29 @@ describe('saveItems', () => {
 
     expect(saved).toEqual([]);
     expect(await itemsForBatch(testDb(), batchId)).toEqual([]);
+  });
+
+  it('сохранённое узнаётся отсевом повторов по сырому тексту модели', async () => {
+    /**
+     * Связка задач 3.62 и 3.22: в базу текст уходит без полей карточки,
+     * а отсев повторной выгрузки сверяет сырой текст модели с тем, что
+     * лежит в базе. Пока преобразования жили порознь, сверка мерила не
+     * то значение, что хранится, и повтор заводил вторую копию именно
+     * тех записей, куда модель вписала «Срок 07.09». Здесь сохранение
+     * настоящее: расхождение между тем, что пишет `saveItems`, и тем, что
+     * считает ключом `sameTextKey`, красит этот тест, а не бой.
+     */
+    const raw = 'позвонить бабушке. Срок 07.09\nСтатус ждет';
+
+    await saveItems(testDb(), { userId, batchId, items: [item({ text: raw })] });
+    const open = await openItemsFor(testDb(), userId);
+
+    expect(open.map((row) => row.text)).toEqual(['Позвонить бабушке']);
+
+    const split = splitKnown([{ text: raw }], knownByText(open));
+
+    expect(split.fresh).toEqual([]);
+    expect(split.known.map((row) => row.text)).toEqual(['Позвонить бабушке']);
   });
 
   it('частичный сбой не оставляет половину разбора', async () => {
@@ -313,5 +339,61 @@ describe('регулярность в базе (задача 2.18а)', () => {
       }),
       'items_recurrence_has_source',
     );
+  });
+});
+
+describe('открытость — одно условие на весь продукт', () => {
+  /**
+   * Список открытых статусов лежал в четырёх местах, и после уборки под
+   * фон (§13.6) две копии уцелели: в выдаче и в сводках тем. Пока наборы
+   * совпадали, это было незаметно — и ни один тест их не сверял. Пятый
+   * статус, добавленный репозиторию и забытый выдачей, вычеркнул бы
+   * запись молча: репозиторий поднял, фильтр выбросил, человек не увидел
+   * и ничего не узнал.
+   *
+   * Сверка по поведению, а не по тексту: по одной задаче на каждый статус
+   * справочника §5.1, и то, что репозиторий считает открытым, обязано
+   * совпасть с тем, что показывает выдача и что берёт сводка темы. Список
+   * статусов здесь не переписан — он читается из самой схемы, иначе
+   * страж застыл бы вместе со своей копией.
+   */
+  const oneTaskPerStatus = async (): Promise<Item[]> => {
+    await testDb()
+      .insert(items)
+      .values(
+        itemStatus.enumValues.map((status) => ({
+          userId,
+          sourceBatchId: batchId,
+          text: `дело ${status}`,
+          type: 'TASK' as const,
+          priority: 'NOW' as const,
+          topic: 'дом',
+          status,
+        })),
+      );
+
+    return await testDb().select().from(items).where(eq(items.userId, userId));
+  };
+
+  const statusesOf = (rows: readonly Item[]): string[] => rows.map((row) => row.status).sort();
+
+  it('выдача показывает ровно те статусы, что репозиторий считает открытыми', async () => {
+    const all = await oneTaskPerStatus();
+    const byRepo = statusesOf(await openItemsFor(testDb(), userId));
+    const byFilter = statusesOf(all.filter((row) => isShowable(row)));
+
+    // Страж не пустой: открытых больше нуля и меньше, чем статусов вообще.
+    expect(byRepo.length).toBeGreaterThan(0);
+    expect(byRepo.length).toBeLessThan(all.length);
+    expect(byFilter).toEqual(byRepo);
+  });
+
+  it('сводка темы берёт ровно те статусы, что репозиторий считает открытыми', async () => {
+    await oneTaskPerStatus();
+    const byRepo = statusesOf(await openItemsFor(testDb(), userId));
+    const byTopic = statusesOf(await itemsOfTopic(testDb(), userId, 'дом'));
+
+    expect(byRepo.length).toBeGreaterThan(0);
+    expect(byTopic).toEqual(byRepo);
   });
 });

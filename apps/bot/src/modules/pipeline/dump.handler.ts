@@ -1273,8 +1273,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     });
 
     // ── Сохранение ──────────────────────────────────────────────────────
-    const toSave = await withEmbeddings(db, deps, batch, units);
-
     /**
      * Повтор той же выгрузки не заводит вторую запись (см. same-text.ts).
      *
@@ -1288,12 +1286,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * память весь бэклог ради редкого случая дороже одной лишней строки.
      */
     const before = await openItemsFor(db, batch.userId);
-    const split = splitKnown(toSave, knownByText(before));
+    const split = splitKnown(units, knownByText(before));
+
+    /**
+     * Вектор — только тому, что будет сохранено, и потому **после**
+     * отсева, а не до.
+     *
+     * Ревизия этапов 1–2, дефект 32: вектор считался по всем единицам, а
+     * отсев шёл следующей строкой. Повтору запись не нужна — значит не
+     * нужен и вектор: свежий никуда не записывался (в строку он попадает
+     * только у новой записи), а у существующей он посчитан при создании
+     * или досчитывается отдельно (`backfill-embeddings`) — отсюда ему
+     * взяться неоткуда. Тот самый боевой случай, ради которого отсев и
+     * появился, — одно голосовое трижды — оплачивал векторы трижды. Учёт
+     * при этом был верен, деньги просто уходили в никуда. Платит
+     * отправка, а не результат: где черта оплаты, там и граница отсева.
+     */
+    const toSave = await withEmbeddings(db, deps, batch, split.fresh);
 
     const saved = await saveItems(db, {
       userId: batch.userId,
       batchId: batch.id,
-      items: split.fresh,
+      items: toSave,
     });
 
     for (const item of [...saved, ...split.known]) mentioned.add(item.id);
@@ -1585,10 +1599,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
            * пустые: человек должен увидеть свою структуру целиком, а не
            * только те сферы, куда что-то попало. То же правило, что на
            * онбординге. Дальше — только затронутые.
+           *
+           * Темы берутся по всем разобранным единицам (`units`), а не
+           * только по сохранённым: повтор запись не заводит, но человек о
+           * ней сейчас говорил, и её тема тоже считается затронутой.
            */
           topicNames: spheresCreated
             ? [...topics.names]
-            : [...new Set([...toSave.map((item) => item.topic), ...touchedTopics])],
+            : [...new Set([...units.map((item) => item.topic), ...touchedTopics])],
           timeZone: context.timeZone,
           profile: context.textProfile,
         },

@@ -1,5 +1,6 @@
-import type { EnergyLevelValue, Item } from '../../db/schema.js';
+import type { EnergyLevelValue, Item, ItemStatusValue } from '../../db/schema.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
+import { OPEN_STATUSES } from '../items/items.repo.js';
 
 /**
  * Отбор дел для ответа (задача 2.10).
@@ -29,8 +30,18 @@ export const LIMIT_BY_ENERGY: Readonly<Record<EnergyLevelValue, number>> = {
   empty: 1,
 };
 
-/** Статусы, при которых дело ещё ждёт действия. */
-const OPEN_STATUSES = new Set(['new', 'active', 'in_progress', 'waiting']);
+/**
+ * Статусы, при которых дело ещё ждёт действия.
+ *
+ * Список один на весь продукт и живёт у репозитория рядом с
+ * `openItemsWhere`: записи в выдачу приходят оттуда, и то, что он поднял
+ * как открытое, здесь обязано пройти. Своя копия лежала тут до 11.09.2026
+ * и сходила с рук, пока наборы совпадали; пятый статус, добавленный там и
+ * забытый здесь, вычеркнул бы запись молча — репозиторий поднял, фильтр
+ * выбросил, человек не увидел. Сверяет их по поведению страж в
+ * `items.int.test.ts`.
+ */
+const OPEN_STATUS_SET: ReadonlySet<ItemStatusValue> = new Set(OPEN_STATUSES);
 
 export interface SelectContext {
   readonly energy: EnergyLevelValue;
@@ -140,7 +151,7 @@ export function isShowable(item: Item): boolean {
   if (item.type !== 'TASK') return false;
   if (item.priority === 'NONE' || item.priority === null) return false;
 
-  return OPEN_STATUSES.has(item.status);
+  return OPEN_STATUS_SET.has(item.status);
 }
 
 function bucketOf(
