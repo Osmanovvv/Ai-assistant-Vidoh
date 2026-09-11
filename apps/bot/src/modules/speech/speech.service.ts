@@ -8,12 +8,13 @@ import type { Database } from '../../infra/db.js';
 import { meterEachSend } from '../metering/metered-send.js';
 import { SPEECH_BILLING_BLOCK_SEC, type ModelPricing } from '../metering/pricing.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
-import { attribute } from './attribution.js';
+import { AttributionError, attribute } from './attribution.js';
 import { pauseStats } from './pauses.js';
 import { groupVoices } from './grouping.js';
 import {
   DEFAULT_AUDIO_LIMITS,
   GLUE_PAUSE_SEC,
+  GlueDriftError,
   glueVoices,
   prepareAudio,
   withTempDir,
@@ -237,6 +238,39 @@ interface GroupOutcome {
 }
 
 /**
+ * Склейка сорвалась на одной из групп, а группы до неё уже расшифрованы
+ * и записаны.
+ *
+ * **Зачем своё исключение, а не голое из раскладки.** Группы пишутся в
+ * базу по одной, и откат (transcribe.ts) перечитывает список, чтобы не
+ * платить за записанное второй раз. Но вместе с записанным пропадал и
+ * его итог: долгая одиночная запись, обрезанная по потолку §10.5 до
+ * срыва, в откат уже не попадала — и человек не получал предупреждения,
+ * что хвост не расшифрован, а в журнале об этом не было ни строки.
+ * Прежде флаг «восстанавливался» побочным эффектом переплаты: откат
+ * расшифровывал ту же запись заново и снова её обрезал. Найдено встречной
+ * проверкой 11.09.2026.
+ *
+ * `done` — итог удавшихся групп, ровно то, что лежит в базе. Записи за
+ * потолком выгрузки и обрезанные до остатка сюда не входят: они ещё не
+ * тронуты и уйдут в откат, а там об их обрезке скажет сам откат. Причина
+ * срыва — в `cause` и в тексте: сериализатор журнала перечисляет только
+ * собственные перечислимые поля, а штатный `cause` не перечислим.
+ */
+export class GlueAbortedError extends Error {
+  constructor(
+    cause: AttributionError | GlueDriftError,
+    readonly done: VoicesOutcome,
+  ) {
+    super(
+      `склейка сорвалась (удавшихся запросов до срыва: ${String(done.requests)}): ${cause.message}`,
+      { cause },
+    );
+    this.name = 'GlueAbortedError';
+  }
+}
+
+/**
  * Расшифровка одной группы голосовых одним запросом.
  *
  * Группа собрана так, что влезает в запрос целиком (см. grouping.ts). Если
@@ -455,39 +489,50 @@ export async function transcribeVoices(
 
   let requests = 0;
   let durationSec = 0;
-  let truncated = capped.length > 0 || skipped.length > 0;
+  // Только то, что уже сделано: обрезка по потолку выгрузки добавляется
+  // в самом конце, потому что до конца эти записи не тронуты — а при
+  // срыве склейки итог уходит с исключением и обязан описывать базу.
+  let truncated = false;
   let split = 0;
 
-  for (const group of groups) {
-    const members = group.flatMap((voice) => {
-      const message = byId.get(voice.messageId);
-      return message === undefined ? [] : [message];
-    });
-
-    const only = members.length === 1 ? members[0] : undefined;
-
-    if (only !== undefined) {
-      // Клеить нечего: один запрос в любом случае, а прежний путь умеет
-      // резать длинную запись по её внутренним паузам.
-      const outcome = await transcribeMessage(deps, {
-        messageId: only.messageId,
-        fileId: only.fileId,
-        userId: params.userId,
-        batchId: params.batchId,
+  try {
+    for (const group of groups) {
+      const members = group.flatMap((voice) => {
+        const message = byId.get(voice.messageId);
+        return message === undefined ? [] : [message];
       });
 
-      requests += outcome.parts;
+      const only = members.length === 1 ? members[0] : undefined;
+
+      if (only !== undefined) {
+        // Клеить нечего: один запрос в любом случае, а прежний путь умеет
+        // резать длинную запись по её внутренним паузам.
+        const outcome = await transcribeMessage(deps, {
+          messageId: only.messageId,
+          fileId: only.fileId,
+          userId: params.userId,
+          batchId: params.batchId,
+        });
+
+        requests += outcome.parts;
+        durationSec += outcome.durationSec;
+        truncated = truncated || outcome.truncated;
+        continue;
+      }
+
+      const outcome = await transcribeGroup(deps, members, params);
+
+      requests += outcome.requests;
       durationSec += outcome.durationSec;
       truncated = truncated || outcome.truncated;
-      continue;
+      split += outcome.split;
     }
+  } catch (error) {
+    // Срыв раскладки — повод расшифровать остаток по одному (правило 1.14);
+    // любой другой сбой — сбой выгрузки, и он уходит как есть.
+    if (!(error instanceof AttributionError) && !(error instanceof GlueDriftError)) throw error;
 
-    const outcome = await transcribeGroup(deps, members, params);
-
-    requests += outcome.requests;
-    durationSec += outcome.durationSec;
-    truncated = truncated || outcome.truncated;
-    split += outcome.split;
+    throw new GlueAbortedError(error, { requests, durationSec, truncated, split });
   }
 
   // Запись, упёршаяся в потолок выгрузки: расшифровываем ровно остаток.
@@ -517,5 +562,10 @@ export async function transcribeVoices(
       .where(eq(messagesRaw.id, message.messageId));
   }
 
-  return { requests, durationSec, truncated, split };
+  return {
+    requests,
+    durationSec,
+    truncated: truncated || capped.length > 0 || skipped.length > 0,
+    split,
+  };
 }

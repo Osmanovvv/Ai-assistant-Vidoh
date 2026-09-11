@@ -1,11 +1,14 @@
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
 
 import { asc, eq } from 'drizzle-orm';
+import type { Logger } from 'pino';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { aiCalls, batches, messagesRaw, type Batch } from '../../db/schema.js';
+import { createLogger } from '../../infra/logger.js';
 import { makeAudio } from '../../test/audio.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
@@ -191,6 +194,24 @@ beforeEach(async () => {
 /** Скачивание подменено копированием: fileId — имя файла в папке. */
 async function download(fileId: string, destPath: string): Promise<void> {
   await copyFile(join(dir, `${fileId}.wav`), destPath);
+}
+
+/** Журнал в память: проверяется то, что в него попало, а не то, что хотели написать. */
+function loggerWithSink(): { readonly logger: Logger; readonly messages: string[] } {
+  const messages: string[] = [];
+
+  const sink = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      for (const line of chunk.toString('utf8').split('\n')) {
+        if (line.trim() === '') continue;
+        const record = JSON.parse(line) as { readonly msg?: string };
+        if (record.msg !== undefined) messages.push(record.msg);
+      }
+      callback();
+    },
+  });
+
+  return { logger: createLogger({ level: 'info' }, sink), messages };
 }
 
 /** Одно слово в начале своей записи: этого хватает, чтобы проверить адрес. */
@@ -573,5 +594,76 @@ describe('откат от склейки после сорвавшейся гр�
     const calls = await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId));
     expect(calls, 'строк учёта').toHaveLength(4);
     expect(provider.calls).toBe(4);
+  });
+});
+
+describe('обрезка групп, удавшихся до срыва склейки', () => {
+  /**
+   * Провайдер с заявленными, но пустыми временами: нумерует ответы.
+   *
+   * Одиночной записи времена не нужны, и её расшифровка записывается;
+   * склеенная группа без времён не раскладывается — срыв. По номерам
+   * видно, чей текст лежит в каждом сообщении: одинаковое «что-то
+   * сказано» не отличило бы записанное до срыва от переписанного.
+   */
+  class NumberedNoTimesProvider implements SpeechProvider {
+    readonly name = 'fake-numbered-no-times';
+    readonly timeline = true;
+    calls = 0;
+
+    transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+      this.calls++;
+      const text = `запись ${String(this.calls)}`;
+
+      return Promise.resolve({
+        text,
+        model: 'fake',
+        audioSeconds: Math.round(request.durationSec),
+        utterances: [{ text, words: [] }],
+      });
+    }
+  }
+
+  beforeEach(async () => {
+    // Первая запись — долгая: одна в своей группе и длиннее потолка
+    // записи. За ней две короткие, которые склеиваются — и срываются.
+    await testDb()
+      .update(messagesRaw)
+      .set({ fileId: LONG_FILE_ID, audioDurationSec: LONG_FILE_SEC })
+      .where(eq(messagesRaw.id, messageIds[0] ?? ''));
+  });
+
+  it('обрезка записи, записанной до срыва, доходит до ответа и до журнала', async () => {
+    // Раньше флаг обрезки «восстанавливался» побочным эффектом переплаты:
+    // откат расшифровывал длинную запись заново и снова её обрезал. Как
+    // только откат перестал платить за записанное, флаг пропал бы вместе
+    // с исключением — и человек не узнал бы, что хвост не расшифрован.
+    const provider = new NumberedNoTimesProvider();
+    const { logger, messages } = loggerWithSink();
+
+    // Потолок запроса девять секунд: долгая запись (20 с) одна в группе,
+    // 3 + 4 + пауза — вторая, склеиваемая. Потолок записи пять секунд:
+    // долгая обрезается.
+    const result = await transcribeBatch(testDb(), batch, {
+      provider,
+      download,
+      logger,
+      limits: { maxSegmentSec: 9, maxSingleDurationSec: 5 },
+    });
+
+    // Долгая расшифрована первым запросом и не переписана; второй запрос —
+    // сорвавшаяся склейка, его текст выброшен; по одному ушли только две
+    // записи сорвавшейся группы.
+    expect(await transcriptsInOrder()).toEqual(['запись 1', 'запись 3', 'запись 4']);
+    expect(provider.calls).toBe(4);
+    expect(result.requests).toBe(3);
+
+    // Хвост долгой записи не расшифрован, и ответ обязан об этом сказать
+    // (§10.5 ТЗ).
+    expect(result.truncated).toBe(true);
+
+    // И журнал тоже: раньше обрезку писал только удавшийся до конца
+    // проход склейки.
+    expect(messages).toContain('Часть сказанного не расшифрована: упёрлись в потолок');
   });
 });
