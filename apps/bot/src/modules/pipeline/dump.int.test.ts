@@ -3832,6 +3832,69 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
     expect((await openTexts()).map((one) => one.toLowerCase())).toContain('забрать права');
     expect(await openTexts()).toHaveLength(SAID.length + 1);
   });
+
+  it('повтор не заводит копию записи, куда модель вписала поля карточки', async () => {
+    /**
+     * Две боевые находки встречаются. Живой прогон 05.09.2026 (задача
+     * 3.62): модель вернула «Позвонить бабушке. Срок 07.09 / Статус
+     * ждет», а сохранилось «Позвонить бабушке». Отсев повторов (3.22)
+     * сверял сырой текст модели с сохранённым — и на такой записи
+     * промахивался: вторая выгрузка заводила ей копию, хотя остальные
+     * пять узнавала. То есть починка «восемнадцать вместо шести» не
+     * работала ровно там, где текст уже испортил другой дефект.
+     */
+    const GRANDMA = 'позвонить бабушке';
+    const WITH_FIELDS = `Позвонить бабушке. Срок 07.09${NEWLINE}Статус ждет`;
+
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      classifier: (request) =>
+        JSON.stringify({
+          items: unitsFromInput(request.input).map((text) => ({
+            // Так ответила живая модель: поля карточки внутри заголовка.
+            text: text === GRANDMA ? WITH_FIELDS : text,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          })),
+        }),
+    });
+
+    async function dumpWithGrandma(): Promise<void> {
+      await queuedBatchOf([{ kind: 'text', text: [...SAID, GRANDMA].join(NEWLINE), offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+        },
+        userId,
+      );
+    }
+
+    await dumpWithGrandma();
+    const afterFirst = await openTexts();
+
+    // Поля карточки в базу не попали (3.62) — на этом и держится повтор.
+    expect(afterFirst).toContain('Позвонить бабушке');
+    expect(afterFirst).toHaveLength(3 + SAID.length + 1);
+
+    await dumpWithGrandma();
+    const afterSecond = await openTexts();
+
+    expect(afterSecond.filter((text) => text === 'Позвонить бабушке')).toHaveLength(1);
+    expect(afterSecond).toHaveLength(afterFirst.length);
+  });
 });
 
 describe('правка к сказанному в этой же выгрузке (задача 3.24)', () => {
