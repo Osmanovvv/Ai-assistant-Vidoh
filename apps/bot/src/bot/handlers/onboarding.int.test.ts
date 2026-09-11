@@ -11,6 +11,7 @@ import { items, messagesRaw, topics, users, userSettings } from '../../db/schema
 import { createLogger } from '../../infra/logger.js';
 import { localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
 import type { PipelineJob } from '../../infra/queue.js';
+import type { PaymentProvider } from '../../modules/billing/provider.js';
 import {
   ACTION,
   onboardingStateOf,
@@ -19,12 +20,14 @@ import {
   type Button,
 } from '../../modules/onboarding/onboarding.service.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
-import { consumeAwaited } from './awaiting.js';
+import { consumeAwaited, type AwaitingDeps } from './awaiting.js';
+import { createPromoConsumer } from './billing.js';
 import { incomingMiddleware } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
 import { registerStartHandlers } from './start.js';
@@ -86,6 +89,8 @@ function createTestBot(
   gateway?: FakeTopicGateway,
   /** Журнал приёма ответа: там, где проверяется, что отказ назван. */
   log: Logger = logger,
+  /** Приём промокода словами — как в бою, обратным вызовом (§14). */
+  promo?: AwaitingDeps['promo'],
 ): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
@@ -117,7 +122,7 @@ function createTestBot(
       queue: stubQueue,
       // Ответ словами (задача 3.61): без этого текстовая реплика
       // уходит в буфер выгрузки, как было до задачи.
-      consume: consumeAwaited({ db: testDb(), logger: log }),
+      consume: consumeAwaited({ db: testDb(), logger: log, promo }),
     }),
   );
   registerStartHandlers(bot, {
@@ -1445,5 +1450,47 @@ describe('сбой отправки «не понял» не оставляет 
     expect(seen.refusals).toBe(1);
     expect((await settingsOf())?.awaitingInput).toBeNull();
     expect(await batchOfLastMessage()).toEqual(expect.any(String));
+  });
+
+  it('мысль вместо промокода (§14): «не похоже на код» отвергнута, а выгрузка есть', async () => {
+    /**
+     * Пятая отправка на той же дороге к буферу живёт не в приёме ответа,
+     * а в приёме промокода (`billing.ts`), подключённом обратным вызовом —
+     * как в бою. Ожидание кода снимается до разбора, значит присланное —
+     * мысль, и терять её из-за отказа Telegram нельзя так же, как имя
+     * или время.
+     */
+    const { logger: log, records } = loggerWithSink();
+    // Провайдер есть, как в бою: без единого рельса кнопка промокода не
+    // показывается вовсе, и стенд без него мерил бы недостижимое.
+    const provider: PaymentProvider = {
+      name: 'robokassa:smz',
+      createCheckout: () => Promise.reject(new Error('в этом страже счёт не выставляется')),
+      readEvent: () => Promise.resolve(undefined),
+      stopRenewal: () => Promise.resolve(),
+      statusOf: () => Promise.resolve(undefined),
+    };
+    const promo = createPromoConsumer({
+      db: testDb(),
+      settings: new SettingsRegistry({ db: testDb(), logger: log, ttlMs: 0 }),
+      logger: log,
+      providers: { 'robokassa:smz': provider },
+    });
+    const { bot } = createTestBot(undefined, undefined, log, promo);
+    await bot.init();
+    const seen = refuseReply(bot, defaultTexts.billing.promoUnknown);
+
+    await setAwaiting(testDb(), userId, AWAITING.promo);
+    await bot.handleUpdate(textUpdate(THOUGHT));
+
+    expect(seen.refusals).toBe(1);
+    expect((await settingsOf())?.awaitingInput).toBeNull();
+    // Мысль привязана к выгрузке, а не осталась сиротой.
+    expect(await batchOfLastMessage()).toEqual(expect.any(String));
+    // Отказ назван в журнале с причиной и без текста человека.
+    const warned = records.filter((record) => record.level === 40);
+    expect(warned.map((record) => record.msg)).toContainEqual(expect.stringContaining('не понял'));
+    expect(JSON.stringify(warned)).toContain('429');
+    expect(JSON.stringify(warned)).not.toContain(THOUGHT);
   });
 });
