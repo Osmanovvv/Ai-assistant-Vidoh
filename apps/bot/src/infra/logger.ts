@@ -176,6 +176,15 @@ export interface CreateLoggerOptions {
   readonly file?: string | undefined;
 }
 
+/**
+ * Чем становится поток файла после отказа: запись «принята» и выброшена,
+ * сброс и закрытие — ничего не делают. `true` у записи — договор
+ * sonic-boom «буфер не переполнен»: pino этот возврат не читает, но
+ * сигнатура потока обещает именно его.
+ */
+const swallowWrite = (): boolean => true;
+const doNothing = (): void => undefined;
+
 export function createLogger(
   options: CreateLoggerOptions = {},
   destination?: DestinationStream,
@@ -227,14 +236,37 @@ export function createLogger(
        * Случай не выдуманный: том `./logs` создаёт демон Docker от root,
        * а бот работает под непривилегированным пользователем.
        *
-       * Говорим один раз: поток отказывает на каждой записи, и жалоба на
-       * каждую строку утопила бы сам журнал.
+       * **Слушателя мало — поток надо ещё и отключить.** После отказа
+       * открытия у sonic-boom остаётся `fd = -1`, и следующая же строка
+       * журнала уходит в `fs.write(-1, …)`, а это **синхронный** бросок
+       * `RangeError` — из самого `logger.info()`, где бы его ни вызвали:
+       * из обработчика апдейта, из `bot.catch`, из ловца отказов промисов.
+       * Отказ записи (полный диск) мягче, но тоже не проходит: каждая
+       * строка снова бьётся в тот же кусок и копится в буфере без предела.
+       * И на выходе процесса pino зовёт `flushSync()` отказавшего потока,
+       * а тот бросает «sonic boom is not ready yet» из обработчика `exit`.
+       *
+       * Поэтому первый же отказ гасит поток целиком — так же, как сам
+       * pino гасит его при EPIPE (`pino/lib/tools.js`, `filterBrokenPipe`):
+       * запись, закрытие и сброс становятся пустыми, и в `multistream`
+       * по-настоящему остаётся один поток. Обещание плана «нет прав,
+       * кончилось место — остаётся один поток» держится на этом, а не на
+       * `catch` ниже.
+       *
+       * Говорим один раз: pino переизлучает событие внутри своего же
+       * слушателя, и без защёлки одна причина звучала бы дважды.
        */
       let told = false;
 
       toFile.on('error', (error: unknown) => {
         if (told) return;
         told = true;
+
+        toFile.write = swallowWrite;
+        toFile.flush = doNothing;
+        toFile.flushSync = doNothing;
+        toFile.end = doNothing;
+        toFile.destroy = doNothing;
 
         pino(base, toStdout).error(
           { err: error, file },
