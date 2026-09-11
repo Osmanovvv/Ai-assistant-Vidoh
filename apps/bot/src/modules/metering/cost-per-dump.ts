@@ -1,5 +1,9 @@
-import type { AiStage } from '../../db/schema.js';
+import { and, gte } from 'drizzle-orm';
+
+import { aiCalls, type AiStage } from '../../db/schema.js';
+import type { Executor } from '../../infra/db.js';
 import { callCost, PRICING, type Currency, type ModelPricing } from './pricing.js';
+import { paidSql } from './unpriced.js';
 
 /**
  * Себестоимость одной выгрузки (задача 2.21).
@@ -33,6 +37,52 @@ export interface DumpCall {
   readonly audioSeconds: number | null;
   readonly costMicros: number | null;
   readonly costCurrency: Currency | null;
+}
+
+/** Строка учёта для отчёта: вызов плюс версия модели, которой ответили. */
+export interface DumpCallRow extends DumpCall {
+  readonly modelVersion: string | null;
+}
+
+/**
+ * Строки учёта, из которых считается себестоимость.
+ *
+ * Берутся **оплаченные** отправки — и удавшиеся, и те, за которые платили,
+ * хотя результат не доехал. С учётом на каждую отправку (§10.5)
+ * сорвавшийся заход тоже лежит в таблице; обычно он ничего не стоил, и
+ * пустая цена вывела бы всю выгрузку в «цена неизвестна», а модель — в
+ * «нет в прайс-листе». Но распознавание платит отправкой, и такой отказ
+ * несёт свои секунды: выбросить его — занизить себестоимость ровно на
+ * переплату.
+ *
+ * Условие не пишется здесь — его дом `unpriced.ts`, и «вызовы без цены»
+ * панели считаются по нему же. Пока скрипт брал строки без разбора, одни
+ * и те же данные давали в панели одну себестоимость, а здесь другую;
+ * потом условие дважды выравнивали руками, и сверить два написания было
+ * нечем.
+ *
+ * Здесь, а не в скрипте, чтобы выборку можно было вызвать из теста: у
+ * скрипта побочные эффекты с первой строки, и его условие не проверял
+ * никто.
+ */
+export async function loadDumpCalls(
+  db: Executor,
+  since: Date | undefined,
+): Promise<readonly DumpCallRow[]> {
+  return await db
+    .select({
+      batchId: aiCalls.batchId,
+      stage: aiCalls.stage,
+      model: aiCalls.model,
+      modelVersion: aiCalls.modelVersion,
+      tokensIn: aiCalls.tokensIn,
+      tokensOut: aiCalls.tokensOut,
+      audioSeconds: aiCalls.audioSeconds,
+      costMicros: aiCalls.costMicros,
+      costCurrency: aiCalls.costCurrency,
+    })
+    .from(aiCalls)
+    .where(and(paidSql(), since === undefined ? undefined : gte(aiCalls.createdAt, since)));
 }
 
 /** Что стадия потребляет на одну выгрузку, в среднем. */

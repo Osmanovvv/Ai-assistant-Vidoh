@@ -1,8 +1,9 @@
-import { and, eq, gte, isNotNull, or } from 'drizzle-orm';
-
-import { aiCalls } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
-import { collectCost, withCurrentPrices } from '../modules/metering/cost-per-dump.js';
+import {
+  collectCost,
+  loadDumpCalls,
+  withCurrentPrices,
+} from '../modules/metering/cost-per-dump.js';
 import { formatCost, PRICING } from '../modules/metering/pricing.js';
 
 /**
@@ -33,38 +34,12 @@ const db = getDb();
 try {
   const since = days === undefined ? undefined : new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  const rows = await db
-    .select({
-      batchId: aiCalls.batchId,
-      stage: aiCalls.stage,
-      model: aiCalls.model,
-      modelVersion: aiCalls.modelVersion,
-      tokensIn: aiCalls.tokensIn,
-      tokensOut: aiCalls.tokensOut,
-      audioSeconds: aiCalls.audioSeconds,
-      costMicros: aiCalls.costMicros,
-      costCurrency: aiCalls.costCurrency,
-    })
-    .from(aiCalls)
-    /**
-     * Удавшиеся отправки — и оплаченные неудачные.
-     *
-     * С учётом на каждую отправку (§10.5) сорвавшийся заход тоже лежит в
-     * таблице. Обычно ему в себестоимости не место дважды: он ничего не
-     * стоил, а пустая цена вывела бы всю выгрузку в «цена неизвестна».
-     *
-     * Но распознавание платит отправкой, и с ревизии этапов 1–2 такой
-     * отказ несёт свои секунды. Выбросить его — значит занизить
-     * себестоимость ровно на переплату, то есть на то, из-за чего эти
-     * находки и разбирали. Условие — по объёму, а не по признаку успеха:
-     * пустой объём у отказа значит «платить было не за что».
-     */
-    .where(
-      and(
-        or(eq(aiCalls.ok, true), isNotNull(aiCalls.audioSeconds), isNotNull(aiCalls.tokensIn)),
-        since === undefined ? undefined : gte(aiCalls.createdAt, since),
-      ),
-    );
+  /**
+   * Оплаченные отправки — удавшиеся и те, за которые платили без
+   * результата. Условие одно на всех, его дом `metering/unpriced.ts`;
+   * почему скрипт больше не пишет его сам — у `loadDumpCalls`.
+   */
+  const rows = await loadDumpCalls(db, since);
 
   /**
    * Колонка объявлена bigint в режиме числа, преобразование делает
