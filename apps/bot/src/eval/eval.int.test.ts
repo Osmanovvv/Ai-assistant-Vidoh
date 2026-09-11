@@ -63,38 +63,60 @@ const classified = (
   deadlineText: '',
 });
 
+/** Верный ответ на каждом этапе: ровно то, что в ожидании набора. */
+function answerCorrectly(request: CompletionRequest): string {
+  switch (stageOf(request)) {
+    case 'router':
+      return JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'DUMP', text: request.input }],
+      });
+    case 'extractor':
+      return JSON.stringify({
+        units: [
+          unit('купить продукты'),
+          unit('записаться к врачу'),
+          unit('начать бегать по утрам'),
+          unit('я ничего не успеваю'),
+        ],
+      });
+    case 'classifier':
+      return JSON.stringify({
+        items: [
+          classified('купить продукты', 'TASK', 'SOON', 'покупки'),
+          classified('записаться к врачу', 'TASK', 'SOON', 'здоровье'),
+          classified('начать бегать по утрам', 'DESIRE', 'NONE', 'личное'),
+          classified('я ничего не успеваю', 'EMOTION', 'NONE', 'личное'),
+        ],
+      });
+    default:
+      return '{}';
+  }
+}
+
 /** Модель, которая отвечает верно: ровно то, что в ожидании набора. */
 function goodModel(): MockLlmProvider {
+  return new MockLlmProvider({ respond: answerCorrectly });
+}
+
+/**
+ * Маршрутизатор, который увёл всю выгрузку из `DUMP`: единственный отрезок
+ * с намерением `PATCH`. Извлечение и классификация — верные, как у
+ * `goodModel()`: дойди стенд до них, он показал бы полную точность.
+ *
+ * В бою до них дело не доходит: при пустом наборе отрезков `DUMP`
+ * обработка кончается раньше извлечения, и человек не получает ни одной
+ * записи. Стенд обязан показать ту же потерю.
+ */
+function routerLosesEverything(): MockLlmProvider {
   return new MockLlmProvider({
-    respond: (request) => {
-      switch (stageOf(request)) {
-        case 'router':
-          return JSON.stringify({
+    respond: (request) =>
+      stageOf(request) === 'router'
+        ? JSON.stringify({
             crisis: false,
-            segments: [{ intent: 'DUMP', text: request.input }],
-          });
-        case 'extractor':
-          return JSON.stringify({
-            units: [
-              unit('купить продукты'),
-              unit('записаться к врачу'),
-              unit('начать бегать по утрам'),
-              unit('я ничего не успеваю'),
-            ],
-          });
-        case 'classifier':
-          return JSON.stringify({
-            items: [
-              classified('купить продукты', 'TASK', 'SOON', 'покупки'),
-              classified('записаться к врачу', 'TASK', 'SOON', 'здоровье'),
-              classified('начать бегать по утрам', 'DESIRE', 'NONE', 'личное'),
-              classified('я ничего не успеваю', 'EMOTION', 'NONE', 'личное'),
-            ],
-          });
-        default:
-          return '{}';
-      }
-    },
+            segments: [{ intent: 'PATCH', text: request.input }],
+          })
+        : answerCorrectly(request),
   });
 }
 
@@ -265,6 +287,57 @@ describe('порча промпта видна в отчёте', () => {
     expect(verdict.passed).toBe(false);
     expect(verdict.failures.join(' ')).toContain('желаний');
     expect(verdict.failures.join(' ')).toContain('эмоций');
+  });
+});
+
+describe('маршрутизатор увёл всю выгрузку из DUMP', () => {
+  it('все ожидания потеряны, как и в бою, а не найдены по запасному тексту', async () => {
+    // Шестой случай той же болезни: стенд мерил не то, что работает.
+    // При пустом наборе отрезков `DUMP` бой не разбирает ничего, а стенд
+    // подставлял текст случая и показывал «найдено 100%». Регрессия
+    // промпта маршрутизатора, уводящая выгрузку из `DUMP`, оставалась бы
+    // в отчёте невидимой — а человек не получал бы ни одной записи.
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const report = collect(await runDataset(deps(routerLosesEverything(), registry), cases));
+
+    expect(report.found).toBe(0);
+    expect(report.missed).toBe(4);
+    expect(shares(report).recall).toBe(0);
+    // Потеря, а не отказ: разбор прошёл, просто не оставил ничего.
+    // «Разбор не удался» — про сеть и модель, и смешивать их нельзя:
+    // прогон из одних таких случаев не должен выбрасываться как незамер.
+    expect(report.failed).toBe(0);
+    expect(report.crisisDetected).toBe(0);
+  });
+
+  it('порог ловит потерю строкой «найдено единиц»', async () => {
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const verdict = checkThreshold(
+      collect(await runDataset(deps(routerLosesEverything(), registry), cases)),
+    );
+
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('найдено единиц 0.0% ниже порога');
+    expect(verdict.failures.join(' ')).toContain('(0 из 4)');
+    expect(verdict.failures.join(' ')).not.toContain('разбор не удался');
+  });
+
+  it('дальше маршрутизатора денег не тратит — как бой', async () => {
+    // §10.5: бой при пустом `DUMP` не зовёт ни извлечение, ни классификацию.
+    // Стенд, который их зовёт, врал бы и про качество, и про себестоимость.
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const provider = routerLosesEverything();
+    await runDataset(deps(provider, registry), cases);
+
+    expect(provider.callCount).toBe(1);
+    const stages = new Set((await testDb().select().from(aiCalls)).map((call) => call.stage));
+    expect(stages).toEqual(new Set(['router']));
   });
 });
 

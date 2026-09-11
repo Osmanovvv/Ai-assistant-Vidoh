@@ -170,6 +170,7 @@ function askModel(): Promise<CompletionResult> {
       if (attempt > 1) process.stdout.write(`  (попытка ${String(attempt)})\n`);
 
       return provider.complete({
+        stage: stageName as AiStage,
         prompt,
         input,
         jsonSchema: toJsonSchema(stage.schema),

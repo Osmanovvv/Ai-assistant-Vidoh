@@ -88,8 +88,8 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
   const batchId = await openBatch(deps, item);
   const owner = { userId: deps.owner, batchId };
 
-  /** §13.7: при срабатывании кризисного контура разбор прекращается. */
-  const stopped = (): CaseOutcome => ({
+  /** Разбор до записей не дошёл: ни одной единицы, все ожидания потеряны. */
+  const lostAll = (crisisDetected: boolean): CaseOutcome => ({
     id: item.id,
     note: item.note,
     timeZone: item.timeZone,
@@ -100,9 +100,12 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       ambiguous: [],
       retracted: [],
     },
-    crisis: { detected: true, expected: item.expected.crisis },
+    crisis: { detected: crisisDetected, expected: item.expected.crisis },
     promptVersions: versions,
   });
+
+  /** §13.7: при срабатывании кризисного контура разбор прекращается. */
+  const stopped = (): CaseOutcome => lostAll(true);
 
   try {
     /**
@@ -121,6 +124,30 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
     if (detectCrisis(item.text, routed.crisis).detected) return stopped();
 
     const parsed = routed.segments.filter((segment) => segment.intent === 'DUMP');
+
+    /**
+     * Ни одного отрезка `DUMP` — разбор окончен, как в бою.
+     *
+     * Бой на пустом `parsed` до извлечения не доходит: обработка кончается
+     * ветвью `parsed.length === 0` в `dump.handler.ts`, и человек не
+     * получает ни одной записи. Стенд считает так же — **по тому же
+     * условию, а не по пустоте склеенного текста**: все ожидания потеряны,
+     * дальше — ни одного вызова модели.
+     *
+     * **Здесь стоял запасной путь**: при пустом входе извлечению
+     * подавался текст случая целиком. Включался он ровно тогда, когда
+     * бой означает «разобрать нечего», — и показывал «найдено 100%».
+     * Регрессия промпта маршрутизатора, уводящая выгрузку из `DUMP`,
+     * осталась бы в отчёте невидимой. Шестой случай той же болезни;
+     * пятый описан ниже, у `spoken`.
+     *
+     * Потеря, а не отказ (`failed`): разбор прошёл и ничего не оставил —
+     * это наблюдение о качестве, и порог ловит его строкой «найдено
+     * единиц». Отказ — про сеть и модель, прогон из одних отказов в
+     * замеры не идёт; прогон из одних таких потерь идёт: он настоящий.
+     */
+    if (parsed.length === 0) return lostAll(false);
+
     const dumpText = parsed.map((segment) => segment.text).join('\n');
 
     /**
@@ -132,10 +159,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
      */
     const forExtraction = weaveForExtraction(parsed, routed.segments);
 
-    const extracted = await extractUnits(deps.ai, {
-      input: forExtraction === '' ? item.text : forExtraction,
-      ...owner,
-    });
+    const extracted = await extractUnits(deps.ai, { input: forExtraction, ...owner });
     versions.extractor = extracted.promptVersion;
 
     if (!extracted.ok) {
