@@ -1,17 +1,10 @@
 import { closeDb, getDb } from '../infra/db.js';
 import { createLogger } from '../infra/logger.js';
-import { meterCall } from '../modules/metering/ai-calls.repo.js';
 import { createRunGuard } from '../modules/metering/run-guard.js';
-import { basename } from 'node:path';
 
 import { modelEnvSchema } from '../config/env.js';
-import {
-  DEFAULT_AUDIO_LIMITS,
-  prepareAudio,
-  withTempDir,
-} from '../modules/speech/audio.service.js';
-import { callCost, formatCost } from '../modules/metering/pricing.js';
 import { createSpeechProvider } from '../modules/speech/providers/factory.js';
+import { checkSpeechFile } from './lib/check-speech-file.js';
 
 /**
  * Проверка расшифровки на живом файле (задача 1.15).
@@ -62,55 +55,22 @@ if (refusedByCeiling !== undefined) {
 
 const provider = createSpeechProvider(env);
 
-process.stdout.write(`Провайдер: ${provider.name}\nФайл: ${basename(filePath)}\n\n`);
-
-await withTempDir(async (dir) => {
-  const startedAt = Date.now();
-  const prepared = await prepareAudio(filePath, dir, DEFAULT_AUDIO_LIMITS);
-
-  process.stdout.write(
-    `Длительность: ${prepared.durationSec.toFixed(1)} с, частей: ${String(prepared.parts.length)}` +
-      `${prepared.truncated ? ' (хвост обрезан по потолку)' : ''}\n\n`,
-  );
-
-  const texts: string[] = [];
-
-  for (const [index, part] of prepared.parts.entries()) {
-    const partStartedAt = Date.now();
-    const seconds = part.endSec - part.startSec;
-
-    const result = await meterCall(
-      db,
-      { stage: 'speech', model: provider.name },
-      async () => {
-        const transcribed = await provider.transcribe({
-          filePath: part.path,
-          durationSec: seconds,
-          language: env.SPEECH_LANGUAGE,
-        });
-
-        return { value: transcribed, usage: { audioSeconds: Math.ceil(seconds) } };
-      },
-      { guard: guard.spendGuard },
-    );
-
-    const elapsed = ((Date.now() - partStartedAt) / 1000).toFixed(1);
-    process.stdout.write(
-      `Часть ${String(index + 1)} (${part.startSec.toFixed(1)}–${part.endSec.toFixed(1)} с, ` +
-        `${elapsed} с на распознавание):\n${result.text || '(пусто)'}\n\n`,
-    );
-
-    texts.push(result.text);
-  }
-
-  const seconds = Math.round(prepared.durationSec);
-  process.stdout.write(
-    `${'─'.repeat(60)}\nИтоговый текст:\n${texts.filter((text) => text !== '').join(' ')}\n\n` +
-      `Всего: ${((Date.now() - startedAt) / 1000).toFixed(1)} с работы, ` +
-      // Цена берётся из прайс-листа. Пока она там не заполнена, здесь
-      // честно написано «неизвестна», а не выдуманный ноль.
-      `стоимость ${formatCost(callCost(provider.name, { audioSeconds: seconds }))}\n`,
-  );
+/**
+ * Цена файла — только строкой счёта ниже (ревизия этапов 1–2, дефект №18).
+ *
+ * Своей строки «стоимость …» у скрипта больше нет: она считала один
+ * `callCost` на всю запись и расходилась с учётом, где каждая часть
+ * округлена до блока отдельно. Почему так — в докстринге `checkSpeechFile`.
+ */
+await checkSpeechFile({
+  db,
+  provider,
+  spendGuard: guard.spendGuard,
+  filePath,
+  language: env.SPEECH_LANGUAGE,
+  write: (text) => {
+    process.stdout.write(text);
+  },
 });
 
 process.stdout.write(

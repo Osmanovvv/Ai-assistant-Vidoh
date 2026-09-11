@@ -9,9 +9,12 @@ import type { SpendGuard } from '../metering/spend-guard.js';
 import type { StatusTarget } from '../presenter/status.service.js';
 import type { AudioLimits } from '../speech/audio.service.js';
 import type { SpeechProvider } from '../speech/providers/types.js';
-import { AttributionError } from '../speech/attribution.js';
-import { GlueDriftError } from '../speech/audio.service.js';
-import { transcribeMessage, transcribeVoices } from '../speech/speech.service.js';
+import {
+  GlueAbortedError,
+  transcribeMessage,
+  transcribeVoices,
+  type VoicesOutcome,
+} from '../speech/speech.service.js';
 
 /**
  * Расшифровка голосовых выгрузки и склейка её текста (задача 1.15).
@@ -130,7 +133,13 @@ export interface TranscribeResult {
   /** Склеенный текст всей выгрузки: расшифровки и тексты по порядку. */
   readonly combined: string;
   readonly voices: number;
-  /** Сколько запросов к распознавателю понадобилось. */
+  /**
+   * Сколько запросов к распознавателю дали расшифровку.
+   *
+   * Сорвавшийся запрос склейки сюда не входит: его текст выброшен, а
+   * деньги за него считает учёт расхода, где каждая отправка — своя
+   * строка. Число это читают одни тесты.
+   */
   readonly requests: number;
   /**
    * Часть сказанного не расшифрована: запись длиннее десяти минут или
@@ -180,8 +189,8 @@ export async function transcribeBatch(
   let truncated = false;
 
   /** Расшифровка по одному сообщению: путь на единственную запись и откат. */
-  const onePerMessage = async (): Promise<number> => {
-    for (const voice of voices) {
+  const onePerMessage = async (list: typeof voices): Promise<number> => {
+    for (const voice of list) {
       const outcome = await transcribeMessage(speech, {
         messageId: voice.id,
         fileId: voice.fileId,
@@ -201,16 +210,48 @@ export async function transcribeBatch(
       }
     }
 
-    return voices.length;
+    return list.length;
   };
 
   /**
-   * Расшифровка всех голосовых одним запросом. Возвращает undefined, если
-   * склейка сорвалась: тогда остаётся путь по одному сообщению.
+   * Учёт того, что дала склейка — вся или до срыва.
+   *
+   * Одна функция на оба исхода нарочно: обрезка записанной группы — тот же
+   * факт и та же строка журнала независимо от того, дошла ли склейка до
+   * конца. Пока учёт жил только на пути успеха, обрезка групп до срыва
+   * терялась вместе с исключением.
    */
-  const glueAll = async (): Promise<number | undefined> => {
+  const absorbGlued = (outcome: VoicesOutcome): void => {
+    if (outcome.truncated) {
+      truncated = true;
+
+      deps.logger?.warn(
+        { batchId: batch.id, durationSec: outcome.durationSec },
+        'Часть сказанного не расшифрована: упёрлись в потолок',
+      );
+    }
+
+    if (outcome.split > 0) {
+      // Не беда, но знать полезно: столько фраз распознаватель не
+      // разорвал на нашей паузе, и у них потеряна пунктуация. Вырастет
+      // это число — значит паузу пора удлинять.
+      deps.logger?.info(
+        { batchId: batch.id, split: outcome.split },
+        'Фразы на границе сообщений поделены по словам',
+      );
+    }
+  };
+
+  /**
+   * Расшифровка всех голосовых одним запросом. Если склейка сорвалась,
+   * сама уходит на путь по одному сообщению — но только для того, что
+   * ещё не расшифровано.
+   */
+  const glueAll = async (): Promise<number> => {
+    let outcome: VoicesOutcome;
+
     try {
-      const outcome = await transcribeVoices(speech, {
+      outcome = await transcribeVoices(speech, {
         messages: voices.map((voice) => ({
           messageId: voice.id,
           fileId: voice.fileId,
@@ -219,45 +260,47 @@ export async function transcribeBatch(
         userId: batch.userId,
         batchId: batch.id,
       });
-
-      if (outcome.truncated) {
-        truncated = true;
-
-        deps.logger?.warn(
-          { batchId: batch.id, durationSec: outcome.durationSec },
-          'Часть сказанного не расшифрована: упёрлись в потолок',
-        );
-      }
-
-      if (outcome.split > 0) {
-        // Не беда, но знать полезно: столько фраз распознаватель не
-        // разорвал на нашей паузе, и у них потеряна пунктуация. Вырастет
-        // это число — значит паузу пора удлинять.
-        deps.logger?.info(
-          { batchId: batch.id, split: outcome.split },
-          'Фразы на границе сообщений поделены по словам',
-        );
-      }
-
-      return outcome.requests;
     } catch (error) {
-      if (!(error instanceof AttributionError) && !(error instanceof GlueDriftError)) throw error;
+      if (!(error instanceof GlueAbortedError)) throw error;
 
-      // Склейка сорвалась: платим полную цену, но не врём о том, кто что
-      // сказал. Деньги за склеенный запрос уже потрачены — поэтому это
+      // Склейка сорвалась: платим полную цену за нерасшифрованное, но не
+      // врём о том, кто что сказал.
+      //
+      // **Группы до срыва записаны, и их итог приходит с исключением.**
+      // Учитывается он до отката: долгая запись, обрезанная по потолку
+      // §10.5 и записанная первой, в откат уже не попадёт — и без этого
+      // человек не узнал бы, что хвост не расшифрован.
+      absorbGlued(error.done);
+
+      // **Список перечитывается, а не берётся снятый до склейки.** Склейка
+      // пишет расшифровки в базу группа за группой — нарочно, чтобы
+      // повторный заход добирал только нерасшифрованное. Сорваться могла
+      // третья группа из трёх, и первые две уже записаны. Откат по
+      // старому списку качал и оплачивал их второй раз — на живой
+      // выгрузке из девяти голосовых, разложенной в группы 1 + 4 + 4, при
+      // срыве третьей это двенадцать отправок вместо семи — и переписывал
+      // верную расшифровку новым распознаванием того же звука: вернись
+      // оно пустым, вместо сказанного встала бы пустая строка.
+      const pending = await pendingVoices(db, batch.id);
+
+      // Деньги за склеенный запрос уже потрачены — поэтому это
       // предупреждение, а не отладочная строка.
       deps.logger?.warn(
-        { batchId: batch.id, err: error, voices: voices.length },
+        { batchId: batch.id, err: error, voices: voices.length, pending: pending.length },
         'Склейка не удалась, расшифровываю по одному сообщению',
       );
 
-      return undefined;
+      return error.done.requests + (await onePerMessage(pending));
     }
+
+    absorbGlued(outcome);
+
+    return outcome.requests;
   };
 
-  let requests: number | undefined;
-  if (canGlue(deps.provider, voices.length)) requests = await glueAll();
-  requests ??= await onePerMessage();
+  const requests = canGlue(deps.provider, voices.length)
+    ? await glueAll()
+    : await onePerMessage(voices);
 
   return {
     combined: await combineBatch(db, batch.id),

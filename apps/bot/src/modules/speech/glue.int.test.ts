@@ -1,18 +1,24 @@
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { Writable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import { asc, eq } from 'drizzle-orm';
+import type { Logger } from 'pino';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { aiCalls, batches, messagesRaw, type Batch } from '../../db/schema.js';
+import { createLogger } from '../../infra/logger.js';
 import { makeAudio } from '../../test/audio.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
+import { SPEECH_BILLING_BLOCK_SEC } from '../metering/pricing.js';
 import { transcribeBatch } from '../pipeline/transcribe.js';
 import { upsertUser } from '../users/users.repo.js';
-import { GLUE_PAUSE_SEC } from './audio.service.js';
+import { DEFAULT_AUDIO_LIMITS, GLUE_PAUSE_SEC } from './audio.service.js';
 import { probeDurationSec } from './ffmpeg.js';
+import { groupVoices } from './grouping.js';
 import type {
   RecognizedUtterance,
   SpeechProvider,
@@ -35,6 +41,8 @@ import { transcribeVoices } from './speech.service.js';
  * сообщение. На ней держатся выгрузка данных по §16, повторный заход
  * после сбоя и порядок текста выгрузки.
  */
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 /** Длительности трёх записей, из которых считаются границы внутри склейки. */
 const SECONDS = [2, 3, 4] as const;
@@ -193,6 +201,24 @@ async function download(fileId: string, destPath: string): Promise<void> {
   await copyFile(join(dir, `${fileId}.wav`), destPath);
 }
 
+/** Журнал в память: проверяется то, что в него попало, а не то, что хотели написать. */
+function loggerWithSink(): { readonly logger: Logger; readonly messages: string[] } {
+  const messages: string[] = [];
+
+  const sink = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      for (const line of chunk.toString('utf8').split('\n')) {
+        if (line.trim() === '') continue;
+        const record = JSON.parse(line) as { readonly msg?: string };
+        if (record.msg !== undefined) messages.push(record.msg);
+      }
+      callback();
+    },
+  });
+
+  return { logger: createLogger({ level: 'info' }, sink), messages };
+}
+
 /** Одно слово в начале своей записи: этого хватает, чтобы проверить адрес. */
 function utteranceAt(text: string, startSec: number): RecognizedUtterance {
   const startMs = Math.round((startSec + 0.3) * 1000);
@@ -256,6 +282,100 @@ describe('расшифровка выгрузки одним запросом', 
     const calls = await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId));
     expect(calls).toHaveLength(1);
     expect(calls[0]?.audioSeconds).toBe(11);
+  });
+
+  it('скрипт ручной проверки обещает человеку ту же одну строку, а не три', async () => {
+    /**
+     * `ops/check-voice.sh` — единственная проверка голосового пути на
+     * живом боте: ссылка на файл живёт у Telegram, и автотесту её не
+     * получить. В конце скрипт говорит человеку, что должно получиться.
+     * До склейки там стояло «по строке на каждое голосовое», и после неё
+     * это осталось (ревизия этапов 1–2, дефект 17): человек, идущий по
+     * рантбуку перед сдачей, увидел бы одну строку вместо трёх и пошёл бы
+     * искать поломку там, где всё в порядке.
+     *
+     * Страж читает текст, потому что ничего другого о скрипте прочесть
+     * нельзя: сам он ходит по ssh на боевой сервер. Читается только блок
+     * «Что должно получиться» — ровно то, что видит человек, — поэтому
+     * комментарий скрипта, вспомнивший старую формулировку, стража не
+     * обманет. Число строк здесь не переписано из соседа, а сосчитано
+     * заново тем же прогоном: уберут склейку — покраснеет и он, и сосед,
+     * и текст скрипта придётся править вместе с кодом.
+     *
+     * Одна строка — правда только для коротких записей: раскладка
+     * (grouping.ts) не клеит там, где склейка не дешевле или не влезает
+     * в запрос, и три записи по 15 секунд дают три строки при исправной
+     * склейке. Безусловное «одна строка» послало бы человека с настоящими
+     * голосовыми по полминуты искать поломку там, где всё в порядке, —
+     * та же ошибка, что чинилась, с обратным знаком. Поэтому стережётся
+     * и условие: обещание его называет, а предел из шапки сходится с
+     * раскладкой на боевых параметрах — тех же, что взял прогон выше.
+     */
+    const bounds = intervals();
+    const provider = new TimedProvider([utteranceAt('Одна фраза.', bounds[0]?.startSec ?? 0)]);
+
+    await transcribeVoices(
+      { db: testDb(), provider, download },
+      { messages: voices(), userId, batchId: batch.id },
+    );
+
+    const speechRows = (
+      await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId))
+    ).filter((row) => row.stage === 'speech');
+    expect(speechRows).toHaveLength(1);
+    expect(voices()).toHaveLength(3);
+
+    const script = await readFile(resolve(root, 'ops/check-voice.sh'), 'utf8');
+    const block = /say "Что должно получиться"[\s\S]*?cat <<'EOF'\n([\s\S]*?)\nEOF/u.exec(
+      script,
+    )?.[1];
+    // Пропади блок — стеречь было бы нечего, и пусть краснеет страж, а не человек.
+    expect(block, 'в скрипте нет блока «Что должно получиться»').toBeDefined();
+
+    const sentence = /В ai_calls[^.]*\./u.exec((block ?? '').replace(/\s+/gu, ' '))?.[0];
+    expect(sentence, 'скрипт ничего не обещает про ai_calls').toBeDefined();
+
+    // Одна строка на три голосовых — то, что только что сосчитано выше.
+    expect(sentence).toMatch(/одна строка/u);
+    expect(sentence).toMatch(/три голосовых/u);
+    expect(sentence).not.toMatch(/каждое голосовое/u);
+
+    // …и только на короткие: обещание обязано назвать своё условие.
+    expect(sentence).toMatch(/коротк/u);
+
+    // Какие записи короткие, говорит шапка. Ниже её предела три записи
+    // любой длины уходят одним запросом — иначе «одна строка» была бы
+    // обещана зря; на самом пределе уже тремя — и блок обязан назвать
+    // три строки при таких длинах нормой, а не поломкой.
+    const header = script.slice(0, script.indexOf('\nset -'));
+    const threshold = /короче (\d+) секунд/u.exec(header)?.[1];
+    expect(threshold, 'шапка скрипта не говорит, какие записи короткие').toBeDefined();
+    const limit = Number(threshold);
+
+    const requestsFor = (...durations: readonly number[]): number =>
+      groupVoices(
+        durations.map((durationSec, index) => ({ messageId: String(index), durationSec })),
+        {
+          capacitySec: DEFAULT_AUDIO_LIMITS.maxSegmentSec,
+          pauseSec: GLUE_PAUSE_SEC,
+          blockSec: SPEECH_BILLING_BLOCK_SEC,
+        },
+      ).length;
+
+    for (let first = 1; first < limit; first++) {
+      for (let second = 1; second < limit; second++) {
+        for (let third = 1; third < limit; third++) {
+          expect(
+            requestsFor(first, second, third),
+            `записи ${String(first)}, ${String(second)} и ${String(third)} с должны уйти одним запросом`,
+          ).toBe(1);
+        }
+      }
+    }
+    expect(requestsFor(limit, limit, limit)).toBe(3);
+
+    expect(block).toMatch(new RegExp(`от ${String(limit)} секунд`, 'u'));
+    expect(block).toMatch(/не поломка/u);
   });
 
   it('ссылка на файл снимается: держать её дольше обработки нельзя', async () => {
@@ -488,5 +608,161 @@ describe('потолок на выгрузку (§10.5 ТЗ)', () => {
     });
 
     expect(result.truncated).toBe(true);
+  });
+});
+
+describe('откат от склейки после сорвавшейся группы', () => {
+  /**
+   * Провайдер, у которого времена слов есть только в первом ответе.
+   *
+   * Первая группа раскладывается и записывается; вторая приходит без
+   * времён, и раскладка отказывается от неё. Дальше — запросы по одному
+   * сообщению, в которых времена не нужны.
+   */
+  class TimesOnceProvider implements SpeechProvider {
+    readonly name = 'fake-times-once';
+    readonly timeline = true;
+    calls = 0;
+
+    constructor(private readonly first: readonly RecognizedUtterance[]) {}
+
+    transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+      this.calls++;
+
+      const utterances = this.calls === 1 ? this.first : [{ text: 'по одному', words: [] }];
+
+      return Promise.resolve({
+        text: utterances.map((utterance) => utterance.text).join(' '),
+        model: 'fake',
+        audioSeconds: Math.round(request.durationSec),
+        utterances,
+      });
+    }
+  }
+
+  /** Длительность четвёртой записи: файл тот же, что у второй. */
+  const FOURTH_SEC = SECONDS[1];
+
+  beforeEach(async () => {
+    // Четвёртая запись — чтобы групп вышло две и обе клеились: на трёх
+    // записях вторая группа всегда одиночная, а одиночная не срывается.
+    const [row] = await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_000 + seq * 100 + SECONDS.length,
+        tgChatId: 9100 + seq,
+        tgMessageId: SECONDS.length + 1,
+        kind: 'voice',
+        fileId: 'v1',
+        audioDurationSec: FOURTH_SEC,
+      })
+      .returning({ id: messagesRaw.id });
+
+    messageIds.push(row?.id ?? '');
+    await attachMessageToBatch(testDb(), { userId, messageId: row?.id ?? '' });
+  });
+
+  it('уже записанные группы второй раз не оплачиваются и не переписываются', async () => {
+    // Склейка пишет расшифровки в базу группа за группой — нарочно,
+    // чтобы повторный заход добирал только нерасшифрованное. Откат по
+    // списку, снятому до склейки, этого не знал: качал и оплачивал все
+    // записи заново, а верную расшифровку первой группы затирал новым
+    // распознаванием того же звука.
+    const bounds = intervals();
+    const provider = new TimesOnceProvider([
+      utteranceAt('Первое.', bounds[0]?.startSec ?? 0),
+      utteranceAt('Второе.', bounds[1]?.startSec ?? 0),
+    ]);
+
+    // Потолок запроса девять секунд: 2 + 3 + пауза влезают, 4 + 3 + пауза
+    // влезают, все четыре — нет. Две группы, обе склеиваются.
+    await transcribeBatch(testDb(), batch, {
+      provider,
+      download,
+      limits: { maxSegmentSec: 9, maxSingleDurationSec: 600 },
+    });
+
+    // Первая группа осталась тем, что дала склейка; по одному
+    // расшифрованы только две записи сорвавшейся группы.
+    expect(await transcriptsInOrder()).toEqual(['Первое.', 'Второе.', 'по одному', 'по одному']);
+
+    // Счёт: удавшаяся склейка, сорвавшаяся и две по одному. Каждая
+    // отправка — строка учёта, и лишних строк быть не должно: до починки
+    // их выходило шесть.
+    const calls = await testDb().select().from(aiCalls).where(eq(aiCalls.userId, userId));
+    expect(calls, 'строк учёта').toHaveLength(4);
+    expect(provider.calls).toBe(4);
+  });
+});
+
+describe('обрезка групп, удавшихся до срыва склейки', () => {
+  /**
+   * Провайдер с заявленными, но пустыми временами: нумерует ответы.
+   *
+   * Одиночной записи времена не нужны, и её расшифровка записывается;
+   * склеенная группа без времён не раскладывается — срыв. По номерам
+   * видно, чей текст лежит в каждом сообщении: одинаковое «что-то
+   * сказано» не отличило бы записанное до срыва от переписанного.
+   */
+  class NumberedNoTimesProvider implements SpeechProvider {
+    readonly name = 'fake-numbered-no-times';
+    readonly timeline = true;
+    calls = 0;
+
+    transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+      this.calls++;
+      const text = `запись ${String(this.calls)}`;
+
+      return Promise.resolve({
+        text,
+        model: 'fake',
+        audioSeconds: Math.round(request.durationSec),
+        utterances: [{ text, words: [] }],
+      });
+    }
+  }
+
+  beforeEach(async () => {
+    // Первая запись — долгая: одна в своей группе и длиннее потолка
+    // записи. За ней две короткие, которые склеиваются — и срываются.
+    await testDb()
+      .update(messagesRaw)
+      .set({ fileId: LONG_FILE_ID, audioDurationSec: LONG_FILE_SEC })
+      .where(eq(messagesRaw.id, messageIds[0] ?? ''));
+  });
+
+  it('обрезка записи, записанной до срыва, доходит до ответа и до журнала', async () => {
+    // Раньше флаг обрезки «восстанавливался» побочным эффектом переплаты:
+    // откат расшифровывал длинную запись заново и снова её обрезал. Как
+    // только откат перестал платить за записанное, флаг пропал бы вместе
+    // с исключением — и человек не узнал бы, что хвост не расшифрован.
+    const provider = new NumberedNoTimesProvider();
+    const { logger, messages } = loggerWithSink();
+
+    // Потолок запроса девять секунд: долгая запись (20 с) одна в группе,
+    // 3 + 4 + пауза — вторая, склеиваемая. Потолок записи пять секунд:
+    // долгая обрезается.
+    const result = await transcribeBatch(testDb(), batch, {
+      provider,
+      download,
+      logger,
+      limits: { maxSegmentSec: 9, maxSingleDurationSec: 5 },
+    });
+
+    // Долгая расшифрована первым запросом и не переписана; второй запрос —
+    // сорвавшаяся склейка, его текст выброшен; по одному ушли только две
+    // записи сорвавшейся группы.
+    expect(await transcriptsInOrder()).toEqual(['запись 1', 'запись 3', 'запись 4']);
+    expect(provider.calls).toBe(4);
+    expect(result.requests).toBe(3);
+
+    // Хвост долгой записи не расшифрован, и ответ обязан об этом сказать
+    // (§10.5 ТЗ).
+    expect(result.truncated).toBe(true);
+
+    // И журнал тоже: раньше обрезку писал только удавшийся до конца
+    // проход склейки.
+    expect(messages).toContain('Часть сказанного не расшифрована: упёрлись в потолок');
   });
 });
