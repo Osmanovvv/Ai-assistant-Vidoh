@@ -242,7 +242,7 @@ export function nextOccurrence(
   let candidate = skipWholePeriods(rule, anchor, today);
 
   for (let step = 0; step < STEP_BUDGET; step++) {
-    candidate = advance(rule, candidate);
+    candidate = advance(rule, anchor, candidate);
     if (compare(candidate, today) > 0) return startOfDayInZone(candidate, params.timeZone);
   }
 
@@ -304,11 +304,9 @@ function daysBetween(from: DateParts, to: DateParts): number {
  * поэтому точен так же. Попасть на субботу он может только из субботы, а
  * такую дату цикл наружу не отдаёт: он сравнивает уже сделав шаг.
  *
- * **Месячные и годовые не перешагиваются, и это нарочно.** У них шаг
- * зависит от длины месяца: 31 января плюс месяц — это 28 февраля, а
- * дальше 28 марта, а не 31-е. Обход и прыжок дали бы **разные** ряды, то
- * есть прыжок молча изменил бы сроки уже заведённых дел. Считать их по
- * одному не жалко: тремя тысячами шагов покрываются двести пятьдесят лет.
+ * **Месячные и годовые не перешагиваются.** У них нет постоянного шага в
+ * сутках — длина месяца плавает, — а считать их по одному не жалко:
+ * тремя тысячами шагов покрываются двести пятьдесят лет.
  */
 function skipWholePeriods(rule: RecurrenceRule, from: DateParts, today: DateParts): DateParts {
   const period = periodInDays(rule);
@@ -342,7 +340,8 @@ function periodInDays(rule: RecurrenceRule): number {
   }
 }
 
-function advance(rule: RecurrenceRule, from: DateParts): DateParts {
+/** Следующее повторение после `from`; `anchor` нужен месячным и годовым. */
+function advance(rule: RecurrenceRule, anchor: DateParts, from: DateParts): DateParts {
   switch (rule.kind) {
     case 'daily':
       return addDays(from, rule.interval);
@@ -358,11 +357,31 @@ function advance(rule: RecurrenceRule, from: DateParts): DateParts {
       return addDays(from, 7 * rule.interval);
 
     case 'monthly':
-      return addMonths(from, rule.interval);
+      return monthsFromAnchor(anchor, from, rule.interval);
 
     case 'yearly':
-      return addMonths(from, 12 * rule.interval);
+      return monthsFromAnchor(anchor, from, 12 * rule.interval);
   }
+}
+
+/**
+ * Месячный шаг — от якоря, а не от предыдущего повторения.
+ *
+ * Зажим «31 января плюс месяц — 28 февраля» верен на один шаг. Но шаг от
+ * **уже зажатого** 28-го давал 28 марта, и зажим накапливался: 31.08 →
+ * 30.09 → 30.10, а после февраля — 28-е до конца дней. Человек заводил
+ * «оплатить 31-го», а через полгода видел «28-го» и не понимал, откуда
+ * оно взялось; состояния для промаха не нужно — пересчёт всегда идёт от
+ * якоря, так что промах постоянный. План (2.18а) обещает обратное: на
+ * последний день сдвигает **короткий** месяц, и только он.
+ *
+ * Число повторения — это число якоря. Зажимается только день, а год и
+ * месяц у кандидата всегда точные, поэтому месяцев от якоря до него —
+ * ровно столько, сколько прошло шагов; ещё один шаг — и снова от якоря.
+ */
+function monthsFromAnchor(anchor: DateParts, from: DateParts, months: number): DateParts {
+  const elapsed = (from.year - anchor.year) * 12 + (from.month - anchor.month);
+  return addMonths(anchor, elapsed + months);
 }
 
 /**

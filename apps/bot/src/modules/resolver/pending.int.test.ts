@@ -2,9 +2,10 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, items, pendingQuestions, type Item } from '../../db/schema.js';
+import type { Database } from '../../infra/db.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
-import { askQuestion } from './questions.repo.js';
+import { answerQuestion, askQuestion } from './questions.repo.js';
 import { settlePendingQuestion } from './pending.js';
 
 /**
@@ -24,8 +25,9 @@ let batchId = '';
 let item: Item;
 let seq = 0;
 
-async function ask(): Promise<void> {
-  await askQuestion(testDb(), {
+/** Заводит вопрос; возвращает его идентификатор — кнопке он нужен. */
+async function ask(): Promise<string> {
+  const question = await askQuestion(testDb(), {
     userId,
     itemId: item.id,
     batchId,
@@ -42,6 +44,8 @@ async function ask(): Promise<void> {
     },
     now: NOW,
   });
+
+  return question.id;
 }
 
 async function settle(answerText?: string) {
@@ -386,4 +390,92 @@ describe('вопрос сняли, пока шла расшифровка (§9.1
     expect(again.leftoverSaved, 'черновик положен второй раз').toBeUndefined();
     expect(await draftTexts()).toEqual(['купить чехол']);
   });
+
+  it('кнопка успела между чтением вопроса и записью ответа: слова сверх ответа спасены', async () => {
+    /**
+     * Второй путь к той же потере, и до этого стража — незащищённый.
+     *
+     * Вопрос ещё открыт, когда разбор его читает, а к моменту записи
+     * ответа его уже закрыла кнопка: разбор получает `stale`. Окно
+     * узкое — между двумя обращениями к базе, — но нажатие приходит
+     * своим апдейтом и в это окно попадает. Раньше здесь стояло голое
+     * `{ kind: 'none' }`, и «купить чехол» пропадало так же молча, как
+     * при вопросе, снятом до разбора.
+     *
+     * Гонка воспроизводится по-настоящему: та же `answerQuestion`, что
+     * стоит у кнопки, вклинивается перед первым обновлением базы — тем
+     * самым, которым разбор пытается записать ответ.
+     */
+    const questionId = await ask();
+
+    const live = testDb();
+    let pressed = false;
+    const press = async (): Promise<void> => {
+      pressed = true;
+      await answerQuestion(live, { questionId, userId, outcome: 'attached' });
+    };
+
+    const result = await settlePendingQuestion(pressedBeforeFirstUpdate(live, press), {
+      userId,
+      batchId,
+      timeZone: MOSCOW,
+      answerText: 'да, к прошлой, и ещё купить чехол',
+      now: NOW,
+    });
+
+    expect(pressed, 'гонка не случилась — страж мерил не то').toBe(true);
+    expect(result.kind).toBe('none');
+    expect(result.leftoverSaved, 'слова сверх ответа пропали молча').toBe(true);
+    expect(await draftTexts()).toContain('купить чехол');
+
+    // Правку применила кнопка; разбор её не повторяет и ответ кнопки не
+    // затирает.
+    expect((await reread()).deadlineAt).toBeNull();
+    const [question] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.id, questionId));
+    expect(question?.outcome).toBe('attached');
+  });
 });
+
+/**
+ * База, в которой нажатие кнопки вклинивается перед первым обновлением.
+ *
+ * Прокси, а не копия: клиент базы — экземпляр класса, копирование
+ * потеряло бы прототип. Построитель запроса у drizzle — цепочка методов,
+ * которая выполняется только при `await`, поэтому перехватывается
+ * `then`: сперва кнопка, потом сам запрос. Только первое обновление:
+ * дальше разбор должен работать с настоящей базой как есть.
+ */
+function pressedBeforeFirstUpdate(live: Database, press: () => Promise<void>): Database {
+  let intercepted = false;
+
+  const deferred = (builder: object): object =>
+    new Proxy(builder, {
+      get(target, key, receiver): unknown {
+        const value: unknown = Reflect.get(target, key, receiver);
+        if (typeof value !== 'function') return value;
+
+        if (key === 'then') {
+          type Then = (onDone: unknown, onFail: unknown) => unknown;
+          return (onDone: unknown, onFail: unknown) =>
+            press().then(() => (value as Then).call(target, onDone, onFail));
+        }
+
+        // Шаг цепочки: результат тоже под прокси, иначе `await` уйдёт мимо.
+        return (...args: unknown[]) =>
+          deferred((value as (...inner: unknown[]) => object).apply(target, args));
+      },
+    });
+
+  return new Proxy(live, {
+    get(target, key, receiver): unknown {
+      const value: unknown = Reflect.get(target, key, receiver);
+      if (key !== 'update' || intercepted) return value;
+
+      intercepted = true;
+      return (table: unknown) => deferred((value as (what: unknown) => object).call(target, table));
+    },
+  });
+}

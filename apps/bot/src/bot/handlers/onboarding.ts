@@ -33,6 +33,7 @@ import {
   appendTopics,
   archiveTopicsExcept,
   listTopics,
+  normalizeTopicName,
   topicsFor,
   type ArchivedTopic,
 } from '../../modules/topics/topics.repo.js';
@@ -418,6 +419,31 @@ export function registerOnboardingHandlers(
     }
 
     /**
+     * Снятая сфера не предлагается обратно (ревизия этапов 1–2, дефект 29).
+     *
+     * С задачи 3.43 базовые сферы есть до опроса, и дела в них уже лежат.
+     * Человек снимает «покупки» галочкой → тема уходит в архив → её дела
+     * переезжают в «личное» → имя «покупки» возвращается из переноса как
+     * потерянное — и следующая же реплика спрашивала: «добавить покупки?».
+     * Выбор человека возвращался к нему вопросом в том же обмене.
+     *
+     * §6.4 просит предлагать сферу, которой человеку **не хватило**, а не
+     * ту, от которой он только что отказался. Поэтому из потерянных имён
+     * вычитаются архивированные этим же ответом. Остальные — например,
+     * «дети» у того, кто их не отмечал и такой темы никогда не имел, —
+     * предлагаются по-прежнему.
+     *
+     * Сравнение по общему правилу имён (регистр, «ё»): имя в записи и имя
+     * темы — одна и та же строка из списка, но правило одно на проект.
+     *
+     * `orphaned` в журнале остаётся полным: разбирающему важно видеть,
+     * откуда переехали дела, а `offered` рядом показывает, что из этого
+     * дошло до вопроса и почему разница не пустая.
+     */
+    const refused = new Set(archived.map((topic) => normalizeTopicName(topic.name)));
+    const offered = orphaned.filter((name) => !refused.has(normalizeTopicName(name)));
+
+    /**
      * §8.2 и §12.2: по ответам человека появляются ветки и закреплённые
      * сводки в них. Делается здесь, а не отдельным обходом: сводка сама
      * создаёт ветку, если её нет.
@@ -467,6 +493,7 @@ export function registerOnboardingHandlers(
         fallback: result.fallback,
         moved,
         orphaned,
+        offered,
         summaries,
       },
       'Онбординг пройден',
@@ -483,12 +510,15 @@ export function registerOnboardingHandlers(
      * Найдено на живой выкладке этапа 2: потерянные названия сфер
      * записывались в журнал и больше никуда. У человека десять покупок
      * ушло в «личное», а сказать ему об этом было некому.
+     *
+     * Предлагается `offered`, а не всё потерянное: снятые этим же ответом
+     * сферы отсеяны выше.
      */
     const finishedText = result.fallback
       ? state.texts.onboarding.finishedDefault
       : state.texts.onboarding.finished;
 
-    const offer = orphaned.length > 0 ? offerTopicsQuestion(state.texts, orphaned) : undefined;
+    const offer = offered.length > 0 ? offerTopicsQuestion(state.texts, offered) : undefined;
 
     if (offer === undefined) {
       await ctx.editMessageText(finishedText);

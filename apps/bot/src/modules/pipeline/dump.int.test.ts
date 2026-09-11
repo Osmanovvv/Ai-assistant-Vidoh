@@ -27,7 +27,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
-import { askQuestion } from '../resolver/questions.repo.js';
+import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
 import { revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
@@ -2689,6 +2689,71 @@ describe('ответ на уточняющий вопрос голосом (§7.
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts.map((row) => row.text)).toContain('купить чехол');
     expect(all.join(NEWLINE)).toContain(defaultTexts.resolver.leftoverSaved);
+  });
+
+  it('вопрос уже снят кнопкой: лишнее сохранено и названо, «расскажешь, что в голове?» не звучит', async () => {
+    /**
+     * Ревизия этапов 1–2, дефект 10 (закрыт коммитом 829965d).
+     *
+     * Кнопку нажали, пока шла расшифровка: к разбору вопроса уже нет.
+     * Саму правку применила кнопка — повторять её нельзя. А слова сверх
+     * ответа раньше пропадали молча, и раз в выгрузке больше ничего не
+     * было, человек получал «Я здесь. Расскажешь, что в голове?» на
+     * только что сказанное — то есть «я тебя не слышала».
+     *
+     * Связка, а не служба: спасение проверено в pending.int.test.ts.
+     * Здесь важно, что разбор его слышит — говорит про черновик и не
+     * добавляет следом «не поняла».
+     */
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion();
+    const [open] = await testDb()
+      .select({ id: pendingQuestions.id })
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    // Кнопка успела раньше разбора — той же дорогой, что и в боте.
+    const pressed = await answerQuestion(testDb(), {
+      questionId: open!.id,
+      userId,
+      outcome: 'attached',
+    });
+    expect(pressed.kind).toBe('answered');
+
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'да, к прошлой, и ещё купить чехол', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'ANSWER', text: 'да, к прошлой, и ещё купить чехол' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(
+      saved.filter((row) => row.isDraft).map((row) => row.text),
+      'слова сверх ответа пропали',
+    ).toContain('купить чехол');
+
+    const heard = all.join(NEWLINE);
+    expect(heard).toContain(defaultTexts.resolver.leftoverSaved);
+    expect(heard, 'человеку сказано «не поняла» на только что сказанное').not.toContain(
+      defaultTexts.answer.nothingToParse,
+    );
+
+    // Правку кнопки разбор не повторил: срок так и не поставлен.
+    const [asked] = saved.filter((row) => row.id === itemId);
+    expect(asked?.deadlineAt).toBeNull();
   });
 });
 
