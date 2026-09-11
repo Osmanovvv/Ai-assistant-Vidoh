@@ -6,6 +6,7 @@ import { isMessageGone } from '../../bot/message-gone.js';
 import { items, topics, type Item } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDateParts } from '../classifier/dates.js';
+import { OPEN_STATUSES } from '../items/items.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import {
   isThreadGone,
@@ -31,9 +32,6 @@ import { titleWithoutDate } from '../resolver/title-date.js';
 
 /** Сколько записей показывать. Сводка — это обзор, а не полный бэклог. */
 const MAX_LINES = 15;
-
-/** Статусы, при которых дело ещё ждёт действия. */
-const OPEN_STATUSES = ['new', 'active', 'in_progress', 'waiting'] as const;
 
 export interface SummaryDeps {
   readonly db: Executor;
