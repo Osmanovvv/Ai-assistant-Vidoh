@@ -362,11 +362,19 @@ async function consentView(
   const code = CODE_OF_RAIL[params.rail];
   const flag = params.consented ? '1' : '0';
 
+  // Оговорка про иностранные карты — только на экране карты (п. 7.10).
+  const foreign =
+    params.rail === 'robokassa:smz'
+      ? `${texts.billing.foreignCardNote}
+
+`
+      : '';
+
   return {
     ok: true,
     text: `${texts.billing.consentScreen(priceText(price), untilText(firstCharge))}
 
-${params.consented ? texts.billing.consentOn : texts.billing.consentOff}`,
+${foreign}${params.consented ? texts.billing.consentOn : texts.billing.consentOff}`,
     keyboard: {
       inline_keyboard: [
         [

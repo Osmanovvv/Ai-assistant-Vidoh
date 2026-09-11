@@ -549,6 +549,8 @@ describe('согласие на автосписания — §14, оферта 
     expect(text).not.toContain(defaultTexts.billing.consentOn);
     expect(text).toContain('399 ₽');
     expect(text).toContain('раз в месяц');
+    // Оферта п. 7.10: об иностранных картах сказано до оплаты картой.
+    expect(text).toContain(defaultTexts.billing.foreignCardNote);
 
     const buttons = buttonsOf(screen);
 
@@ -679,6 +681,8 @@ describe('согласие на автосписания — §14, оферта 
 
     expect(textOf(sent(calls)[0])).toContain(defaultTexts.billing.consentOff);
     expect(textOf(sent(calls)[0])).toContain('250 ⭐');
+    // У звёзд карты нет — оговорка про иностранные карты не к месту.
+    expect(textOf(sent(calls)[0])).not.toContain(defaultTexts.billing.foreignCardNote);
 
     await bot.handleUpdate(callbackUpdate(`${BILLING_ACTION.goPrefix}s:0`));
 
