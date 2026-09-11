@@ -44,8 +44,15 @@ describe.each(['Caddyfile', 'Caddyfile.selfsigned'])('прокси %s', (file) =
   const config = routesOf(file);
 
   it.each(OPEN_PATHS)('открывает %s и ведёт его к боту', (path) => {
+    /**
+     * Внутри блока могут стоять и другие директивы — `log_skip` у панели
+     * появился ровно так (ревизия, группа d), и страж, требовавший «только
+     * reverse_proxy», покраснел на чужой верной правке. Проверяется то,
+     * что важно: блок для пути есть, и до его закрывающей скобки в нём
+     * стоит `reverse_proxy bot:3000`.
+     */
     const block = new RegExp(
-      String.raw`handle ${path.replace('*', String.raw`\*`)} \{\s*reverse_proxy bot:3000\s*\}`,
+      String.raw`handle ${path.replace('*', String.raw`\*`)} \{[^}]*reverse_proxy bot:3000[^}]*\}`,
       'u',
     );
 
