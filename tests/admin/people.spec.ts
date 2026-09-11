@@ -1,6 +1,25 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Request } from '@playwright/test';
 
 import { signIn } from './panel.js';
+
+/**
+ * Что искали этим запросом: `q` из тела POST или из строки запроса.
+ *
+ * Строка запроса — прежняя форма поиска, та, что уносила имя в журнал
+ * Caddy. Помощник обязан видеть и её: тогда страж ниже покраснеет на
+ * методе, а не промолчит, не заметив запроса вовсе.
+ */
+function searchedFor(request: Request): string | undefined {
+  const fromUrl = new URL(request.url()).searchParams.get('q');
+
+  if (fromUrl !== null) return fromUrl;
+
+  if (request.method() !== 'POST') return undefined;
+
+  const body = request.postDataJSON() as { readonly q?: unknown } | null;
+
+  return typeof body?.q === 'string' ? body.q : undefined;
+}
 
 /**
  * Обзор, список людей и карточка (§15; задачи 4.6 и 4.12).
@@ -355,8 +374,8 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
 
     let asked = 0;
 
-    await page.route('**/admin/api/people?**', async (route) => {
-      if (route.request().url().includes('q=')) asked += 1;
+    await page.route('**/admin/api/people**', async (route) => {
+      if (searchedFor(route.request()) !== undefined) asked += 1;
       await route.continue();
     });
 
@@ -369,5 +388,51 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     await page.waitForTimeout(700);
 
     expect(asked).toBe(1);
+  });
+
+  test('имя из поиска едет в теле запроса, а не в адресе', async ({ page }) => {
+    /**
+     * Ревизия этапов 1–2: перед ботом стоит Caddy, и он пишет адрес
+     * запроса целиком — в журнал доступа на каждый запрос и в журнал
+     * ошибок на каждый отказ прокси. Поиск `GET /people?q=<имя>` уносил
+     * имя человека туда, откуда его не вычистит ни маска логгера бота,
+     * ни удаление данных по §16. Тела запроса Caddy не пишет никогда.
+     *
+     * Проверяется в браузере, потому что здесь сходятся обе половины:
+     * панель собирает запрос, бот его понимает. Проверки по отдельности
+     * зелёные и при разошедшемся ключе — тогда поиск просто «никого не
+     * находит», и человек решит, что такого человека нет.
+     */
+    await signIn(page, 'Пользователи');
+    await expect(page.getByTestId('people')).toBeVisible();
+
+    const sent: { readonly url: string; readonly method: string; readonly q?: string }[] = [];
+
+    await page.route('**/admin/api/people**', async (route) => {
+      const request = route.request();
+      const q = searchedFor(request);
+
+      sent.push({
+        url: request.url(),
+        method: request.method(),
+        ...(q === undefined ? {} : { q }),
+      });
+      await route.continue();
+    });
+
+    await page.locator('input[name="q"]').fill('Аня');
+    await expect(page.getByRole('row', { name: /Аня/u })).toBeVisible();
+
+    const search = sent.filter((one) => one.q !== undefined);
+
+    // Поиск ушёл — и нашёл: строка выше видна. Не ушёл бы — проверка
+    // ниже была бы пустой и зелёной.
+    expect(search.map((one) => one.q)).toEqual(['Аня']);
+    expect(search.map((one) => one.method)).toEqual(['POST']);
+
+    for (const one of sent) {
+      expect(one.url, 'в адресе запроса строка запроса: Caddy запишет её').not.toContain('?');
+      expect(decodeURIComponent(one.url)).not.toContain('Аня');
+    }
   });
 });

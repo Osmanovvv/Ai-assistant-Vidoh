@@ -1307,6 +1307,56 @@ describe('удаление данных отменяет продление у �
     expect(outcome).toEqual({ stopped: [], failed: [] });
   });
 
+  it('робокассная подписка отменяется нашей отметкой: ключа у неё нет и не бывает', async () => {
+    /**
+     * Дефект №20 ревизии. У Робокассы `readEvent` поля `subscriptionRef`
+     * не отдаёт — дочернее списание уходит **от нас** по строке
+     * `billing_subscriptions`, и удалённо отменять нечего. Прежде пустой
+     * ключ считался отказом, и робокассный подписчик после удаления
+     * данных читал инструкцию про звёзды и обещание списаний, которых
+     * не будет.
+     *
+     * Подписка заводится настоящим путём — счётом и событием оплаты, —
+     * чтобы проверялась та форма строки, какую делает бой.
+     */
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'рк-удаление' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'рк-удаление', externalId: '9101' }),
+    });
+
+    expect(
+      (await subscriptionOf(testDb(), { userId, provider: RAIL }))?.subscriptionRef,
+    ).toBeNull();
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: { [RAIL]: watching().provider },
+    });
+
+    expect(outcome).toEqual({ stopped: [RAIL], failed: [] });
+    expect((await subscriptionOf(testDb(), { userId, provider: RAIL }))?.autoRenew).toBe(false);
+  });
+
+  it('робокассная подписка при выключенном рельсе — тоже не отказ', async () => {
+    // Списание без нас не уйдёт: проход продления при выключенном рельсе
+    // не запускается, а строка подписки уходит каскадом. Пугать нечем.
+    await invoiceFor({ plan: 'monthly', kind: 'initial', ref: 'рк-без-рельса' });
+    await applyPaymentEvent(testDb(), {
+      provider: RAIL,
+      event: paid({ ref: 'рк-без-рельса', externalId: '9102' }),
+    });
+
+    const outcome = await stopAllRenewals(testDb(), {
+      userId,
+      tgId: 4_200_001,
+      providers: {},
+    });
+
+    expect(outcome).toEqual({ stopped: [RAIL], failed: [] });
+  });
+
   it('отменённое продление второй раз не отменяют', async () => {
     await testDb()
       .insert(billingSubscriptions)

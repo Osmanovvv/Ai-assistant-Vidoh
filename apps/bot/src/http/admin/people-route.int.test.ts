@@ -15,7 +15,7 @@ import {
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { createServer } from '../server.js';
-import { SESSION_COOKIE, type AdminAuthConfig } from './index.js';
+import { recentAccess, SESSION_COOKIE, type AdminAuthConfig } from './index.js';
 import { hashPassword } from './password.js';
 import { issuePass } from './token.js';
 
@@ -157,5 +157,68 @@ describe('глубина карточки приходит с запроса, а
     expect((await card(at, '?dumps=1000')).dumps).toHaveLength(25);
     expect((await card(at, '?dumps=десять')).dumps).toHaveLength(20);
     expect((await card(at, '?dumps=0')).dumps).toHaveLength(1);
+  });
+});
+
+/**
+ * Имя из поиска не попадает в строку запроса (§16, ревизия этапов 1–2).
+ *
+ * Перед ботом стоит Caddy, и он пишет `request.uri` целиком — в журнал
+ * доступа на каждый запрос и в журнал ошибок на каждый отказ прокси (502,
+ * пока бот перезапускается). Поиск `GET /api/people?q=<имя>` уносил имя
+ * человека туда, откуда его не вычистит ни маска логгера бота, ни удаление
+ * данных. Тела запроса Caddy не пишет никогда — поэтому имя едет в теле.
+ *
+ * Здесь проверяется половина бота: список принимает имя в теле POST и
+ * ищет по нему, а GET со строкой запроса список не отдаёт. Половина
+ * панели — в `caddy-log.wiring.test.ts` и в браузерной проверке
+ * `tests/admin/people.spec.ts`.
+ */
+describe('поиск людей несёт имя в теле, а не в строке запроса', () => {
+  it('POST с именем в теле находит человека, и журнал считает выданных', async () => {
+    await upsertUser(testDb(), { tgId: 7_702, firstName: 'Вера' });
+    const at = await stand();
+
+    const response = await fetch(`${at}/admin/api/people`, {
+      method: 'POST',
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ limit: 20, offset: 0, q: 'Вера' }),
+    });
+
+    expect(response.status).toBe(200);
+
+    const page = (await response.json()) as {
+      readonly total: number;
+      readonly rows: readonly { readonly title: string }[];
+    };
+
+    expect(page.total).toBe(1);
+    expect(page.rows.map((row) => row.title)).toEqual(['Вера']);
+
+    // Журнал §16 живёт на том же пути и считает по строкам ответа —
+    // смена метода не должна была его задеть.
+    const [row] = await recentAccess(testDb());
+
+    expect(row?.route).toBe('/api/people');
+    expect(row?.subjects).toBe(1);
+  });
+
+  it('GET со строкой запроса список не отдаёт', async () => {
+    /**
+     * Прежний путь. Оставь его рядом с новым «для совместимости» — и имя
+     * снова поедет строкой запроса, стоит панели или человеку с curl
+     * позвать старый. Поэтому старого пути нет вовсе, а не «есть, но
+     * панель им не пользуется».
+     */
+    await upsertUser(testDb(), { tgId: 7_702, firstName: 'Вера' });
+    const at = await stand();
+
+    const response = await fetch(`${at}/admin/api/people?limit=20&offset=0&q=Вера`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('rows');
+    expect(await recentAccess(testDb())).toEqual([]);
   });
 });

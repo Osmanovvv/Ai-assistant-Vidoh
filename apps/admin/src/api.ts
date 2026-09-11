@@ -390,16 +390,25 @@ export function overview(days: number): Promise<Overview> {
   return call<Overview>(`/overview?days=${String(days)}`);
 }
 
+/**
+ * Список людей — страницами и с поиском по имени.
+ *
+ * **Имя едет в теле, а не в строке запроса** (ревизия этапов 1–2). Прежде
+ * поиск шёл `GET /people?q=<имя>`, и Caddy, стоящий перед ботом, писал
+ * строку запроса целиком в свой журнал — то есть имя человека, которого
+ * искали, — туда, откуда его не вычистит ни маска логгера бота, ни
+ * удаление данных по §16. Тела запроса Caddy не пишет никогда.
+ */
 export function peoplePage(params: {
   readonly limit: number;
   readonly offset: number;
   readonly query?: string;
 }): Promise<PeoplePage> {
-  const search = params.query === undefined ? '' : `&q=${encodeURIComponent(params.query)}`;
-
-  return call<PeoplePage>(
-    `/people?limit=${String(params.limit)}&offset=${String(params.offset)}${search}`,
-  );
+  return post<PeoplePage>('/people', {
+    limit: params.limit,
+    offset: params.offset,
+    ...(params.query === undefined ? {} : { q: params.query }),
+  });
 }
 
 /**
