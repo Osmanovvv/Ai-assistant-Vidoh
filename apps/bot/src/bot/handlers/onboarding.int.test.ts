@@ -965,6 +965,60 @@ describe('сферы, появившиеся до опроса (задача 3.4
     expect(gateway.deletedThreads).toHaveLength(0);
   });
 
+  it('снятую сферу бот не предлагает создать в той же реплике', async () => {
+    /**
+     * Ревизия этапов 1–2, дефект 29. Порядок «наговорил → потом закончил
+     * опрос» законен (§12.2 разрешает не отвечать). Дела из снятой
+     * сферы переезжают в «личное» — это §6.4, и сосед выше это проверяет.
+     * А вот вопрос «добавить покупки?» задавать нельзя: человек только
+     * что снял эту сферу галочкой. §6.4 просит предлагать сферу, которой
+     * человеку **не хватило**, а не ту, от которой он отказался.
+     */
+    const gateway = new FakeTopicGateway();
+    const { bot, calls } = createTestBot(undefined, gateway);
+    await bot.init();
+
+    await baseSpheresWithThreads();
+    await itemIn('покупки');
+    await walkToSpheres(bot);
+
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
+    );
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent.map((call) => textOf(call)).join(' ')).not.toContain('покупки');
+    expect(
+      sent.some((call) =>
+        keyboardOf(call).some((button) => button.callback_data?.startsWith(ACTION.addTopicsPrefix)),
+      ),
+    ).toBe(false);
+  });
+
+  it('сфера, которой у человека не было, предлагается по-прежнему — а снятая рядом с ней нет', async () => {
+    // Исключение снятых не должно выключить предложение целиком: дела
+    // про «детей» ни к одной сфере не подошли, и §6.4 велит спросить.
+    const gateway = new FakeTopicGateway();
+    const { bot, calls } = createTestBot(undefined, gateway);
+    await bot.init();
+
+    await baseSpheresWithThreads();
+    await itemIn('покупки');
+    await itemIn('дети');
+    await walkToSpheres(bot);
+
+    await bot.handleUpdate(
+      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
+    );
+
+    const offer = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(offer)).toContain('дети');
+    expect(textOf(offer)).not.toContain('покупки');
+    expect(
+      keyboardOf(offer).some((button) => button.callback_data?.startsWith(ACTION.addTopicsPrefix)),
+    ).toBe(true);
+  });
+
   it('выбранное сверх базового добавляется, а не упирается в существующее', async () => {
     const gateway = new FakeTopicGateway();
     const { bot } = createTestBot(undefined, gateway);
