@@ -5,7 +5,7 @@ import { sep } from 'node:path';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
-import { unpricedCountSql, unpricedSql } from './unpriced.js';
+import { paidSql, unpricedCountSql, unpricedSql } from './unpriced.js';
 
 /**
  * Готовый текст запроса.
@@ -35,6 +35,21 @@ function rendered(fragment: ReturnType<typeof unpricedSql>): string {
  * в продуктовом коде быть не должно вовсе.
  */
 
+/**
+ * Исходник без комментариев.
+ *
+ * Иначе страж не отличает цитату от кода: прежнее условие в разборах
+ * принято описывать словами, и проверка краснела бы от собственного
+ * объяснения. `//` внутри адреса (`https://`) — не комментарий.
+ */
+function code(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .split('\n')
+    .map((line) => line.replace(/(^|[^:])\/\/.*$/u, '$1'))
+    .join('\n');
+}
+
 /** Продуктовые исходники, кроме самого дома условия и проверок. */
 async function productSources(): Promise<readonly { path: string; text: string }[]> {
   const found: { path: string; text: string }[] = [];
@@ -46,7 +61,7 @@ async function productSources(): Promise<readonly { path: string; text: string }
     // Дом условия — единственное место, где оно написано словами.
     if (path.endsWith('/metering/unpriced.ts')) continue;
 
-    found.push({ path, text: await readFile(path, 'utf8') });
+    found.push({ path, text: code(await readFile(path, 'utf8')) });
   }
 
   return found;
@@ -87,6 +102,47 @@ describe('вызовы без цены считаются одним услов�
     ).toEqual([]);
   });
 
+  it('ни один запрос не пишет условие оплаченности сам', async () => {
+    /**
+     * Вторая половина того же условия — «за отправку платили» — тоже
+     * переписывалась руками (ревизия этапов 1–2, дефект №11).
+     *
+     * Себестоимость (`scripts/cost-report.ts`) держала своё условие через
+     * drizzle, а здесь оно жило сырым SQL. Сперва они расходились по
+     * смыслу: скрипт брал всё подряд, и сорвавшийся вызов делал модель
+     * «без цены» и выбрасывал выгрузку из средней. Потом их дважды
+     * подтягивали друг к другу руками — по признаку успеха, затем по
+     * объёму, — и оба раза двумя написаниями: следующая правка одного из
+     * них разошлась бы с другим молча, сверить их нечем, кроме этого
+     * стража.
+     */
+    const sources = await productSources();
+    const own: string[] = [];
+
+    for (const source of sources) {
+      const raw = /(audioSeconds|tokensIn)\}\s*is\s*not\s*null|ok\}\s*=\s*true/u.test(source.text);
+      const viaDrizzle =
+        /isNotNull\(\s*aiCalls\.(audioSeconds|tokensIn)\s*\)|eq\(\s*aiCalls\.ok\s*,\s*true\s*\)/u.test(
+          source.text,
+        );
+
+      if (raw || viaDrizzle) own.push(source.path);
+    }
+
+    expect(
+      own,
+      [
+        'Условие «за отправку платили» написано мимо общего:',
+        '',
+        ...own,
+        '',
+        'Зовите paidSql() из modules/metering/unpriced.ts.',
+        'Себестоимость и «вызовы без цены» обязаны считать оплаченность одинаково:',
+        'иначе один сорвавшийся вызов делает модель «без цены» в одном отчёте и нет в другом.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
   it('условие требует успеха, а не только отсутствия цены', () => {
     /**
      * Проверка самого условия, без базы: сорвавшийся вызов цены не имеет
@@ -109,5 +165,38 @@ describe('вызовы без цены считаются одним услов�
 
     expect(counter).toContain(inner);
     expect(counter).toContain('filter (where');
+  });
+
+  it('«без цены» собрано из условия оплаченности, а не повторяет его', () => {
+    /**
+     * Иначе правка оплаченности (скажем, новый вид объёма) дошла бы до
+     * себестоимости и не дошла бы до «вызовов без цены» — или наоборот.
+     *
+     * Сверяется готовый SQL, пробел в пробел: повтор условия со своим
+     * переносом строк (так оно и было написано до выноса) краснеет.
+     * Предел честный — повтор буква в букву страж не отличит, но такой
+     * повтор делают нарочно, а не по забывчивости, от которой он стоит.
+     */
+    const paid = rendered(paidSql());
+    const unpriced = rendered(unpricedSql());
+
+    expect(unpriced).toContain(paid);
+    // Оплаченность — это успех ИЛИ объём: без объёма оплаченный отказ
+    // распознавания снова выпал бы из себестоимости.
+    expect(paid.replaceAll(/\s+/gu, ' ')).toMatch(/"ok" or .*is not null/u);
+  });
+
+  it('скрипт себестоимости берёт строки общей выборкой, а не своим запросом', async () => {
+    /**
+     * Выборка вынесена в `loadDumpCalls`, чтобы её проверял тест
+     * (`cost-per-dump.int.test.ts`). Но проверенная функция, которую
+     * скрипт не зовёт, — это «написано, покрыто тестами и недостижимо»:
+     * стражи выше не заметят, если скрипт снова заведёт свой запрос без
+     * условия вовсе.
+     */
+    const script = code(await readFile('src/scripts/cost-report.ts', 'utf8'));
+
+    expect(script).toContain('loadDumpCalls(');
+    expect(script).not.toContain('from(aiCalls)');
   });
 });
