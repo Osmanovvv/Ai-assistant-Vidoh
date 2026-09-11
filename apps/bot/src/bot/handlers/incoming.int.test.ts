@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import type { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -14,7 +14,7 @@ import type { Context } from 'grammy';
 import type { StatusSender } from '../../modules/presenter/status.service.js';
 import { SettingsRegistry, putSetting } from '../../modules/settings/settings.repo.js';
 import type { PipelineJob } from '../../infra/queue.js';
-import { DEFAULT_LIMITS } from '../../modules/buffer/buffer.service.js';
+import { DEFAULT_LIMITS, closeBatchOnSilence } from '../../modules/buffer/buffer.service.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -283,6 +283,75 @@ describe('потолок выгрузок за сутки', () => {
       (call) => call.payload['text'] === defaultTexts.limits.tooManyDumps,
     );
     expect(refusals).toHaveLength(0);
+    expect(await dumpCount()).toBe(30);
+  });
+
+  /**
+   * Потолок — про число **выгрузок**, а не сообщений внутри одной.
+   *
+   * Ревизия этапов 1–2: при 29 выгрузках за сутки первое голосовое
+   * открывало тридцатую, а второе упиралось в потолок — счёт уже
+   * включал только что открытую — и оставалось без выгрузки навсегда.
+   * Серия из трёх голосовых разбиралась по первому; человек читал «всё
+   * сохранено, посмотри через /menu», а в /menu хвоста не было. Это
+   * против §9.1 правила 2: серия сообщений — одна мысль, и §10.5
+   * ограничивает частоту выгрузок, а не длину начатой.
+   */
+  it('тридцатая выгрузка принимает всю серию, а не только первое сообщение', async () => {
+    await seedDumps(29);
+
+    const { bot, calls } = createTestBot();
+    await bot.handleUpdate(textUpdate('записать сына к врачу'));
+    await bot.handleUpdate(textUpdate('и купить продукты'));
+    await bot.handleUpdate(textUpdate('а ещё позвонить маме'));
+
+    const refusals = calls.filter(
+      (call) => call.payload['text'] === defaultTexts.limits.tooManyDumps,
+    );
+    expect(refusals).toHaveLength(0);
+
+    const saved = await testDb()
+      .select({ batchId: messagesRaw.batchId })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.userId, userId));
+    expect(saved).toHaveLength(3);
+    // Все три — в одной выгрузке, и ни одно не осталось без неё.
+    const batchIds = new Set(saved.map((row) => row.batchId));
+    expect(batchIds.size).toBe(1);
+    expect(batchIds.has(null)).toBe(false);
+
+    const [open] = await testDb()
+      .select({ messageCount: batches.messageCount })
+      .from(batches)
+      .where(and(eq(batches.userId, userId), eq(batches.status, 'open')));
+    expect(open?.messageCount).toBe(3);
+    expect(await dumpCount()).toBe(30);
+  });
+
+  it('но когда тридцатая закрылась, следующая мысль упирается в потолок', async () => {
+    // Обратная сторона: послабление касается продолжения начатой
+    // выгрузки, а не новой. Закрытие — настоящее, по тишине.
+    await seedDumps(29);
+
+    const { bot, calls } = createTestBot();
+    await bot.handleUpdate(textUpdate('записать сына к врачу'));
+
+    const [open] = await testDb()
+      .select({ id: batches.id })
+      .from(batches)
+      .where(and(eq(batches.userId, userId), eq(batches.status, 'open')));
+    if (open === undefined) throw new Error('тридцатая выгрузка не открылась');
+    const closed = await closeBatchOnSilence(testDb(), open.id, {
+      now: new Date(Date.now() + DEFAULT_LIMITS.silenceWindowMs + 1_000),
+    });
+    expect(closed.closed).toBe(true);
+
+    await bot.handleUpdate(textUpdate('и купить продукты'));
+
+    const refusals = calls.filter(
+      (call) => call.payload['text'] === defaultTexts.limits.tooManyDumps,
+    );
+    expect(refusals).toHaveLength(1);
     expect(await dumpCount()).toBe(30);
   });
 });

@@ -5,6 +5,7 @@ import type { Express } from 'express';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { appSettings } from '../../db/schema.js';
+import { DEFAULT_LIMITS } from '../../modules/buffer/buffer.service.js';
 import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { testDb } from '../../test/db.js';
 import { createServer } from '../server.js';
@@ -153,7 +154,12 @@ describe('запись настройки проверяется до базы',
     const response = await write(at, { name: 'silenceWindowMs', value: '99999999' });
 
     expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toContain('до 600000');
+    // Отказ называет потолок, который буфер правда держит: окно длиннее
+    // потолка возраста выгрузки не действует вовсе (ревизия этапов 1–2,
+    // дефект 15), и «до 600000» здесь обещало бы вдвое больше, чем есть.
+    expect(((await response.json()) as { error: string }).error).toContain(
+      `до ${String(DEFAULT_LIMITS.maxBatchAgeMs)}`,
+    );
   });
 
   it('мусор отвергается, а не превращается в пустую строку', async () => {

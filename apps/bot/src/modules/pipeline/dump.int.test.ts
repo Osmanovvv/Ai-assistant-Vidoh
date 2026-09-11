@@ -3802,13 +3802,18 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
       ]);
   }
 
-  async function dump(sender: StatusSender, prompts: PromptRegistry): Promise<void> {
-    await queuedBatchOf([{ kind: 'text', text: SAID.join(NEWLINE), offsetMs: 0 }]);
+  async function dump(
+    sender: StatusSender,
+    prompts: PromptRegistry,
+    embedder?: MockEmbeddingProvider,
+    said: readonly string[] = SAID,
+  ): Promise<void> {
+    await queuedBatchOf([{ kind: 'text', text: said.join(NEWLINE), offsetMs: 0 }]);
     await processUserBatches(
       {
         db: testDb(),
         lock,
-        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, embedder }),
       },
       userId,
     );
@@ -3896,6 +3901,104 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
 
     expect((await openTexts()).map((one) => one.toLowerCase())).toContain('забрать права');
     expect(await openTexts()).toHaveLength(SAID.length + 1);
+  });
+
+  it('за вектор повтора не платят: считается только то, что будет сохранено', async () => {
+    /**
+     * Ревизия этапов 1–2, дефект 32. Вектор считался по всем единицам
+     * выгрузки, а отсев повторов шёл следующей строкой. Повтору запись не
+     * нужна — значит не нужен и вектор: свежий никуда не записывался, а у
+     * существующей записи он посчитан при создании или досчитывается
+     * отдельно. Тот самый боевой случай — одно голосовое трижды —
+     * оплачивал векторы трижды. Учёт при этом был верен, деньги просто
+     * уходили в никуда: платит отправка, а не результат.
+     *
+     * Считаются отправки провайдеру, а не строки учёта: черта оплаты
+     * проходит по отправке. Только `document`: вектор запроса (`query`)
+     * считает резолвер, и к сохранению он отношения не имеет.
+     */
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender } = recordingSender();
+    const embedder = new MockEmbeddingProvider();
+
+    const documents = (): number =>
+      embedder.requests.filter((one) => one.purpose === 'document').length;
+
+    await dump(sender, prompts, embedder);
+    const paidOnce = documents();
+    // Новых записей шесть — и за вектор заплачено ровно шесть раз.
+    expect(paidOnce, 'первая выгрузка платит за вектор каждой новой записи').toBe(SAID.length);
+
+    await dump(sender, prompts, embedder);
+    expect(documents() - paidOnce, 'повтор оплатил векторы заново').toBe(0);
+
+    // Одно новое дело среди повторов — один вектор, а не семь и не ноль.
+    await dump(sender, prompts, embedder, [...SAID, 'забрать права']);
+    expect(documents() - paidOnce, 'за новое дело среди повторов платят ровно раз').toBe(1);
+  });
+
+  it('повтор не заводит копию записи, куда модель вписала поля карточки', async () => {
+    /**
+     * Две боевые находки встречаются. Живой прогон 05.09.2026 (задача
+     * 3.62): модель вернула «Позвонить бабушке. Срок 07.09 / Статус
+     * ждет», а сохранилось «Позвонить бабушке». Отсев повторов (3.22)
+     * сверял сырой текст модели с сохранённым — и на такой записи
+     * промахивался: вторая выгрузка заводила ей копию, хотя остальные
+     * пять узнавала. То есть починка «восемнадцать вместо шести» не
+     * работала ровно там, где текст уже испортил другой дефект.
+     */
+    const GRANDMA = 'позвонить бабушке';
+    const WITH_FIELDS = `Позвонить бабушке. Срок 07.09${NEWLINE}Статус ждет`;
+
+    const prompts = await seedPrompts();
+    await seedOld();
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      classifier: (request) =>
+        JSON.stringify({
+          items: unitsFromInput(request.input).map((text) => ({
+            // Так ответила живая модель: поля карточки внутри заголовка.
+            text: text === GRANDMA ? WITH_FIELDS : text,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          })),
+        }),
+    });
+
+    async function dumpWithGrandma(): Promise<void> {
+      await queuedBatchOf([{ kind: 'text', text: [...SAID, GRANDMA].join(NEWLINE), offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+        },
+        userId,
+      );
+    }
+
+    await dumpWithGrandma();
+    const afterFirst = await openTexts();
+
+    // Поля карточки в базу не попали (3.62) — на этом и держится повтор.
+    expect(afterFirst).toContain('Позвонить бабушке');
+    expect(afterFirst).toHaveLength(3 + SAID.length + 1);
+
+    await dumpWithGrandma();
+    const afterSecond = await openTexts();
+
+    expect(afterSecond.filter((text) => text === 'Позвонить бабушке')).toHaveLength(1);
+    expect(afterSecond).toHaveLength(afterFirst.length);
   });
 });
 

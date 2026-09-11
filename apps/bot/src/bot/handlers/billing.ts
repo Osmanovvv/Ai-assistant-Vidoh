@@ -26,6 +26,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
 import type { TextProfile } from '../../texts/types.js';
+import { sayNotUnderstood } from './awaiting.js';
 
 /**
  * Подписка глазами человека (§14 ТЗ, задача 4.2).
@@ -342,9 +343,17 @@ export function createPromoConsumer(deps: BillingHandlerDeps) {
      * Человек мог вместо кода сказать мысль — тогда она обязана уйти в
      * разбор, а не пропасть. Ровно тот дефект, что уже был: «ответ съедал
      * мысль».
+     *
+     * И отказ Telegram на самой реплике «не похоже на код» мысль тоже не
+     * теряет: сообщение к этому моменту сохранено, ожидание снято, а к
+     * выгрузке оно ещё не привязано — исключение отсюда уносило бы его
+     * из приёма до привязки, и оно оставалось бы сиротой навсегда, как
+     * «не понял» имя или время (ревизия этапов 1–2). Обёртка та же и
+     * одна на все пять таких отправок: что пишется в журнал, решается в
+     * одном месте.
      */
     if (code === undefined) {
-      await ctx.reply(texts.billing.promoUnknown);
+      await sayNotUnderstood(ctx, deps.logger, userId, texts.billing.promoUnknown);
       return false;
     }
 

@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, messagesRaw } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
-import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
+import {
+  DEFAULT_LIMITS,
+  attachMessageToBatch,
+  closeBatchOnSilence,
+} from '../buffer/buffer.service.js';
+import { SETTINGS, checkValue } from '../settings/settings.repo.js';
 import { upsertUser } from '../users/users.repo.js';
 import { recoverAfterRestart, recoverStuckBatches } from './recovery.js';
 
@@ -121,6 +126,45 @@ describe('открытая выгрузка с потерянным задани
 
     expect(report.closedOrphanedOpen).toBe(0);
     expect(await statusOf(batchId)).toBe('open');
+  });
+});
+
+describe('окно тишины из панели против потолка возраста', () => {
+  /**
+   * Панель принимала окно до десяти минут, а жёсткий потолок открытой
+   * выгрузки — пять (ревизия этапов 1–2, дефект 15). Любое окно длиннее
+   * потолка молча вырождалось в пятиминутное: досмотр закрывал выгрузку
+   * по возрасту раньше, чем задание закрытия дожидалось тишины. Человек
+   * ставил семь минут, видел «Сохранено» — и ничего не менялось.
+   *
+   * Поведением, а не числом: самое длинное окно берётся у самой проверки
+   * записи — той, что отвечает панели «Сохранено», — выгрузка с одним
+   * сообщением проходит досмотр за миллисекунду до конца окна открытой и
+   * закрывается тишиной, а не возрастом.
+   */
+  it('самое длинное окно, которое принимает панель, успевает сработать раньше потолка', async () => {
+    const accepted = checkValue('silenceWindowMs', String(SETTINGS.silenceWindowMs.max));
+
+    if (!accepted.ok) throw new Error(`предел окна тишины сам себя не проходит: ${accepted.why}`);
+
+    const windowMs = Number(accepted.value);
+    const limits = { ...DEFAULT_LIMITS, silenceWindowMs: windowMs };
+    const batchId = await openBatchAt(0);
+
+    // Досмотр за миллисекунду до конца окна: закрыл — значит окно не
+    // действует, его обрывает потолок возраста.
+    const sweep = await recoverStuckBatches(testDb(), { now: at(windowMs - 1), limits });
+
+    expect(sweep.closedOrphanedOpen, 'досмотр закрыл выгрузку раньше конца окна').toBe(0);
+    expect(await statusOf(batchId)).toBe('open');
+
+    // А в конце окна выгрузку закрывает тишина.
+    const outcome = await closeBatchOnSilence(testDb(), batchId, {
+      now: at(windowMs),
+      silenceWindowMs: windowMs,
+    });
+
+    expect(outcome).toEqual({ closed: true });
   });
 });
 
@@ -253,6 +297,52 @@ describe('подъём процесса', () => {
 
     expect(report.userIds).toEqual([userId]);
     expect(report.awaitingUsers, 'ждущий и возвращённый посчитаны порознь').toBe(0);
+  });
+
+  it('забытую выгрузку закрывает окно из панели, а не число из кода', async () => {
+    /**
+     * Ревизия этапов 1–2, дефект 19. Закрытие по заданию и досмотр брали
+     * окно тишины из панели, а подъём — из константы: вызов при старте
+     * шёл без `limits`, и правило молча закрывало по умолчанию из кода.
+     * При окне в панели длиннее умолчания перезапуск посреди диктовки
+     * резал серию пополам: первая половина уходила в разбор, вторая
+     * открывала новую выгрузку — два разбора вместо одного, двойная
+     * оплата модели, лишняя выгрузка в суточный потолок и мысль,
+     * разрезанная посередине (§9.1 правило 2) ровно в момент выкладки.
+     *
+     * Окно — то, которое принимает панель (`checkValue`), а не набранное
+     * здесь число: в проверку идёт то же значение, что собирает бой.
+     * Вдвое длиннее умолчания, и это условие проверяется: с окном не
+     * длиннее умолчания подъём по константе был бы неотличим от подъёма
+     * по панели, и страж зеленел бы в обе стороны.
+     */
+    const accepted = checkValue('silenceWindowMs', String(2 * DEFAULT_LIMITS.silenceWindowMs));
+
+    if (!accepted.ok) throw new Error(`панель не приняла удвоенное окно: ${accepted.why}`);
+
+    const windowMs = Number(accepted.value);
+
+    expect(windowMs, 'окно проверки не длиннее умолчания из кода').toBeGreaterThan(
+      DEFAULT_LIMITS.silenceWindowMs,
+    );
+
+    const limits = { ...DEFAULT_LIMITS, silenceWindowMs: windowMs };
+    const batchId = await openBatchAt(0);
+
+    // За миллисекунду до конца окна из панели. По числу из кода выгрузка
+    // была бы закрыта ещё полокна назад.
+    const early = await recoverAfterRestart(testDb(), { now: at(windowMs - 1), limits });
+
+    expect(early.closedOrphanedOpen, 'подъём закрыл выгрузку по числу из кода').toBe(0);
+    expect(await statusOf(batchId)).toBe('open');
+
+    // А в конце окна — закрывает: окно из панели действует, а не
+    // выключено вовсе.
+    const due = await recoverAfterRestart(testDb(), { now: at(windowMs), limits });
+
+    expect(due.closedOrphanedOpen, 'окно из панели на подъёме не действует').toBe(1);
+    expect(await statusOf(batchId)).toBe('queued');
+    expect(due.userIds).toEqual([userId]);
   });
 
   it('живой разбор, взятый секунду назад, досмотр не трогает — даже если выгрузка ждала час', async () => {

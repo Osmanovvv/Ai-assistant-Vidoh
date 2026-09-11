@@ -1,8 +1,9 @@
-import { and, asc, eq, gte, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, or, sql } from 'drizzle-orm';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
 import { batches, messagesRaw, type Batch } from '../../db/schema.js';
+import { MAX_BATCH_AGE_MS } from './batch-age.js';
 
 /**
  * Буфер выгрузки и окно тишины (задачи 1.12 и 1.13).
@@ -40,12 +41,18 @@ export interface BufferLimits {
  * «По умолчанию» в панели разошёлся бы с поведением от любой правки
  * одного из двух мест, и заметить это было бы нечем.
  *
- * Остальные три настройкой не объявлены (§15 их не просит) и живут
+ * **Потолок возраста — из `batch-age.ts`, потому что читателей у него
+ * двое** (ревизия этапов 1–2, дефект 15): этот набор и предел окна
+ * тишины в реестре настроек. Окно длиннее потолка не действует вовсе —
+ * досмотр закрывает выгрузку по возрасту раньше, чем задание дождётся
+ * тишины, — и предел в реестре обязан быть тем же числом.
+ *
+ * Остальные два настройкой не объявлены (§15 их не просит) и живут
  * здесь: у них нет второго экземпляра, значит и расходиться нечему.
  */
 export const DEFAULT_LIMITS: BufferLimits = {
   silenceWindowMs: SETTINGS.silenceWindowMs.fallback,
-  maxBatchAgeMs: 5 * 60_000,
+  maxBatchAgeMs: MAX_BATCH_AGE_MS,
   // Втрое дольше обычного разбора и короче потолка открытой выгрузки.
   maxProcessingMs: 3 * 60_000,
   maxMessagesPerBatch: 15,
@@ -117,8 +124,35 @@ export async function attachMessageToBatch(
       .set({ batchId: batch.id })
       .where(eq(messagesRaw.id, params.messageId));
 
-    const messageCount = batch.messageCount + 1;
-    const ageMs = now.getTime() - batch.openedAt.getTime();
+    /**
+     * Счёт ведёт база, а не код: `message_count + 1` внутри самого UPDATE,
+     * и наружу идёт то число, которое база вернула.
+     *
+     * Прежде число читалось из строки, прибавлялось в памяти и писалось
+     * обратно готовым. Для **уже открытой** выгрузки `openBatchFor`
+     * никого не ждёт — вставка на закреплённой строке отдаёт ноль строк
+     * без замка, чтение идёт без замка, — и два сообщения, пришедшие
+     * одновременно, читали одно и то же число и писали одно и то же:
+     * прибавка терялась, потолок `maxMessagesPerBatch` пропускал лишние
+     * сообщения (ревизия этапов 1–2, дефект 14). UPDATE берёт замок
+     * строки, и второй прибавляет уже к тому, что записал первый.
+     */
+    const [updated] = await tx
+      .update(batches)
+      .set({ messageCount: sql`${batches.messageCount} + 1`, lastMessageAt: now })
+      .where(eq(batches.id, batch.id))
+      .returning({ messageCount: batches.messageCount, openedAt: batches.openedAt });
+
+    // Строки может не стать между чтением и прибавкой только одним путём —
+    // удалением данных человека по §16. Тогда и сообщение уже удалено
+    // каскадом, и считать нечего; молчать об этом — значит поставить
+    // задание закрытия на выгрузку, которой нет.
+    if (!updated) {
+      throw new Error(`Выгрузка ${batch.id} исчезла между чтением и прибавкой счётчика`);
+    }
+
+    const { messageCount } = updated;
+    const ageMs = now.getTime() - updated.openedAt.getTime();
 
     const closeReason: CloseReason | undefined =
       messageCount >= limits.maxMessagesPerBatch
@@ -127,14 +161,16 @@ export async function attachMessageToBatch(
           ? 'age_limit'
           : undefined;
 
-    await tx
-      .update(batches)
-      .set({
-        messageCount,
-        lastMessageAt: now,
-        ...(closeReason ? { status: 'queued' as const, closedAt: now } : {}),
-      })
-      .where(eq(batches.id, batch.id));
+    if (closeReason) {
+      // Отдельным запросом, потому что решение о закрытии принимается
+      // по числу, которое известно только после прибавки. Строка уже под
+      // замком этой транзакции: между прибавкой и закрытием никто не
+      // вклинится.
+      await tx
+        .update(batches)
+        .set({ status: 'queued', closedAt: now })
+        .where(eq(batches.id, batch.id));
+    }
 
     return {
       batchId: batch.id,
@@ -268,16 +304,27 @@ export async function combineBatch(db: Executor, batchId: string): Promise<strin
   return combined;
 }
 
-/** §10.5 ТЗ: сколько выгрузок пользователь сделал за последние сутки. */
-export async function countRecentDumps(db: Executor, userId: string, since: Date): Promise<number> {
-  const rows = await db
-    .select({ id: batches.id })
-    .from(batches)
-    .where(and(eq(batches.userId, userId), gte(batches.openedAt, since)));
-
-  return rows.length;
-}
-
+/**
+ * §10.5 ТЗ: упёрся ли человек в суточный потолок выгрузок.
+ *
+ * Потолок решает, **заводить ли новую выгрузку**, а не принимать ли
+ * сообщение в уже начатую. Пока у человека есть открытая выгрузка,
+ * следующее сообщение продолжит её (`attachMessageToBatch` присоединяет
+ * к открытой и лишь без неё создаёт новую), и потолку здесь решать
+ * нечего: §9.1 правило 2 — серия сообщений это одна мысль, и потолок
+ * на длину серии стоит отдельный, `maxMessagesPerBatch`.
+ *
+ * Прежде счёт шёл по всем выгрузкам за сутки, включая открытую только
+ * что (ревизия этапов 1–2). При потолке 30 и 29 выгрузках за сутки
+ * первое голосовое открывало тридцатую, а второе считало уже 30 и
+ * получало «На сегодня достаточно». Серия из трёх разбиралась по первому,
+ * хвост оставался без выгрузки навсегда — а реплика при этом обещала,
+ * что всё сохранено и видно через /menu.
+ *
+ * Одним запросом: открытая выгрузка и выгрузки за сутки берутся вместе,
+ * иначе между двумя походами в базу закрытие по тишине успело бы
+ * поменять ответ.
+ */
 export async function isOverDumpLimit(
   db: Executor,
   userId: string,
@@ -287,5 +334,20 @@ export async function isOverDumpLimit(
   const now = params.now ?? new Date();
   const since = new Date(now.getTime() - 24 * 60 * 60_000);
 
-  return (await countRecentDumps(db, userId, since)) >= limits.maxDumpsPerDay;
+  const recent = await db
+    .select({ status: batches.status })
+    .from(batches)
+    .where(
+      and(
+        eq(batches.userId, userId),
+        // Открытая берётся независимо от возраста: досмотр закрывает
+        // залежавшиеся, но правило «есть открытая — продолжаем» не должно
+        // зависеть от того, жив ли досмотр.
+        or(eq(batches.status, 'open'), gte(batches.openedAt, since)),
+      ),
+    );
+
+  if (recent.some((batch) => batch.status === 'open')) return false;
+
+  return recent.length >= limits.maxDumpsPerDay;
 }
