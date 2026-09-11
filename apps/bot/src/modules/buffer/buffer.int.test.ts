@@ -368,4 +368,75 @@ describe('isOverDumpLimit', () => {
     const tomorrow = at(25 * 60 * 60_000);
     await expect(isOverDumpLimit(testDb(), userId, { now: tomorrow })).resolves.toBe(false);
   });
+
+  /**
+   * Открытая выгрузка — не повод отказывать: сообщение продолжит её, а
+   * не заведёт новую. Потолок §10.5 — про число выгрузок, а серия
+   * сообщений внутри одной — §9.1 правило 2. Прежде открытая только что
+   * выгрузка входила в счёт, и последняя разрешённая принимала лишь
+   * первое сообщение серии.
+   */
+  it('последняя разрешённая выгрузка открыта — её продолжение проходит', async () => {
+    const closedBefore = DEFAULT_LIMITS.maxDumpsPerDay - 1;
+    for (let i = 0; i < closedBefore; i++) {
+      const { batchId } = await attachMessageToBatch(testDb(), {
+        userId,
+        messageId: await putMessage({ text: `выгрузка ${String(i)}` }),
+        now: at(i * 1_000),
+      });
+      await closeBatchOnSilence(testDb(), batchId, { now: at(i * 1_000 + 31_000) });
+    }
+
+    const last = closedBefore * 1_000;
+    await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text: 'первое голосовое' }),
+      now: at(last),
+    });
+
+    // Выгрузок за сутки ровно потолок, одна из них открыта.
+    await expect(isOverDumpLimit(testDb(), userId, { now: at(last + 5_000) })).resolves.toBe(false);
+  });
+
+  it('открытая выгрузка проходит и когда закрытых уже потолок', async () => {
+    // Потолок в настройках могли опустить, пока человек говорил: его
+    // начатая мысль всё равно дописывается, режется только следующая.
+    for (let i = 0; i < DEFAULT_LIMITS.maxDumpsPerDay; i++) {
+      const { batchId } = await attachMessageToBatch(testDb(), {
+        userId,
+        messageId: await putMessage({ text: `выгрузка ${String(i)}` }),
+        now: at(i * 1_000),
+      });
+      await closeBatchOnSilence(testDb(), batchId, { now: at(i * 1_000 + 31_000) });
+    }
+
+    const last = DEFAULT_LIMITS.maxDumpsPerDay * 1_000;
+    await testDb()
+      .insert(batches)
+      .values({ userId, openedAt: at(last), lastMessageAt: at(last) });
+
+    await expect(isOverDumpLimit(testDb(), userId, { now: at(last + 5_000) })).resolves.toBe(false);
+  });
+
+  it('а закрылась последняя — потолок снова держит', async () => {
+    // Обратная сторона послабления: оно про продолжение, не про новую.
+    let batchId = '';
+    for (let i = 0; i < DEFAULT_LIMITS.maxDumpsPerDay; i++) {
+      ({ batchId } = await attachMessageToBatch(testDb(), {
+        userId,
+        messageId: await putMessage({ text: `выгрузка ${String(i)}` }),
+        now: at(i * 1_000),
+      }));
+      if (i < DEFAULT_LIMITS.maxDumpsPerDay - 1) {
+        await closeBatchOnSilence(testDb(), batchId, { now: at(i * 1_000 + 31_000) });
+      }
+    }
+
+    const last = (DEFAULT_LIMITS.maxDumpsPerDay - 1) * 1_000;
+    await expect(isOverDumpLimit(testDb(), userId, { now: at(last + 5_000) })).resolves.toBe(false);
+
+    await closeBatchOnSilence(testDb(), batchId, { now: at(last + 31_000) });
+
+    await expect(isOverDumpLimit(testDb(), userId, { now: at(last + 32_000) })).resolves.toBe(true);
+  });
 });

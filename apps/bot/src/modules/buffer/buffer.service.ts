@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, or, sql } from 'drizzle-orm';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
@@ -268,16 +268,27 @@ export async function combineBatch(db: Executor, batchId: string): Promise<strin
   return combined;
 }
 
-/** §10.5 ТЗ: сколько выгрузок пользователь сделал за последние сутки. */
-export async function countRecentDumps(db: Executor, userId: string, since: Date): Promise<number> {
-  const rows = await db
-    .select({ id: batches.id })
-    .from(batches)
-    .where(and(eq(batches.userId, userId), gte(batches.openedAt, since)));
-
-  return rows.length;
-}
-
+/**
+ * §10.5 ТЗ: упёрся ли человек в суточный потолок выгрузок.
+ *
+ * Потолок решает, **заводить ли новую выгрузку**, а не принимать ли
+ * сообщение в уже начатую. Пока у человека есть открытая выгрузка,
+ * следующее сообщение продолжит её (`attachMessageToBatch` присоединяет
+ * к открытой и лишь без неё создаёт новую), и потолку здесь решать
+ * нечего: §9.1 правило 2 — серия сообщений это одна мысль, и потолок
+ * на длину серии стоит отдельный, `maxMessagesPerBatch`.
+ *
+ * Прежде счёт шёл по всем выгрузкам за сутки, включая открытую только
+ * что (ревизия этапов 1–2). При потолке 30 и 29 выгрузках за сутки
+ * первое голосовое открывало тридцатую, а второе считало уже 30 и
+ * получало «На сегодня достаточно». Серия из трёх разбиралась по первому,
+ * хвост оставался без выгрузки навсегда — а реплика при этом обещала,
+ * что всё сохранено и видно через /menu.
+ *
+ * Одним запросом: открытая выгрузка и выгрузки за сутки берутся вместе,
+ * иначе между двумя походами в базу закрытие по тишине успело бы
+ * поменять ответ.
+ */
 export async function isOverDumpLimit(
   db: Executor,
   userId: string,
@@ -287,5 +298,20 @@ export async function isOverDumpLimit(
   const now = params.now ?? new Date();
   const since = new Date(now.getTime() - 24 * 60 * 60_000);
 
-  return (await countRecentDumps(db, userId, since)) >= limits.maxDumpsPerDay;
+  const recent = await db
+    .select({ status: batches.status })
+    .from(batches)
+    .where(
+      and(
+        eq(batches.userId, userId),
+        // Открытая берётся независимо от возраста: досмотр закрывает
+        // залежавшиеся, но правило «есть открытая — продолжаем» не должно
+        // зависеть от того, жив ли досмотр.
+        or(eq(batches.status, 'open'), gte(batches.openedAt, since)),
+      ),
+    );
+
+  if (recent.some((batch) => batch.status === 'open')) return false;
+
+  return recent.length >= limits.maxDumpsPerDay;
 }
