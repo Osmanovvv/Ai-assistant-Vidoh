@@ -13,10 +13,12 @@ import { createLogger } from '../../infra/logger.js';
 import { makeAudio } from '../../test/audio.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
+import { SPEECH_BILLING_BLOCK_SEC } from '../metering/pricing.js';
 import { transcribeBatch } from '../pipeline/transcribe.js';
 import { upsertUser } from '../users/users.repo.js';
-import { GLUE_PAUSE_SEC } from './audio.service.js';
+import { DEFAULT_AUDIO_LIMITS, GLUE_PAUSE_SEC } from './audio.service.js';
 import { probeDurationSec } from './ffmpeg.js';
+import { groupVoices } from './grouping.js';
 import type {
   RecognizedUtterance,
   SpeechProvider,
@@ -299,6 +301,15 @@ describe('расшифровка выгрузки одним запросом', 
      * обманет. Число строк здесь не переписано из соседа, а сосчитано
      * заново тем же прогоном: уберут склейку — покраснеет и он, и сосед,
      * и текст скрипта придётся править вместе с кодом.
+     *
+     * Одна строка — правда только для коротких записей: раскладка
+     * (grouping.ts) не клеит там, где склейка не дешевле или не влезает
+     * в запрос, и три записи по 15 секунд дают три строки при исправной
+     * склейке. Безусловное «одна строка» послало бы человека с настоящими
+     * голосовыми по полминуты искать поломку там, где всё в порядке, —
+     * та же ошибка, что чинилась, с обратным знаком. Поэтому стережётся
+     * и условие: обещание его называет, а предел из шапки сходится с
+     * раскладкой на боевых параметрах — тех же, что взял прогон выше.
      */
     const bounds = intervals();
     const provider = new TimedProvider([utteranceAt('Одна фраза.', bounds[0]?.startSec ?? 0)]);
@@ -328,6 +339,43 @@ describe('расшифровка выгрузки одним запросом', 
     expect(sentence).toMatch(/одна строка/u);
     expect(sentence).toMatch(/три голосовых/u);
     expect(sentence).not.toMatch(/каждое голосовое/u);
+
+    // …и только на короткие: обещание обязано назвать своё условие.
+    expect(sentence).toMatch(/коротк/u);
+
+    // Какие записи короткие, говорит шапка. Ниже её предела три записи
+    // любой длины уходят одним запросом — иначе «одна строка» была бы
+    // обещана зря; на самом пределе уже тремя — и блок обязан назвать
+    // три строки при таких длинах нормой, а не поломкой.
+    const header = script.slice(0, script.indexOf('\nset -'));
+    const threshold = /короче (\d+) секунд/u.exec(header)?.[1];
+    expect(threshold, 'шапка скрипта не говорит, какие записи короткие').toBeDefined();
+    const limit = Number(threshold);
+
+    const requestsFor = (...durations: readonly number[]): number =>
+      groupVoices(
+        durations.map((durationSec, index) => ({ messageId: String(index), durationSec })),
+        {
+          capacitySec: DEFAULT_AUDIO_LIMITS.maxSegmentSec,
+          pauseSec: GLUE_PAUSE_SEC,
+          blockSec: SPEECH_BILLING_BLOCK_SEC,
+        },
+      ).length;
+
+    for (let first = 1; first < limit; first++) {
+      for (let second = 1; second < limit; second++) {
+        for (let third = 1; third < limit; third++) {
+          expect(
+            requestsFor(first, second, third),
+            `записи ${String(first)}, ${String(second)} и ${String(third)} с должны уйти одним запросом`,
+          ).toBe(1);
+        }
+      }
+    }
+    expect(requestsFor(limit, limit, limit)).toBe(3);
+
+    expect(block).toMatch(new RegExp(`от ${String(limit)} секунд`, 'u'));
+    expect(block).toMatch(/не поломка/u);
   });
 
   it('ссылка на файл снимается: держать её дольше обработки нельзя', async () => {
