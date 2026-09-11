@@ -162,6 +162,7 @@ export async function runMergedCase(
   try {
     const ask = (): Promise<CompletionResult> =>
       deps.provider.complete({
+        stage: 'classifier',
         prompt: deps.prompt,
         input: buildInput(item, now),
         jsonSchema: toJsonSchema(classifierSchema),

@@ -180,6 +180,7 @@ export async function requestStructured<T>(
         const result = await withTimeout(
           (signal) =>
             deps.provider.complete({
+              stage: request.stage,
               prompt,
               input: request.input,
               jsonSchema: active.jsonSchema,
