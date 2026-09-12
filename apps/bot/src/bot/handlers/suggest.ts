@@ -93,7 +93,7 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
       interval: offer.interval,
     });
 
-    const applied = await applyDecision(db, {
+    const outcome = await applyDecision(db, {
       userId: active.userId,
       itemId: offer.itemId,
       action: 'update',
@@ -113,17 +113,24 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
     });
 
     logger.info(
-      { userId: active.userId, itemId: offer.itemId, applied: applied !== undefined },
+      { userId: active.userId, itemId: offer.itemId, outcome: outcome.kind },
       'Человек согласился запомнить регулярность',
     );
 
-    if (applied === undefined) {
-      await ctx.editMessageText(active.texts.resolver.rememberedIt);
+    if (outcome.kind !== 'applied') {
+      /**
+       * Правило не легло — так и сказать (ревизия этапа 3, A3). Раньше
+       * при любом исходе бот отвечал «Запомнила. Буду вести это как
+       * регулярное» при нетронутой записи.
+       */
+      await ctx.editMessageText(
+        outcome.kind === 'gone' ? active.texts.card.gone : active.texts.resolver.rememberFailed,
+      );
       return;
     }
 
     await ctx.editMessageText(active.texts.resolver.rememberedIt, {
-      reply_markup: undoKeyboard(applied.revisionId, active.texts),
+      reply_markup: undoKeyboard(outcome.applied.revisionId, active.texts),
     });
   });
 

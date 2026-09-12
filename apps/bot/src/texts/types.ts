@@ -117,6 +117,8 @@ export interface TextProfile {
 
     /** §17: разобрать не удалось, но текст сохранён. */
     readonly savedUnparsed: string;
+    /** Правка припаркована — слова сохранены, применить не вышло (A4). */
+    readonly patchParked: string;
     /**
      * Разбирать было нечего: человек поздоровался или наговорил только
      * заполнение паузы. Реплика короткая (§13.9) и не выдаёт разбор.
@@ -273,6 +275,12 @@ export interface TextProfile {
     readonly goOn: string;
     readonly buttonGoOn: string;
     readonly buttonEnough: string;
+    /** Запись уже в этом состоянии — менять нечего (ревизия этапа 3, A3). */
+    readonly unchanged: string;
+    /** Срок отвергнут — в прошлом или не существует (A3). */
+    readonly deadlineRefused: string;
+    /** Правило не легло: не на что опереться (A3). */
+    readonly rememberFailed: string;
     readonly undone: string;
     /** Повторное нажатие: кнопка живёт в чате вечно. */
     readonly alreadyUndone: string;
@@ -289,7 +297,6 @@ export interface TextProfile {
     readonly question: (title: string) => string;
     readonly buttonAttach: string;
     readonly buttonSeparate: string;
-    readonly attached: string;
     readonly separated: string;
     /**
      * В ответе на вопрос были слова сверх ответа — сохранены черновиком

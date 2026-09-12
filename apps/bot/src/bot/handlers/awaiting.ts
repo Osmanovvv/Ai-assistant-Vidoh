@@ -360,7 +360,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
        */
       const context = await outputContextOf(db, userId);
 
-      const applied = await applyDecision(db, {
+      const outcome = await applyDecision(db, {
         userId,
         itemId: awaiting.itemId,
         action: 'update',
@@ -374,11 +374,13 @@ export function consumeAwaited(deps: AwaitingDeps) {
         changedBy: 'user',
       });
 
-      if (applied === undefined) {
+      if (outcome.kind !== 'applied') {
         // Записи нет или менять нечего: сказать честно и не трогать разбор.
-        await ctx.reply(texts.card.editNotApplied);
+        await ctx.reply(outcome.kind === 'gone' ? texts.card.gone : texts.card.editNotApplied);
         return true;
       }
+
+      const { applied } = outcome;
 
       logger.info({ userId, itemId: awaiting.itemId }, 'Запись поправлена словами из карточки');
 

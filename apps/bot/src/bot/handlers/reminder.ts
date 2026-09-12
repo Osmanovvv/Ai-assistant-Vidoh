@@ -84,7 +84,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
      * вперёд (задача 3.8а). Своя правка статуса здесь молча сломала бы
      * это: «оплатить садик» закрылось бы навсегда после первого месяца.
      */
-    const applied = await applyDecision(db, {
+    const outcome = await applyDecision(db, {
       userId: active.userId,
       itemId,
       action: 'complete',
@@ -95,12 +95,18 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       changedBy: 'user',
     });
 
-    if (applied === undefined) {
+    if (outcome.kind !== 'applied') {
       await ctx.editMessageText(
-        nothingChangedReply('complete', item, active.texts, active.timeZone, now),
+        outcome.kind === 'unchanged'
+          ? nothingChangedReply('complete', item, active.texts, active.timeZone, now)
+          : outcome.kind === 'refused'
+            ? active.texts.resolver.deadlineRefused
+            : active.texts.card.gone,
       );
       return;
     }
+
+    const { applied } = outcome;
 
     logger.info({ userId: active.userId, itemId }, 'Дело закрыто кнопкой под напоминанием');
 
@@ -143,7 +149,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
     // же (ревизия этапа 3, D6).
     const moved = startOfDayAfter(base, POSTPONE_DAYS, active.timeZone);
 
-    const applied = await applyDecision(db, {
+    const outcome = await applyDecision(db, {
       userId: active.userId,
       itemId,
       action: 'update',
@@ -157,10 +163,18 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       changedBy: 'user',
     });
 
-    if (applied === undefined) {
-      await ctx.editMessageText(active.texts.card.gone);
+    if (outcome.kind !== 'applied') {
+      await ctx.editMessageText(
+        outcome.kind === 'unchanged'
+          ? active.texts.resolver.unchanged
+          : outcome.kind === 'refused'
+            ? active.texts.resolver.deadlineRefused
+            : active.texts.card.gone,
+      );
       return;
     }
+
+    const { applied } = outcome;
 
     await ctx.editMessageText(
       active.texts.reminders.postponed(dayInWords(moved, active.timeZone)),
@@ -199,7 +213,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       return;
     }
 
-    const applied = await applyDecision(db, {
+    const outcome = await applyDecision(db, {
       userId: active.userId,
       itemId,
       action: 'update',
@@ -213,9 +227,12 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       changedBy: 'user',
     });
 
+    // Срок уже сегодня — менять нечего, но «взялась» всё равно правда.
     await ctx.editMessageText(
       active.texts.reminders.projectTaken,
-      applied === undefined ? {} : { reply_markup: undoKeyboard(applied.revisionId, active.texts) },
+      outcome.kind === 'applied'
+        ? { reply_markup: undoKeyboard(outcome.applied.revisionId, active.texts) }
+        : {},
     );
   });
 

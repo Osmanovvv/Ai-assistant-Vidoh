@@ -2908,6 +2908,116 @@ describe('правка доходит до резолвера (§7, задача
     expect(open?.segment).toBe('перенеси на пятницу');
   });
 
+  it('отвергнутый срок: человеку сказано, черновик с настоящей причиной (ревизия этапа 3, A3, A4)', async () => {
+    /**
+     * «Перенеси врача на десятое», модель дала дату в прошлом. Раньше:
+     * запись не тронута, черновик с причиной «запись уже в нужном
+     * состоянии», а человеку — «Я здесь. Расскажешь, что в голове?».
+     */
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси врача на десятое', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'перенеси врача на десятое' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '2026-01-10',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка срока',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(
+      (await testDb().select().from(items).where(eq(items.id, itemId)))[0]?.deadlineAt,
+    ).toBeNull();
+    expect(all).toContain(defaultTexts.resolver.deadlineRefused);
+    expect(all).not.toContain(defaultTexts.answer.nothingToParse);
+
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts.map((row) => row.draftReason)).toEqual([
+      expect.stringContaining('правка отвергнута'),
+    ]);
+  });
+
+  it('в смешанной выгрузке об отвергнутой правке сказано под ответом (ревизия этапа 3, A4)', async () => {
+    const prompts = await seedPrompts();
+    await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'купить хлеб. а врача давай на десятое', offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'купить хлеб' },
+          { intent: 'PATCH', text: 'а врача давай на десятое' },
+        ],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '2026-01-10',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка срока',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Обычный ответ §13.2 пришёл — и в нём строка про правку.
+    const reply = all.find(
+      (text) =>
+        text.includes(defaultTexts.answer.actionsLeadSingle) ||
+        text.includes(defaultTexts.answer.actionsLead),
+    );
+    expect(reply).toBeDefined();
+    expect(reply).toContain(defaultTexts.resolver.deadlineRefused);
+  });
+
   it('две неоднозначные правки: один вопрос, и открыт в базе именно он (ревизия этапа 3, A2)', async () => {
     /**
      * Второй вопрос за выгрузку не задаётся (§13.9), но раньше резолвер

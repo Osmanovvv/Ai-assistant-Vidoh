@@ -5,7 +5,7 @@ import { itemRevisions, items, type Item } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
-import { applyDecision, PATCHABLE_FIELDS } from './patch.js';
+import { applyDecision, appliedOf, PATCHABLE_FIELDS } from './patch.js';
 import { lastRevisionOf, RESTORABLE_FIELDS, revertRevision } from './revisions.repo.js';
 
 /**
@@ -73,23 +73,25 @@ describe('применение оставляет ревизию', () => {
   it('перенос срока: запись изменилась, снимок «до» сохранён', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: '',
-        deadline: '2026-09-04',
-        deadlineAccuracy: 'day',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-      reason: 'подтверждено свежестью',
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: '',
+          deadline: '2026-09-04',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+        reason: 'подтверждено свежестью',
+      }),
+    );
 
     expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy']);
 
@@ -107,22 +109,24 @@ describe('применение оставляет ревизию', () => {
   it('новая формулировка', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: 'Записать сына к стоматологу',
-        deadline: '',
-        deadlineAccuracy: 'none',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: 'Записать сына к стоматологу',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied?.fields).toEqual(['text']);
     expect((await reread(item.id)).text).toBe('Записать сына к стоматологу');
@@ -131,14 +135,16 @@ describe('применение оставляет ревизию', () => {
   it('дело сделано', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied?.fields).toEqual(['status', 'completedAt']);
 
@@ -150,14 +156,16 @@ describe('применение оставляет ревизию', () => {
   it('дело отменено, а не удалено (§13.5)', async () => {
     const item = await sow();
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect((await reread(item.id)).status).toBe('cancelled');
   });
@@ -166,14 +174,16 @@ describe('применение оставляет ревизию', () => {
     // Иначе вечерний итог посчитал бы убранное дело закрытым сегодня.
     const item = await sow({ status: 'done', completedAt: NOW });
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const after = await reread(item.id);
     expect(after.status).toBe('cancelled');
@@ -188,14 +198,16 @@ describe('отложить — решение с ревизией (ревизи�
    * него тот же.
    */
   async function snooze(item: Item, now: Date) {
-    return await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'snooze',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now,
-    });
+    return appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'snooze',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now,
+      }),
+    );
   }
 
   it('просроченное уходит на три дня вперёд, к началу местного дня', async () => {
@@ -221,14 +233,16 @@ describe('отложить — решение с ревизией (ревизи�
      */
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'snooze',
-      changes: NO_CHANGES,
-      timeZone: 'Europe/Berlin',
-      now: new Date('2026-10-23T13:00:00.000Z'),
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'snooze',
+        changes: NO_CHANGES,
+        timeZone: 'Europe/Berlin',
+        now: new Date('2026-10-23T13:00:00.000Z'),
+      }),
+    );
 
     expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-10-25T23:00:00.000Z');
   });
@@ -271,28 +285,99 @@ describe('отложить — решение с ревизией (ревизи�
   });
 });
 
+describe('четыре исхода применения (ревизия этапа 3, A3)', () => {
+  /**
+   * «Записи нет», «менять нечего» и «срок отвергнут» были одним
+   * `undefined`, и вызывающие читали его как «уже в нужном состоянии»:
+   * «перенеси на десятое» с датой в прошлом получало «Добавила к
+   * прошлой» при нетронутой записи.
+   */
+  it('отвергнутый срок — «отвергнуто» с причиной, а не «менять нечего»', async () => {
+    const item = await sow();
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-08-20', deadlineAccuracy: 'day' },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.kind === 'refused' ? outcome.reason : '').toContain('в прошлом');
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('запись уже в этом состоянии — «менять нечего»', async () => {
+    const item = await sow({ status: 'done', completedAt: NOW });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'complete',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('unchanged');
+  });
+
+  it('записи нет — «нет записи»', async () => {
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: '00000000-0000-4000-8000-000000000000',
+      action: 'complete',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('gone');
+  });
+
+  it('применено — с изменением внутри', async () => {
+    const item = await sow();
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'complete',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(appliedOf(outcome)?.fields).toEqual(['status', 'completedAt']);
+  });
+});
+
 describe('чего применение делать не должно', () => {
   it('изменение, которое ничего не меняет, ревизии не оставляет', async () => {
     // Иначе человек получит кнопку отмены, которая ничего не отменяет,
     // и сообщение о том, чего не было.
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: 'Записать сына к врачу в четверг',
-        deadline: '',
-        deadlineAccuracy: 'none',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: 'Записать сына к врачу в четверг',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied).toBeUndefined();
     expect(await lastRevisionOf(testDb(), item.id)).toBeUndefined();
@@ -302,28 +387,32 @@ describe('чего применение делать не должно', () => {
     const item = await sow({ status: 'done', completedAt: NOW });
 
     expect(
-      await applyDecision(testDb(), {
-        userId,
-        itemId: item.id,
-        action: 'complete',
-        changes: NO_CHANGES,
-        timeZone: MOSCOW,
-        now: NOW,
-      }),
+      appliedOf(
+        await applyDecision(testDb(), {
+          userId,
+          itemId: item.id,
+          action: 'complete',
+          changes: NO_CHANGES,
+          timeZone: MOSCOW,
+          now: NOW,
+        }),
+      ),
     ).toBeUndefined();
   });
 
   it('чужую запись не трогает', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId: strangerId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId: strangerId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied).toBeUndefined();
     expect((await reread(item.id)).status).toBe('new');
@@ -334,22 +423,24 @@ describe('чего применение делать не должно', () => {
     // отсутствующего, потому что напоминание придёт не вовремя.
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: '',
-        deadline: '2020-01-01',
-        deadlineAccuracy: 'day',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: '',
+          deadline: '2020-01-01',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied).toBeUndefined();
     expect((await reread(item.id)).deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
@@ -360,22 +451,24 @@ describe('откат в один тап (3.4)', () => {
   it('возвращает запись ровно в прежнее состояние', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: 'Другое дело',
-        deadline: '2026-09-04',
-        deadlineAccuracy: 'day',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: 'Другое дело',
+          deadline: '2026-09-04',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const outcome = await revertRevision(testDb(), {
       revisionId: applied?.revisionId ?? '',
@@ -394,14 +487,16 @@ describe('откат в один тап (3.4)', () => {
   it('откат закрытия возвращает и статус, и дату закрытия', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
 
@@ -414,14 +509,16 @@ describe('откат в один тап (3.4)', () => {
     // Кнопка остаётся в чате навсегда, и человек нажмёт её ещё раз.
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const first = await revertRevision(testDb(), {
       revisionId: applied?.revisionId ?? '',
@@ -440,14 +537,16 @@ describe('откат в один тап (3.4)', () => {
   it('чужую ревизию откатить нельзя', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const outcome = await revertRevision(testDb(), {
       revisionId: applied?.revisionId ?? '',
@@ -461,14 +560,16 @@ describe('откат в один тап (3.4)', () => {
   it('откаченная ревизия перестаёт быть последней', async () => {
     const item = await sow();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
 
@@ -491,26 +592,30 @@ describe('откат возвращает только своё (ревизия 
   const SATURDAY_AT = '2026-09-04T21:00:00.000Z';
 
   async function moveToFriday(item: Item) {
-    return await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: FRIDAY, deadlineAccuracy: 'day' },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    return appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: FRIDAY, deadlineAccuracy: 'day' },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
   }
 
   async function addNote(item: Item, note: string) {
-    return await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      mode: 'append',
-      changes: { ...NO_CHANGES, note },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    return appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        mode: 'append',
+        changes: { ...NO_CHANGES, note },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
   }
 
   it('откат старой правки не стирает позднейшую', async () => {
@@ -547,14 +652,16 @@ describe('откат возвращает только своё (ревизия 
     // хочет человек: четверг или оставить субботу. Честнее спросить.
     const item = await sow();
     const first = await moveToFriday(item);
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const outcome = await revertRevision(testDb(), {
       revisionId: first?.revisionId ?? '',
@@ -575,14 +682,16 @@ describe('откат возвращает только своё (ревизия 
   it('откат перекрытой правки после отката перекрывшей — снова возможен', async () => {
     const item = await sow();
     const first = await moveToFriday(item);
-    const second = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const second = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     await revertRevision(testDb(), { revisionId: second?.revisionId ?? '', userId });
     const outcome = await revertRevision(testDb(), {
@@ -607,14 +716,16 @@ describe('обещание отката держится по построени
   it('удаление человека уносит его ревизии (§16)', async () => {
     const item = await sow();
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     await testDb().delete(items).where(eq(items.id, item.id));
 
@@ -643,15 +754,17 @@ describe('дополнение против замены (§7.4, задача 3.
 
     return {
       item,
-      applied: await applyDecision(testDb(), {
-        userId,
-        itemId: item,
-        action: 'update',
-        mode: 'append',
-        changes,
-        timeZone: MOSCOW,
-        now: NOW,
-      }),
+      applied: appliedOf(
+        await applyDecision(testDb(), {
+          userId,
+          itemId: item,
+          action: 'update',
+          mode: 'append',
+          changes,
+          timeZone: MOSCOW,
+          now: NOW,
+        }),
+      ),
     };
   }
 
@@ -671,23 +784,25 @@ describe('дополнение против замены (§7.4, задача 3.
   it('вторая подробность встаёт отдельной строкой, а не затирает первую', async () => {
     const { item } = await append();
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item,
-      action: 'update',
-      mode: 'append',
-      changes: {
-        note: 'и полис',
-        text: '',
-        deadline: '',
-        deadlineAccuracy: 'none',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item,
+        action: 'update',
+        mode: 'append',
+        changes: {
+          note: 'и полис',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect((await reread(item)).body).toBe('взять карту прививок\nи полис');
   });
@@ -766,14 +881,16 @@ describe('регулярное дело движется, а не множитс
   }
 
   async function markDone(item: Item, now: Date) {
-    return await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'complete',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now,
-    });
+    return appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now,
+      }),
+    );
   }
 
   it('выполнение переносит срок вперёд и не закрывает запись', async () => {
@@ -860,14 +977,16 @@ describe('регулярное дело движется, а не множитс
     // было»: садик оплачивался год, и это правда.
     const item = await weekly('2026-08-30');
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied?.fields).toContain('recurrenceRule');
 
@@ -885,14 +1004,16 @@ describe('регулярное дело движется, а не множитс
      */
     const item = await weekly('2026-08-30');
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied?.fields).toContain('deadlineAt');
 
@@ -904,14 +1025,16 @@ describe('регулярное дело движется, а не множитс
 
   it('снятое правило откатывается вместе со сроком', async () => {
     const item = await weekly('2026-08-30');
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: NO_CHANGES,
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
 
@@ -946,22 +1069,24 @@ describe('правило на закрытой записи оживляет е�
       deadlineAccuracy: 'day',
     });
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        ...NO_CHANGES,
-        deadline: '2026-08-05',
-        deadlineAccuracy: 'day',
-        recurrenceKind: 'monthly',
-        recurrenceInterval: 1,
-        recurrenceText: 'каждый месяц',
-      },
-      recurrenceSource: 'noticed',
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          ...NO_CHANGES,
+          deadline: '2026-08-05',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'monthly',
+          recurrenceInterval: 1,
+          recurrenceText: 'каждый месяц',
+        },
+        recurrenceSource: 'noticed',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied?.fields).toEqual(
       expect.arrayContaining(['recurrenceRule', 'status', 'completedAt', 'deadlineAt']),
@@ -978,19 +1103,21 @@ describe('правило на закрытой записи оживляет е�
   it('открытое дело правило не двигает: срок остаётся его', async () => {
     const item = await sow();
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        ...NO_CHANGES,
-        recurrenceKind: 'weekly',
-        recurrenceInterval: 1,
-        recurrenceText: 'каждую неделю',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          ...NO_CHANGES,
+          recurrenceKind: 'weekly',
+          recurrenceInterval: 1,
+          recurrenceText: 'каждую неделю',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const after = await reread(item.id);
     expect(after.status).toBe('new');
@@ -1014,15 +1141,17 @@ describe('просьба запомнить у существующего дел
 
     return {
       item,
-      applied: await applyDecision(testDb(), {
-        userId,
-        itemId: item.id,
-        action: 'update',
-        changes,
-        spoken,
-        timeZone: MOSCOW,
-        now: NOW,
-      }),
+      applied: appliedOf(
+        await applyDecision(testDb(), {
+          userId,
+          itemId: item.id,
+          action: 'update',
+          changes,
+          spoken,
+          timeZone: MOSCOW,
+          now: NOW,
+        }),
+      ),
     };
   }
 
@@ -1103,24 +1232,26 @@ describe('просьба запомнить у существующего дел
      */
     const item = await sow({ text: 'Записаться к стоматологу' });
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        note: '',
-        text: '',
-        // 2026-09-09 — среда. Человек говорит про четверг.
-        deadline: '2026-09-09',
-        deadlineAccuracy: 'day',
-        recurrenceKind: 'weekly',
-        recurrenceInterval: 1,
-        recurrenceText: 'каждый четверг',
-      },
-      spoken: 'нет, в четверг, и запомни — каждый четверг',
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: '',
+          // 2026-09-09 — среда. Человек говорит про четверг.
+          deadline: '2026-09-09',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'weekly',
+          recurrenceInterval: 1,
+          recurrenceText: 'каждый четверг',
+        },
+        spoken: 'нет, в четверг, и запомни — каждый четверг',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const after = await reread(item.id);
     const rule = after.recurrenceRule as { anchor: string };
@@ -1141,15 +1272,17 @@ describe('просьба запомнить у существующего дел
       .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'деньги' })
       .returning();
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: row?.id ?? '',
-      action: 'update',
-      changes: RULE,
-      spoken: 'запомни, каждый месяц',
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: row?.id ?? '',
+        action: 'update',
+        changes: RULE,
+        spoken: 'запомни, каждый месяц',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     expect(applied).toBeUndefined();
   });
@@ -1177,20 +1310,22 @@ describe('день недели в правке считает код, а не �
   it('«в пятницу» в субботу — это следующая пятница, а не прошедшая', async () => {
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: {
-        ...NO_CHANGES,
-        // Ровно то, что вернула модель в бою: пятница, но прошедшая.
-        deadline: '2026-09-04',
-        deadlineAccuracy: 'day',
-      },
-      spoken: 'перенеси на пятницу',
-      timeZone: MOSCOW,
-      now: SATURDAY,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          ...NO_CHANGES,
+          // Ровно то, что вернула модель в бою: пятница, но прошедшая.
+          deadline: '2026-09-04',
+          deadlineAccuracy: 'day',
+        },
+        spoken: 'перенеси на пятницу',
+        timeZone: MOSCOW,
+        now: SATURDAY,
+      }),
+    );
 
     expect(applied).toBeDefined();
     expect(asDate((await reread(item.id)).deadlineAt)).toBe('2026-09-11');
@@ -1204,14 +1339,16 @@ describe('день недели в правке считает код, а не �
      */
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
-    const applied = await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: '2026-09-04', deadlineAccuracy: 'day' },
-      timeZone: MOSCOW,
-      now: SATURDAY,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: '2026-09-04', deadlineAccuracy: 'day' },
+        timeZone: MOSCOW,
+        now: SATURDAY,
+      }),
+    );
 
     // Прошлый срок не лёг — и это верно: «человек не ставит задачи на вчера».
     expect(applied).toBeUndefined();
@@ -1222,15 +1359,17 @@ describe('день недели в правке считает код, а не �
     // Выбрать за человека нельзя. Дата модели проходит обычную проверку.
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: '2026-09-08', deadlineAccuracy: 'day' },
-      spoken: 'перенеси на вторник или четверг',
-      timeZone: MOSCOW,
-      now: SATURDAY,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: '2026-09-08', deadlineAccuracy: 'day' },
+        spoken: 'перенеси на вторник или четверг',
+        timeZone: MOSCOW,
+        now: SATURDAY,
+      }),
+    );
 
     expect(asDate((await reread(item.id)).deadlineAt)).toBe('2026-09-08');
   });
@@ -1242,15 +1381,17 @@ describe('день недели в правке считает код, а не �
      */
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'update',
-      changes: { ...NO_CHANGES, deadline: '2026-09-11', deadlineAccuracy: 'week' },
-      spoken: 'перенеси на следующую неделю, ближе к пятнице',
-      timeZone: MOSCOW,
-      now: SATURDAY,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: { ...NO_CHANGES, deadline: '2026-09-11', deadlineAccuracy: 'week' },
+        spoken: 'перенеси на следующую неделю, ближе к пятнице',
+        timeZone: MOSCOW,
+        now: SATURDAY,
+      }),
+    );
 
     const after = await reread(item.id);
     expect(asDate(after.deadlineAt)).toBe('2026-09-11');

@@ -238,7 +238,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         return;
       }
 
-      const applied = await applyDecision(db, {
+      const outcome = await applyDecision(db, {
         userId: active.userId,
         itemId: active.item.id,
         action,
@@ -249,12 +249,18 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         changedBy: 'user',
       });
 
-      if (applied === undefined) {
+      if (outcome.kind !== 'applied') {
         await ctx.editMessageText(
-          nothingChangedReply(action, active.item, active.texts, active.timeZone, now),
+          outcome.kind === 'unchanged'
+            ? nothingChangedReply(action, active.item, active.texts, active.timeZone, now)
+            : outcome.kind === 'refused'
+              ? active.texts.resolver.deadlineRefused
+              : active.texts.card.gone,
         );
         return;
       }
+
+      const { applied } = outcome;
 
       logger.info(
         { userId: active.userId, action, fields: applied.fields },

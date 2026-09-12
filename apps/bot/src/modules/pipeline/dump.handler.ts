@@ -427,6 +427,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       parked: false,
     };
 
+    /**
+     * Что сказать о припаркованном (ревизия этапа 3, A4).
+     *
+     * Правка, которая не применилась, уходила в черновик молча: в
+     * смешанной выгрузке обычный ответ §13.2 шёл без слова о ней, а без
+     * мыслей человек получал «Я здесь. Расскажешь, что в голове?» —
+     * реплику, которая читается как «не поняла». Строка подбирается по
+     * исходу и произносится один раз, даже если таких правок две.
+     */
+    const parkedWords: string[] = [];
+    const sayParked = (line: string): void => {
+      if (!parkedWords.includes(line)) parkedWords.push(line);
+    };
+    const parkedLine = (said: 'unchanged' | 'refused' | 'gone' | undefined): string =>
+      said === 'refused'
+        ? texts.resolver.deadlineRefused
+        : said === 'unchanged'
+          ? texts.resolver.unchanged
+          : said === 'gone'
+            ? texts.card.gone
+            : texts.answer.patchParked;
+
     const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       if (happened.statusTaken) {
         await alsoSay(deps, target, text, buttons);
@@ -744,8 +766,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         undoButtons(settled.applied.revisionId, texts),
       );
     } else if (settled.kind === 'nothingToApply') {
+      // «Добавила к прошлой» здесь было ложью на все три исхода (A3).
       happened.said = true;
-      await tell(texts.resolver.attached);
+      await tell(
+        settled.why === 'refused'
+          ? texts.resolver.deadlineRefused
+          : settled.why === 'gone'
+            ? texts.card.gone
+            : texts.resolver.unchanged,
+      );
     } else if (settled.kind === 'unclear') {
       happened.said = true;
       await tell(texts.resolver.answerUnclear);
@@ -890,6 +919,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         }
 
         happened.parked = true;
+        sayParked(texts.answer.savedUnparsed);
         await saveDraft(db, {
           userId: batch.userId,
           batchId: batch.id,
@@ -905,6 +935,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       happened.parked = true;
+      sayParked(parkedLine(outcome.said));
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
@@ -940,6 +971,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       for (const segment of pending) {
         happened.parked = true;
+        sayParked(texts.answer.patchParked);
         await saveDraft(db, {
           userId: batch.userId,
           batchId: batch.id,
@@ -1130,13 +1162,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
           { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
         ]);
-      } else if (parkedHere > 0) {
+      } else if (parkedHere > 0 || parkedWords.length > 0) {
         /**
-         * Слова сохранены — так и говорим. «Расскажешь, что в голове?»
-         * человеку, который только что сказал своё, читается как «я
-         * тебя не услышала».
+         * Слова сохранены — так и говорим, и по исходу (A4). «Расскажешь,
+         * что в голове?» человеку, который только что сказал своё,
+         * читается как «я тебя не услышала».
          */
-        await answer(texts.answer.savedUnparsed);
+        await answer(parkedWords.length > 0 ? parkedWords.join('\n') : texts.answer.savedUnparsed);
       } else if (deferred.length === 0 && !happened.said) {
         /**
          * «Я здесь. Расскажешь, что в голове?» — только когда сказать
@@ -1573,7 +1605,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // §13.2: под разбором три кнопки, и одна из них ведёт к остальным
     // делам. Без неё человек не знал, куда они делись.
-    await answer(presented.reply.text, presented.reply.buttons);
+    // Припаркованная правка — строкой под ответом, а не молча (A4).
+    await answer(
+      parkedWords.length > 0
+        ? `${presented.reply.text}\n\n${parkedWords.join('\n')}`
+        : presented.reply.text,
+      presented.reply.buttons,
+    );
 
     /**
      * §8.2: сводка темы обновляется правкой закреплённого сообщения.

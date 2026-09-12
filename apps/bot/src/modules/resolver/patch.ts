@@ -146,9 +146,22 @@ function snoozeUntil(now: Date, timeZone: string): Date {
   return startOfDayAfter(now, SNOOZE_DAYS, timeZone);
 }
 
-/** Что станет с записью. Пустой объект означает «ничего не меняется». */
-function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
+/**
+ * Что станет с записью, или почему не станет.
+ *
+ * `refused` — правка отвергнута по существу (срок в прошлом, несуществующая
+ * дата): это не «менять нечего», а «не смогли», и человек обязан это
+ * услышать (ревизия этапа 3, A3). Пустой `next` без `refused` означает
+ * «ничего не меняется».
+ */
+interface Plan {
+  readonly next: ItemPatch;
+  readonly refused?: string | undefined;
+}
+
+function plan(item: Item, params: ApplyParams, now: Date): Plan {
   const next: ItemPatch = {};
+  let refused: string | undefined;
 
   if (params.action === 'complete') {
     /**
@@ -168,7 +181,7 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
         item.completedAt !== null &&
         isoDateIn(item.completedAt, params.timeZone) === isoDateIn(now, params.timeZone)
       ) {
-        return next;
+        return { next };
       }
 
       if (item.deadlineAt?.getTime() !== moved.getTime()) {
@@ -178,14 +191,14 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
       // Запись не закрывается, но когда её сделали в последний раз —
       // записано: по этому вечерний итог считает сделанное (C9).
       next.completedAt = now;
-      return next;
+      return { next };
     }
 
     if (item.status !== 'done') {
       next.status = 'done';
       next.completedAt = now;
     }
-    return next;
+    return { next };
   }
 
   if (params.action === 'cancel') {
@@ -210,7 +223,7 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
         next.deadlineAt = null;
         next.deadlineAccuracy = null;
       }
-      return next;
+      return { next };
     }
 
     // §13.5: «убрать» — это отменённая запись, а не удалённая строка.
@@ -218,7 +231,7 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
     // Убранное — не сделанное: иначе вечерний итог посчитал бы его
     // закрытым сегодня.
     if (item.completedAt !== null) next.completedAt = null;
-    return next;
+    return { next };
   }
 
   if (params.action === 'snooze') {
@@ -243,7 +256,7 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
       }
     }
 
-    return next;
+    return { next };
   }
 
   /**
@@ -256,7 +269,7 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
    */
   if (params.mode === 'append') {
     const note = params.changes.note.trim();
-    if (note.length === 0) return next;
+    if (note.length === 0) return { next };
 
     // Подробности копятся строками: каждая — отдельная мысль человека, и
     // склеивать их в один абзац значит терять границы.
@@ -264,10 +277,10 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
 
     // Одно и то же уточнение дважды — не изменение. Человек мог повторить
     // сказанное, а список подробностей с дублями читать невозможно.
-    if (already.split('\n').includes(note)) return next;
+    if (already.split('\n').includes(note)) return { next };
 
     next.body = already.length === 0 ? note : `${already}\n${note}`;
-    return next;
+    return { next };
   }
 
   const { text, deadline, deadlineAccuracy } = params.changes;
@@ -340,6 +353,9 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
         next.deadlineAt = at;
         next.deadlineAccuracy = outcome.deadline.accuracy;
       }
+    } else if (!outcome.ok) {
+      // Причина отказа шла в никуда — ни в журнал, ни человеку (A3).
+      refused = outcome.reason;
     }
   }
 
@@ -407,22 +423,43 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
     }
   }
 
-  return next;
+  return refused === undefined ? { next } : { next, refused };
+}
+
+/**
+ * Исход применения (ревизия этапа 3, A3).
+ *
+ * Раньше «записи нет», «менять нечего» и «срок отвергнут» схлопывались в
+ * один `undefined`, и все вызывающие читали его как «уже в нужном
+ * состоянии»: на «перенеси на десятое» с датой в прошлом бот отвечал
+ * «Добавила к прошлой», в записи ничего не менялось, кнопки отмены не
+ * было. Четыре исхода — четыре ответа.
+ */
+export type ApplyOutcome =
+  /** Изменение применено, есть что отменять. */
+  | { readonly kind: 'applied'; readonly applied: Applied }
+  /** Запись уже в этом состоянии — менять нечего; это не ошибка. */
+  | { readonly kind: 'unchanged' }
+  /** Правка отвергнута по существу; причина — словами для журнала. */
+  | { readonly kind: 'refused'; readonly reason: string }
+  /** Записи нет: чужая, удалённая или выдуманный код. */
+  | { readonly kind: 'gone' };
+
+/** Само изменение, если оно было, — для тех, кому исход неважен. */
+export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
+  return outcome.kind === 'applied' ? outcome.applied : undefined;
 }
 
 /**
  * Применяет решение и оставляет ревизию.
  *
- * Возвращает `undefined`, если менять нечего или записи нет: и то, и
- * другое — обычные исходы, а не ошибки.
+ * Исход размечен: «применено», «менять нечего», «отвергнуто с причиной»,
+ * «записи нет» — см. `ApplyOutcome`.
  */
-export async function applyDecision(
-  db: Database,
-  params: ApplyParams,
-): Promise<Applied | undefined> {
+export async function applyDecision(db: Database, params: ApplyParams): Promise<ApplyOutcome> {
   const now = params.now ?? new Date();
 
-  return await db.transaction(async (tx): Promise<Applied | undefined> => {
+  return await db.transaction(async (tx): Promise<ApplyOutcome> => {
     /**
      * Запись читается и правится в одной транзакции.
      *
@@ -437,11 +474,17 @@ export async function applyDecision(
       .for('update')
       .limit(1);
 
-    if (!item) return undefined;
+    if (!item) return { kind: 'gone' };
 
-    const next = plan(item, params, now);
+    const planned = plan(item, params, now);
+    const next = planned.next;
     const fields = Object.keys(next) as PatchableField[];
-    if (fields.length === 0) return undefined;
+
+    if (fields.length === 0) {
+      return planned.refused === undefined
+        ? { kind: 'unchanged' }
+        : { kind: 'refused', reason: planned.refused };
+    }
 
     const [after] = await tx
       .update(items)
@@ -449,7 +492,7 @@ export async function applyDecision(
       .where(eq(items.id, item.id))
       .returning();
 
-    if (!after) return undefined;
+    if (!after) return { kind: 'gone' };
 
     const revision = await recordRevision(tx, {
       itemId: item.id,
@@ -461,6 +504,9 @@ export async function applyDecision(
       sourceMessageId: params.sourceMessageId,
     });
 
-    return { revisionId: revision.id, action: params.action, before: item, after, fields };
+    return {
+      kind: 'applied',
+      applied: { revisionId: revision.id, action: params.action, before: item, after, fields },
+    };
   });
 }

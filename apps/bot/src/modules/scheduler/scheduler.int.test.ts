@@ -25,7 +25,7 @@ import {
 } from './scheduler.service.js';
 import { ignoredStreak, lastMorningDay } from './reminders.repo.js';
 import { setEvening, setMorning, setTimezone } from '../onboarding/onboarding.service.js';
-import { applyDecision, emptyChanges } from '../resolver/patch.js';
+import { applyDecision, appliedOf, emptyChanges } from '../resolver/patch.js';
 import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { defaultTexts } from '../../texts/index.js';
 import { eveningText } from './digest.js';
@@ -476,14 +476,16 @@ describe('напоминание по сроку сверяется с ныне�
     await planReminders(deps(), { now: NOW });
 
     // Вечером 30.08 нажала «Сделано»: срок ушёл на 30.09.
-    await applyDecision(testDb(), {
-      userId,
-      itemId: id,
-      action: 'complete',
-      changes: emptyChanges(),
-      timeZone: 'Europe/Moscow',
-      now: new Date('2026-08-30T17:00:00.000Z'),
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: id,
+        action: 'complete',
+        changes: emptyChanges(),
+        timeZone: 'Europe/Moscow',
+        now: new Date('2026-08-30T17:00:00.000Z'),
+      }),
+    );
 
     await dispatchReminders(deps(), { now: morning });
 
