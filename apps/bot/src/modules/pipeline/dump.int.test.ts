@@ -29,6 +29,7 @@ import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
 import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
 import { QUESTION_ACTION } from '../resolver/change-text.js';
+import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
 import { revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
@@ -3056,7 +3057,7 @@ describe('выполнение и отмена голосом (§21 п.8, зад
      * это устроено у онбординга.
      */
     const prompts = await seedPrompts();
-    const { sender, all } = recordingSender();
+    const { sender, all, said } = recordingSender();
 
     // Прошлая выгрузка — три недели назад.
     await testDb()
@@ -3068,7 +3069,9 @@ describe('выполнение и отмена голосом (§21 п.8, зад
         lastMessageAt: new Date(T0.getTime() - 21 * 24 * 60 * 60_000),
       });
 
-    await queuedBatchOf([{ kind: 'text', text: 'надо купить продукты', offsetMs: 0 }]);
+    const batchId = await queuedBatchOf([
+      { kind: 'text', text: 'надо купить продукты', offsetMs: 0 },
+    ]);
 
     await processUserBatches(
       {
@@ -3085,6 +3088,11 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     );
 
     expect(all.some((text) => text.includes('С возвращением'))).toBe(true);
+
+    // Кнопка «С чистого листа» знает свою выгрузку: старое — это то, что
+    // было до неё (ревизия этапа 3, H1).
+    const greeting = said.find((one) => one.text.includes('С возвращением'));
+    expect(greeting?.actions).toContain(`${RETURNING_ACTION.fresh}:${toShortId(batchId)}`);
 
     // Сказанное разобрано, а не потеряно.
     const saved = await testDb().select().from(items).where(eq(items.userId, userId));
@@ -3292,6 +3300,32 @@ describe('выполнение и отмена голосом (§21 п.8, зад
      * дальше, и он в ТЗ прямо назван.
      */
     expect(all.at(-1)).toBe(defaultTexts.resolver.goOn);
+  });
+
+  it('«что на сегодня?» при пустом дне отвечает как кнопка «Сегодня» (ревизия этапа 3, E16)', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'что у меня на сегодня', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что у меня на сегодня' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.menu.todayEmpty);
+    expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 
   it('после ответа на вопрос по бэклогу — тоже не добавляет', async () => {

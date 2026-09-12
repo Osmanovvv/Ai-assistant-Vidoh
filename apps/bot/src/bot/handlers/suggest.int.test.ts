@@ -218,6 +218,29 @@ describe('«Да, запомни» под замеченной регулярн�
     expect((await reread(item.id)).recurrenceSource).toBe('noticed');
   });
 
+  it('закрытое дело после «Да, запомни» снова в работе (ревизия этапа 3, C7)', async () => {
+    /**
+     * Главный сценарий 3.17а: «оплатить садик» четыре раза, все сделаны.
+     * Правило ложилось на закрытую запись — и «Запомнила» оборачивалось
+     * тишиной навсегда: закрытое не видят ни выдача, ни планировщик.
+     */
+    const { bot } = createTestBot();
+    await bot.init();
+    const { item, action } = await offered(new Date(Date.now() - 7 * 24 * 60 * 60_000));
+    await testDb()
+      .update(items)
+      .set({ status: 'done', completedAt: new Date(Date.now() - 7 * 24 * 60 * 60_000) })
+      .where(eq(items.id, item.id));
+
+    await bot.handleUpdate(callbackUpdate(action));
+
+    const after = await reread(item.id);
+    expect((after.recurrenceRule as { kind: string } | null)?.kind).toBe('weekly');
+    expect(after.status).toBe('new');
+    expect(after.completedAt).toBeNull();
+    expect(after.deadlineAt?.getTime() ?? 0).toBeGreaterThan(Date.now());
+  });
+
   it('под ответом есть кнопка отката', async () => {
     // Правило пишется на всё будущее, и §7.3 требует один тап назад.
     const { bot, calls } = createTestBot();

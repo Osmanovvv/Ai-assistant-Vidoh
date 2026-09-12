@@ -7,7 +7,9 @@ import {
   refusalFor,
   type Reply as DictionaryReply,
 } from '../../texts/rules.js';
+import { toShortId } from '../shared/short-id.js';
 import {
+  ANSWER_ACTION,
   buildReply,
   composeOf,
   countQuestions,
@@ -46,6 +48,27 @@ describe('buildReply', () => {
     expect(reply.text).toContain(texts.answer.restSaved);
     expect(reply.text.endsWith(texts.answer.question)).toBe(true);
     expect(countQuestions(reply.text)).toBe(1);
+  });
+
+  it('«Сделать сейчас» ведёт к первому показанному делу, а не к «первому на сегодня» (ревизия этапа 3, E2)', () => {
+    /**
+     * Ответ строится очередью выдачи с упомянутым в выгрузке; «Сегодня»
+     * — другой очередью. Три бессрочных дела из выгрузки в ответе есть,
+     * а в «Сегодня» нет — и кнопка отвечала «На сегодня ничего срочного»
+     * под только что показанным списком.
+     */
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      actions: ['Позвонить маме', 'Купить хлеб'],
+      firstItemId: '11111111-1111-4111-8111-111111111111',
+      hidden: 0,
+      tired: false,
+    });
+
+    expect(reply.buttons[0]?.action).toBe(
+      `${ANSWER_ACTION.now}:${toShortId('11111111-1111-4111-8111-111111111111')}`,
+    );
   });
 
   it('три кнопки из §13.2 в заданном порядке', () => {

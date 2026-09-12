@@ -1,4 +1,5 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
+import { toShortId } from '../shared/short-id.js';
 import type { ItemType, PresenterAcknowledgement } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { contentRefusal } from '../../texts/rules.js';
@@ -90,6 +91,17 @@ export interface BuildReplyParams {
   readonly acknowledgement: string;
   /** Заголовки дел из фильтра выдачи, в его порядке. */
   readonly actions: readonly string[];
+  /**
+   * Первое показанное дело — к нему ведёт «Сделать сейчас» (ревизия
+   * этапа 3, E2).
+   *
+   * Ответ строится очередью выдачи с упомянутым в выгрузке, а «Сегодня»
+   * — другой очередью; без кода кнопка открывала «первое на сегодня»,
+   * которого в показанном списке могло не быть, и отвечала «На сегодня
+   * ничего срочного» под только что показанными делами. Пусто — у
+   * кнопки нет своего дела, и она ведёт к первому на сегодня.
+   */
+  readonly firstItemId?: string | undefined;
   /** Сколько дел осталось за пределами выдачи. */
   readonly hidden: number;
   /**
@@ -115,6 +127,13 @@ export function buildReply(params: BuildReplyParams): Reply {
   const { texts, actions, hidden, tired } = params;
   const answer = texts.answer;
   const lines: string[] = [params.acknowledgement];
+  const doNow = {
+    label: answer.buttonDoNow,
+    action:
+      params.firstItemId === undefined
+        ? ANSWER_ACTION.now
+        : `${ANSWER_ACTION.now}:${toShortId(params.firstItemId)}`,
+  };
 
   if (actions.length === 0) {
     // Разбирать было что, но срочного нет. Вопрос «с чего начнём» здесь
@@ -169,7 +188,6 @@ export function buildReply(params: BuildReplyParams): Reply {
     lines.push('', answer.closingTired);
 
     const exit = { label: answer.buttonLater, action: ANSWER_ACTION.later };
-    const doNow = { label: answer.buttonDoNow, action: ANSWER_ACTION.now };
 
     return {
       text: lines.join('\n'),
@@ -186,7 +204,7 @@ export function buildReply(params: BuildReplyParams): Reply {
   return {
     text: lines.join('\n'),
     buttons: [
-      { label: answer.buttonDoNow, action: ANSWER_ACTION.now },
+      doNow,
       { label: answer.buttonShowAll, action: ANSWER_ACTION.all },
       { label: answer.buttonLater, action: ANSWER_ACTION.later },
     ],
@@ -275,6 +293,8 @@ export function sanitizeAcknowledgement(
 export interface PresentParams {
   readonly composition: DumpComposition;
   readonly actions: readonly string[];
+  /** См. `BuildReplyParams.firstItemId`. */
+  readonly firstItemId?: string | undefined;
   readonly hidden: number;
   /** Профиль текстов пользователя. Неизвестный — берётся по умолчанию. */
   readonly profile?: string | null | undefined;
@@ -392,6 +412,7 @@ export async function presentDump(
       texts,
       acknowledgement: checked.text,
       actions: params.actions,
+      firstItemId: params.firstItemId,
       hidden: params.hidden,
       tired,
       omitQuestion: params.omitQuestion,

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -72,7 +72,7 @@ function createTestBot(gateway?: FakeTopicGateway): { bot: Bot; calls: ApiCall[]
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerMenuHandlers(bot, testDb(), logger);
+  registerMenuHandlers(bot, testDb(), logger, undefined, gateway);
   registerCardHandlers(
     bot,
     { db: testDb(), logger, ...(gateway === undefined ? {} : { topics: gateway }) },
@@ -506,6 +506,53 @@ describe('меню', () => {
 
     expect(calls.filter((call) => call.method === 'sendMessage')).toHaveLength(0);
     expect(calls.filter((call) => call.method === 'editMessageText')).toHaveLength(3);
+  });
+});
+
+describe('«Сделать сейчас» открывает показанное (ревизия этапа 3, E2)', () => {
+  it('с кодом дела — его карточку, даже если в «Сегодня» его нет', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    // Бессрочное дело: в «Сегодня» такого нет, а в ответе было.
+    const itemId = await addItem({ owner: userId, text: 'позвонить маме', topic: 'личное' });
+
+    await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(itemId)}`));
+
+    const shown = textOf(calls.filter((call) => call.method === 'editMessageText').at(-1));
+    expect(shown).toContain('позвонить маме');
+    expect(shown).not.toBe(defaultTexts.menu.todayEmpty);
+  });
+
+  it('чужое дело по коду не открывает', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem({ owner: otherUserId, text: 'чужое', topic: 'личное' });
+
+    await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(itemId)}`));
+
+    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
+      defaultTexts.card.gone,
+    );
+  });
+
+  it('без кода — по-прежнему первое на сегодня («Продолжаем» и старые кнопки)', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await addItem({
+      owner: userId,
+      text: 'к врачу',
+      topic: 'личное',
+      deadlineAt: new Date(Date.now() - 86_400_000),
+    });
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.now));
+
+    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toContain(
+      'к врачу',
+    );
   });
 });
 
@@ -1016,6 +1063,42 @@ describe('настройки §12.1: времена, пояс, сферы, им�
     await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
 
     expect(await myTopics()).not.toContain('здоровье');
+  });
+
+  it('снятая сфера не оставляет сирот: дела — в оставшуюся, ветка закрыта (ревизия этапа 3, E1)', async () => {
+    /**
+     * Онбординг на том же шаге переносил записи и закрывал ветку; меню
+     * только архивировало тему. Пять дел из «здоровья» пропадали из
+     * «Все задачи», ветка с закреплённой сводкой висела в чате навсегда,
+     * а при возврате галочки бот заводил вторую такую же.
+     */
+    const gateway = new FakeTopicGateway();
+    const { bot } = createTestBot(gateway);
+    await bot.init();
+
+    const homeId = await addTopic(userId, 'дом', true);
+    const healthId = await addTopic(userId, 'здоровье');
+    await testDb().update(topics).set({ tgThreadId: 777 }).where(eq(topics.id, healthId));
+    const itemId = await addItem({ owner: userId, text: 'к зубному', topic: 'здоровье' });
+    await testDb().update(items).set({ topicId: healthId }).where(eq(items.id, itemId));
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
+
+    expect(await myTopics()).toEqual(['дом']);
+
+    const row = await itemRow(itemId);
+    expect(row?.topic).toBe('дом');
+    expect(row?.topicId).toBe(homeId);
+
+    expect(gateway.deletedThreads.map((one) => one.threadId)).toEqual([777]);
+
+    // Ни одной открытой записи в архивной теме — страж на будущее.
+    const strays = await testDb()
+      .select({ id: items.id })
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.topicId, healthId)));
+    expect(strays).toEqual([]);
   });
 
   it('последнюю сферу убрать нельзя, и причина названа', async () => {
