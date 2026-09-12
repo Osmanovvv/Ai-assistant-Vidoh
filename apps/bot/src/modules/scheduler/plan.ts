@@ -28,8 +28,11 @@ export const HORIZON_HOURS = 36;
  * Не утром и не вечером: там уже стоят сводки, а инвариант «один вопрос
  * на реплику» (§13.9) не даёт добавить в них второй. Полдень — это
  * единственное время, которое ничем не занято.
+ *
+ * Было `13:00` при этом же комментарии и при плане 3.14, где сказано
+ * «в полдень» (ревизия этапа 3, D10): код приведён к написанному.
  */
-export const PROJECT_NUDGE_TIME = '13:00';
+export const PROJECT_NUDGE_TIME = '12:00';
 
 export interface PlanSettings {
   readonly morningTime: string;
@@ -102,6 +105,23 @@ function remindable(deadline: PlanDeadline): boolean {
   return deadline.accuracy === 'day';
 }
 
+/**
+ * Ключ задания по сроку: вид, запись и **день срока**.
+ *
+ * Тот же ключ считает и отправка (ревизия этапа 3, D1): если срок записи
+ * с тех пор изменился, ключ не сойдётся, и задание про день, которого
+ * больше нет, не уйдёт. Одна функция на раскладку и проверку — иначе
+ * они однажды разошлись бы форматом, и проверка пропускала бы всё.
+ */
+export function deadlineKey(
+  kind: 'deadline_eve' | 'deadline_day',
+  itemId: string,
+  deadlineAt: Date,
+  timeZone: string,
+): string {
+  return `${kind}:${itemId}:${localDateKey(deadlineAt, timeZone)}`;
+}
+
 export function planFor(input: PlanInput): PlannedReminder[] {
   // Выключатель напоминаний — первый и безусловный (§11).
   if (!input.settings.notificationsOn) return [];
@@ -159,16 +179,17 @@ export function planFor(input: PlanInput): PlannedReminder[] {
     if (!remindable(deadline)) continue;
 
     const day = localDateParts(deadline.deadlineAt, timeZone);
-    const dayKey = localDateKey(deadline.deadlineAt, timeZone);
+    const keyOf = (kind: 'deadline_eve' | 'deadline_day'): string =>
+      deadlineKey(kind, deadline.itemId, deadline.deadlineAt, timeZone);
 
     const eve = localTimeToUtc(previousDay(day, timeZone), settings.eveningTime, timeZone);
     if (eve.getTime() > now.getTime()) {
-      add('deadline_eve', eve, `deadline_eve:${deadline.itemId}:${dayKey}`, deadline.itemId);
+      add('deadline_eve', eve, keyOf('deadline_eve'), deadline.itemId);
     }
 
     const morningOf = localTimeToUtc(day, settings.morningTime, timeZone);
     if (morningOf.getTime() > now.getTime()) {
-      add('deadline_day', morningOf, `deadline_day:${deadline.itemId}:${dayKey}`, deadline.itemId);
+      add('deadline_day', morningOf, keyOf('deadline_day'), deadline.itemId);
     }
   }
 

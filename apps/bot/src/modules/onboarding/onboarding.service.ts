@@ -508,6 +508,15 @@ export async function setTimezone(
     .set({ timezone: zone, timezoneConfirmed: true })
     .where(eq(users.id, userId));
 
+  /**
+   * Разложенное по прежнему поясу снимается (ревизия этапа 3, D11).
+   *
+   * Иначе после переезда утреннее приходило в 15:30 по новому времени, а
+   * в 08:30 — ничего: ключ дня был занят старым заданием. То же, что у
+   * `setMorning`: настройка обязана действовать сразу.
+   */
+  await dropPending(db, userId);
+
   return {
     from: before?.zone ?? 'Europe/Moscow',
     to: zone,

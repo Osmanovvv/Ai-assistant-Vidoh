@@ -187,7 +187,10 @@ describe('возврат к проекту (3.13)', () => {
     const plan = planFor(input({ staleProjects: ['p1'] }));
     const nudge = plan.find((one) => one.kind === 'project');
 
-    expect(shown(nudge!.dueAt).slice(-5)).toBe(PROJECT_NUDGE_TIME);
+    // Буквально «12:00», а не константа: сравнение с константой не
+    // заметило бы, что она ушла от полудня (ревизия этапа 3, D10).
+    expect(shown(nudge!.dueAt).slice(-5)).toBe('12:00');
+    expect(PROJECT_NUDGE_TIME).toBe('12:00');
     expect(nudge!.itemId).toBe('p1');
   });
 

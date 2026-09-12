@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import {
@@ -25,7 +25,7 @@ import { sweepHistory } from '../recurrence/history.service.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { outputContextOf } from '../users/state.repo.js';
 import { deadlineText, eveningText, morningText, projectText } from './digest.js';
-import { HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
+import { deadlineKey, HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
   countAttempt,
@@ -35,6 +35,7 @@ import {
   lastMorningDay,
   markSent,
   markSkipped,
+  type SkipReason,
   storePlanned,
 } from './reminders.repo.js';
 
@@ -332,7 +333,16 @@ export async function dispatchReminders(
     try {
       if (await sendOne(deps, reminder, now)) sent += 1;
     } catch (error) {
+      /**
+       * Исключение — тоже попытка (ревизия этапа 3, D8).
+       *
+       * Раньше оно только писалось в журнал: попытка не считалась, и та
+       * же строка пробовалась каждую минуту без предела — а при двадцати
+       * таких порция была занята ими целиком, и здоровые за ними не
+       * уходили. Счёт и предел те же, что у отказа Telegram.
+       */
       deps.logger.error({ err: error, reminderId: reminder.id }, 'Напоминание не отправлено');
+      await noteFailure(deps, reminder);
     }
 
     /**
@@ -378,10 +388,10 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
   }
 
   const texts = textsFor(person.textProfile);
-  const message = await composeOne(deps, reminder, texts, now);
+  const message = await composeOne(deps, reminder, texts, now, person.timeZone);
 
-  if (message === undefined) {
-    await markSkipped(deps.db, reminder.id, 'gone');
+  if (typeof message === 'string') {
+    await markSkipped(deps.db, reminder.id, message);
     return false;
   }
 
@@ -401,21 +411,25 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
   });
 
   if (messageId === 0) {
-    const attempts = await countAttempt(deps.db, reminder.id);
-
-    if (attempts >= MAX_ATTEMPTS) {
-      await markSkipped(deps.db, reminder.id, 'failed');
-      deps.logger.error(
-        { reminderId: reminder.id, attempts },
-        'Напоминание не удалось отправить, больше не пробуем',
-      );
-    }
-
+    await noteFailure(deps, reminder);
     return false;
   }
 
   await markSent(deps.db, reminder.id, now);
   return true;
+}
+
+/** Сорвавшаяся попытка засчитана; после `MAX_ATTEMPTS` — сдаёмся вслух. */
+async function noteFailure(deps: SchedulerDeps, reminder: Reminder): Promise<void> {
+  const attempts = await countAttempt(deps.db, reminder.id);
+
+  if (attempts >= MAX_ATTEMPTS) {
+    await markSkipped(deps.db, reminder.id, 'failed');
+    deps.logger.error(
+      { reminderId: reminder.id, attempts },
+      'Напоминание не удалось отправить, больше не пробуем',
+    );
+  }
 }
 
 interface ComposedReminder {
@@ -424,7 +438,7 @@ interface ComposedReminder {
 }
 
 /**
- * Собирает реплику. `undefined` — отправлять больше нечего.
+ * Собирает реплику или называет причину, почему отправлять нечего.
  *
  * Самый важный случай здесь — закрытое дело. Напоминание о сроке ставится
  * накануне вечером, а закрыть дело человек может ночью. Напомнить утром о
@@ -461,7 +475,8 @@ async function composeOne(
   reminder: Reminder,
   texts: TextProfile,
   now: Date,
-): Promise<ComposedReminder | undefined> {
+  timeZone: string,
+): Promise<ComposedReminder | SkipReason> {
   switch (reminder.kind) {
     case 'morning': {
       const context = await outputContextOf(deps.db, reminder.userId);
@@ -561,7 +576,23 @@ async function composeOne(
     case 'deadline_eve':
     case 'deadline_day': {
       const item = await openItem(deps.db, reminder);
-      if (!item) return undefined;
+      if (!item) return 'gone';
+
+      /**
+       * Срок сверяется на отправке (ревизия этапа 3, D1).
+       *
+       * Между раскладкой и отправкой — до полутора суток, и срок за это
+       * время меняется: «не завтра, а в пятницу», «Отложить», «Сделано»
+       * у регулярного. Задание же было поставлено про прежний день, и
+       * без проверки в 21:00 приходило «Завтра срок» о дне, которого у
+       * записи больше нет. Ключ считается той же функцией, что при
+       * раскладке; неточный срок напоминаний не даёт вовсе.
+       */
+      const current =
+        item.deadlineAt !== null && item.deadlineAccuracy === 'day'
+          ? deadlineKey(reminder.kind, item.id, item.deadlineAt, timeZone)
+          : undefined;
+      if (current !== reminder.dedupeKey) return 'stale';
 
       return {
         text: deadlineText(texts, { item, onDay: reminder.kind === 'deadline_day' }),
@@ -571,7 +602,7 @@ async function composeOne(
 
     case 'project': {
       const item = await openItem(deps.db, reminder);
-      if (!item) return undefined;
+      if (!item) return 'gone';
 
       const [step] = await deps.db
         .select()
@@ -580,7 +611,7 @@ async function composeOne(
         .orderBy(asc(projectSteps.position))
         .limit(1);
 
-      if (!step) return undefined;
+      if (!step) return 'gone';
 
       return {
         text: projectText(texts, { title: item.text, step: step.text }),
@@ -690,21 +721,6 @@ export async function runScheduler(
   };
 }
 
-/** Последнее отправленное напоминание вида — для проверок и отладки. */
-export async function lastReminderOf(
-  db: Database,
-  params: { readonly userId: string; readonly kind: Reminder['kind'] },
-): Promise<Reminder | undefined> {
-  const [row] = await db
-    .select()
-    .from(reminders)
-    .where(and(eq(reminders.userId, params.userId), eq(reminders.kind, params.kind)))
-    .orderBy(desc(reminders.dueAt))
-    .limit(1);
-
-  return row;
-}
-
 /**
  * Как часто просыпается планировщик.
  *
@@ -723,14 +739,25 @@ export const TICK_MS = 60_000;
  * за одни и те же задания — от дублей спасал бы только ключ, а спасать
  * его должно от перезапуска, а не от нас самих.
  */
-export function startScheduler(deps: SchedulerDeps, intervalMs: number = TICK_MS): () => void {
-  let running = false;
+export function startScheduler(
+  deps: SchedulerDeps,
+  intervalMs: number = TICK_MS,
+): () => Promise<void> {
+  /**
+   * Идущий проход — чтобы остановка его дождалась (ревизия этапа 3, D7).
+   *
+   * Выкладка в 08:30, когда уходят утренние: сообщение отправлено, а
+   * пометить его в базе процесс не успел — базу закрыли. После
+   * перезапуска «Доброе утро» уходило второй раз. §21 п.11 требует «без
+   * дублей», поэтому стоп возвращается, когда проход завершён; проход
+   * короткий — двадцать отправок с шагом в сто двадцать миллисекунд.
+   */
+  let inFlight: Promise<void> | null = null;
 
   const timer = setInterval(() => {
-    if (running) return;
-    running = true;
+    if (inFlight !== null) return;
 
-    void runScheduler(deps)
+    inFlight = runScheduler(deps)
       .then((outcome) => {
         if (outcome.planned > 0 || outcome.sent > 0 || outcome.woken > 0) {
           deps.logger.info(outcome, 'Проход планировщика');
@@ -740,13 +767,14 @@ export function startScheduler(deps: SchedulerDeps, intervalMs: number = TICK_MS
         deps.logger.error({ err: error }, 'Проход планировщика не удался');
       })
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   }, intervalMs);
 
   timer.unref();
 
-  return () => {
+  return async () => {
     clearInterval(timer);
+    if (inFlight !== null) await inFlight;
   };
 }

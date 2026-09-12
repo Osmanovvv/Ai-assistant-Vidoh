@@ -21,9 +21,11 @@ import {
   MAX_ATTEMPTS,
   planReminders,
   runScheduler,
+  startScheduler,
 } from './scheduler.service.js';
 import { ignoredStreak, lastMorningDay } from './reminders.repo.js';
-import { setEvening, setMorning } from '../onboarding/onboarding.service.js';
+import { setEvening, setMorning, setTimezone } from '../onboarding/onboarding.service.js';
+import { applyDecision, emptyChanges } from '../resolver/patch.js';
 import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { defaultTexts } from '../../texts/index.js';
 import { eveningText } from './digest.js';
@@ -51,10 +53,19 @@ let outbox: Sent[] = [];
 
 /** Срывать ли отправку: так проверяется счётчик попыток (§5 ТЗ). */
 let sendFails = false;
+let sendThrows = false;
+/** Первая отправка ждёт, пока тест её не отпустит: проход «в полёте». */
+let sendGate: Promise<void> | null = null;
 
 const sender: QuestionSender = {
   ask: async ({ chatId, text, rows }) => {
+    if (sendThrows) throw new Error('внутри отправки что-то упало');
     if (sendFails) return await Promise.resolve(0);
+    if (sendGate !== null) {
+      const gate = sendGate;
+      sendGate = null;
+      await gate;
+    }
 
     outbox.push({ chatId, text, buttons: rows.flat().map((one) => one.label) });
     return await Promise.resolve(1);
@@ -93,6 +104,8 @@ beforeEach(async () => {
   tgId = 7300 + seq;
   outbox = [];
   sendFails = false;
+  sendThrows = false;
+  sendGate = null;
 
   const user = await upsertUser(testDb(), { tgId, firstName: 'Аня' });
   userId = user.id;
@@ -244,6 +257,30 @@ describe('сорвавшаяся отправка (§5 ТЗ, колонка atte
     expect(outbox).toHaveLength(1);
   });
 
+  it('исключение внутри отправки — тоже попытка, и повтор конечен (ревизия этапа 3, D8)', async () => {
+    /**
+     * Ошибка, вылетевшая из сборки или отправки, ловилась и писалась в
+     * журнал — и всё: попытка не считалась, и та же строка пробовалась
+     * каждую минуту без предела. При двадцати таких порция была занята
+     * ими целиком, и здоровые за ними не уходили.
+     */
+    await planReminders(deps(), { now: NOW });
+    sendThrows = true;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS + 2; attempt += 1) {
+      await dispatchReminders(deps(), { now: morning });
+    }
+
+    const [row] = await testDb()
+      .select()
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    expect(row?.attempts).toBe(MAX_ATTEMPTS);
+    expect(row?.skippedReason).toBe('failed');
+    expect(row?.sentAt).toBeNull();
+  });
+
   it('недоставленное не считается молчанием человека', async () => {
     // Иначе наш сбой снижал бы человеку частоту напоминаний.
     await planReminders(deps(), { now: NOW });
@@ -343,6 +380,136 @@ describe('сроки (3.16)', () => {
 
     const withDeadline = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
     expect(withDeadline?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+});
+
+describe('напоминание по сроку сверяется с нынешним сроком (ревизия этапа 3, D1)', () => {
+  /**
+   * Задания по сроку раскладываются на полтора суток вперёд с ключом
+   * «вид:запись:день». Срок за это время меняется — правкой словами,
+   * «Отложить», «Сделано» у регулярного, — а задание оставалось: в
+   * 21:00 приходило «Завтра срок: к врачу» про день, которого уже нет.
+   * Теперь на отправке день задания сверяется с нынешним сроком записи.
+   */
+  const eve = new Date('2026-08-30T18:00:00.000Z'); // 21:00 МСК, накануне 31.08
+  const morning = new Date('2026-08-31T05:30:00.000Z'); // 08:30 МСК, 31.08
+
+  async function sow(
+    overrides: {
+      readonly recurring?: boolean;
+    } = {},
+  ): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Оплатить садик',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'деньги',
+        deadlineAt: new Date('2026-08-30T21:00:00.000Z'), // 31.08 по Москве
+        deadlineAccuracy: 'day',
+        ...(overrides.recurring === true
+          ? {
+              recurrenceRule: { kind: 'monthly', interval: 1, anchor: '2026-01-31' },
+              recurrenceText: 'каждый месяц',
+              recurrenceSource: 'stated' as const,
+            }
+          : {}),
+      })
+      .returning({ id: items.id });
+
+    return row?.id ?? '';
+  }
+
+  async function skippedOf(kind: 'deadline_eve' | 'deadline_day'): Promise<string | null> {
+    const [row] = await testDb()
+      .select({ reason: reminders.skippedReason })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, kind)));
+
+    return row?.reason ?? null;
+  }
+
+  const deadlineTexts = () => outbox.map((one) => one.text).filter((text) => text.includes('срок'));
+
+  it('после переноса срока «Завтра срок» про старый день не приходит', async () => {
+    const id = await sow();
+    await planReminders(deps(), { now: NOW });
+
+    // Днём сказала «не завтра, а в пятницу» — срок 04.09.
+    await testDb()
+      .update(items)
+      .set({ deadlineAt: new Date('2026-09-03T21:00:00.000Z') })
+      .where(eq(items.id, id));
+
+    await dispatchReminders(deps(), { now: eve });
+
+    expect(deadlineTexts()).toEqual([]);
+    expect(await skippedOf('deadline_eve')).toBe('stale');
+  });
+
+  it('по новому сроку напоминание ставится — старый ключ ему не мешает', async () => {
+    const id = await sow();
+    await planReminders(deps(), { now: NOW });
+    await testDb()
+      .update(items)
+      .set({ deadlineAt: new Date('2026-09-03T21:00:00.000Z') })
+      .where(eq(items.id, id));
+
+    // Вечер 02.09: горизонт 36 часов уже видит пятницу.
+    await planReminders(deps(), { now: new Date('2026-09-02T15:00:00.000Z') });
+
+    const keys = await testDb()
+      .select({ key: reminders.dedupeKey })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'deadline_eve')));
+
+    expect(keys.map((row) => row.key).sort()).toEqual([
+      `deadline_eve:${id}:2026-08-31`,
+      `deadline_eve:${id}:2026-09-04`,
+    ]);
+  });
+
+  it('«Сделано» у регулярного накануне снимает утреннее «Сегодня срок»', async () => {
+    const id = await sow({ recurring: true });
+    await planReminders(deps(), { now: NOW });
+
+    // Вечером 30.08 нажала «Сделано»: срок ушёл на 30.09.
+    await applyDecision(testDb(), {
+      userId,
+      itemId: id,
+      action: 'complete',
+      changes: emptyChanges(),
+      timeZone: 'Europe/Moscow',
+      now: new Date('2026-08-30T17:00:00.000Z'),
+    });
+
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(deadlineTexts()).toEqual([]);
+    expect(await skippedOf('deadline_day')).toBe('stale');
+  });
+
+  it('срок стал неточным — напоминание тоже снимается', async () => {
+    const id = await sow();
+    await planReminders(deps(), { now: NOW });
+    await testDb().update(items).set({ deadlineAccuracy: 'week' }).where(eq(items.id, id));
+
+    await dispatchReminders(deps(), { now: eve });
+
+    expect(deadlineTexts()).toEqual([]);
+    expect(await skippedOf('deadline_eve')).toBe('stale');
+  });
+
+  it('срок не менялся — напоминание приходит, как раньше', async () => {
+    await sow();
+    await planReminders(deps(), { now: NOW });
+
+    await dispatchReminders(deps(), { now: eve });
+
+    expect(deadlineTexts()).toHaveLength(1);
+    expect(await skippedOf('deadline_eve')).toBeNull();
   });
 });
 
@@ -607,6 +774,56 @@ describe('пояса', () => {
   });
 });
 
+describe('остановка дожидается идущего прохода (ревизия этапа 3, D7)', () => {
+  it('стоп возвращается после того, как отправленное помечено', async () => {
+    /**
+     * Выкладка в 08:30, когда уходят утренние: сообщение отправлено, а
+     * пометить его в базе процесс не успел — базу закрыли. После
+     * перезапуска «Доброе утро» уходит второй раз. §21 п.11 требует
+     * «без дублей»: остановка обязана дождаться прохода.
+     */
+    await planReminders(deps(), { now: NOW });
+
+    let release: () => void = () => undefined;
+    sendGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const stop = startScheduler(deps(), 5);
+
+    // Ждём, пока проход дойдёт до отправки и повиснет на калитке:
+    // отправитель обнуляет калитку, когда берёт её.
+    const gateTaken = (): boolean => sendGate === null;
+    while (!gateTaken()) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    let stopped = false;
+    const stopping = stop().then(() => {
+      stopped = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(stopped, 'стоп вернулся, не дождавшись прохода').toBe(false);
+
+    release();
+    await stopping;
+
+    // Проход идёт по настоящим часам и раскладывает ещё и сегодняшнее;
+    // нас интересует утреннее 30.08 — то, что висело на калитке.
+    const rows = await testDb()
+      .select({ sentAt: reminders.sentAt })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.dedupeKey, 'morning:2026-08-30')));
+
+    expect(rows.map((row) => row.sentAt !== null)).toEqual([true]);
+  });
+
+  it('стоп без идущего прохода возвращается сразу', async () => {
+    const stop = startScheduler(deps(), 60_000);
+
+    await stop();
+  });
+});
+
 describe('проход целиком', () => {
   it('раскладывает и рассылает за один вызов', async () => {
     const morning = new Date('2026-08-30T05:30:00.000Z');
@@ -813,6 +1030,35 @@ describe('выбранное время вступает в силу сразу 
     await planReminders(deps(), { now: NOW });
 
     expect(await morningAt()).toBe('09:00');
+  });
+
+  it('смена города тоже: утреннее встаёт по новому поясу (ревизия этапа 3, D11)', async () => {
+    /**
+     * Переехала во Владивосток и сменила город в настройках. Раньше
+     * разложенное по Москве оставалось: утреннее приходило в 15:30 по
+     * новому времени, а в 08:30 — ничего, потому что ключ дня был занят.
+     */
+    await planReminders(deps(), { now: NOW });
+    expect(await morningAt()).toBe('08:30');
+
+    await setTimezone(testDb(), userId, 'Asia/Vladivostok');
+    await planReminders(deps(), { now: NOW });
+
+    const rows = await testDb()
+      .select({ dueAt: reminders.dueAt })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    const local = rows.map((row) =>
+      new Intl.DateTimeFormat('ru-RU', {
+        timeZone: 'Asia/Vladivostok',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(row.dueAt),
+    );
+
+    expect(local).toEqual(['08:30']);
   });
 
   it('вечер тоже', async () => {

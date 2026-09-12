@@ -1198,10 +1198,12 @@ async function main(): Promise<void> {
         })
       : () => undefined;
 
-  installShutdownHandlers(server, worker, broadcastWorker, () => {
+  installShutdownHandlers(server, worker, broadcastWorker, async () => {
     stopSweep();
-    stopScheduler();
     stopRenewals();
+    // Рассылка дорабатывает идущий проход: отправленное должно быть
+    // помечено до закрытия базы (ревизия этапа 3, D7).
+    await stopScheduler();
   });
 }
 
@@ -1209,7 +1211,8 @@ function installShutdownHandlers(
   server: Server,
   worker: Worker<PipelineJob>,
   broadcastWorker: Worker<BroadcastJob>,
-  stopSweep: () => void,
+  /** Останавливает фоновые циклы; возвращается, когда идущее доработано. */
+  stopLoops: () => Promise<void>,
 ): void {
   let shuttingDown = false;
 
@@ -1217,7 +1220,10 @@ function installShutdownHandlers(
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Останавливаюсь');
-    stopSweep();
+    // Циклы встают сразу; их хвост дожидается ниже, до закрытия базы.
+    const loopsStopped = stopLoops().catch((error: unknown) => {
+      logger.error({ err: error }, 'Фоновый цикл не остановился чисто');
+    });
 
     const forceExit = setTimeout(() => {
       logger.warn('Штатная остановка не уложилась в срок, выхожу принудительно');
@@ -1252,6 +1258,7 @@ function installShutdownHandlers(
           if (summary !== undefined) logger.info({ ...summary }, 'Запись ответов модели');
         }
 
+        await loopsStopped;
         await Promise.allSettled([closeDb(), closeRedis()]);
         clearTimeout(forceExit);
         process.exit(0);
