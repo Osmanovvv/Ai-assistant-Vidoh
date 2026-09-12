@@ -15,6 +15,7 @@ import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { BILLING_ACTION } from './billing.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
+import { markConsumed } from '../../modules/gateway/orphans.js';
 import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
@@ -200,7 +201,12 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
      * вызываемая сторона, одной обёрткой `sayNotUnderstood`, а не эта
      * строка.
      */
-    if (deps.consume && (await deps.consume(ctx, outcome.userId))) return;
+    if (deps.consume && (await deps.consume(ctx, outcome.userId))) {
+      // Съедено — так и помечается, иначе строка без выгрузки навсегда
+      // считалась бы сиротой (найдено на бою 12.09.2026).
+      await markConsumed(deps.db, outcome.messageId);
+      return;
+    }
 
     /**
      * §14 ТЗ: пробный период кончился — новые выгрузки не заводим

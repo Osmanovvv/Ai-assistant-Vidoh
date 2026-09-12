@@ -551,6 +551,39 @@ describe('сообщения без выгрузки видны', () => {
     expect(result.orphanedMessages, 'сирота осталась невидимой').toBe(1);
   });
 
+  it('ответ словами на вопрос бота сиротой не считается (найдено на бою 12.09.2026)', async () => {
+    /**
+     * «7:30» в ответ на вопрос про утреннее время бот съедает сам и в
+     * разбор не пускает — по замыслу. Строка оставалась без выгрузки, и
+     * счётчик неделю писал «есть сообщения без выгрузки: 2» о том, что
+     * давно обработано. Съеденное помечается — и не считается.
+     */
+    const HOUR = 60 * 60_000;
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_004,
+        tgChatId: 800,
+        tgMessageId: 9004,
+        kind: 'text',
+        text: '7:30',
+        receivedAt: at(-2 * HOUR),
+        consumedAt: at(-2 * HOUR),
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages).toBe(0);
+  });
+
   it('команда сиротой не считается', async () => {
     /**
      * Команда сохраняется и дальше буфера не идёт нарочно: иначе бот
