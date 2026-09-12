@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { items, type Batch, type EnergyLevelValue } from '../../db/schema.js';
+import { items, type Batch, type EnergyLevelValue, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
@@ -834,6 +834,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const searchEverywhere: Segment[] = [];
 
     /**
+     * Мысли, принятые за правку после первой мысли (ревизия этапа 3,
+     * A4-средняя): резолвер, глядя на записи, сказал «это новая мысль»,
+     * а разбор выгрузки уже прошёл. Им — свой проход, ниже.
+     */
+    const lateThoughts: Segment[] = [];
+
+    /**
      * Что делать с исходом разбора правки.
      *
      * Отдельной функцией потому, что проходов два и обработка у них
@@ -926,26 +933,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         }
 
         /**
-         * На первом проходе это ещё мысль, на втором — уже поздно:
-         * извлечение и сохранение прошли, и вставить её в разбор нечем.
-         * Слова ложатся черновиком, и человек слышит «Сохранила целиком»
-         * (A4). Второй прогон извлечения ради одного сегмента — отдельное
-         * решение с ценой в вызов модели; пока его нет, и обещание
-         * маршрутизатора говорит об этом прямо.
+         * На первом проходе это ещё мысль: она идёт в общий разбор. На
+         * втором и третьем извлечение и сохранение уже прошли, и в них
+         * её не вставить — она ждёт своего прохода (`absorbLateThoughts`),
+         * а не ложится черновиком, как было до ревизии этапа 3 (A4).
          */
         if (stage === 'before') {
           parsed.push(segment);
           return;
         }
 
-        happened.parked = true;
-        sayParked(texts.answer.savedUnparsed);
-        await saveDraft(db, {
-          userId: batch.userId,
-          batchId: batch.id,
-          text: segment.text,
-          reason: 'резолвер счёл это новой мыслью, но разбор выгрузки уже прошёл',
-        });
+        lateThoughts.push(segment);
         return;
       }
 
@@ -1443,6 +1441,105 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       await useOutcome(segment, await resolveOne(segment), 'wide');
     }
 
+    // ── Поздние мысли ───────────────────────────────────────────────────
+    /**
+     * Мысль, принятая за правку после первой мысли (ревизия этапа 3,
+     * A4-средняя).
+     *
+     * Правка после мысли разбирается уже после извлечения и сохранения.
+     * Если резолвер, глядя на записи, говорит «это новая мысль», в
+     * прошедший разбор её не вставить — прежде слова ложились черновиком
+     * с «Сохранила целиком», и обещание маршрутизатора «запись всё равно
+     * появится» после первой мысли было неправдой. Теперь такие слова
+     * получают свой проход: извлечение и классификация только их, дальше
+     * — тот же путь, что у остальных единиц: отсев повторов, вектор,
+     * сохранение, отбор и ответ.
+     *
+     * Цена — два вызова модели, и только в этом случае: у обычной
+     * выгрузки поздних мыслей нет, и проход не стоит ничего. Не вышло —
+     * извлечение не удалось или единиц не нашло — прежний путь: черновик
+     * и слово человеку. «Хотя нет, в пятницу», которое резолвер по ошибке
+     * назвал мыслью, задачей так не станет: настоящее извлечение из
+     * обрывка единиц не даёт.
+     */
+    const absorbLateThoughts = async (): Promise<{
+      readonly units: readonly ClassifiedItem[];
+      readonly saved: readonly Item[];
+      readonly known: readonly Item[];
+    }> => {
+      const nothing = { units: [], saved: [], known: [] };
+      if (lateThoughts.length === 0) return nothing;
+
+      const spokenLate = lateThoughts.map((segment) => segment.text).join('\n');
+
+      const park = async (reason: string): Promise<typeof nothing> => {
+        for (const segment of lateThoughts) {
+          happened.parked = true;
+          sayParked(texts.answer.savedUnparsed);
+          await saveDraft(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            text: segment.text,
+            reason,
+          });
+        }
+
+        return nothing;
+      };
+
+      const lateExtracted = await extractUnits(heavy, {
+        input: spokenLate,
+        userId: batch.userId,
+        batchId: batch.id,
+      });
+
+      if (!lateExtracted.ok) {
+        return await park(`поздняя мысль: извлечение не удалось: ${lateExtracted.problem}`);
+      }
+
+      if (lateExtracted.units.length === 0) {
+        return await park('поздняя мысль: извлечение не нашло в ней единиц');
+      }
+
+      const lateClassified = await classifyUnits(heavy, {
+        units: lateExtracted.units,
+        spoken: spokenLate,
+        // Правилам дня — речь целиком, как и у основного прохода.
+        speech: combined,
+        topics: topics.names,
+        defaultTopic: threadTopic?.name ?? topics.defaultName,
+        timeZone: context.timeZone,
+        now,
+        userId: batch.userId,
+        batchId: batch.id,
+      });
+
+      if (!lateClassified.ok) {
+        return await park(`поздняя мысль: классификация не удалась: ${lateClassified.problem}`);
+      }
+
+      const lateUnits = applyThreadTopic(lateClassified.items, {
+        threadTopic: threadTopic?.name,
+        catchAllTopic: topics.defaultName,
+      });
+
+      // Повторы — против всех открытых записей, включая только что
+      // сохранённые основным проходом.
+      const lateSplit = splitKnown(lateUnits, knownByText(await openItemsFor(db, batch.userId)));
+      const lateSaved = await saveItems(db, {
+        userId: batch.userId,
+        batchId: batch.id,
+        items: await withEmbeddings(db, deps, batch, lateSplit.fresh),
+      });
+
+      return { units: lateUnits, saved: lateSaved, known: lateSplit.known };
+    };
+
+    const late = await absorbLateThoughts();
+    units.push(...late.units);
+    saved.push(...late.saved);
+    for (const item of [...late.saved, ...late.known]) mentioned.add(item.id);
+
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
     /** Слова человека о состоянии: по ним решается, сколько дел показать. */
@@ -1560,7 +1657,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * быть быстрым добавлением и отвечало полным разбором: человек
        * сказал одно дело, а получил список.
        */
-      created: saved.length + split.known.length,
+      created: saved.length + split.known.length + late.known.length,
       hidden: selection.hidden,
       emotions: composition.emotions,
       spoken: dumpText,
@@ -1650,6 +1747,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         units: extracted.units.length,
         saved: split.fresh.length,
         known: split.known.length,
+        late: late.saved.length,
         shown: selection.shown.length,
         hidden: selection.hidden,
         corrections: classified.corrections,
