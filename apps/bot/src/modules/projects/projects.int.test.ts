@@ -81,6 +81,28 @@ describe('ближайший шаг', () => {
     expect((await nextStepOf(testDb(), project.id))?.text).toBe('решить, где отмечаем');
   });
 
+  it('закрытие шага — движение по проекту: запись обновляется (ревизия этапа 3, G2)', async () => {
+    /**
+     * «Нет движения» планировщик считает по `updatedAt` записи, а шаги
+     * закрывались только в своей таблице: человек закрывал шаг за шагом,
+     * а бот каждые пять дней спрашивал «как там ремонт?».
+     */
+    await testDb()
+      .update(items)
+      .set({ updatedAt: new Date('2026-08-20T09:00:00.000Z') })
+      .where(eq(items.id, project.id));
+    const steps = await saveSteps(testDb(), {
+      itemId: project.id,
+      userId,
+      texts: ['выбрать дату', 'позвать гостей'],
+    });
+
+    await completeStep(testDb(), { stepId: steps[0]?.id ?? '', userId, now: NOW });
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, project.id));
+    expect(after?.updatedAt.toISOString()).toBe(NOW.toISOString());
+  });
+
   it('последний шаг закрыт — ближайшего нет', async () => {
     const steps = await saveSteps(testDb(), { itemId: project.id, userId, texts: ['один шаг'] });
     await completeStep(testDb(), { stepId: steps[0]?.id ?? '', userId, now: NOW });

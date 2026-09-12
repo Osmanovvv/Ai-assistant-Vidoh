@@ -10,7 +10,7 @@ import type { Database } from '../../infra/db.js';
 import { openItemsFor } from '../../modules/items/items.repo.js';
 import { describeProject } from '../../modules/projects/project-text.js';
 import { stepButtons } from '../../modules/projects/project-actions.js';
-import { contextOf, projectsOf } from '../../modules/projects/projects.service.js';
+import { contextOf, projectsOf, withNextSteps } from '../../modules/projects/projects.service.js';
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
@@ -257,11 +257,26 @@ export function registerMenuHandlers(
     return { userId: user.id, texts: textsFor(context.textProfile), timeZone: context.timeZone };
   }
 
+  /**
+   * Экран меню правит своё сообщение; экран, открытый **из-под ответа на
+   * выгрузку**, уходит новым (ревизия этапа 3, E18).
+   *
+   * 3.58 закрыла это для «Оставить на потом»: прощание дописывается под
+   * сводку. «Разобрать всё» и «Сделать сейчас» по-прежнему правили само
+   * сообщение с выдачей — три дела, которые человек только что увидел,
+   * исчезали под списком сфер или карточкой. Кнопка под ответом узнаётся
+   * по префиксу `answer:`; всё остальное — навигация внутри меню.
+   */
   const show = async (
     ctx: CallbackQueryContext<Context>,
     text: string,
     keyboard: InlineKeyboard,
   ): Promise<void> => {
+    if (ctx.callbackQuery.data.startsWith('answer:')) {
+      await ctx.reply(text, { reply_markup: keyboard });
+      return;
+    }
+
     await ctx.editMessageText(text, { reply_markup: keyboard });
   };
 
@@ -877,12 +892,15 @@ export function registerMenuHandlers(
      * Шапка называет день, значит вчерашнее «завтра» на кнопке лишнее
      * (задача 3.78). Срезается только у дела, чей срок и есть сегодня.
      */
+    // Большая цель — ближайшим шагом (E17).
+    const lines = await withNextSteps(db, today);
+
     await show(
       ctx,
       active.texts.menu.todayTitle,
       itemsKeyboard(
         active.texts,
-        today.map((item) => ({ id: item.id, text: titleUnderDayHeader(item, day) })),
+        lines.map((item) => ({ id: item.id, text: titleUnderDayHeader(item, day) })),
         MENU_ACTION.root,
         {
           index: page,

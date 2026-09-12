@@ -164,10 +164,6 @@ const AROUND_TIME = new Set([
   'час',
   'утра',
   'утром',
-  'вечера',
-  'вечером',
-  'дня',
-  'ночи',
   'мск',
 ]);
 
@@ -184,6 +180,9 @@ const AROUND_TIME = new Set([
  * «полвосьмого»: угадав неверно, бот начнёт писать не в то время, а
  * человек не поймёт почему.
  */
+/** Половина суток словами: сдвигает час, а не выбрасывается. */
+const HALF_OF_DAY = new Set(['вечера', 'вечером', 'дня', 'ночи']);
+
 export function parseTime(text: string): string | undefined {
   /**
    * Слова вокруг времени убираются **по словам**, а не выражением с `\b`.
@@ -192,21 +191,38 @@ export function parseTime(text: string): string | undefined {
    * `\bв\b` кириллическое «в» не находит вовсе: у него нет границы слова
    * там, где её ждёшь. На этом «в 7:30» не разбиралось.
    */
-  const cleaned = text
+  const words = text
     .toLowerCase()
     .replace(/ё/gu, 'е')
     .split(/\s+/u)
-    .filter((word) => word !== '' && !AROUND_TIME.has(word))
-    .join(' ');
+    .filter((word) => word !== '' && !AROUND_TIME.has(word));
+
+  /**
+   * «Вечера», «дня», «ночи» — половина суток, а не обрамление (ревизия
+   * этапа 3, D14). Раньше они вырезались вместе с «утра», и «7 вечера»
+   * становилось семью утра: человек просил вечернее в 19:00, а получал
+   * в 07:00. Слово «утра» числа не меняет — оно осталось в обрамлении.
+   */
+  const half = words.find((word) => HALF_OF_DAY.has(word));
+  const cleaned = words.filter((word) => !HALF_OF_DAY.has(word)).join(' ');
 
   const match = /^(\d{1,2})(?:[:. ∶-](\d{2}))?$/u.exec(cleaned);
   if (!match) return undefined;
 
-  const hours = Number(match[1]);
+  const spoken = Number(match[1]);
   const minutes = match[2] === undefined ? 0 : Number(match[2]);
 
-  if (!Number.isInteger(hours) || hours > 23) return undefined;
+  if (!Number.isInteger(spoken) || spoken > 23) return undefined;
   if (!Number.isInteger(minutes) || minutes > 59) return undefined;
+
+  // «7 вечера» и «2 дня» — вторая половина суток; «19 вечера» уже там.
+  // «12 ночи» — полночь.
+  const hours =
+    half === 'ночи' && spoken === 12
+      ? 0
+      : half !== undefined && half !== 'утра' && spoken < 12
+        ? spoken + 12
+        : spoken;
 
   const pad = (value: number): string => String(value).padStart(2, '0');
   return `${pad(hours)}:${pad(minutes)}`;

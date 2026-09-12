@@ -52,7 +52,11 @@ const embedder: EmbeddingProvider = {
 
 let userId = '';
 
-async function addItem(text: string, where: 'active' | 'background'): Promise<void> {
+async function addItem(
+  text: string,
+  where: 'active' | 'background' | 'done',
+  overrides: { readonly topic?: string; readonly deadlineAt?: Date } = {},
+): Promise<void> {
   await testDb()
     .insert(items)
     .values({
@@ -60,11 +64,15 @@ async function addItem(text: string, where: 'active' | 'background'): Promise<vo
       text,
       type: 'TASK',
       priority: 'SOON',
-      topic: 'дети',
-      status: 'active',
+      topic: overrides.topic ?? 'дети',
+      status: where === 'done' ? 'done' : 'active',
+      completedAt: where === 'done' ? new Date('2026-09-10T10:00:00.000Z') : null,
       // Ушедшее в фон (§13.6) поиск находит, а «открытые» не отдают.
       backgroundedAt: where === 'background' ? new Date() : null,
       embedding: vector(1, 0, 0),
+      ...(overrides.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: overrides.deadlineAt, deadlineAccuracy: 'day' as const }),
     });
 }
 
@@ -72,6 +80,106 @@ beforeEach(async () => {
   const user = await upsertUser(testDb(), { tgId: 9501, firstName: 'Аня' });
 
   userId = user.id;
+});
+
+describe('вопрос про день, кроме сегодняшнего (ревизия этапа 3, F2)', () => {
+  const DAY = 24 * 60 * 60_000;
+  // Пятница 04.09.2026, 12:00 по Москве.
+  const NOW = new Date('2026-09-04T09:00:00.000Z');
+  const dayAfter = (days: number): Date =>
+    new Date(new Date('2026-09-03T21:00:00.000Z').getTime() + days * DAY);
+
+  it('«что на завтра» — дела со сроком завтра, а не поиск по словам', async () => {
+    /**
+     * Слово о времени, кроме «сегодня», не узнавалось: вопрос уходил в
+     * смысловой поиск по словам «что на завтра», ничего похожего не
+     * находил, и человек с тремя делами на завтра читал «ничего не
+     * записано».
+     */
+    await addItem('к стоматологу', 'active', { deadlineAt: dayAfter(1) });
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(3) });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на завтра', now: NOW },
+    );
+
+    expect(answer.kind).toBe('period');
+    expect(answer.kind === 'period' ? answer.period : '').toBe('tomorrow');
+    expect(answer.kind === 'period' ? answer.items.map((one) => one.text) : []).toEqual([
+      'к стоматологу',
+    ]);
+  });
+
+  it('«что на выходных» — суббота и воскресенье', async () => {
+    await addItem('к стоматологу', 'active', { deadlineAt: dayAfter(1) }); // сб 05.09
+    await addItem('к маме', 'active', { deadlineAt: dayAfter(2) }); // вс 06.09
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(3) }); // пн
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что на выходных', now: NOW },
+    );
+
+    expect(answer.kind === 'period' ? answer.items.map((one) => one.text) : []).toEqual([
+      'к стоматологу',
+      'к маме',
+    ]);
+  });
+
+  it('«что на неделе» — ближайшие семь дней', async () => {
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(3) });
+    await addItem('к врачу', 'active', { deadlineAt: dayAfter(10) });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на неделе', now: NOW },
+    );
+
+    expect(answer.kind === 'period' ? answer.items.map((one) => one.text) : []).toEqual([
+      'сдать отчёт',
+    ]);
+  });
+
+  it('на завтра пусто — так и сказано, а не «ничего не записано»', async () => {
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(3) });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что на завтра', now: NOW },
+    );
+
+    expect(answer.kind).toBe('periodEmpty');
+  });
+});
+
+describe('вопрос внутри ветки сферы (ревизия этапа 3, F4)', () => {
+  it('сужается до сферы ветки', async () => {
+    await addItem('к стоматологу', 'active', { topic: 'здоровье' });
+    await addItem('к стоматологу с ребёнком', 'active', { topic: 'дети' });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что там со стоматологом', topic: 'здоровье' },
+    );
+
+    expect(answer.kind === 'about' ? answer.items.map((one) => one.topic) : []).toEqual([
+      'здоровье',
+    ]);
+  });
+});
+
+describe('без провайдера векторов (ревизия этапа 3, F3)', () => {
+  it('«не смогла посмотреть», а не «ничего не записано»', async () => {
+    await addItem('записать сына в садик', 'active');
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), logger },
+      { userId, text: 'что там с садиком' },
+    );
+
+    expect(answer.kind).toBe('unavailable');
+  });
 });
 
 describe('вопрос про дело, которое нашлось поиском', () => {
@@ -87,17 +195,27 @@ describe('вопрос про дело, которое нашлось поиск
     expect(answer.kind === 'about' ? answer.items.length : 0).toBeGreaterThan(0);
   });
 
-  it('только ушедшая в фон — отвечает «ничего», а не шапкой в пустоту', async () => {
+  it('закрытое дело — «записано, но закрыто», а не «ничего не записано» (ревизия этапа 3, F1)', async () => {
     /**
-     * Главная проверка. Запись в фоне поиск находит, а «открытые» не
-     * отдают — и человек получал заголовок «Вот что у меня про это
-     * записано:» без единой строки под ним. Честное «ничего не
-     * записано» он поймёт; пустую шапку прочтёт как поломку.
-     *
-     * До ревизии этапа 3 (C1) здесь была отложенная запись; теперь
-     * отложенное открыто и на вопрос отвечает — прятать его от «что там
-     * с садиком» было бы ложью.
+     * «Что там с днём рождения?» — «ничего не записано», хотя вчера
+     * нажала «сделано». Поиск находил запись, отсев по открытым выбрасывал
+     * её, и пустой остаток читался как «ничего». Человек решал, что бот
+     * забыл.
      */
+    await addItem('заказать торт на день рождения', 'done');
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что там с тортом' },
+    );
+
+    expect(answer.kind).toBe('aboutClosed');
+    expect(answer.kind === 'aboutClosed' ? answer.items.map((one) => one.text) : []).toEqual([
+      'заказать торт на день рождения',
+    ]);
+  });
+
+  it('ушедшее в фон — тоже названо, а не спрятано за «ничего» (F1)', async () => {
     await addItem('записать сына в садик', 'background');
 
     const answer = await answerBacklogQuery(
@@ -105,26 +223,38 @@ describe('вопрос про дело, которое нашлось поиск
       { userId, text: 'что там с садиком' },
     );
 
-    expect(answer.kind).toBe('nothing');
+    expect(answer.kind).toBe('aboutClosed');
+  });
+
+  it('открытое важнее закрытого: если есть и то, и другое — список открытых', async () => {
+    await addItem('заказать торт', 'done');
+    await addItem('заказать торт побольше', 'active');
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что там с тортом' },
+    );
+
+    expect(answer.kind).toBe('about');
+  });
+
+  it('«что на сегодня?» с просроченным — список', async () => {
+    await addItem('сдать отчёт', 'active', { deadlineAt: new Date(Date.now() - 24 * 60 * 60_000) });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на сегодня' },
+    );
+
+    expect(answer.kind).toBe('today');
   });
 
   it('«что на сегодня?» при пустом дне — «на сегодня пусто», а не «ничего не записано» (ревизия этапа 3, E16)', async () => {
-    /**
-     * У неё тридцать записей на следующую неделю; «ничего не записано»
-     * читалось как «записей нет». Пустой день — свой ответ, тот же, что
-     * у кнопки «Сегодня».
-     */
-    await testDb()
-      .insert(items)
-      .values({
-        userId,
-        text: 'сдать отчёт',
-        type: 'TASK',
-        priority: 'SOON',
-        topic: 'работа',
-        deadlineAt: new Date(Date.now() + 7 * 24 * 60 * 60_000),
-        deadlineAccuracy: 'day',
-      });
+    // У неё тридцать записей на следующую неделю; «ничего не записано»
+    // читалось как «записей нет». Пустой день — свой ответ.
+    await addItem('сдать отчёт', 'active', {
+      deadlineAt: new Date(Date.now() + 7 * 24 * 60 * 60_000),
+    });
 
     const answer = await answerBacklogQuery(
       { db: testDb(), embedder, logger },

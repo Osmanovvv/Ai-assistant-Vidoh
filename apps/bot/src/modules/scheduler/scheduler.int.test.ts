@@ -7,6 +7,7 @@ import {
   batches,
   items,
   messagesRaw,
+  projectSteps,
   recurrenceSuggestions,
   reminders,
   userSettings,
@@ -14,7 +15,7 @@ import {
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
-import { upsertUser } from '../users/users.repo.js';
+import { touchActivity, upsertUser } from '../users/users.repo.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   dispatchReminders,
@@ -109,6 +110,12 @@ beforeEach(async () => {
 
   const user = await upsertUser(testDb(), { tgId, firstName: 'Аня' });
   userId = user.id;
+  // Тесты живут в августе 2026 по фиксированным часам; отметка активности
+  // «сейчас» (настоящие часы) считалась бы реакцией на любое утреннее.
+  await testDb()
+    .update(users)
+    .set({ lastActiveAt: new Date('2026-08-01T00:00:00.000Z') })
+    .where(eq(users.id, userId));
 
   await testDb()
     .insert(userSettings)
@@ -373,6 +380,30 @@ describe('сроки (3.16)', () => {
     expect(deadline?.text).toContain('Оплатить квитанцию');
   });
 
+  it('большая цель в утреннем — ближайшим шагом (ревизия этапа 3, E17)', async () => {
+    const [project] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Ремонт на кухне',
+        type: 'TASK',
+        priority: 'NOW',
+        topic: 'дом',
+        isProject: true,
+      })
+      .returning({ id: items.id });
+    await testDb()
+      .insert(projectSteps)
+      .values({ itemId: project?.id ?? '', userId, text: 'Позвонить мастеру', position: 1 });
+
+    await planReminders(deps(), { now: new Date('2026-08-29T03:00:00.000Z') });
+    await dispatchReminders(deps(), { now: new Date('2026-08-30T05:30:00.000Z') });
+
+    const digest = outbox.find((one) => one.text.includes(defaultTexts.reminders.morningInvite));
+    expect(digest?.text).toContain('Позвонить мастеру');
+    expect(digest?.text).not.toContain('Ремонт на кухне');
+  });
+
   it('под напоминанием о сроке две кнопки', async () => {
     await sow(new Date('2026-08-31T09:00:00.000Z'), 'day');
     await planReminders(deps(), { now: NOW });
@@ -380,6 +411,63 @@ describe('сроки (3.16)', () => {
 
     const withDeadline = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
     expect(withDeadline?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+});
+
+describe('возврат к проекту (§11; ревизия этапа 3, G1)', () => {
+  const noon = new Date('2026-08-30T09:00:00.000Z'); // 12:00 МСК
+
+  async function project(overrides: { readonly steps?: readonly string[] } = {}): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Разобраться с ремонтом',
+        type: 'TASK',
+        priority: 'LATER',
+        topic: 'дом',
+        isProject: true,
+        // Десять дней без движения.
+        updatedAt: new Date('2026-08-20T09:00:00.000Z'),
+      })
+      .returning({ id: items.id });
+    const id = row?.id ?? '';
+
+    for (const [index, text] of (overrides.steps ?? []).entries()) {
+      await testDb()
+        .insert(projectSteps)
+        .values({ itemId: id, userId, text, position: index + 1 });
+    }
+
+    return id;
+  }
+
+  it('неразложенный проект тоже получает вопрос — без шага, но с приглашением начать', async () => {
+    /**
+     * Шаги раскладываются только когда человек сам спросил про проект
+     * голосом; названный в выгрузке и ни разу не спрошенный жил без
+     * шагов — и §11 для него не работал никогда: «один вопрос про
+     * ближайший шаг» требовал шага.
+     */
+    await project();
+
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: noon });
+
+    const nudge = outbox.find((one) => one.text.includes('Разобраться с ремонтом'));
+    expect(nudge?.text).toBe(defaultTexts.reminders.projectStuckNoStep('Разобраться с ремонтом'));
+  });
+
+  it('проект с шагами — вопрос про ближайший, как и было', async () => {
+    await project({ steps: ['Позвонить мастеру', 'Выбрать плитку'] });
+
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: noon });
+
+    const nudge = outbox.find((one) => one.text.includes('Разобраться с ремонтом'));
+    expect(nudge?.text).toBe(
+      defaultTexts.reminders.projectStuck('Разобраться с ремонтом', 'Позвонить мастеру'),
+    );
   });
 });
 
@@ -715,6 +803,42 @@ describe('снижение частоты (3.17)', () => {
       });
 
     // Считаем от свежего к старому: 29-е без ответа, 28-е с ответом — стоп.
+    expect(await ignoredStreak(testDb(), { userId, timeZone: 'Europe/Moscow' })).toBe(1);
+  });
+
+  it('нажатие кнопки — тоже реакция (ревизия этапа 3, D13)', async () => {
+    /**
+     * Нажатия в `messages_raw` не пишутся; серия смотрела только на
+     * сообщения. Человек, закрывший дело кнопкой под утренним, считался
+     * молчащим — и ему снижали частоту за то, что он отвечал.
+     */
+    await ignoredMorning('2026-08-27');
+    await ignoredMorning('2026-08-28');
+    await ignoredMorning('2026-08-29');
+
+    // Нажатие 28-го днём: обработчики отмечают активность человека.
+    await touchActivity(testDb(), userId, new Date('2026-08-28T14:00:00.000Z'));
+
+    expect(await ignoredStreak(testDb(), { userId, timeZone: 'Europe/Moscow' })).toBe(1);
+  });
+
+  it('активность в день без утреннего тоже обрывает серию (D13)', async () => {
+    // Утренние по понедельникам (недельная частота): 17-го и 24-го без
+    // ответа, а 20-го человек писал. Молчал он только 24-го.
+    await ignoredMorning('2026-08-17');
+    await ignoredMorning('2026-08-24');
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 900_000 + seq,
+        tgChatId: tgId,
+        tgMessageId: 1,
+        kind: 'text',
+        text: 'вспомнила про врача',
+        receivedAt: new Date('2026-08-20T14:00:00.000Z'),
+      });
+
     expect(await ignoredStreak(testDb(), { userId, timeZone: 'Europe/Moscow' })).toBe(1);
   });
 

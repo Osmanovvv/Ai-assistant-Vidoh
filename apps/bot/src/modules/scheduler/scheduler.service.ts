@@ -23,6 +23,7 @@ import type { StatusButton } from '../presenter/status.service.js';
 import { nudgeDue } from '../projects/projects.service.js';
 import { sweepHistory } from '../recurrence/history.service.js';
 import { withdrawOffer } from '../recurrence/suggestions.repo.js';
+import { withNextSteps } from '../projects/projects.service.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { outputContextOf } from '../users/state.repo.js';
 import { deadlineText, eveningText, morningText, projectText } from './digest.js';
@@ -277,6 +278,7 @@ async function staleProjectsOf(db: Database, userId: string, now: Date): Promise
       itemId: items.id,
       lastMovedAt: items.updatedAt,
       remaining: sql<number>`count(${projectSteps.id}) filter (where ${projectSteps.doneAt} is null)::int`,
+      total: sql<number>`count(${projectSteps.id})::int`,
       lastNudgeAt: sql<Date | null>`max(${reminders.sentAt})`,
     })
     .from(items)
@@ -308,7 +310,15 @@ async function staleProjectsOf(db: Database, userId: string, now: Date): Promise
       nudgeDue({
         lastMovedAt: row.lastMovedAt,
         ...(row.lastNudgeAt === null ? {} : { lastNudgeAt: new Date(row.lastNudgeAt) }),
-        hasNext: row.remaining > 0,
+        /**
+         * Неразложенный проект — тоже стоящий (ревизия этапа 3, G1).
+         *
+         * Шаги раскладываются, когда человек сам спросил про проект
+         * голосом; названный в выгрузке и ни разу не спрошенный жил без
+         * шагов, и §11 для него не работал никогда. Спрашивать нечего
+         * только у законченного — где шаги есть и все закрыты.
+         */
+        hasNext: row.total === 0 || row.remaining > 0,
         now,
       }),
     )
@@ -525,7 +535,11 @@ async function composeOne(
       return {
         text: morningText(
           texts,
-          today.filter((item) => !covered.has(item.id)),
+          // Большая цель — ближайшим шагом (E17).
+          await withNextSteps(
+            deps.db,
+            today.filter((item) => !covered.has(item.id)),
+          ),
           { now, timeZone: context.timeZone },
           mayDump,
         ),
@@ -617,10 +631,21 @@ async function composeOne(
         .orderBy(asc(projectSteps.position))
         .limit(1);
 
-      if (!step) return 'gone';
+      const [any] = await deps.db
+        .select({ id: projectSteps.id })
+        .from(projectSteps)
+        .where(eq(projectSteps.itemId, item.id))
+        .limit(1);
+
+      // Шаги есть и все закрыты — проект закончен, спрашивать нечего.
+      if (!step && any !== undefined) return 'gone';
 
       return {
-        text: projectText(texts, { title: item.text, step: step.text }),
+        // Без шагов — приглашение начать, а не вопрос про шаг (G1).
+        text:
+          step === undefined
+            ? texts.reminders.projectStuckNoStep(item.text)
+            : projectText(texts, { title: item.text, step: step.text }),
         buttons: projectButtons(item.id, texts),
       };
     }

@@ -180,6 +180,24 @@ export function isShowable(item: Item, now: Date): boolean {
   return OPEN_STATUS_SET.has(item.status);
 }
 
+/**
+ * Сколько длится неточный срок (ревизия этапа 3, E15).
+ *
+ * «На следующей неделе» хранится понедельником той недели с точностью
+ * «неделя», «в октябре» — первым числом с точностью «месяц». Очереди
+ * смотрели только на дату: в понедельник дело было «сегодня срок», во
+ * вторник — «просрочено», хотя неделя ещё идёт. Карточка («около») и
+ * планировщик (напоминаний нет) точность учитывали, выдача — нет.
+ * Просрочено неточное только когда прошёл весь период; «сегодня» у него
+ * не бывает.
+ */
+const SPAN_MS: Readonly<Record<'week' | 'month', number>> = {
+  week: 7 * 24 * 60 * 60_000,
+  // Месяц берётся тридцатью одним днём: точность «месяц» и так не про
+  // число, а про то, что срок где-то в этом месяце.
+  month: 31 * 24 * 60 * 60_000,
+};
+
 function bucketOf(
   item: Item,
   todayStart: Date,
@@ -189,8 +207,13 @@ function bucketOf(
   const deadline = item.deadlineAt?.getTime();
 
   if (deadline !== undefined) {
-    if (deadline < todayStart.getTime()) return BUCKET.overdue;
-    if (deadline < tomorrowStart.getTime()) return BUCKET.today;
+    const accuracy = item.deadlineAccuracy;
+    if (accuracy === 'week' || accuracy === 'month') {
+      if (deadline + SPAN_MS[accuracy] <= todayStart.getTime()) return BUCKET.overdue;
+    } else {
+      if (deadline < todayStart.getTime()) return BUCKET.overdue;
+      if (deadline < tomorrowStart.getTime()) return BUCKET.today;
+    }
   }
 
   if (mentioned?.has(item.id) === true) return BUCKET.mentioned;

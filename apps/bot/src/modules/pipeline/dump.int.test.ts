@@ -3438,6 +3438,52 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 
+  it('«что на сегодня» при длинном списке — восемь строк и «ещё N», а не тишина (ревизия этапа 3, E12)', async () => {
+    /**
+     * Список «на сегодня» уходил без предела; при сотне просроченных
+     * текст пробивал 4096 знаков, Telegram отказывал, и человек получал
+     * тишину. Кнопка «Сегодня» листает по восемь — голос отвечает так же.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    for (let index = 1; index <= 10; index += 1) {
+      await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: `Дело номер ${String(index)}`,
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'дом',
+          // Часы конвейера заморожены на T0: «вчера» — от них.
+          deadlineAt: at(-24 * 60 * 60_000),
+          deadlineAccuracy: 'day',
+        });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'что у меня на сегодня', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что у меня на сегодня' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.find((text) => text.startsWith(defaultTexts.backlog.today)) ?? '';
+    expect(reply.split('\n').filter((line) => line.startsWith('— '))).toHaveLength(8);
+    expect(reply).toContain(defaultTexts.backlog.more(2));
+  });
+
   it('после ответа на вопрос по бэклогу — тоже не добавляет', async () => {
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();
@@ -3460,10 +3506,11 @@ describe('выполнение и отмена голосом (§21 п.8, зад
       userId,
     );
 
-    // Без векторного поиска ответом будет «ничего не записано» — и это
-    // ответ: заглушка после него всё равно лишняя.
+    // Без провайдера векторов ответом будет «не смогла посмотреть»
+    // (ревизия этапа 3, F3: «ничего не записано» без взгляда в записи —
+    // ложь) — и это ответ: заглушка после него всё равно лишняя.
     expect(all).not.toContain(defaultTexts.answer.nothingToParse);
-    expect(all.at(-1)).toBe(defaultTexts.backlog.nothing);
+    expect(all.at(-1)).toBe(defaultTexts.backlog.unavailable);
   });
 
   it('отмена голосом переводит в отменённые и откатывается', async () => {

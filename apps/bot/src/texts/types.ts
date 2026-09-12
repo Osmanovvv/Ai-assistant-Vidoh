@@ -85,8 +85,6 @@ export interface TextProfile {
     readonly restSaved: string;
     /** Когда за пределами выдачи ничего не осталось. */
     readonly nothingHidden: string;
-    /** Разобрать было что, но срочного нет. */
-    readonly nothingUrgent: string;
 
     readonly question: string;
     /**
@@ -348,6 +346,18 @@ export interface TextProfile {
     readonly today: string;
     readonly about: string;
     readonly line: (text: string) => string;
+    /** «Что на завтра / выходных / неделе» (ревизия этапа 3, F2). */
+    readonly period: (label: string) => string;
+    readonly periodEmpty: (label: string) => string;
+    readonly labelTomorrow: string;
+    readonly labelWeekend: string;
+    readonly labelWeek: string;
+    /** Спросили про закрытое, убранное или ушедшее в фон дело (F1). */
+    readonly aboutClosed: string;
+    readonly closedLine: (text: string, state: string) => string;
+    readonly inBackground: string;
+    /** Список длиннее предела: хвост одной строкой (ревизия этапа 3, E12). */
+    readonly more: (rest: number) => string;
     /** Ничего похожего не нашлось. Не повод предлагать завести. */
     readonly nothing: string;
     /**
@@ -528,6 +538,8 @@ export interface TextProfile {
 
     /** Один вопрос про застрявший проект (§11, задача 3.13). */
     readonly projectStuck: (title: string, step: string) => string;
+    /** То же для проекта без шагов: приглашение начать (ревизия этапа 3, G1). */
+    readonly projectStuckNoStep: (title: string) => string;
     readonly buttonProjectTake: string;
     readonly buttonProjectLater: string;
     readonly projectTaken: string;

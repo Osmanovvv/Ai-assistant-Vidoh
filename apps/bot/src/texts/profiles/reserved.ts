@@ -90,7 +90,6 @@ export const reserved: TextProfile = {
 
     restSaved: 'Остальное пока никуда не убежит.',
     nothingHidden: 'Больше ничего не висит.',
-    nothingUrgent: 'Срочного на сегодня нет — всё остальное сохранила.',
 
     question: 'С чего начнём?',
     closingTired: 'Если найдутся силы на что-то ещё, скажи.',
@@ -217,6 +216,15 @@ export const reserved: TextProfile = {
     today: 'На сегодня у тебя вот это:',
     about: 'Вот что у меня про это записано:',
     line: (text) => `— ${text}`,
+    period: (label) => `На ${label} у тебя вот это:`,
+    periodEmpty: (label) => `На ${label} ничего не назначено.`,
+    labelTomorrow: 'завтра',
+    labelWeekend: 'выходные',
+    labelWeek: 'неделю',
+    aboutClosed: 'Про это у меня записано, но уже закрыто:',
+    closedLine: (text, state) => `— ${text} (${state})`,
+    inBackground: 'в фоне',
+    more: (rest) => `…и ещё ${String(rest)}. Полный список — в меню.`,
     nothing: 'Про это у меня ничего не записано.',
     unavailable: 'Сейчас не смогла заглянуть в записи — они на месте.',
   },
@@ -319,6 +327,8 @@ export const reserved: TextProfile = {
     postponed: (when) => `Перенесла на ${when}.`,
 
     projectStuck: (title, step) => `«${title}» стоит. Ближайший шаг — ${step}. Возьмёшься?`,
+    projectStuckNoStep: (title) =>
+      `«${title}» стоит. С чего бы начать — скажи, разложу на шаги. Возьмёшься?`,
     buttonProjectTake: 'Возьмусь',
     buttonProjectLater: 'Не сейчас',
     projectTaken: 'Хорошо, поставила на сегодня.',

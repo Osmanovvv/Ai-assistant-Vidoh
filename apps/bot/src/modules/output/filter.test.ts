@@ -111,6 +111,45 @@ describe('что вообще попадает в выдачу', () => {
   });
 });
 
+describe('неточный срок в очередях (ревизия этапа 3, E15)', () => {
+  /**
+   * «На следующей неделе» хранится понедельником той недели с точностью
+   * «неделя». Очереди смотрели только на дату: в понедельник дело было
+   * «сегодня срок», во вторник — «просрочено», хотя неделя ещё идёт.
+   * Карточка и планировщик точность учитывали, выдача — нет.
+   */
+  const monday = day('2026-08-31'); // NOW — пятница 04.09, та же неделя
+
+  it('неделя, которая ещё идёт, — не просрочено и не «сегодня»', () => {
+    const thisWeek = item({ priority: 'LATER', deadlineAt: monday, deadlineAccuracy: 'week' });
+    const urgent = item({ priority: 'NOW' });
+
+    const result = selectForOutput([thisWeek, urgent], context);
+
+    // Срочное впереди: неточный срок не поднимает дело над NOW.
+    expect(result.shown[0]?.id).toBe(urgent.id);
+  });
+
+  it('неделя, которая прошла целиком, — просрочено', () => {
+    const lastWeek = item({
+      priority: 'LATER',
+      deadlineAt: day('2026-08-17'),
+      deadlineAccuracy: 'week',
+    });
+    const urgent = item({ priority: 'NOW' });
+
+    const result = selectForOutput([urgent, lastWeek], context);
+
+    expect(result.shown[0]?.id).toBe(lastWeek.id);
+  });
+
+  it('в «Сегодня» неделя не попадает как «срок сегодня»', () => {
+    const thisWeek = item({ priority: 'LATER', deadlineAt: monday, deadlineAccuracy: 'week' });
+
+    expect(selectForToday([thisWeek], context).map((one) => one.id)).toEqual([]);
+  });
+});
+
 describe('порядок', () => {
   it('просроченное идёт первым, даже если приоритет ниже', () => {
     const overdue = item({

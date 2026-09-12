@@ -81,6 +81,26 @@ export async function nextStepOf(db: Executor, itemId: string): Promise<ProjectS
   return step;
 }
 
+/**
+ * Большая цель в списке — ближайшим шагом, а не заголовком (§13.2;
+ * ревизия этапа 3, E17).
+ *
+ * Выдача разбора так и делала, а «Сегодня», утреннее и ответ «что на
+ * сегодня» писали заголовок — «День рождения сына» вместо «Выбрать торт».
+ * Одно место на всех: у проекта с шагами в `text` подставляется
+ * ближайший, остальное как было. Неразложенный проект показывается как
+ * есть — так же, как показывался до третьего этапа.
+ */
+export async function withNextSteps(db: Executor, list: readonly Item[]): Promise<Item[]> {
+  return await Promise.all(
+    list.map(async (item) => {
+      if (!item.isProject) return item;
+      const step = await nextStepOf(db, item.id);
+      return step === undefined ? item : { ...item, text: step.text };
+    }),
+  );
+}
+
 export interface SaveStepsParams {
   readonly itemId: string;
   readonly userId: string;
@@ -162,10 +182,20 @@ export async function completeStep(
   if (!step) return { kind: 'gone' };
   if (step.doneAt !== null) return { kind: 'already', next: await nextStepOf(db, step.itemId) };
 
-  await db
-    .update(projectSteps)
-    .set({ doneAt: params.now ?? new Date() })
-    .where(eq(projectSteps.id, step.id));
+  const now = params.now ?? new Date();
+
+  await db.update(projectSteps).set({ doneAt: now }).where(eq(projectSteps.id, step.id));
+
+  /**
+   * Закрытый шаг — движение по проекту (ревизия этапа 3, G2).
+   *
+   * «Нет движения» планировщик считает по `updatedAt` записи, а шаги
+   * жили только в своей таблице: человек закрывал шаг за шагом, а бот
+   * каждые пять дней спрашивал «как там ремонт?» — как будто месяц
+   * ничего не делала. Одно число одним способом: движение — это
+   * `updatedAt`, и шаг его двигает.
+   */
+  await db.update(items).set({ updatedAt: now }).where(eq(items.id, step.itemId));
 
   return { kind: 'done', next: await nextStepOf(db, step.itemId) };
 }

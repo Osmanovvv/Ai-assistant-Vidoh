@@ -8,8 +8,13 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { ModelPricing } from '../metering/pricing.js';
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
+
+import { items } from '../../db/schema.js';
+import { localDateParts, startOfDayAfter, startOfDayInZone } from '../classifier/dates.js';
+import { SEARCHABLE_STATUSES } from '../embedder/embedder.service.js';
 import { selectForToday } from '../output/filter.js';
-import { openItemsFor } from '../items/items.repo.js';
+import { openItemsFor, openItemsWhere } from '../items/items.repo.js';
 import { outputContextOf } from '../users/state.repo.js';
 
 /**
@@ -49,7 +54,17 @@ export interface QueryParams {
   readonly text: string;
   readonly batchId?: string | undefined;
   readonly now?: Date | undefined;
+  /**
+   * Сфера ветки, из которой пришёл вопрос (§8.1; ревизия этапа 3, F4).
+   *
+   * «Что там у меня?» внутри ветки «здоровье» — вопрос про здоровье, а
+   * не про весь бэклог. Без ветки — по всему.
+   */
+  readonly topic?: string | undefined;
 }
+
+/** О каком дне спросили, кроме сегодняшнего (ревизия этапа 3, F2). */
+export type AskedPeriod = 'tomorrow' | 'weekend' | 'week';
 
 export type BacklogAnswer =
   /**
@@ -61,6 +76,20 @@ export type BacklogAnswer =
   | { readonly kind: 'project'; readonly item: Item }
   /** Спрашивали про сегодня: список дел на сегодня. */
   | { readonly kind: 'today'; readonly items: readonly Item[] }
+  /**
+   * Спрашивали про завтра, выходные или неделю (ревизия этапа 3, F2):
+   * дела со сроком в этом отрезке. Раньше такие вопросы уходили в
+   * смысловой поиск по словам «что на завтра» и получали «ничего не
+   * записано» при трёх делах на завтра.
+   */
+  | { readonly kind: 'period'; readonly period: AskedPeriod; readonly items: readonly Item[] }
+  | { readonly kind: 'periodEmpty'; readonly period: AskedPeriod }
+  /**
+   * Спрашивали про дело, которое записано, но закрыто, убрано или ушло в
+   * фон (ревизия этапа 3, F1). «Ничего не записано» здесь было ложью:
+   * записано — и бот сам вчера его закрыл по нажатию «сделано».
+   */
+  | { readonly kind: 'aboutClosed'; readonly items: readonly Item[] }
   /**
    * Спрашивали про сегодня, а на сегодня пусто (ревизия этапа 3, E16).
    *
@@ -89,6 +118,16 @@ const MAX_SHOWN = 5;
 const RELEVANT = 0.35;
 
 const TODAY_WORDS = ['сегодня', 'на сегодня', 'сейчас', 'ближайшее', 'ближайшие'];
+
+/** Слова о другом дне — каждое ведёт к своему отрезку (F2). */
+const PERIOD_WORDS: Readonly<Record<string, AskedPeriod>> = {
+  завтра: 'tomorrow',
+  выходные: 'weekend',
+  выходных: 'weekend',
+  неделе: 'week',
+  неделю: 'week',
+  неделя: 'week',
+};
 
 /**
  * Слова, из которых состоит сам вопрос, а не его предмет (задача 3.66).
@@ -155,6 +194,12 @@ const FRAME_WORDS = [
   'помню',
   'помнишь',
   'знаешь',
+  // «На этой неделе», «на эти выходные» — указание, а не предмет.
+  'этой',
+  'эти',
+  'эту',
+  'ближайшую',
+  'ближайшей',
 ];
 
 function wordsOf(text: string): readonly string[] {
@@ -174,15 +219,82 @@ function wordsOf(text: string): readonly string[] {
  * и отвечать на него списком дел на сегодня значит не ответить.
  */
 export function asksAboutToday(text: string): boolean {
+  return askedDay(text) === 'today';
+}
+
+/**
+ * О каком дне спросили — или ни о каком (тогда это вопрос про дело).
+ *
+ * Правило одно на «сегодня» и остальные дни (F2): слово о времени есть,
+ * а предмета — нет. «Что на завтра?» — про завтра; «что завтра по сайту?»
+ * — про сайт.
+ */
+export function askedDay(text: string): 'today' | AskedPeriod | undefined {
   const words = wordsOf(text);
 
-  const times = new Set(TODAY_WORDS.map((word) => word.replace(/ё/gu, 'е')));
-  if (!words.some((word) => times.has(word))) return false;
+  const today = new Set(TODAY_WORDS.map((word) => word.replace(/ё/gu, 'е')));
+  const period = words.map((word) => PERIOD_WORDS[word]).find((one) => one !== undefined);
+  const isToday = words.some((word) => today.has(word));
+  if (!isToday && period === undefined) return undefined;
 
   const frame = new Set(FRAME_WORDS.map((word) => word.replace(/ё/gu, 'е')));
+  const isTime = (word: string): boolean => today.has(word) || word in PERIOD_WORDS;
 
   // Предмет — слово, которое не о времени и не из рамки вопроса.
-  return !words.some((word) => !times.has(word) && !frame.has(word));
+  if (words.some((word) => !isTime(word) && !frame.has(word))) return undefined;
+
+  return period ?? 'today';
+}
+
+/**
+ * Дела со сроком в отрезке дня (F2): завтра — один день, выходные —
+ * ближайшие суббота и воскресенье, неделя — семь дней от сегодня.
+ * Только точные сроки: «около 15.09» на конкретный день не ложится.
+ */
+async function itemsInPeriod(
+  db: Database,
+  params: {
+    readonly userId: string;
+    readonly period: AskedPeriod;
+    readonly now: Date;
+    readonly timeZone: string;
+    readonly topic?: string | undefined;
+  },
+): Promise<Item[]> {
+  const { now, timeZone } = params;
+  const todayStart = startOfDayInZone(localDateParts(now, timeZone), timeZone);
+
+  let from: Date;
+  let to: Date;
+  if (params.period === 'tomorrow') {
+    from = startOfDayAfter(now, 1, timeZone);
+    to = startOfDayAfter(now, 2, timeZone);
+  } else if (params.period === 'week') {
+    from = todayStart;
+    to = startOfDayAfter(now, 7, timeZone);
+  } else {
+    // День недели местной даты: суббота — 6, воскресенье — 0. В субботу и
+    // воскресенье «выходные» — эти; в будни — ближайшие.
+    const parts = localDateParts(now, timeZone);
+    const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+    const untilSaturday = weekday === 0 ? -1 : 6 - weekday;
+    from = startOfDayAfter(now, untilSaturday, timeZone);
+    to = startOfDayAfter(now, untilSaturday + 2, timeZone);
+  }
+
+  return await db
+    .select()
+    .from(items)
+    .where(
+      and(
+        openItemsWhere(params.userId),
+        eq(items.deadlineAccuracy, 'day'),
+        gte(items.deadlineAt, from),
+        lt(items.deadlineAt, to),
+        params.topic === undefined ? undefined : eq(items.topic, params.topic),
+      ),
+    )
+    .orderBy(asc(items.deadlineAt));
 }
 
 /**
@@ -197,19 +309,38 @@ export async function answerBacklogQuery(
 ): Promise<BacklogAnswer> {
   const now = params.now ?? new Date();
 
-  if (asksAboutToday(params.text)) {
+  const day = askedDay(params.text);
+
+  if (day === 'today') {
     const context = await outputContextOf(deps.db, params.userId);
     const today = selectForToday(await openItemsFor(deps.db, params.userId), {
       now,
       timeZone: context.timeZone,
-    });
+    }).filter((item) => params.topic === undefined || item.topic === params.topic);
 
     // Пустой день — не «ничего не записано» (ревизия этапа 3, E16):
     // записи есть, просто не на сегодня.
     return today.length === 0 ? { kind: 'todayEmpty' } : { kind: 'today', items: today };
   }
 
-  if (deps.embedder === undefined) return { kind: 'nothing' };
+  if (day !== undefined) {
+    const context = await outputContextOf(deps.db, params.userId);
+    const listed = await itemsInPeriod(deps.db, {
+      userId: params.userId,
+      period: day,
+      now,
+      timeZone: context.timeZone,
+      topic: params.topic,
+    });
+
+    return listed.length === 0
+      ? { kind: 'periodEmpty', period: day }
+      : { kind: 'period', period: day, items: listed };
+  }
+
+  // «Ничего не записано» без взгляда в записи — ложь (ревизия этапа 3, F3):
+  // без провайдера векторов посмотреть нечем.
+  if (deps.embedder === undefined) return { kind: 'unavailable' };
 
   /**
    * Вектор вопроса, а не его слова.
@@ -278,6 +409,9 @@ export async function answerBacklogQuery(
     userId: params.userId,
     vector,
     limit: MAX_SHOWN * 2,
+    // И закрытое тоже: про него спрашивают так же, как про открытое (F1).
+    statuses: [...SEARCHABLE_STATUSES, 'done', 'cancelled'],
+    ...(params.topic === undefined ? {} : { topic: params.topic }),
   });
 
   const relevant = similar.filter((candidate) => candidate.similarity >= RELEVANT);
@@ -315,7 +449,21 @@ export async function answerBacklogQuery(
    * Честное «ничего не записано» человек поймёт, а шапку в пустоту
    * прочтёт как поломку — и будет прав.
    */
-  if (found.length === 0) return { kind: 'nothing' };
+  if (found.length === 0) {
+    /**
+     * Нашлось, но не среди открытых — значит закрыто, убрано или ушло в
+     * фон (F1). Это не «ничего»: человек спрашивает «что там с тортом»,
+     * а торт вчера сам закрыл кнопкой. Ему называется запись и её
+     * состояние. Старше потолка свежести — тот же ответ: запись есть.
+     */
+    const closed = await deps.db
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, params.userId), inArray(items.id, [...ids])))
+      .orderBy(asc(items.updatedAt));
+
+    return closed.length === 0 ? { kind: 'nothing' } : { kind: 'aboutClosed', items: closed };
+  }
 
   return { kind: 'about', items: found };
 }
