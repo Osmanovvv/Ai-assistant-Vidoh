@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, items, pendingQuestions, type Item } from '../../db/schema.js';
@@ -176,6 +176,26 @@ describe('три пути, которыми вопрос кончается', ()
     expect(row?.outcome).toBe('timeout');
   });
 
+  it('уборка кладёт сказанное черновиком: слова не исчезают (§9.1, ревизия этапа 3, B2)', async () => {
+    /**
+     * Три исхода в `pending.ts` — снят выгрузкой, не прочитан, оказался
+     * мыслью — сохраняют сегмент черновиком; таймаут не сохранял ничего.
+     * «Нет, в пятницу», оставшееся без ответа шесть часов, пропадало.
+     */
+    await ask();
+    const later = new Date(NOW.getTime() + (QUESTION_TTL_HOURS + 1) * HOUR);
+
+    await expireQuestions(testDb(), later);
+
+    const drafts = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, true)));
+
+    expect(drafts.map((row) => row.text)).toEqual(['нет, в пятницу']);
+    expect(drafts[0]?.draftReason).toContain('без ответа');
+  });
+
   it('вопрос идущего разбора уборка не трогает', async () => {
     /**
      * Ревизия этапов 1–2, молчаливый отказ 14.
@@ -253,6 +273,12 @@ describe('нажатие устаревшей кнопки', () => {
     });
 
     expect(outcome.kind).toBe('stale');
+
+    // …и строка не врёт «привязан» об исходе, которого не было (ревизия
+    // этапа 3, B4): протухший вопрос остаётся открытым до уборки.
+    const [row] = await testDb().select().from(pendingQuestions).where(eq(pendingQuestions.id, id));
+    expect(row?.outcome).toBeNull();
+    expect(row?.resolvedAt).toBeNull();
   });
 
   it('чужую кнопку нажать нельзя', async () => {

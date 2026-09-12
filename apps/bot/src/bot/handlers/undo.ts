@@ -10,6 +10,10 @@ import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
+import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
+import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
+import type { ModelPricing } from '../../modules/metering/pricing.js';
+import type { SpendGuard } from '../../modules/metering/spend-guard.js';
 
 /**
  * Откат в один тап (§7.3 ТЗ, задача 3.4).
@@ -39,6 +43,10 @@ export function undoKeyboard(revisionId: string, texts: TextProfile): InlineKeyb
 export interface UndoDeps {
   readonly db: Database;
   readonly logger: Logger;
+  /** Вектор заголовка после отката (A5). */
+  readonly embedder?: EmbeddingProvider | undefined;
+  readonly spendGuard?: SpendGuard | undefined;
+  readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   /** Нужен, чтобы после откатa обновить сводку ветки (§8). */
   readonly topics?: TopicGateway | undefined;
 }
@@ -77,6 +85,20 @@ export function registerUndoHandlers(bot: Bot, deps: UndoDeps): void {
     }[outcome.kind];
 
     await ctx.editMessageText(reply);
+
+    // Откат вернул прежний заголовок — вектор вслед (A5).
+    if (outcome.kind === 'reverted') {
+      await reembedIfRetitled(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+          ...(deps.spendGuard === undefined ? {} : { spendGuard: deps.spendGuard }),
+          ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+          logger,
+        },
+        { after: outcome.item, fields: outcome.fields },
+      );
+    }
 
     /**
      * Сводки веток после отката (§8, найдено ручным прогоном 31.08.2026).

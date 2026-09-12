@@ -35,13 +35,14 @@ async function sow(params: {
   readonly at: string;
   readonly vector?: number;
   readonly status?: 'done' | 'new';
+  readonly type?: 'TASK' | 'EMOTION';
 }): Promise<string> {
   const [row] = await testDb()
     .insert(items)
     .values({
       userId,
       text: params.text,
-      type: 'TASK',
+      type: params.type ?? 'TASK',
       priority: 'SOON',
       topic: 'деньги',
       status: params.status ?? 'done',
@@ -135,6 +136,20 @@ describe('молчит, когда ритма нет', () => {
   it('двух повторений мало, даже ровных', async () => {
     await sow({ text: 'Оплатить садик', at: '2026-07-05' });
     await sow({ text: 'Садик оплатить', at: '2026-08-05' });
+
+    expect(await sweepHistory({ db: testDb() }, { userId, now: NOW })).toBeUndefined();
+  });
+
+  it('эмоции в связку не идут: правило бывает только у дела (ревизия этапа 3, C8)', async () => {
+    /**
+     * «Устала» каждый месяц — не регулярное дело. База отвергла бы
+     * правило на эмоции (`items_recurrence_task_only`), а бот отвечал бы
+     * «Запомнила» на исключение. Связка собирается только из дел.
+     */
+    await sow({ text: 'Устала от всего', at: '2026-05-05', type: 'EMOTION' });
+    await sow({ text: 'Опять устала', at: '2026-06-05', type: 'EMOTION' });
+    await sow({ text: 'Устала совсем', at: '2026-07-05', type: 'EMOTION' });
+    await sow({ text: 'Снова устала', at: '2026-08-05', type: 'EMOTION' });
 
     expect(await sweepHistory({ db: testDb() }, { userId, now: NOW })).toBeUndefined();
   });

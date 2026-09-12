@@ -847,6 +847,9 @@ async function main(): Promise<void> {
       consume: consumeAwaited({
         db,
         logger,
+        // Вектор заголовка после правки словами из карточки (A5).
+        embedder,
+        spendGuard,
         /**
          * §14: промокод словами (задача 4.4).
          *
@@ -919,7 +922,8 @@ async function main(): Promise<void> {
   // подключён (это 3.6 и далее), но кнопки обязаны работать в тот же
   // день, когда появится первая ревизия: иначе изменение окажется
   // необратимым, а вопрос — без ответа.
-  registerUndoHandlers(bot, { db, logger, topics: topicGateway });
+  // Вектор заголовка после отката — тот же провайдер, что у разбора (A5).
+  registerUndoHandlers(bot, { db, logger, topics: topicGateway, embedder, spendGuard });
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
   // §21 п.6: закрыть шаг проекта. До задачи 3.82 это было нельзя ничем,
@@ -930,6 +934,8 @@ async function main(): Promise<void> {
     db,
     ai: { db, provider: llm, prompts, logger, spendGuard },
     logger,
+    // Вектор заголовка после «Добавить к прошлой» (A5).
+    embedder,
     // Чтобы кнопка «это новое» не платила модели за человека,
     // которому гейт уже отказывает (ревизия четвёртого этапа).
     settings,

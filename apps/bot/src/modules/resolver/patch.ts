@@ -1,12 +1,13 @@
 import { and, eq } from 'drizzle-orm';
 
 import { items, type ChangedBy, type Item } from '../../db/schema.js';
-import type { Database } from '../../infra/db.js';
+import type { Executor } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import {
   isoDateIn,
   nearestWeekday,
   resolveDeadline,
+  saysDistantWeek,
   startOfDayAfter,
 } from '../classifier/dates.js';
 import { weekdaysIn } from '../classifier/time-words.js';
@@ -335,8 +336,11 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     const named = weekdaysIn(params.spoken ?? '');
     const only = named.length === 1 ? named[0] : undefined;
 
+    // «На следующую пятницу» — дальний день его выбор, ближайшим не
+    // подменяется (ревизия этапа 3, A1-средняя); правило то же, что у
+    // классификации.
     const corrected =
-      only !== undefined && deadlineAccuracy === 'day'
+      only !== undefined && deadlineAccuracy === 'day' && !saysDistantWeek(params.spoken ?? '')
         ? new Intl.DateTimeFormat('sv-SE', { timeZone: params.timeZone }).format(
             nearestWeekday(only, { now, timeZone: params.timeZone }),
           )
@@ -414,9 +418,20 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
        * живое по устройству: запись снова в работе, срок — ближайшее
        * повторение от сегодня.
        */
-      if (item.status === 'done' || item.status === 'cancelled') {
+      const closed = item.status === 'done' || item.status === 'cancelled';
+      /**
+       * И бессрочной (C6): дата от модели отвергнута, у записи срока
+       * не было — правило ложилось, а срок оставался пустым, и
+       * планировщик такую запись не видел никогда. Регулярное дело без
+       * срока — не регулярное.
+       */
+      const dateless = (next.deadlineAt ?? item.deadlineAt) === null;
+
+      if (closed) {
         next.status = 'new';
         if (item.completedAt !== null) next.completedAt = null;
+      }
+      if (closed || dateless) {
         next.deadlineAt = nextOccurrence(resolved.rule, { after: now, timeZone: params.timeZone });
         next.deadlineAccuracy = 'day';
       }
@@ -456,7 +471,7 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
  * Исход размечен: «применено», «менять нечего», «отвергнуто с причиной»,
  * «записи нет» — см. `ApplyOutcome`.
  */
-export async function applyDecision(db: Database, params: ApplyParams): Promise<ApplyOutcome> {
+export async function applyDecision(db: Executor, params: ApplyParams): Promise<ApplyOutcome> {
   const now = params.now ?? new Date();
 
   return await db.transaction(async (tx): Promise<ApplyOutcome> => {

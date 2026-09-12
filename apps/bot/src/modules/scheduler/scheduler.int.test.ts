@@ -930,6 +930,27 @@ describe('регулярность в накопленной истории (3.1
     expect(await offerCount()).toBe(0);
   });
 
+  it('сорвавшаяся отправка не сжигает связку: предложение снимается, и назавтра спросят снова (ревизия этапа 3, C2)', async () => {
+    /**
+     * Предложение записывалось при сборке сводки, а не после отправки:
+     * отказ Telegram — и про эту связку бот не спросил бы больше никогда,
+     * а недельный бюджет предложений сгорал на невидимом сообщении.
+     */
+    await monthlyPayments();
+    await planReminders(withSweep(), { now: NOW });
+
+    sendFails = true;
+    await dispatchReminders(withSweep(), { now: evening });
+    expect(await offerCount()).toBe(0);
+
+    // Повтор через минуту — тем же заданием: связка цела, вопрос уходит.
+    sendFails = false;
+    await dispatchReminders(withSweep(), { now: new Date(evening.getTime() + 60_000) });
+
+    expect(outbox.map((one) => one.text)).toContainEqual(expect.stringContaining('каждый месяц'));
+    expect(await offerCount()).toBe(1);
+  });
+
   it('с выключенным вечером человек не получает его вовсе', async () => {
     /**
      * Правила 3.17 действуют без исключений: предложение едет внутри

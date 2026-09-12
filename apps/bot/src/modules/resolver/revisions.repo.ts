@@ -109,7 +109,13 @@ export type RevertOutcome =
    * переносила запись между темами, и одна в обычном случае. Без этого
    * ветка после отката показывала состояние, которого больше нет.
    */
-  | { readonly kind: 'reverted'; readonly item: Item; readonly topics: readonly string[] }
+  | {
+      readonly kind: 'reverted';
+      readonly item: Item;
+      readonly topics: readonly string[];
+      /** Что вернулось — вызывающему решать, пересчитывать ли вектор (A5). */
+      readonly fields: readonly RestorableField[];
+    }
   /** Эту ревизию уже откатывали. Повторное нажатие — не ошибка. */
   | { readonly kind: 'already' }
   /** Ревизии нет: чужая, выдуманная или удалённая вместе с записью. */
@@ -247,5 +253,5 @@ export async function revertRevision(
     (topic): topic is string => topic !== undefined,
   );
 
-  return { kind: 'reverted', item, topics };
+  return { kind: 'reverted', item, topics, fields };
 }

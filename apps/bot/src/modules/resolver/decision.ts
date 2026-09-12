@@ -270,7 +270,17 @@ export function decide(
     };
   }
 
-  if (candidate.sources.includes('deadline')) {
+  /**
+   * Срок подтверждает только единственного (ревизия этапа 3, A2 и C10).
+   *
+   * Близость и свежесть требуют единственности, а срок не требовал:
+   * при двух делах на тот же день правка шла в первое попавшееся без
+   * вопроса. Второй сигнал — это когда он выделяет одного.
+   */
+  if (
+    candidate.sources.includes('deadline') &&
+    candidates.filter((one) => one.sources.includes('deadline')).length === 1
+  ) {
     return {
       kind: 'apply',
       action: answer.action,

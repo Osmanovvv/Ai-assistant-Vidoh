@@ -93,6 +93,14 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
       interval: offer.interval,
     });
 
+    /**
+     * Отказ базы — не молча (ревизия этапа 3, C8).
+     *
+     * Правило бывает только у дела (`items_recurrence_task_only`); связка
+     * теперь собирается из дел, но если ограничение всё же сработает,
+     * исключение уходило в общий барьер, и человек не получал ничего.
+     * Здесь — журнал и честная реплика.
+     */
     const outcome = await applyDecision(db, {
       userId: active.userId,
       itemId: offer.itemId,
@@ -110,6 +118,9 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
       timeZone: active.timeZone,
       reason: 'бот заметил повторяемость, человек подтвердил',
       changedBy: 'user',
+    }).catch((error: unknown) => {
+      logger.error({ err: error, userId: active.userId, itemId: offer.itemId }, 'Правило не легло');
+      return { kind: 'refused', reason: 'база отвергла правило' } as const;
     });
 
     logger.info(

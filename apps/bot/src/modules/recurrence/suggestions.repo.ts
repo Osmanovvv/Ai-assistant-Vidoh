@@ -143,6 +143,19 @@ export async function recordOffer(
 }
 
 /** Закрывает предложение ответом человека. */
+/**
+ * Снимает предложение, которое не дошло до человека (ревизия этапа 3,
+ * C2).
+ *
+ * Предложение записывается при сборке сводки — раньше отправки, потому
+ * что кнопки несут его код. Отказ Telegram оставлял строку: связка
+ * считалась спрошенной навсегда, а недельный бюджет предложений сгорал
+ * на невидимом сообщении. Удаляется, а не помечается: вопроса не было.
+ */
+export async function withdrawOffer(db: Executor, suggestionId: string): Promise<void> {
+  await db.delete(recurrenceSuggestions).where(eq(recurrenceSuggestions.id, suggestionId));
+}
+
 export async function resolveOffer(
   db: Executor,
   params: {

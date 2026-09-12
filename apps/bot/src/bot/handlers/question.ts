@@ -23,6 +23,9 @@ import {
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { undoKeyboard } from './undo.js';
 import { titleWithoutDate } from '../../modules/resolver/title-date.js';
+import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
+import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
+import type { ModelPricing } from '../../modules/metering/pricing.js';
 
 /**
  * Уточняющий вопрос: две кнопки (§7.3 ТЗ, задача 3.5).
@@ -46,6 +49,9 @@ export interface QuestionDeps {
   readonly db: Database;
   readonly ai: AiClientDeps;
   readonly logger: Logger;
+  /** Вектор заголовка после правки (A5); без него правка текста вектор не обновит. */
+  readonly embedder?: EmbeddingProvider | undefined;
+  readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   /**
    * Реестр настроек — чтобы спросить доступ перед платным разбором.
    *
@@ -101,59 +107,93 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
 
       const questionId = fromShortId(ctx.callbackQuery.data.slice(QUESTION_ACTION.attach.length));
 
-      const outcome =
-        questionId === undefined
-          ? ({ kind: 'stale' } as const)
-          : await answerQuestion(db, { questionId, userId: active.userId, outcome: 'attached' });
+      /**
+       * Ответ и применение — одной транзакцией (ревизия этапа 3, B1).
+       *
+       * Раньше вопрос помечался «привязан» до применения: сорвётся
+       * применение (отказ базы) — вопрос закрыт, правка не сделана,
+       * повторное нажатие отвечает «неактуально», и человек ни о чём не
+       * узнаёт. Теперь при срыве откатывается и пометка: вопрос открыт,
+       * нажать можно ещё раз, и человеку сказано.
+       */
+      const settled = await db
+        .transaction(async (tx) => {
+          const outcome =
+            questionId === undefined
+              ? ({ kind: 'stale' } as const)
+              : await answerQuestion(tx, {
+                  questionId,
+                  userId: active.userId,
+                  outcome: 'attached',
+                });
 
-      if (outcome.kind === 'stale') {
+          if (outcome.kind === 'stale') return { kind: 'stale' } as const;
+
+          const question = outcome.question;
+          const applying = await applyDecision(tx, {
+            userId: active.userId,
+            itemId: question.itemId,
+            // Действие сохранялось строкой: в таблице ему незачем знать про
+            // перечисление резолвера, а «новая мысль» сюда не попадает.
+            action:
+              question.action === 'complete' || question.action === 'cancel'
+                ? question.action
+                : 'update',
+            /**
+             * Режим правки из вопроса — §7.4 (задача 3.82).
+             *
+             * Без него ответ на вопрос про дополнение применялся заменой:
+             * подробность выбрасывалась, менять оказывалось нечего, и
+             * человек получал «Добавила к прошлой» при пустой записи.
+             *
+             * Пусто означает «замена» — так вело себя применение раньше, и
+             * вопросы, заданные до этой правки, доживают как жили.
+             */
+            ...(question.mode === 'append' ? { mode: 'append' as const } : {}),
+            changes: question.changes as ResolverAnswer['changes'],
+            /**
+             * Слова человека — и на кнопочном пути тоже (задача 3.82).
+             *
+             * **Это и была красная 36-я проверка сквозного.** Без них не
+             * работал пересчёт дня недели (3.65): человек сказал «перенеси
+             * на пятницу», модель вернула **прошедшую** пятницу, проверка
+             * §2.7 такой срок отбрасывает — и правка не применялась ни к
+             * одной записи. Бот при этом отвечал «Добавила к прошлой».
+             *
+             * Голосом тот же ответ работал: `pending.ts` слова передаёт.
+             * Кнопкой — нет, и разошлись эти два пути молча.
+             *
+             * Тем же путём терялось правило повторения из 3.8б: «запомни»
+             * видно только в сказанном, и без него правило ложилось в базу
+             * как названное мимоходом, а не как просьба запомнить.
+             */
+            spoken: question.segment,
+            timeZone: active.timeZone,
+            reason: 'человек подтвердил кнопкой',
+            changedBy: 'user',
+          });
+
+          return { kind: 'answered', question, applying } as const;
+        })
+        .catch((error: unknown) => {
+          logger.error(
+            { err: error, userId: active.userId, questionId },
+            'Правка кнопкой сорвалась',
+          );
+          return { kind: 'failed' } as const;
+        });
+
+      if (settled.kind === 'stale') {
         await ctx.editMessageText(active.texts.resolver.questionStale);
         return;
       }
 
-      const question = outcome.question;
-      const applying = await applyDecision(db, {
-        userId: active.userId,
-        itemId: question.itemId,
-        // Действие сохранялось строкой: в таблице ему незачем знать про
-        // перечисление резолвера, а «новая мысль» сюда не попадает.
-        action:
-          question.action === 'complete' || question.action === 'cancel'
-            ? question.action
-            : 'update',
-        /**
-         * Режим правки из вопроса — §7.4 (задача 3.82).
-         *
-         * Без него ответ на вопрос про дополнение применялся заменой:
-         * подробность выбрасывалась, менять оказывалось нечего, и
-         * человек получал «Добавила к прошлой» при пустой записи.
-         *
-         * Пусто означает «замена» — так вело себя применение раньше, и
-         * вопросы, заданные до этой правки, доживают как жили.
-         */
-        ...(question.mode === 'append' ? { mode: 'append' as const } : {}),
-        changes: question.changes as ResolverAnswer['changes'],
-        /**
-         * Слова человека — и на кнопочном пути тоже (задача 3.82).
-         *
-         * **Это и была красная 36-я проверка сквозного.** Без них не
-         * работал пересчёт дня недели (3.65): человек сказал «перенеси
-         * на пятницу», модель вернула **прошедшую** пятницу, проверка
-         * §2.7 такой срок отбрасывает — и правка не применялась ни к
-         * одной записи. Бот при этом отвечал «Добавила к прошлой».
-         *
-         * Голосом тот же ответ работал: `pending.ts` слова передаёт.
-         * Кнопкой — нет, и разошлись эти два пути молча.
-         *
-         * Тем же путём терялось правило повторения из 3.8б: «запомни»
-         * видно только в сказанном, и без него правило ложилось в базу
-         * как названное мимоходом, а не как просьба запомнить.
-         */
-        spoken: question.segment,
-        timeZone: active.timeZone,
-        reason: 'человек подтвердил кнопкой',
-        changedBy: 'user',
-      });
+      if (settled.kind === 'failed') {
+        await ctx.editMessageText(active.texts.resolver.applyFailed);
+        return;
+      }
+
+      const { question, applying } = settled;
 
       if (applying.kind !== 'applied') {
         /**
@@ -178,6 +218,17 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
       }
 
       const { applied } = applying;
+
+      await reembedIfRetitled(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+          ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+          ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+          logger,
+        },
+        applied,
+      );
 
       await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
         reply_markup: undoKeyboard(applied.revisionId, active.texts),

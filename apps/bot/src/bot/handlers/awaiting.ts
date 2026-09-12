@@ -28,6 +28,10 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { describeChange, undoButtons } from '../../modules/resolver/change-text.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
+import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
+import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
+import type { ModelPricing } from '../../modules/metering/pricing.js';
+import type { SpendGuard } from '../../modules/metering/spend-guard.js';
 import { textsFor } from '../../texts/index.js';
 
 /**
@@ -50,6 +54,10 @@ import { textsFor } from '../../texts/index.js';
 export interface AwaitingDeps {
   readonly db: Database;
   readonly logger: Logger;
+  /** Вектор заголовка после правки словами (A5). */
+  readonly embedder?: EmbeddingProvider | undefined;
+  readonly spendGuard?: SpendGuard | undefined;
+  readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
   /**
    * Приём промокода словами (§14, задача 4.4).
    *
@@ -381,6 +389,17 @@ export function consumeAwaited(deps: AwaitingDeps) {
       }
 
       const { applied } = outcome;
+
+      await reembedIfRetitled(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+          ...(deps.spendGuard === undefined ? {} : { spendGuard: deps.spendGuard }),
+          ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+          logger,
+        },
+        applied,
+      );
 
       logger.info({ userId, itemId: awaiting.itemId }, 'Запись поправлена словами из карточки');
 
