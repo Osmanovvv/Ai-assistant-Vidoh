@@ -6,7 +6,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, billingSubscriptions, messagesRaw } from '../../db/schema.js';
+import { batches, billingSubscriptions, messagesRaw, users } from '../../db/schema.js';
 import { BILLING_ACTION, registerBillingHandlers, registerPaySupportCommands } from './billing.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { createLogger } from '../../infra/logger.js';
@@ -15,7 +15,7 @@ import type { StatusSender } from '../../modules/presenter/status.service.js';
 import { SettingsRegistry, putSetting } from '../../modules/settings/settings.repo.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { DEFAULT_LIMITS, closeBatchOnSilence } from '../../modules/buffer/buffer.service.js';
-import { upsertUser } from '../../modules/users/users.repo.js';
+import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { incomingMiddleware } from './incoming.js';
@@ -35,6 +35,7 @@ import { incomingMiddleware } from './incoming.js';
  */
 
 const TG_ID = 7373;
+const POLICY_URL = 'https://vydoh-app.ru/privacy';
 
 interface ApiCall {
   readonly method: string;
@@ -118,6 +119,7 @@ function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] }
     incomingMiddleware({
       db: testDb(),
       queue: stubQueue,
+      privacyPolicyUrl: POLICY_URL,
       ...(options.sender === undefined ? {} : { sender: options.sender }),
       ...(options.settings === undefined ? {} : { settings: options.settings }),
       ...(options.consume === undefined ? {} : { consume: options.consume }),
@@ -207,6 +209,68 @@ beforeEach(async () => {
   seq = 0;
   const user = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
   userId = user.id;
+  // Согласие нажато: без него ни одна выгрузка не разбирается (§16,
+  // решение заказчицы 12.09.2026) — а здесь проверяется путь после него.
+  await confirmConsent(testDb(), userId, { edition: '2026-10-01' });
+});
+
+describe('согласие кнопкой «Согласна» (§16, решение заказчицы 12.09.2026)', () => {
+  async function withoutConsent(): Promise<void> {
+    await testDb()
+      .update(users)
+      .set({ consentConfirmedAt: null, consentEdition: null, consentAt: null })
+      .where(eq(users.id, userId));
+  }
+
+  it('до нажатия сообщение сохраняется, но выгрузка не заводится, и человеку это сказано с кнопкой', async () => {
+    /**
+     * Раньше согласием считалось первое сообщение. Теперь — только
+     * кнопка: слова до неё сохраняются (§16 — ничего не теряется), а
+     * разбор ждёт нажатия. Реплика ведёт к политике и даёт кнопку.
+     */
+    await withoutConsent();
+    const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(textUpdate('записать сына к врачу'));
+
+    expect(await dumpCount()).toBe(0);
+
+    const saved = await testDb().select().from(messagesRaw).where(eq(messagesRaw.userId, userId));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.batchId).toBeNull();
+
+    const replies = calls.filter((call) => call.method === 'sendMessage');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.payload['text']).toBe(defaultTexts.consent.required(POLICY_URL));
+
+    const markup = replies[0]?.payload['reply_markup'] as {
+      inline_keyboard: { text: string; callback_data: string }[][];
+    };
+    expect(markup.inline_keyboard.flat().map((one) => [one.text, one.callback_data])).toEqual([
+      [defaultTexts.consent.button, 'consent:accept'],
+    ]);
+
+    // Согласием сообщение больше не считается.
+    const [row] = await testDb().select().from(users).where(eq(users.id, userId));
+    expect(row?.consentAt).toBeNull();
+  });
+
+  it('команды до согласия проходят: записи на чтение открыты', async () => {
+    await withoutConsent();
+    const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(commandUpdate('/menu'));
+
+    expect(calls.filter((call) => call.method === 'sendMessage')).toHaveLength(0);
+  });
+
+  it('после нажатия та же мысль становится выгрузкой', async () => {
+    const { bot } = createTestBot();
+
+    await bot.handleUpdate(textUpdate('записать сына к врачу'));
+
+    expect(await dumpCount()).toBe(1);
+  });
 });
 
 describe('потолок выгрузок за сутки', () => {
@@ -850,7 +914,7 @@ describe('настройка применяется на лету — услов
       } as never),
     );
 
-    bot.use(incomingMiddleware({ db: testDb(), queue, settings }));
+    bot.use(incomingMiddleware({ db: testDb(), queue, settings, privacyPolicyUrl: POLICY_URL }));
 
     // Умолчание из кода: тридцать секунд.
     await bot.handleUpdate(textUpdate('первая мысль'));
@@ -993,7 +1057,7 @@ describe('порядок регистрации: служебное сообще
       providers: {},
     });
 
-    bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
+    bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue, privacyPolicyUrl: POLICY_URL }));
 
     await bot.init();
     await bot.handleUpdate(paymentUpdate());
@@ -1093,7 +1157,9 @@ describe('осиротевшее закрытие снимается вмест�
       } as never),
     );
 
-    bot.use(incomingMiddleware({ db: testDb(), queue, settings, limits }));
+    bot.use(
+      incomingMiddleware({ db: testDb(), queue, settings, limits, privacyPolicyUrl: POLICY_URL }),
+    );
 
     // Первое сообщение ставит закрытие по тишине.
     await bot.handleUpdate(textUpdate('первая мысль'));

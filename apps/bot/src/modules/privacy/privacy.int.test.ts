@@ -27,7 +27,7 @@ import {
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { recordAiCall } from '../metering/ai-calls.repo.js';
-import { recordConsentIfAbsent, upsertUser } from '../users/users.repo.js';
+import { confirmConsent, upsertUser } from '../users/users.repo.js';
 import { deleteUserData, exportUserData } from './privacy.service.js';
 
 let userId: string;
@@ -58,9 +58,8 @@ async function seedUser(tgId: number): Promise<string> {
     username: 'anya',
     referralSource: 'blog',
   });
-  // `recordConsent` убрана ревизией панели: она ставила отметку
-  // безусловно и вызывающих в продуктовом коде не имела.
-  await recordConsentIfAbsent(testDb(), user.id);
+  // Согласие — кнопкой «Согласна» (решение заказчицы 12.09.2026).
+  await confirmConsent(testDb(), user.id, { edition: '2026-10-01' });
 
   for (const text of ['купить продукты', 'записать к врачу']) {
     seq++;
@@ -276,6 +275,9 @@ describe('exportUserData', () => {
     expect(data?.profile.username).toBe('anya');
     expect(data?.profile.referralSource).toBe('blog');
     expect(data?.profile.consentAt).not.toBeNull();
+    // Согласие кнопкой — с моментом и редакцией (решение заказчицы 12.09.2026).
+    expect(data?.profile.consentConfirmedAt).not.toBeNull();
+    expect(data?.profile.consentEdition).toBe('2026-10-01');
     expect(data?.settings?.energyDefault).toBe('normal');
     expect(data?.messages).toHaveLength(2);
     expect(data?.dumps).toHaveLength(1);

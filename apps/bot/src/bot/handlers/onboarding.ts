@@ -32,7 +32,7 @@ import { retireTopics } from '../../modules/topics/retire.service.js';
 import { appendTopics, listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textsFor } from '../../texts/index.js';
-import { findByTgId, recordConsentIfAbsent } from '../../modules/users/users.repo.js';
+import { findByTgId } from '../../modules/users/users.repo.js';
 
 /**
  * Ответы онбординга (задача 2.13).
@@ -128,19 +128,12 @@ export function registerOnboardingHandlers(
     if (!user) return undefined;
 
     /**
-     * Ответ на вопрос опроса — тоже согласие (запрос на изменение №2).
-     *
-     * §16 считает согласием первое **сообщение** после экрана с
-     * политикой. Пока опрос шёл после первой выгрузки, сообщение всегда
-     * было раньше. Теперь опрос идёт первым, и человек отвечает
-     * кнопками: без этой строки бот узнавал бы имя, пояс и время,
-     * не имея согласия вовсе.
-     *
-     * Форма согласия всё равно ждёт юриста — хвост 10а; там этот случай
-     * назван отдельно.
+     * Согласие здесь больше не записывается (решение заказчицы
+     * 12.09.2026, ответ 13): согласие — только кнопка «Согласна», а
+     * опрос начинается после неё (`start.ts`). Прежде первое нажатие в
+     * опросе считалось согласием — иначе бот узнавал бы имя, пояс и
+     * время, не имея согласия вовсе.
      */
-    await recordConsentIfAbsent(db, user.id);
-
     const state = await onboardingStateOf(db, user.id);
     if (state.step !== expected) {
       logger.debug({ userId: user.id, expected, actual: state.step }, 'Устаревшее нажатие');

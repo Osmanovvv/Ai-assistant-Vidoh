@@ -15,10 +15,10 @@ import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { BILLING_ACTION } from './billing.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
-import { markConsumed } from '../../modules/gateway/orphans.js';
+import { heldMessagesOf, markConsumed } from '../../modules/gateway/orphans.js';
 import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
-import { recordConsentIfAbsent } from '../../modules/users/users.repo.js';
+import { consentConfirmedOf } from '../../modules/users/users.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
 import { textsFor } from '../../texts/index.js';
 
@@ -30,9 +30,18 @@ import { textsFor } from '../../texts/index.js';
  * раньше, чем сообщение легло в базу.
  */
 
+/** Нажатие «Согласна»: обработчик живёт в `start.ts`, реплика — здесь и там. */
+export const CONSENT_ACTION = { accept: 'consent:accept' } as const;
+
 export interface IncomingDeps {
   readonly db: Database;
   readonly queue: Queue<PipelineJob>;
+  /**
+   * Адрес политики — для экрана согласия, который встречает сообщение,
+   * присланное раньше нажатия «Согласна» (§16). Обязателен: гейт без
+   * ссылки на политику просил бы согласиться неизвестно с чем.
+   */
+  readonly privacyPolicyUrl: string;
   readonly limits?: BufferLimits;
   /**
    * Системные значения: отсюда берётся размер пробного периода (4.3).
@@ -174,10 +183,6 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       return;
     }
 
-    // §16 ТЗ: согласие — это первое сообщение после экрана с ссылкой
-    // на политику.
-    await recordConsentIfAbsent(deps.db, outcome.userId);
-
     /**
      * Ответ на вопрос бота словами — до буфера (задача 3.61).
      *
@@ -205,6 +210,33 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       // Съедено — так и помечается, иначе строка без выгрузки навсегда
       // считалась бы сиротой (найдено на бою 12.09.2026).
       await markConsumed(deps.db, outcome.messageId);
+      return;
+    }
+
+    /**
+     * §16: без нажатой «Согласна» разбора нет (решение заказчицы
+     * 12.09.2026, ответ 13).
+     *
+     * До этого согласием считалось первое сообщение после экрана с
+     * политикой — оно записывалось здесь же. Теперь согласие даётся
+     * только кнопкой (`start.ts`), а сообщение, присланное раньше,
+     * **сохранено** (§9.1 «сначала сохраняем», §16 «ничего не теряется»)
+     * и ждёт: после нажатия его подхватит `releaseHeldMessages`. Человеку
+     * говорится, что слова на месте и чего не хватает, — с той же
+     * кнопкой, чтобы не искать её под приветствием.
+     *
+     * Стоит после приёма ответа словами и до гейта доступа: ответ на
+     * вопрос бота — не разбор, а человеку без согласия «пробный период
+     * кончился» говорить рано — сначала согласие, потом всё остальное.
+     */
+    if (!(await consentConfirmedOf(deps.db, outcome.userId))) {
+      const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
+
+      await ctx.reply(texts.consent.required(deps.privacyPolicyUrl), {
+        reply_markup: new InlineKeyboard().text(texts.consent.button, CONSENT_ACTION.accept),
+        parse_mode: 'Markdown',
+        link_preview_options: { is_disabled: true },
+      });
       return;
     }
 
@@ -315,57 +347,113 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       return;
     }
 
-    const attached = await attachMessageToBatch(deps.db, {
+    await bufferMessage(deps, {
       userId: outcome.userId,
       messageId: outcome.messageId,
+      chatId: ctx.chat?.id,
+      threadId: ctx.message?.message_thread_id,
       limits,
     });
 
-    if (attached.closed) {
-      // Потолок по числу сообщений или по возрасту: обрабатываем сразу,
-      // не дожидаясь тишины.
-      await enqueueUserProcessing(deps.queue, outcome.userId);
-
-      /**
-       * И снимаем закрытие, поставленное предыдущим сообщением.
-       *
-       * Иначе оно висит до конца окна, просыпается над закрытой выгрузкой
-       * и уходит ни с чем. Вреда от него нет — заход над закрытой
-       * выгрузкой себя не переставляет, — но обещание `closeJobId`
-       * («одно задание на выгрузку») без этой строки неправда: задание
-       * живёт дольше самой выгрузки.
-       */
-      await cancelBatchClose(deps.queue, attached.batchId);
-    } else {
-      // Каждое новое сообщение отодвигает закрытие: серия голосовых —
-      // это одна мысль (§9.1 правило 2 ТЗ).
-      await scheduleBatchClose(deps.queue, {
-        batchId: attached.batchId,
-        userId: outcome.userId,
-        delayMs: limits.silenceWindowMs,
-      });
-    }
-
-    // §10.2 ТЗ: приём подтверждается сразу, не дожидаясь разбора.
-    // §9.2 ТЗ: пока идёт ожидание тишины, бот молчит — поэтому реплика
-    // одна на выгрузку, а не на каждое сообщение. Ставится после
-    // постановки заданий: медленный Telegram не должен задерживать
-    // конвейер, а сбой отправки не должен мешать разбору.
-    const chatId = ctx.chat?.id;
-    if (deps.sender && chatId !== undefined && attached.messageCount === 1) {
-      const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
-
-      await showStatus(
-        { db: deps.db, sender: deps.sender },
-        {
-          batchId: attached.batchId,
-          chatId,
-          threadId: ctx.message?.message_thread_id,
-        },
-        texts.listening.acknowledged,
-      );
-    }
-
     await next();
   };
+}
+
+/**
+ * Сообщение — в буфер выгрузки: привязка, закрытие по тишине или сразу,
+ * «Слушаю» на первое.
+ *
+ * Одной функцией на два входа: обычный приём и выпуск ждавших согласия
+ * (`releaseHeldMessages`). Разъехавшись, они дали бы сообщение, которое
+ * после кнопки привязано, но не закрывается или не подтверждается.
+ */
+async function bufferMessage(
+  deps: IncomingDeps,
+  params: {
+    readonly userId: string;
+    readonly messageId: string;
+    readonly chatId: number | undefined;
+    readonly threadId: number | undefined;
+    readonly limits: BufferLimits;
+  },
+): Promise<void> {
+  const { userId, limits } = params;
+
+  const attached = await attachMessageToBatch(deps.db, {
+    userId,
+    messageId: params.messageId,
+    limits,
+  });
+
+  if (attached.closed) {
+    // Потолок по числу сообщений или по возрасту: обрабатываем сразу,
+    // не дожидаясь тишины.
+    await enqueueUserProcessing(deps.queue, userId);
+
+    /**
+     * И снимаем закрытие, поставленное предыдущим сообщением.
+     *
+     * Иначе оно висит до конца окна, просыпается над закрытой выгрузкой
+     * и уходит ни с чем. Вреда от него нет — заход над закрытой
+     * выгрузкой себя не переставляет, — но обещание `closeJobId`
+     * («одно задание на выгрузку») без этой строки неправда: задание
+     * живёт дольше самой выгрузки.
+     */
+    await cancelBatchClose(deps.queue, attached.batchId);
+  } else {
+    // Каждое новое сообщение отодвигает закрытие: серия голосовых —
+    // это одна мысль (§9.1 правило 2 ТЗ).
+    await scheduleBatchClose(deps.queue, {
+      batchId: attached.batchId,
+      userId,
+      delayMs: limits.silenceWindowMs,
+    });
+  }
+
+  // §10.2 ТЗ: приём подтверждается сразу, не дожидаясь разбора.
+  // §9.2 ТЗ: пока идёт ожидание тишины, бот молчит — поэтому реплика
+  // одна на выгрузку, а не на каждое сообщение. Ставится после
+  // постановки заданий: медленный Telegram не должен задерживать
+  // конвейер, а сбой отправки не должен мешать разбору.
+  if (deps.sender && params.chatId !== undefined && attached.messageCount === 1) {
+    const texts = textsFor(await textProfileOf(deps.db, userId));
+
+    await showStatus(
+      { db: deps.db, sender: deps.sender },
+      {
+        batchId: attached.batchId,
+        chatId: params.chatId,
+        threadId: params.threadId,
+      },
+      texts.listening.acknowledged,
+    );
+  }
+}
+
+/**
+ * Выпуск сообщений, ждавших нажатия «Согласна» (§16, решение заказчицы
+ * 12.09.2026): каждое уходит в буфер, как только что присланное, — в
+ * порядке получения. Зовётся из обработчика кнопки (`start.ts`).
+ * Возвращает число выпущенных — для журнала.
+ */
+export async function releaseHeldMessages(
+  deps: IncomingDeps,
+  params: { readonly userId: string; readonly chatId: number | undefined },
+): Promise<number> {
+  const held = await heldMessagesOf(deps.db, params.userId);
+  if (held.length === 0) return 0;
+
+  const limits = await effectiveLimits(deps.settings, deps.limits ?? DEFAULT_LIMITS);
+
+  for (const message of held) {
+    await bufferMessage(deps, {
+      userId: params.userId,
+      messageId: message.id,
+      chatId: params.chatId,
+      threadId: message.threadId ?? undefined,
+      limits,
+    });
+  }
+
+  return held.length;
 }

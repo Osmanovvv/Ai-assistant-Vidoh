@@ -59,7 +59,7 @@ export async function upsertUser(db: Executor, input: UpsertUserInput): Promise<
  *
  * `blocked_at` — дата **начала** недоступности, и ставится она один раз
  * за период. COALESCE здесь по той же причине, по которой он стоит у
- * `referral_source` и условие — у `recordConsentIfAbsent`: поле отвечает
+ * `referral_source` и условие — у `confirmConsent`: поле отвечает
  * на вопрос «когда это случилось», а безусловная запись сдвигала бы
  * ответ при каждом новом наблюдении того же самого.
  *
@@ -89,7 +89,8 @@ export async function markBlocked(db: Executor, tgId: number): Promise<void> {
   сказать «человек согласился» — и способом неверным: §16 требует
   запомнить **первое** согласие, а безусловная запись сдвигала бы дату
   при каждом сообщении, и ответить «когда он согласился на самом деле»
-  стало бы нечем. Живёт правило в `recordConsentIfAbsent`, у которого
+  стало бы нечем. Живёт правило в `confirmConsent` (прежде —
+  `recordConsentIfAbsent`, согласие первым сообщением), у которой
   условие стоит в самом запросе.
 
   Вызывающих у неё не было ни одного, кроме собственной проверки. Связку
@@ -98,21 +99,44 @@ export async function markBlocked(db: Executor, tgId: number): Promise<void> {
 */
 
 /**
- * Фиксирует согласие, если его ещё не было (§16 ТЗ).
+ * Нажатие «Согласна» — согласие на обработку данных (§16 ТЗ; решение
+ * заказчицы 12.09.2026, ответ 13).
  *
- * Согласием считается первое сообщение после экрана первого запуска, где
- * показана ссылка на политику. Отметка ставится один раз: повторные
- * сообщения не должны сдвигать дату, иначе непонятно, когда человек
- * согласился на самом деле.
+ * До этого согласием считалось первое сообщение после экрана с
+ * политикой. Теперь — только кнопка: записывается момент нажатия и
+ * редакция политики, на которую нажато. Отметка ставится один раз:
+ * повторное нажатие не сдвигает ни момент, ни редакцию, иначе непонятно,
+ * когда и на что человек согласился на самом деле.
+ *
+ * `consent_at` заполняется тем же моментом, если пуст: у зарегистрированных
+ * до кнопки там остаётся прежнее согласие сообщением — как история.
  */
-export async function recordConsentIfAbsent(db: Executor, userId: string): Promise<boolean> {
+export async function confirmConsent(
+  db: Executor,
+  userId: string,
+  params: { readonly edition: string | undefined; readonly now?: Date },
+): Promise<boolean> {
+  const now = params.now ?? new Date();
   const updated = await db
     .update(users)
-    .set({ consentAt: sql`now()` })
-    .where(and(eq(users.id, userId), isNull(users.consentAt)))
+    .set({
+      consentConfirmedAt: now,
+      consentEdition: params.edition ?? null,
+      consentAt: sql`coalesce(${users.consentAt}, ${now})`,
+    })
+    .where(and(eq(users.id, userId), isNull(users.consentConfirmedAt)))
     .returning({ id: users.id });
-
   return updated.length > 0;
+}
+
+/** Нажата ли «Согласна». Без неё выгрузки не разбираются. */
+export async function consentConfirmedOf(db: Executor, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ at: users.consentConfirmedAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row?.at != null;
 }
 
 /*

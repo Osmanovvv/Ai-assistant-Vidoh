@@ -149,6 +149,14 @@ export const envSchema = z.object({
    * про политику вспомнят на приёмке, а не при выкладке.
    */
   PRIVACY_POLICY_URL: httpsUrl,
+  /**
+   * Редакция политики и согласия — то, на что человек нажимает
+   * «Согласна» (§16; решение заказчицы 12.09.2026, ответ 13). Обычно
+   * дата редакции из шапки документов: `2026-10-01`. Необязательна,
+   * потому что документы получают дату последними; без неё согласия
+   * записываются без редакции, и об этом говорится при старте.
+   */
+  PRIVACY_POLICY_EDITION: z.string().trim().min(1).optional(),
 
   /**
    * Адрес публичной оферты (§14, требование Робокассы к автосписаниям).
@@ -577,6 +585,11 @@ export function productionWarnings(env: Env): readonly string[] {
     if (PLACEHOLDER_HOSTS.has(new URL(value).hostname)) {
       warnings.push(`${name} указывает на заглушку из .env.example`);
     }
+  }
+
+  // Согласие без редакции — согласие неизвестно на что (§16).
+  if (env.PRIVACY_POLICY_EDITION === undefined) {
+    warnings.push('PRIVACY_POLICY_EDITION не задана: согласия записываются без редакции политики');
   }
 
   /**
