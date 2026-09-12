@@ -135,6 +135,17 @@ export async function recordConsentIfAbsent(db: Executor, userId: string): Promi
   покраснеет — даже если его имя останется в этом комментарии.
 */
 
+/**
+ * Человек нажал кнопку — он в разговоре (ревизия этапа 3, D13).
+ *
+ * Сообщения отмечают `last_active_at` при приёме, а нажатия в журнал
+ * сообщений не пишутся, и серия молчания §11 считала нажавшего «Сделано»
+ * под утренним молчащим — и снижала ему частоту за то, что он отвечал.
+ */
+export async function touchActivity(db: Executor, userId: string, at = new Date()): Promise<void> {
+  await db.update(users).set({ lastActiveAt: at }).where(eq(users.id, userId));
+}
+
 export async function findByTgId(db: Executor, tgId: number): Promise<User | undefined> {
   const [user] = await db.select().from(users).where(eq(users.tgId, tgId)).limit(1);
   return user;

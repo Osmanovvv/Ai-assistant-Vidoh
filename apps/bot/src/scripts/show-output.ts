@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { users } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { titleUnderDayHeader } from '../modules/items/item-text.js';
+import { withNextSteps } from '../modules/projects/projects.service.js';
 import { openItemsFor } from '../modules/items/items.repo.js';
 import { selectForToday } from '../modules/output/filter.js';
 import { morningText } from '../modules/scheduler/digest.js';
@@ -74,11 +75,11 @@ try {
     `Пояс: ${context.timeZone}. Открытых записей: ${String(open.length)}.`,
     '',
     '──── Утренняя сводка ────',
-    morningText(texts, today, day),
+    morningText(texts, await withNextSteps(db, today), day),
     '',
     '──── Список «Сегодня» из меню ────',
     texts.menu.todayTitle,
-    ...today.map((item) => `[кнопка] ${titleUnderDayHeader(item, day)}`),
+    ...(await withNextSteps(db, today)).map((item) => `[кнопка] ${titleUnderDayHeader(item, day)}`),
   ];
 
   process.stdout.write(`${lines.join('\n')}\n`);

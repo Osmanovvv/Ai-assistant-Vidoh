@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lt, lte, sql } from 'drizzle-orm';
 
-import { messagesRaw, reminders, type Reminder } from '../../db/schema.js';
+import { messagesRaw, reminders, users, type Reminder } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDayNumber, type PlannedReminder } from './plan.js';
 import { localTimeToUtc } from './time.js';
@@ -239,14 +239,44 @@ export async function ignoredStreak(
     .orderBy(desc(reminders.sentAt))
     .limit(STREAK_WINDOW);
 
+  /**
+   * Последняя активность любого рода — сообщение или нажатие (ревизия
+   * этапа 3, D13). Утреннее, после которого человек что-то делал — хоть
+   * в другой день, без утреннего, — не молчание: он в разговоре. Раньше
+   * считались только сообщения и только в день утреннего, и человек с
+   * недельной частотой, писавший в среду, молчал «по бумагам».
+   */
+  const lastActivity = await lastActivityOf(db, params.userId);
+
   let streak = 0;
   for (const one of sent) {
     if (one.sentAt === null) continue;
+    if (lastActivity !== undefined && lastActivity.getTime() > one.sentAt.getTime()) break;
     if (await spokeOnDay(db, params.userId, one.sentAt, params.timeZone)) break;
     streak += 1;
   }
 
   return streak;
+}
+
+/** Когда человек последний раз что-то писал или нажимал. */
+async function lastActivityOf(db: Executor, userId: string): Promise<Date | undefined> {
+  const [message] = await db
+    .select({ at: messagesRaw.receivedAt })
+    .from(messagesRaw)
+    .where(eq(messagesRaw.userId, userId))
+    .orderBy(desc(messagesRaw.receivedAt))
+    .limit(1);
+  const [person] = await db
+    .select({ at: users.lastActiveAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  const candidates = [message?.at, person?.at].filter((at): at is Date => at !== undefined);
+  if (candidates.length === 0) return undefined;
+
+  return new Date(Math.max(...candidates.map((at) => at.getTime())));
 }
 
 /** Писал ли человек хоть что-нибудь в этот местный день. */
@@ -259,6 +289,15 @@ async function spokeOnDay(
   const parts = localDateParts(day, timeZone);
   const from = localTimeToUtc(parts, '00:00', timeZone);
   const to = new Date(from.getTime() + 24 * 60 * 60_000);
+
+  // Нажатие в тот день — тоже реакция (D13): последняя активность
+  // человека могла быть кнопкой, а не сообщением.
+  const [pressed] = await db
+    .select({ one: sql<number>`1` })
+    .from(users)
+    .where(and(eq(users.id, userId), gte(users.lastActiveAt, from), lt(users.lastActiveAt, to)))
+    .limit(1);
+  if (pressed !== undefined) return true;
 
   const [row] = await db
     .select({ one: sql<number>`1` })

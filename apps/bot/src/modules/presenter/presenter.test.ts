@@ -194,9 +194,11 @@ describe('buildReply', () => {
   });
 
   it('действий нет — вопрос другой, но всё равно один', () => {
-    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 4, tired: false });
+    // Ноль показано при скрытых не бывает: фильтр показывает всё
+    // годное до предела (ревизия этапа 3, E19).
+    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
 
-    expect(reply.text).toContain(texts.answer.nothingUrgent);
+    expect(reply.text).toContain(texts.answer.nothingHidden);
     expect(reply.text).toContain(texts.answer.questionEmotionOnly);
     expect(countQuestions(reply.text)).toBe(1);
     expect(reply.buttons.map((button) => button.label)).toEqual([
@@ -209,7 +211,6 @@ describe('buildReply', () => {
     const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
 
     expect(reply.text).toContain(texts.answer.nothingHidden);
-    expect(reply.text).not.toContain(texts.answer.nothingUrgent);
   });
 
   it('ни при каком сочетании не бывает двух вопросов', () => {

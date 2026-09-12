@@ -275,7 +275,6 @@ export const BESIDE_QUESTION = [
   'answer.bullet',
   'answer.restSaved',
   'answer.nothingHidden',
-  'answer.nothingUrgent',
 ] as const;
 
 /** Чего §13.2 требует от реплики, стоящей рядом с вопросом. Отказ — словами. */

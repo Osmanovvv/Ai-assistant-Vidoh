@@ -74,6 +74,7 @@ import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
 import { warnAboutUnpricedModels } from './modules/metering/pricing.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { startScheduler } from './modules/scheduler/scheduler.service.js';
+import { findByTgId, touchActivity } from './modules/users/users.repo.js';
 import { processUserBatches } from './modules/pipeline/pipeline.service.js';
 import { recoverAfterRestart } from './modules/pipeline/recovery.js';
 import { startRecoverySweep } from './modules/pipeline/sweeper.js';
@@ -832,6 +833,17 @@ async function main(): Promise<void> {
    * сообщения не оставалось. Регистрация вынесена ниже, к остальным
    * командам: сперва сохраняем, потом отвечаем (инвариант 1).
    */
+
+  /**
+   * Нажатие кнопки отмечает активность (ревизия этапа 3, D13): серия
+   * молчания §11 иначе не видит нажатий и снижает частоту тому, кто
+   * отвечал кнопками. Отказ отметки обработчик не роняет.
+   */
+  bot.on('callback_query', async (ctx, next) => {
+    const person = await findByTgId(db, ctx.from.id).catch(() => undefined);
+    if (person !== undefined) await touchActivity(db, person.id).catch(() => undefined);
+    await next();
+  });
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
   bot.use(

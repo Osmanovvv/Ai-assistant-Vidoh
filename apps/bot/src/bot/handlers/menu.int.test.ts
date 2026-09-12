@@ -470,6 +470,46 @@ describe('меню', () => {
     expect(labels).not.toContain('на потом');
   });
 
+  it('большая цель в «Сегодня» — ближайшим шагом, а не заголовком (ревизия этапа 3, E17)', async () => {
+    /**
+     * Выдача разбора подставляет у проекта шаг («Выбрать торт»), а
+     * «Сегодня» и утреннее писали заголовок («День рождения сына») —
+     * §13.2 велит не ставить большую цель в список целиком.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await addTopic(userId, 'личное', true);
+    const projectId = await addItem({
+      owner: userId,
+      text: 'День рождения сына',
+      topic: 'личное',
+      priority: 'NOW',
+    });
+    await testDb().update(items).set({ isProject: true }).where(eq(items.id, projectId));
+    await testDb()
+      .insert(projectSteps)
+      .values([
+        {
+          itemId: projectId,
+          userId,
+          text: 'Составить список гостей',
+          position: 1,
+          doneAt: new Date(),
+        },
+        { itemId: projectId, userId, text: 'Выбрать торт', position: 2, doneAt: null },
+      ]);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.today));
+
+    const labels = keyboardOf(calls.filter((call) => call.method === 'editMessageText').at(-1)).map(
+      (button) => button.text,
+    );
+
+    expect(labels).toContain('Выбрать торт');
+    expect(labels).not.toContain('День рождения сына');
+  });
+
   it('«Сегодня» без срочного говорит об этом, а не показывает пустоту', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();
@@ -509,7 +549,52 @@ describe('меню', () => {
   });
 });
 
+describe('кнопки под ответом не стирают выдачу (ревизия этапа 3, E18)', () => {
+  /**
+   * 3.58 закрыла это для «Оставить на потом»: прощание дописывается под
+   * сводку. «Разобрать всё» и «Сделать сейчас» по-прежнему правили само
+   * сообщение с выдачей — три дела, которые человек только что увидел,
+   * исчезали под списком сфер или карточкой.
+   */
+  const sent = (calls: readonly ApiCall[]) => calls.filter((call) => call.method === 'sendMessage');
+  const edited = (calls: readonly ApiCall[]) =>
+    calls.filter((call) => call.method === 'editMessageText');
+
+  it('«Разобрать всё» под ответом — новым сообщением', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'дом', true);
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.all));
+
+    expect(edited(calls)).toEqual([]);
+    expect(textOf(sent(calls).at(-1))).toBe(defaultTexts.menu.topicsTitle);
+  });
+
+  it('«Сделать сейчас» под ответом — новым сообщением', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    const itemId = await addItem({ owner: userId, text: 'позвонить маме', topic: 'личное' });
+
+    await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(itemId)}`));
+
+    expect(edited(calls)).toEqual([]);
+    expect(textOf(sent(calls).at(-1))).toContain('позвонить маме');
+  });
+
+  it('тот же пункт из меню по-прежнему правит экран меню', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'дом', true);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+
+    expect(textOf(edited(calls).at(-1))).toBe(defaultTexts.menu.topicsTitle);
+  });
+});
+
 describe('«Сделать сейчас» открывает показанное (ревизия этапа 3, E2)', () => {
+  // Экран из-под ответа уходит новым сообщением, а не правкой (E18).
   it('с кодом дела — его карточку, даже если в «Сегодня» его нет', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();
@@ -519,7 +604,7 @@ describe('«Сделать сейчас» открывает показанно�
 
     await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(itemId)}`));
 
-    const shown = textOf(calls.filter((call) => call.method === 'editMessageText').at(-1));
+    const shown = textOf(calls.filter((call) => call.method === 'sendMessage').at(-1));
     expect(shown).toContain('позвонить маме');
     expect(shown).not.toBe(defaultTexts.menu.todayEmpty);
   });
@@ -532,7 +617,7 @@ describe('«Сделать сейчас» открывает показанно�
 
     await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(itemId)}`));
 
-    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
+    expect(textOf(calls.filter((call) => call.method === 'sendMessage').at(-1))).toBe(
       defaultTexts.card.gone,
     );
   });
@@ -550,7 +635,7 @@ describe('«Сделать сейчас» открывает показанно�
 
     await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.now));
 
-    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toContain(
+    expect(textOf(calls.filter((call) => call.method === 'sendMessage').at(-1))).toContain(
       'к врачу',
     );
   });

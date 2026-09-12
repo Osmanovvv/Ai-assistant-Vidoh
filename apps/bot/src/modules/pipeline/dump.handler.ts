@@ -13,10 +13,11 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import { answerBacklogQuery } from '../backlog/query.service.js';
+import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
-import { contextOf, nextStepOf } from '../projects/projects.service.js';
+import { contextOf, withNextSteps } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
 import {
@@ -103,6 +104,9 @@ async function titleOfItem(db: Database, itemId: string): Promise<string | undef
 
 /** Намерения, которые этап 2 разбирает сам. */
 const PARSED_INTENTS = new Set(['DUMP']);
+
+/** Сколько строк списка называть голосом — столько же, сколько на странице кнопки «Сегодня». */
+const SPOKEN_LIST_LIMIT = PAGE_SIZE;
 
 /**
  * Намерения, с которыми работает резолвер (§7 ТЗ, задача 3.6а).
@@ -1064,7 +1068,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           // Вектор вопроса — платный вызов: под потолок его тоже (3.82).
           ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
         },
-        { userId: batch.userId, text: question, batchId: batch.id, now },
+        {
+          userId: batch.userId,
+          text: question,
+          batchId: batch.id,
+          now,
+          // §8.1: вопрос внутри ветки — про её сферу (F4).
+          ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
+        },
       );
 
       /**
@@ -1100,16 +1111,29 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * поискать» выглядят одинаково пустыми, а значат противоположное:
        * первое человек примет за факт о своих делах и не переспросит.
        */
+      const periodLabel = (period: 'tomorrow' | 'weekend' | 'week'): string =>
+        period === 'tomorrow'
+          ? texts.backlog.labelTomorrow
+          : period === 'weekend'
+            ? texts.backlog.labelWeekend
+            : texts.backlog.labelWeek;
+
       const header =
         answer.kind === 'today'
           ? texts.backlog.today
           : answer.kind === 'todayEmpty'
             ? texts.menu.todayEmpty
-            : answer.kind === 'about'
-              ? texts.backlog.about
-              : answer.kind === 'unavailable'
-                ? texts.backlog.unavailable
-                : texts.backlog.nothing;
+            : answer.kind === 'period'
+              ? texts.backlog.period(periodLabel(answer.period))
+              : answer.kind === 'periodEmpty'
+                ? texts.backlog.periodEmpty(periodLabel(answer.period))
+                : answer.kind === 'about'
+                  ? texts.backlog.about
+                  : answer.kind === 'aboutClosed'
+                    ? texts.backlog.aboutClosed
+                    : answer.kind === 'unavailable'
+                      ? texts.backlog.unavailable
+                      : texts.backlog.nothing;
 
       /**
        * Шапка называет день — значит вчерашнее «завтра» в строке лишнее
@@ -1119,16 +1143,41 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * типах компилятор сам приводит сюда за руку, когда видов
        * прибавляется.
        */
+      /**
+       * Список голосом — не длиннее страницы кнопки «Сегодня» (ревизия
+       * этапа 3, E12). Без предела при сотне просроченных текст пробивал
+       * 4096 знаков, Telegram отказывал, и человек получал тишину.
+       */
+      const listed =
+        answer.kind === 'today' ||
+        answer.kind === 'about' ||
+        answer.kind === 'period' ||
+        answer.kind === 'aboutClosed'
+          ? answer.items
+          : [];
+      const shownItems = listed.slice(0, SPOKEN_LIST_LIMIT);
+      const rest = listed.length - shownItems.length;
+
       const body =
-        answer.kind === 'today' || answer.kind === 'about'
-          ? answer.items.map((item) =>
+        answer.kind === 'today' || answer.kind === 'about' || answer.kind === 'period'
+          ? (await withNextSteps(db, shownItems)).map((item) =>
               texts.backlog.line(
                 answer.kind === 'today'
                   ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
                   : item.text,
               ),
             )
-          : [];
+          : answer.kind === 'aboutClosed'
+            ? shownItems.map((item) =>
+                texts.backlog.closedLine(
+                  item.text,
+                  item.backgroundedAt !== null
+                    ? texts.backlog.inBackground
+                    : texts.card.statusName(item.status),
+                ),
+              )
+            : [];
+      if (rest > 0) body.push(texts.backlog.more(rest));
 
       await tell([header, ...body].join('\n'));
     }
@@ -1570,17 +1619,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * обращении к проекту. Неразложенный проект показывается как есть —
      * так же, как показывался до третьего этапа.
      */
-    const actions: string[] = [];
-
-    for (const item of selection.shown) {
-      if (!item.isProject) {
-        actions.push(item.text);
-        continue;
-      }
-
-      const step = await nextStepOf(db, item.id);
-      actions.push(step?.text ?? item.text);
-    }
+    const actions = (await withNextSteps(db, selection.shown)).map((item) => item.text);
 
     const presented = await presentDump(ai, {
       composition,
