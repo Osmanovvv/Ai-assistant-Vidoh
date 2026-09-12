@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
-import { applyDecision } from '../../modules/resolver/patch.js';
+import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -174,6 +174,30 @@ describe('нажатие', () => {
 
     const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
     expect(after?.status).toBe('new');
+  });
+
+  it('перекрытую правку не откатывает и говорит почему (ревизия этапа 3, A1)', async () => {
+    // «Сделано», потом «Убрать»: статус менялся дважды. Отмена первого
+    // не знает, чего хочет человек, и оставляет запись как есть.
+    const item = await sow();
+    const revisionId = await completeIt(item);
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'cancel',
+      changes: emptyChanges(),
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${UNDO_PREFIX}${toShortId(revisionId)}`));
+
+    expect(edits(calls)).toEqual([defaultTexts.resolver.undoOvertaken]);
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+    expect(after?.status).toBe('cancelled');
   });
 
   it('кнопка исчезает вместе с сообщением об изменении', async () => {

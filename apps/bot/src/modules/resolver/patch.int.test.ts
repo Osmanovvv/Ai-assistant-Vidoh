@@ -476,6 +476,125 @@ describe('откат в один тап (3.4)', () => {
   });
 });
 
+describe('откат возвращает только своё (ревизия этапа 3, A1)', () => {
+  /**
+   * Откат восстанавливал весь снимок «до» и молча стирал всё, что
+   * случилось после: 10:05 «нет, в пятницу», 10:07 «а ещё взять полис»,
+   * нажатие первой кнопки возвращало четверг **и** уносило полис; вторая
+   * кнопка возвращала пятницу обратно. Теперь откат возвращает лишь
+   * поля, которые эта правка меняла, — и только если их с тех пор никто
+   * не трогал.
+   */
+  // Четверг — 03.09 (`THURSDAY`), пятница — 04.09, суббота — 05.09.
+  const FRIDAY = '2026-09-04';
+  const SATURDAY = '2026-09-05';
+  const SATURDAY_AT = '2026-09-04T21:00:00.000Z';
+
+  async function moveToFriday(item: Item) {
+    return await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: FRIDAY, deadlineAccuracy: 'day' },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+  }
+
+  async function addNote(item: Item, note: string) {
+    return await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: { ...NO_CHANGES, note },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+  }
+
+  it('откат старой правки не стирает позднейшую', async () => {
+    const item = await sow();
+    const first = await moveToFriday(item);
+    await addNote(item, 'взять полис');
+
+    const outcome = await revertRevision(testDb(), {
+      revisionId: first?.revisionId ?? '',
+      userId,
+    });
+
+    expect(outcome.kind).toBe('reverted');
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.body).toBe('взять полис');
+  });
+
+  it('вторая отмена не возвращает первую правку обратно', async () => {
+    const item = await sow();
+    const first = await moveToFriday(item);
+    const second = await addNote(item, 'взять полис');
+
+    await revertRevision(testDb(), { revisionId: first?.revisionId ?? '', userId });
+    await revertRevision(testDb(), { revisionId: second?.revisionId ?? '', userId });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.body).toBeNull();
+  });
+
+  it('поле, изменённое позже ещё раз, откатом не трогается — и об этом сказано', async () => {
+    // Четверг → пятница → суббота. Откат «на пятницу» не знает, чего
+    // хочет человек: четверг или оставить субботу. Честнее спросить.
+    const item = await sow();
+    const first = await moveToFriday(item);
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const outcome = await revertRevision(testDb(), {
+      revisionId: first?.revisionId ?? '',
+      userId,
+    });
+
+    expect(outcome.kind).toBe('overtaken');
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe(SATURDAY_AT);
+
+    // Ревизия не помечена отменённой: откатить её так и не вышло.
+    const [revision] = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.id, first?.revisionId ?? ''));
+    expect(revision?.revertedAt).toBeNull();
+  });
+
+  it('откат перекрытой правки после отката перекрывшей — снова возможен', async () => {
+    const item = await sow();
+    const first = await moveToFriday(item);
+    const second = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: SATURDAY, deadlineAccuracy: 'day' },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    await revertRevision(testDb(), { revisionId: second?.revisionId ?? '', userId });
+    const outcome = await revertRevision(testDb(), {
+      revisionId: first?.revisionId ?? '',
+      userId,
+    });
+
+    expect(outcome.kind).toBe('reverted');
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+});
+
 describe('обещание отката держится по построению', () => {
   it('всё, что резолвер меняет, он умеет вернуть', () => {
     // Добавили полю право меняться — обязаны добавить и право

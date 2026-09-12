@@ -5,9 +5,8 @@ import type { Logger } from 'pino';
 
 import { items, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { isoDateIn, localDateParts } from '../../modules/classifier/dates.js';
+import { localDateParts } from '../../modules/classifier/dates.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
-import { isRecurring } from '../../modules/recurrence/recurrence.service.js';
 import { describeChange } from '../../modules/resolver/change-text.js';
 import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
@@ -19,6 +18,7 @@ import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
+import { buttonRefusal, nothingChangedReply } from './item-refusal.js';
 import { undoKeyboard } from './undo.js';
 
 /**
@@ -207,37 +207,6 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
   });
 
   /**
-   * Нажатие, которое ничего не изменит, — и почему (ревизия этапа 3, C3).
-   *
-   * Карточка остаётся в чате навсегда, и кнопки на ней нажимают спустя
-   * дни. «Сделано» на уже закрытом деле переписывало дату закрытия на
-   * сегодня, и вечерний итог считал его заново; «Отложить» на убранном
-   * воскрешало его. Закрытое дело кнопками не трогается — человеку
-   * говорится, в каком оно состоянии.
-   */
-  function refusal(
-    action: ApplyAction,
-    item: Item,
-    texts: TextProfile,
-    timeZone: string,
-  ): string | undefined {
-    if (item.status === 'done' || item.status === 'cancelled') {
-      return texts.card.closed(texts.card.statusName(item.status));
-    }
-
-    if (
-      action === 'snooze' &&
-      item.status === 'snoozed' &&
-      item.deadlineAt !== null &&
-      item.deadlineAt.getTime() > Date.now()
-    ) {
-      return texts.card.snoozedAlready(shortDate(item.deadlineAt, timeZone));
-    }
-
-    return undefined;
-  }
-
-  /**
    * Общая часть трёх кнопок, меняющих запись.
    *
    * Все три идут через `applyDecision` — тем же путём, что голос и кнопка
@@ -261,13 +230,14 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         return;
       }
 
-      const refused = refusal(action, active.item, active.texts, active.timeZone);
+      const now = new Date();
+      // Закрытое дело кнопками не трогается (C3) — см. `buttonRefusal`.
+      const refused = buttonRefusal(action, active.item, active.texts, active.timeZone, now);
       if (refused !== undefined) {
         await ctx.editMessageText(refused);
         return;
       }
 
-      const now = new Date();
       const applied = await applyDecision(db, {
         userId: active.userId,
         itemId: active.item.id,
@@ -280,20 +250,8 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       });
 
       if (applied === undefined) {
-        /**
-         * Менять нечего. После отказов выше так бывает у одного случая:
-         * регулярное дело сегодня уже отмечали — второе «Сделано» за
-         * день срок не двигает (C2). Всё прочее — запись исчезла между
-         * чтением и записью.
-         */
-        const doneToday =
-          action === 'complete' &&
-          isRecurring(active.item) &&
-          active.item.completedAt !== null &&
-          isoDateIn(active.item.completedAt, active.timeZone) === isoDateIn(now, active.timeZone);
-
         await ctx.editMessageText(
-          doneToday ? active.texts.card.doneToday(active.item.text) : active.texts.card.gone,
+          nothingChangedReply(action, active.item, active.texts, active.timeZone, now),
         );
         return;
       }

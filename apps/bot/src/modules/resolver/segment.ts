@@ -74,6 +74,15 @@ export interface ResolveSegmentParams {
    * похожей записи из прошлого. Подробности в `candidates.ts`.
    */
   readonly onlyOwnBatch?: boolean | undefined;
+  /**
+   * Вопрос за этот обмен уже задан (§13.9) — второй не заводить.
+   *
+   * Ревизия этапа 3, A2: вопрос записывался в базу здесь, до того как
+   * конвейер решал его не показывать, — и запись снимала показанный
+   * первый как `superseded`. Человек видел вопрос, которого уже нет.
+   * Теперь при занятом вопросе правка паркуется, не касаясь базы.
+   */
+  readonly questionTaken?: boolean | undefined;
 }
 
 export type SegmentResult =
@@ -246,6 +255,13 @@ export async function resolvePatchSegment(
   if (candidate === undefined) return { kind: 'parked', reason: 'решение без записи' };
 
   if (decision.kind === 'ask') {
+    if (params.questionTaken === true) {
+      return {
+        kind: 'parked',
+        reason: 'цель нашлась, но вопрос за эту выгрузку уже задан (§13.9)',
+      };
+    }
+
     const question = await askQuestion(deps.db, {
       userId: params.userId,
       itemId: candidate.id,

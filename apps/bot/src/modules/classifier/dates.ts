@@ -135,6 +135,22 @@ export function startOfDayInZone(parts: DateParts, timeZone: string): Date {
 }
 
 /**
+ * Начало местного дня через `days` дней от дня, в который попадает `from`.
+ *
+ * Шаг в сутках делается до **полудня**, а не до полуночи: в ночь
+ * перевода стрелок назад сутки на час длиннее, и «полночь плюс 24 часа»
+ * — это 23:00 того же числа. Так «Перенести» накануне 25.10 оставляло
+ * срок на месте, а «Отложить» теряло день (ревизия этапа 3, D6 и C1).
+ * От полудня час в любую сторону числа не меняет.
+ */
+export function startOfDayAfter(from: Date, days: number, timeZone: string): Date {
+  const dayStart = startOfDayInZone(localDateParts(from, timeZone), timeZone);
+  const noonThen = new Date(dayStart.getTime() + (days * 24 + 12) * 60 * 60_000);
+
+  return startOfDayInZone(localDateParts(noonThen, timeZone), timeZone);
+}
+
+/**
  * Описание сегодняшнего дня для промпта.
  *
  * День недели здесь обязателен: без него модель не сможет разрешить «в

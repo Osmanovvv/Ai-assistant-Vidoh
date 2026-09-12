@@ -113,15 +113,48 @@ export type RevertOutcome =
   /** Эту ревизию уже откатывали. Повторное нажатие — не ошибка. */
   | { readonly kind: 'already' }
   /** Ревизии нет: чужая, выдуманная или удалённая вместе с записью. */
-  | { readonly kind: 'gone' };
+  | { readonly kind: 'gone' }
+  /**
+   * Поле, которое меняла эта правка, с тех пор меняли ещё раз (ревизия
+   * этапа 3, A1). Четверг → пятница → суббота: откат «на пятницу» не
+   * знает, чего хочет человек — четверг или оставить субботу. Запись
+   * не тронута, ревизия не помечена; честнее спросить словами.
+   */
+  | { readonly kind: 'overtaken'; readonly fields: readonly RestorableField[] };
 
 /**
- * Собирает из снимка то, что нужно вернуть записи.
+ * Значение поля в виде, пригодном для сравнения.
+ *
+ * Снимки лежат в `jsonb`: даты там строки, а у записи из базы — `Date`.
+ * `JSON.stringify` приводит и то, и другое к одной строке; вложенные
+ * объекты (правило повторения) и в снимке, и в записи прошли через
+ * `jsonb`, то есть с одним порядком ключей.
+ */
+function comparable(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+/** Поля, которые эта правка действительно меняла. */
+function changedFields(before: unknown, after: unknown): RestorableField[] {
+  const was = (before ?? {}) as Record<string, unknown>;
+  const became = (after ?? {}) as Record<string, unknown>;
+
+  return RESTORABLE_FIELDS.filter((field) => comparable(was[field]) !== comparable(became[field]));
+}
+
+/**
+ * Собирает из снимка то, что нужно вернуть записи — **только названные
+ * поля**.
  *
  * Снимок пришёл из `jsonb`, то есть в нём строки и числа, а не `Date`.
  * Поля, которых в снимке нет вовсе, не трогаются: их не было и в записи.
+ *
+ * Раньше возвращался весь снимок (ревизия этапа 3, A1): откат старой
+ * правки молча стирал всё, что случилось после неё, — «нет, в пятницу»,
+ * потом «а ещё взять полис», и отмена первого уносила полис; отмена
+ * второго возвращала пятницу обратно. Откат возвращает своё и только своё.
  */
-function restoreFrom(before: unknown): ItemPatch {
+function restoreFrom(before: unknown, fields: readonly RestorableField[]): ItemPatch {
   /**
    * Снимок — сериализованная строка той самой таблицы, а перечень полей
    * закрыт списком выше. Проверять каждое значение по отдельности
@@ -130,7 +163,7 @@ function restoreFrom(before: unknown): ItemPatch {
   const snapshot = (before ?? {}) as Record<string, unknown>;
   const patch: Record<string, unknown> = {};
 
-  for (const field of RESTORABLE_FIELDS) {
+  for (const field of fields) {
     if (!(field in snapshot)) continue;
 
     const value = snapshot[field];
@@ -150,6 +183,10 @@ function restoreFrom(before: unknown): ItemPatch {
  * **Повторное нажатие идемпотентно.** Кнопка остаётся в чате навсегда, и
  * человек нажмёт её ещё раз хотя бы случайно. Второй откат вернул бы
  * запись к состоянию, которого человек уже не ждёт.
+ *
+ * **Возвращаются только поля этой правки, и только нетронутые с тех пор**
+ * (ревизия этапа 3, A1). Поле, которое после этой правки меняли ещё
+ * раз, откатом не трогается — исход `overtaken`, запись как была.
  */
 export async function revertRevision(
   db: Executor,
@@ -164,7 +201,23 @@ export async function revertRevision(
   if (!revision) return { kind: 'gone' };
   if (revision.revertedAt !== null) return { kind: 'already' };
 
-  const patch = restoreFrom(revision.before);
+  const [current] = await db
+    .select()
+    .from(items)
+    .where(and(eq(items.id, revision.itemId), eq(items.userId, params.userId)))
+    .limit(1);
+
+  if (!current) return { kind: 'gone' };
+
+  const fields = changedFields(revision.before, revision.after);
+  const became = (revision.after ?? {}) as Record<string, unknown>;
+  const overtaken = fields.filter(
+    (field) => comparable(current[field]) !== comparable(became[field]),
+  );
+
+  if (overtaken.length > 0) return { kind: 'overtaken', fields: overtaken };
+
+  const patch = restoreFrom(revision.before, fields);
 
   const [item] = await db
     .update(items)

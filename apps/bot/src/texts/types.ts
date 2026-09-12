@@ -277,6 +277,8 @@ export interface TextProfile {
     /** Повторное нажатие: кнопка живёт в чате вечно. */
     readonly alreadyUndone: string;
     readonly undoGone: string;
+    /** После этой правки то же поле меняли ещё раз (ревизия этапа 3, A1). */
+    readonly undoOvertaken: string;
 
     /**
      * Один вопрос, две кнопки, с заголовком найденной записи (§7.3).
