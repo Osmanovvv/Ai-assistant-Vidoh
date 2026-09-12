@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, itemStatus, items, type Item, type ItemTypeValue } from '../../db/schema.js';
@@ -380,12 +380,36 @@ describe('открытость — одно условие на весь про�
   it('выдача показывает ровно те статусы, что репозиторий считает открытыми', async () => {
     const all = await oneTaskPerStatus();
     const byRepo = statusesOf(await openItemsFor(testDb(), userId));
-    const byFilter = statusesOf(all.filter((row) => isShowable(row)));
+    const byFilter = statusesOf(all.filter((row) => isShowable(row, new Date())));
 
     // Страж не пустой: открытых больше нуля и меньше, чем статусов вообще.
     expect(byRepo.length).toBeGreaterThan(0);
     expect(byRepo.length).toBeLessThan(all.length);
     expect(byFilter).toEqual(byRepo);
+  });
+
+  it('единственное намеренное расхождение: отложенное до будущего дня открыто, но не показывается', async () => {
+    /**
+     * Ревизия этапа 3, C1. Репозиторий считает отложенное открытым — иначе
+     * оно пропадает из списков и планировщика, и «Напомню позже» не
+     * исполняется. Выдача же молчит о нём до его дня: «отложить» значит
+     * «не сейчас». Это разница по смыслу, и здесь она названа, чтобы
+     * следующая уборка не приняла её за забытую копию.
+     */
+    await oneTaskPerStatus();
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    await testDb()
+      .update(items)
+      .set({ deadlineAt: tomorrow, deadlineAccuracy: 'day' })
+      .where(and(eq(items.userId, userId), eq(items.status, 'snoozed')));
+
+    const byRepo = statusesOf(await openItemsFor(testDb(), userId));
+    const fresh = await testDb().select().from(items).where(eq(items.userId, userId));
+    const byFilter = statusesOf(fresh.filter((row) => isShowable(row, new Date())));
+
+    expect(byRepo).toContain('snoozed');
+    expect(byFilter).not.toContain('snoozed');
+    expect([...byFilter, 'snoozed'].sort()).toEqual(byRepo);
   });
 
   it('сводка темы берёт ровно те статусы, что репозиторий считает открытыми', async () => {

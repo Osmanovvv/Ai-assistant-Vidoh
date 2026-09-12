@@ -346,6 +346,166 @@ describe('сроки (3.16)', () => {
   });
 });
 
+describe('отложенное возвращается (ревизия этапа 3, C1)', () => {
+  /**
+   * «Отложить» обещало «Напомню позже» — и не напоминало: отложенное
+   * не считалось открытым, планировщик его не видел, а статус назад не
+   * поднимал никто. Теперь дело открыто, напоминания по сроку ставятся,
+   * а в день срока оно просыпается — снова «в работе».
+   */
+  async function snoozed(deadline: Date | null): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записаться к врачу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        status: 'snoozed',
+        deadlineAt: deadline,
+        deadlineAccuracy: deadline === null ? null : 'day',
+      })
+      .returning({ id: items.id });
+
+    return row?.id ?? '';
+  }
+
+  async function statusOf(id: string): Promise<string> {
+    const [row] = await testDb()
+      .select({ status: items.status })
+      .from(items)
+      .where(eq(items.id, id));
+    return row?.status ?? '';
+  }
+
+  it('отложенное до завтра получает напоминание накануне и утром', async () => {
+    // Завтра 31.08 по Москве — начало дня 30.08 21:00 UTC.
+    await snoozed(new Date('2026-08-30T21:00:00.000Z'));
+    await planReminders(deps(), { now: NOW });
+
+    const kinds = await testDb()
+      .select({ kind: reminders.kind })
+      .from(reminders)
+      .where(eq(reminders.userId, userId));
+
+    expect(kinds.map((one) => one.kind).sort()).toEqual([
+      'deadline_day',
+      'deadline_eve',
+      'evening',
+      'morning',
+    ]);
+  });
+
+  it('до своего дня не просыпается', async () => {
+    const id = await snoozed(new Date('2026-08-30T21:00:00.000Z'));
+
+    await runScheduler(deps(), { now: NOW });
+
+    expect(await statusOf(id)).toBe('snoozed');
+  });
+
+  it('в день срока просыпается: снова в работе', async () => {
+    const id = await snoozed(new Date('2026-08-30T21:00:00.000Z'));
+
+    // 31.08, 00:01 по Москве — срок наступил.
+    await runScheduler(deps(), { now: new Date('2026-08-30T21:01:00.000Z') });
+
+    expect(await statusOf(id)).toBe('active');
+  });
+
+  it('отложенное без срока просыпается первым же проходом: ждать ему нечего', async () => {
+    const id = await snoozed(null);
+
+    await runScheduler(deps(), { now: NOW });
+
+    expect(await statusOf(id)).toBe('active');
+  });
+
+  it('чужое отложенное проход не трогает', async () => {
+    const stranger = await upsertUser(testDb(), { tgId: 7900 + seq, firstName: 'Чужая' });
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId: stranger.id,
+        text: 'Не моё',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        status: 'snoozed',
+        deadlineAt: new Date('2026-08-30T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+      })
+      .returning({ id: items.id });
+
+    await runScheduler(deps(), { now: new Date('2026-08-30T21:01:00.000Z') });
+
+    // Просыпается и чужое: проход общий на всех, у него нет «своих».
+    expect(await statusOf(row?.id ?? '')).toBe('active');
+  });
+});
+
+describe('вечерний итог считает сделанные регулярные (ревизия этапа 3, C9)', () => {
+  const evening = new Date('2026-08-30T18:00:00.000Z'); // 21:00 МСК
+
+  async function sow(overrides: {
+    readonly status?: 'new' | 'done' | 'cancelled';
+    readonly completedAt?: Date | null;
+    readonly recurring?: boolean;
+  }): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Оплатить садик',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        status: overrides.status ?? 'new',
+        completedAt: overrides.completedAt ?? null,
+        ...(overrides.recurring === true
+          ? {
+              deadlineAt: new Date('2026-10-04T21:00:00.000Z'),
+              deadlineAccuracy: 'day' as const,
+              recurrenceRule: { kind: 'monthly', interval: 1, anchor: '2026-01-05' },
+              recurrenceText: 'каждый месяц',
+              recurrenceSource: 'stated' as const,
+            }
+          : {}),
+      });
+  }
+
+  async function eveningTextSent(): Promise<string> {
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: evening });
+    return (
+      outbox
+        .map((one) => one.text)
+        .find((text) => text.includes('закончился') || text.includes('закрыто')) ?? ''
+    );
+  }
+
+  it('сделанное сегодня регулярное — закрыто одно, а не «день закончился»', async () => {
+    // Днём отметила садик: запись не закрыта, но сделана сегодня.
+    await sow({ recurring: true, completedAt: new Date('2026-08-30T10:00:00.000Z') });
+
+    expect(await eveningTextSent()).toContain(defaultTexts.reminders.eveningClosed(1));
+  });
+
+  it('регулярное, сделанное вчера, сегодня не считается', async () => {
+    await sow({ recurring: true, completedAt: new Date('2026-08-29T10:00:00.000Z') });
+
+    expect(await eveningTextSent()).toContain(defaultTexts.reminders.eveningQuiet);
+  });
+
+  it('обычное закрытое и регулярное сделанное считаются вместе', async () => {
+    await sow({ status: 'done', completedAt: new Date('2026-08-30T09:00:00.000Z') });
+    await sow({ recurring: true, completedAt: new Date('2026-08-30T10:00:00.000Z') });
+
+    expect(await eveningTextSent()).toContain(defaultTexts.reminders.eveningClosed(2));
+  });
+});
+
 describe('снижение частоты (3.17)', () => {
   /** Отправленное утреннее в указанный день, без единого сообщения в ответ. */
   async function ignoredMorning(day: string): Promise<void> {
@@ -463,7 +623,7 @@ describe('проход целиком', () => {
     await runScheduler(deps(), { now: morning });
     const second = await runScheduler(deps(), { now: morning });
 
-    expect(second).toEqual({ planned: 0, sent: 0 });
+    expect(second).toEqual({ planned: 0, sent: 0, woken: 0 });
     expect(outbox).toHaveLength(1);
   });
 });

@@ -75,6 +75,25 @@ export function describeChange(
     );
   }
 
+  /**
+   * Отложено — до какого дня (ревизия этапа 3, C1). Срок может быть и
+   * прежним, будущим: тогда он в `after` тот же, что был, и назвать его
+   * всё равно надо — человек должен знать, когда дело вернётся.
+   */
+  if (applied.action === 'snooze') {
+    // Срок у отложенного есть всегда: бессрочному «отложить» ставит свой
+    // (`plan` в patch.ts). Пустой срок здесь — нарушенный инвариант, а не
+    // случай, для которого нужна реплика.
+    if (after.deadlineAt === null) {
+      throw new Error(`отложенная запись ${after.id} без срока`);
+    }
+
+    const until = shortDate(after.deadlineAt, timeZone);
+    return after.deadlineAccuracy === 'day'
+      ? texts.card.snoozedUntil(until)
+      : texts.card.snoozedApprox(until);
+  }
+
   // Правило выставлено или изменено (задача 3.8б).
   if (applied.action === 'update' && fields.includes('recurrenceRule')) {
     return resolver.ruleSet(after.text, after.recurrenceText ?? '');

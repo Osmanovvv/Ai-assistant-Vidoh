@@ -8,7 +8,7 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import { collectCandidates } from './candidates.js';
 import { reembedItem } from '../embedder/reembed.js';
-import { applyDecision, type Applied } from './patch.js';
+import { applyDecision, emptyChanges, type Applied } from './patch.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
@@ -35,17 +35,6 @@ import { startsWithReplacement } from '../router/append.js';
  * поправки два других источника кандидатов, и терять правку из-за
  * недоступного эмбеддера было бы обидно.
  */
-
-/** Пустые изменения: модель промолчала, а поля нужны всем. */
-const EMPTY_CHANGES = {
-  note: '',
-  text: '',
-  deadline: '',
-  deadlineAccuracy: 'none',
-  recurrenceKind: 'none',
-  recurrenceInterval: 0,
-  recurrenceText: '',
-} as const;
 
 export interface ResolveDeps {
   readonly db: Database;
@@ -263,7 +252,7 @@ export async function resolvePatchSegment(
       batchId: params.batchId,
       segment: params.text,
       action: decision.action,
-      changes: resolved.changes ?? EMPTY_CHANGES,
+      changes: resolved.changes ?? emptyChanges(),
       /**
        * Режим правки едет с вопросом (задача 3.82).
        *
@@ -306,7 +295,7 @@ export async function resolvePatchSegment(
     itemId: candidate.id,
     action: decision.action === 'new' ? 'update' : decision.action,
     ...(mode === undefined ? {} : { mode }),
-    changes: resolved.changes ?? EMPTY_CHANGES,
+    changes: resolved.changes ?? emptyChanges(),
     // §3.8б: «запомни» видно только в сказанном.
     spoken: params.text,
     timeZone: params.timeZone,

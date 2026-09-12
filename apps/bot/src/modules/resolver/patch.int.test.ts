@@ -161,6 +161,114 @@ describe('применение оставляет ревизию', () => {
 
     expect((await reread(item.id)).status).toBe('cancelled');
   });
+
+  it('отмена сделанного снимает и дату закрытия: убранное — не сделанное', async () => {
+    // Иначе вечерний итог посчитал бы убранное дело закрытым сегодня.
+    const item = await sow({ status: 'done', completedAt: NOW });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'cancel',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('cancelled');
+    expect(after.completedAt).toBeNull();
+  });
+});
+
+describe('отложить — решение с ревизией (ревизия этапа 3, C1)', () => {
+  /**
+   * Кнопка «Отложить» писала в базу напрямую: ни ревизии, ни отката.
+   * Теперь это такое же решение, как «сделано» и «убрать», — и откат у
+   * него тот же.
+   */
+  async function snooze(item: Item, now: Date) {
+    return await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'snooze',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now,
+    });
+  }
+
+  it('просроченное уходит на три дня вперёд, к началу местного дня', async () => {
+    // Срок был вчера; «сейчас» — 29.08 15:00 по Москве. Три дня — 1
+    // сентября, полночь по Москве: дневная точность, как у любого срока.
+    const item = await sow({ deadlineAt: new Date('2026-08-27T21:00:00.000Z') });
+
+    const applied = await snooze(item, NOW);
+
+    expect(applied?.fields).toEqual(['status', 'deadlineAt', 'deadlineAccuracy']);
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('snoozed');
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-31T21:00:00.000Z');
+    expect(after.deadlineAccuracy).toBe('day');
+  });
+
+  it('через перевод стрелок назад — всё равно три дня, а не два', async () => {
+    /**
+     * Берлин, пятница 23.10.2026, 15:00. В ночь на воскресенье 25-го
+     * стрелки уходят на час назад, и «полночь плюс 72 часа» — это ещё
+     * воскресенье, 23:00. Нужен понедельник 26-го, полночь по Берлину.
+     */
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'snooze',
+      changes: NO_CHANGES,
+      timeZone: 'Europe/Berlin',
+      now: new Date('2026-10-23T13:00:00.000Z'),
+    });
+
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-10-25T23:00:00.000Z');
+  });
+
+  it('без срока — тоже на три дня', async () => {
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    await snooze(item, NOW);
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('snoozed');
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-31T21:00:00.000Z');
+  });
+
+  it('будущий срок не трогает: отложить — не значит перенести приём у врача', async () => {
+    // Четверг 03.09 ещё впереди. Дело прячется до него, а дата остаётся.
+    const item = await sow();
+
+    const applied = await snooze(item, NOW);
+
+    expect(applied?.fields).toEqual(['status']);
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('уже отложенное с будущим сроком — менять нечего', async () => {
+    const item = await sow({ status: 'snoozed' });
+
+    expect(await snooze(item, NOW)).toBeUndefined();
+  });
+
+  it('откат возвращает и статус, и прежний срок', async () => {
+    const item = await sow({ deadlineAt: new Date('2026-08-27T21:00:00.000Z') });
+    const applied = await snooze(item, NOW);
+
+    await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-27T21:00:00.000Z');
+  });
 });
 
 describe('чего применение делать не должно', () => {
@@ -554,13 +662,39 @@ describe('регулярное дело движется, а не множитс
     const item = await weekly('2026-08-30');
     const applied = await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
 
-    expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy']);
+    expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy', 'completedAt']);
 
     const after = await reread(item.id);
     expect(after.status).toBe('new');
-    expect(after.completedAt).toBeNull();
+    // Запись не закрыта, но когда её сделали в последний раз — записано:
+    // по этому вечерний итог и считает сделанное (ревизия этапа 3, C9).
+    expect(after.completedAt?.toISOString()).toBe('2026-09-01T09:00:00.000Z');
     // Следующий понедельник — 7 сентября.
     expect(after.deadlineAt?.toISOString()).toBe('2026-09-06T21:00:00.000Z');
+  });
+
+  it('второе «сделано» в тот же день срок не двигает (ревизия этапа 3, C2)', async () => {
+    /**
+     * Нажатие или реплика повторились — дело от этого не сделано дважды.
+     * Раньше каждое «сделано» считалось от уже сдвинутого срока, и два
+     * нажатия уносили садик на два месяца вперёд.
+     */
+    const item = await weekly('2026-08-30');
+    await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
+
+    expect(await markDone(item, new Date('2026-09-01T18:00:00.000Z'))).toBeUndefined();
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-09-06T21:00:00.000Z');
+  });
+
+  it('«сделано» на следующий день — уже новое выполнение', async () => {
+    // Ежедневное дело: вчера сделано, сегодня сделано снова — это правда.
+    const item = await weekly('2026-08-30', 'daily');
+    await markDone(item, new Date('2026-09-01T09:00:00.000Z'));
+
+    const again = await markDone(item, new Date('2026-09-02T09:00:00.000Z'));
+
+    expect(again).toBeDefined();
+    expect((await reread(item.id)).completedAt?.toISOString()).toBe('2026-09-02T09:00:00.000Z');
   });
 
   it('две пропущенные недели дают одну запись со сроком, а не две просроченные', async () => {

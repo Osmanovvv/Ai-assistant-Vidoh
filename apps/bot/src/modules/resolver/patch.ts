@@ -3,7 +3,13 @@ import { and, eq } from 'drizzle-orm';
 import { items, type ChangedBy, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
-import { isoDateIn, nearestWeekday, resolveDeadline } from '../classifier/dates.js';
+import {
+  isoDateIn,
+  localDateParts,
+  nearestWeekday,
+  resolveDeadline,
+  startOfDayInZone,
+} from '../classifier/dates.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
@@ -50,11 +56,48 @@ export type PatchableField = (typeof PATCHABLE_FIELDS)[number];
 /** Правка записи: только те поля, что резолвер имеет право менять. */
 type ItemPatch = Partial<Pick<Item, PatchableField>>;
 
+/**
+ * Что можно сделать с записью.
+ *
+ * Три действия приходят от резолвера; «отложить» — только с кнопки
+ * карточки (ревизия этапа 3, C1): модель его не выбирает, а человек
+ * словами говорит «перенеси», и это `update` со сроком. Но решение это
+ * того же рода — меняет запись и обязано оставить ревизию, — поэтому идёт
+ * тем же путём, а не своей записью в базу.
+ */
+export type ApplyAction = Exclude<ResolverAction, 'new'> | 'snooze';
+
+/** Сколько ждать отложенное дело. §11 подробностей не задаёт. */
+const SNOOZE_DAYS = 3;
+
+/**
+ * Пустые изменения: применение ждёт все поля, меняются лишь названные.
+ *
+ * Точность — `none`, а не `day`: пустой срок применение и так не трогает,
+ * но нейтральное значение здесь должно выглядеть нейтральным. Тот, кто
+ * однажды добавит сюда срок и забудет про точность, получит `day` молча.
+ *
+ * Одно место на всех: кнопки под напоминанием, карточка, правка словами
+ * и конвейер — раньше у каждого была своя копия, и четвёртая (12.09.2026)
+ * была бы лишней.
+ */
+export function emptyChanges(): ResolverAnswer['changes'] {
+  return {
+    note: '',
+    text: '',
+    deadline: '',
+    deadlineAccuracy: 'none',
+    recurrenceKind: 'none',
+    recurrenceInterval: 0,
+    recurrenceText: '',
+  };
+}
+
 export interface ApplyParams {
   readonly userId: string;
   readonly itemId: string;
   /** «Новая мысль» сюда не приходит: применять нечего. */
-  readonly action: Exclude<ResolverAction, 'new'>;
+  readonly action: ApplyAction;
   readonly changes: ResolverAnswer['changes'];
   /**
    * Сказанное человеком: по нему видно, просили ли запомнить (3.8б).
@@ -92,11 +135,26 @@ export interface ApplyParams {
 export interface Applied {
   readonly revisionId: string;
   /** Что делали: реплика человеку у выполнения и правки разная. */
-  readonly action: Exclude<ResolverAction, 'new'>;
+  readonly action: ApplyAction;
   readonly before: Item;
   readonly after: Item;
   /** Что именно поменялось — для реплики человеку и для журнала. */
   readonly fields: readonly PatchableField[];
+}
+
+/**
+ * Начало местного дня через `SNOOZE_DAYS` от сегодняшнего.
+ *
+ * Шаг в сутках делается до полудня, а не до полуночи: в ночь перевода
+ * стрелок назад сутки на час длиннее, и полночь плюс трое суток — это
+ * 23:00 позапрошлого дня, число на один меньше нужного. От полудня час
+ * в любую сторону числа не меняет.
+ */
+function snoozeUntil(now: Date, timeZone: string): Date {
+  const todayStart = startOfDayInZone(localDateParts(now, timeZone), timeZone);
+  const noonThen = new Date(todayStart.getTime() + (SNOOZE_DAYS * 24 + 12) * 60 * 60_000);
+
+  return startOfDayInZone(localDateParts(noonThen, timeZone), timeZone);
 }
 
 /** Что станет с записью. Пустой объект означает «ничего не меняется». */
@@ -112,10 +170,25 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
     const moved = nextDeadlineAfterDone(item, { timeZone: params.timeZone, now });
 
     if (moved !== undefined) {
+      /**
+       * Второе «сделано» в тот же день — повтор, а не второе выполнение
+       * (ревизия этапа 3, C2). Раньше каждое считалось от уже сдвинутого
+       * срока, и два нажатия уносили садик на два месяца вперёд.
+       */
+      if (
+        item.completedAt !== null &&
+        isoDateIn(item.completedAt, params.timeZone) === isoDateIn(now, params.timeZone)
+      ) {
+        return next;
+      }
+
       if (item.deadlineAt?.getTime() !== moved.getTime()) {
         next.deadlineAt = moved;
         next.deadlineAccuracy = 'day';
       }
+      // Запись не закрывается, но когда её сделали в последний раз —
+      // записано: по этому вечерний итог считает сделанное (C9).
+      next.completedAt = now;
       return next;
     }
 
@@ -142,6 +215,34 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
 
     // §13.5: «убрать» — это отменённая запись, а не удалённая строка.
     if (item.status !== 'cancelled') next.status = 'cancelled';
+    // Убранное — не сделанное: иначе вечерний итог посчитал бы его
+    // закрытым сегодня.
+    if (item.completedAt !== null) next.completedAt = null;
+    return next;
+  }
+
+  if (params.action === 'snooze') {
+    /**
+     * «Отложить» — это «не сейчас» (ревизия этапа 3, C1).
+     *
+     * Просроченное или бессрочное уходит на три дня вперёд, к началу
+     * местного дня — с дневной точностью, как любой срок: иначе оно
+     * осталось бы просроченным и полезло бы в выдачу тем же вечером.
+     * Будущий срок не трогается: отложить «к врачу в четверг» — не
+     * значит перенести приём. Дело прячется до своего дня, а дата
+     * остаётся его датой.
+     */
+    if (item.status !== 'snoozed') next.status = 'snoozed';
+
+    if (item.deadlineAt === null || item.deadlineAt.getTime() <= now.getTime()) {
+      const until = snoozeUntil(now, params.timeZone);
+
+      if (item.deadlineAt?.getTime() !== until.getTime()) {
+        next.deadlineAt = until;
+        next.deadlineAccuracy = 'day';
+      }
+    }
+
     return next;
   }
 

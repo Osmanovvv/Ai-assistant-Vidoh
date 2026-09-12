@@ -63,7 +63,7 @@ const context = { energy: 'normal' as const, now: NOW, timeZone: MOSCOW };
 
 describe('что вообще попадает в выдачу', () => {
   it('задача с приоритетом попадает', () => {
-    expect(isShowable(item())).toBe(true);
+    expect(isShowable(item(), NOW)).toBe(true);
   });
 
   const excluded: readonly [string, Partial<Item>][] = [
@@ -74,21 +74,40 @@ describe('что вообще попадает в выдачу', () => {
     ['задача с приоритетом NONE', { priority: 'NONE' }],
     ['выполненное', { status: 'done' }],
     ['отменённое', { status: 'cancelled' }],
-    ['отложенное', { status: 'snoozed' }],
+    ['отложенное до завтра', { status: 'snoozed', deadlineAt: day('2026-09-05') }],
     ['делегированное', { status: 'delegated' }],
     ['черновик', { isDraft: true, type: null, priority: null, topic: null }],
   ];
 
   for (const [what, overrides] of excluded) {
     it(`не попадает: ${what}`, () => {
-      expect(isShowable(item(overrides))).toBe(false);
+      expect(isShowable(item(overrides), NOW)).toBe(false);
     });
   }
 
   it('желание не попадает даже с высоким приоритетом', () => {
     // Классификация приводит тип и приоритет в согласие, но выдача не
     // должна зависеть от того, что кто-то раньше всё сделал правильно.
-    expect(isShowable(item({ type: 'DESIRE', priority: 'NOW' }))).toBe(false);
+    expect(isShowable(item({ type: 'DESIRE', priority: 'NOW' }), NOW)).toBe(false);
+  });
+
+  /**
+   * «Отложить» — это «не сейчас», а не «никогда» (ревизия этапа 3, C1).
+   *
+   * Отложенное дело скрыто ровно до своего дня: до него выдача о нём
+   * молчит, как и просил человек, а с его наступления дело возвращается
+   * само — иначе «Напомню позже» было бы обещанием без исполнения.
+   */
+  it('отложенное возвращается в выдачу, когда подошёл его день', () => {
+    expect(isShowable(item({ status: 'snoozed', deadlineAt: day('2026-09-04') }), NOW)).toBe(true);
+  });
+
+  it('отложенное с прошедшим сроком тоже показывается: оно просрочено, а не спрятано', () => {
+    expect(isShowable(item({ status: 'snoozed', deadlineAt: day('2026-09-01') }), NOW)).toBe(true);
+  });
+
+  it('отложенное без срока показывается: прятать его не до чего', () => {
+    expect(isShowable(item({ status: 'snoozed' }), NOW)).toBe(true);
   });
 });
 

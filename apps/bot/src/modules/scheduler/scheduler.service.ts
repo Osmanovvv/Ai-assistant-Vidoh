@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import {
@@ -603,7 +603,16 @@ async function openItem(db: Database, reminder: Reminder): Promise<Item | undefi
   return item;
 }
 
-/** Сколько дел закрыто за сегодняшний местный день. */
+/**
+ * Сколько дел сделано за сегодняшний местный день.
+ *
+ * По дате выполнения, а не по статусу (ревизия этапа 3, C9): у
+ * регулярного дела «сделано» двигает срок и запись не закрывает, но
+ * `completed_at` у него — когда его сделали в последний раз. Иначе
+ * «оплатила садик» днём вечером оборачивалось «День закончился».
+ * Убранное дату выполнения теряет (`patch.ts`), так что здесь не
+ * считается.
+ */
 async function closedToday(
   db: Database,
   userId: string,
@@ -618,13 +627,39 @@ async function closedToday(
     .where(
       and(
         eq(items.userId, userId),
-        eq(items.status, 'done'),
         isNotNull(items.completedAt),
         sql`${items.completedAt} >= ${from}`,
       ),
     );
 
   return row?.count ?? 0;
+}
+
+/**
+ * Отложенное, чей день настал, снова в работе (ревизия этапа 3, C1).
+ *
+ * «Отложить» прячет дело до срока, к которому его отложили; с этого
+ * дня оно возвращается — в выдачу его пускает фильтр сам, по сроку, а
+ * статус поднимает этот шаг, чтобы карточка и списки не звали «отложено»
+ * то, что уже просрочено. Бессрочное отложенное будить не до чего —
+ * оно просыпается сразу. Ревизии здесь нет: это не решение человека, а
+ * наступившее время.
+ *
+ * Возвращает число разбуженных — для журнала прохода.
+ */
+export async function wakeSnoozed(db: Database, now: Date): Promise<number> {
+  const woken = await db
+    .update(items)
+    .set({ status: 'active', updatedAt: now })
+    .where(
+      and(
+        eq(items.status, 'snoozed'),
+        or(isNull(items.deadlineAt), sql`${items.deadlineAt} <= ${now}`),
+      ),
+    )
+    .returning({ id: items.id });
+
+  return woken.length;
 }
 
 async function pause(ms: number): Promise<void> {
@@ -642,12 +677,16 @@ async function pause(ms: number): Promise<void> {
 export async function runScheduler(
   deps: SchedulerDeps,
   params: { readonly now?: Date | undefined } = {},
-): Promise<{ readonly planned: number; readonly sent: number }> {
+): Promise<{ readonly planned: number; readonly sent: number; readonly woken: number }> {
   const now = params.now ?? new Date();
+
+  // Сперва разбудить: разложенное в этом же проходе видит уже «в работе».
+  const woken = await wakeSnoozed(deps.db, now);
 
   return {
     planned: await planReminders(deps, { now }),
     sent: await dispatchReminders(deps, { now }),
+    woken,
   };
 }
 
@@ -693,7 +732,7 @@ export function startScheduler(deps: SchedulerDeps, intervalMs: number = TICK_MS
 
     void runScheduler(deps)
       .then((outcome) => {
-        if (outcome.planned > 0 || outcome.sent > 0) {
+        if (outcome.planned > 0 || outcome.sent > 0 || outcome.woken > 0) {
           deps.logger.info(outcome, 'Проход планировщика');
         }
       })
