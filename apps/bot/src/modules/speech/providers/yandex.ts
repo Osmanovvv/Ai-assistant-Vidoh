@@ -6,6 +6,7 @@ import {
   AccessDeniedError,
   markAlreadyPaid,
 } from '../../../infra/failures.js';
+import { YANDEX_NO_DATA_LOGGING } from '../../../infra/yandex-data-logging.js';
 
 import {
   PermanentSpeechError,
@@ -485,6 +486,7 @@ export class YandexSpeechProvider implements SpeechProvider {
           authorization: `Api-Key ${this.options.apiKey}`,
           ...(this.options.folderId === undefined ? {} : { 'x-folder-id': this.options.folderId }),
           ...(request.contentType === undefined ? {} : { 'content-type': request.contentType }),
+          ...YANDEX_NO_DATA_LOGGING,
         },
         ...(request.body === undefined ? {} : { body: request.body }),
       });

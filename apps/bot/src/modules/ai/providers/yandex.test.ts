@@ -64,6 +64,27 @@ describe('успешный вызов', () => {
     expect(result.model).toBe('yandexgpt/latest');
   });
 
+  it('просит Yandex не сохранять содержание запроса (x-data-logging-enabled: false)', async () => {
+    /**
+     * По умолчанию модели Yandex сохраняют все данные запросов, а в них —
+     * слова людей. Заказчица 12.09.2026 решила логирование на стороне
+     * Yandex отключить, и политика конфиденциальности это обещает.
+     */
+    let headers: Record<string, string> = {};
+
+    const provider = new YandexLlmProvider({
+      ...options,
+      fetchImpl: ((_url: string, init: RequestInit) => {
+        headers = init.headers as Record<string, string>;
+        return Promise.resolve(new Response(JSON.stringify(answering('{}')), { status: 200 }));
+      }) as unknown as typeof fetch,
+    });
+
+    await provider.complete(request());
+
+    expect(headers['x-data-logging-enabled']).toBe('false');
+  });
+
   it('собирает modelUri из каталога и модели', async () => {
     let captured: Record<string, unknown> = {};
 

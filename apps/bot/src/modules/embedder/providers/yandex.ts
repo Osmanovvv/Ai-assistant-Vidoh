@@ -1,4 +1,5 @@
 import { ACCESS_DENIED_STATUSES, AccessDeniedError } from '../../../infra/failures.js';
+import { YANDEX_NO_DATA_LOGGING } from '../../../infra/yandex-data-logging.js';
 
 import {
   PermanentEmbeddingError,
@@ -91,6 +92,7 @@ export class YandexEmbeddingProvider implements EmbeddingProvider {
         headers: {
           authorization: `Api-Key ${this.options.apiKey}`,
           'content-type': 'application/json',
+          ...YANDEX_NO_DATA_LOGGING,
         },
         body: JSON.stringify({
           modelUri: `emb://${this.options.folderId}/${model}/latest`,
