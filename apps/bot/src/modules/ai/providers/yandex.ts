@@ -3,6 +3,7 @@ import {
   AccessDeniedError,
   markAlreadyPaid,
 } from '../../../infra/failures.js';
+import { YANDEX_NO_DATA_LOGGING } from '../../../infra/yandex-data-logging.js';
 
 import {
   PermanentLlmError,
@@ -106,6 +107,7 @@ export class YandexLlmProvider implements LlmProvider {
         headers: {
           authorization: `Api-Key ${this.options.apiKey}`,
           'content-type': 'application/json',
+          ...YANDEX_NO_DATA_LOGGING,
         },
         body: JSON.stringify(body),
         // Таймаут обязан отменять генерацию, а не только ожидание:

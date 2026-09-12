@@ -208,6 +208,8 @@ describe('форма запроса', () => {
     expect(headers['authorization']).toBe('Api-Key секретный-ключ');
     expect(headers['x-folder-id']).toBe('b1g-folder');
     expect(headers['content-type']).toBe('application/json');
+    // Голос человека не должен оседать у Yandex (решение заказчицы 12.09.2026).
+    expect(headers['x-data-logging-enabled']).toBe('false');
 
     const body = jsonBody(start) as unknown as {
       content: string;
