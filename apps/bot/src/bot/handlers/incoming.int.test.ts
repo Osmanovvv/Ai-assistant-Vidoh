@@ -774,6 +774,33 @@ describe('пробный период и деградация (§14, задач�
     expect(consumed).toBe(1);
     expect(calls.map((call) => call.payload['text'])).not.toContain(defaultTexts.limits.trialOver);
   });
+
+  it('съеденный ответ помечен: сиротой без выгрузки он не станет (найдено на бою 12.09.2026)', async () => {
+    const { bot } = createTestBot({ consume: () => Promise.resolve(true) });
+
+    await bot.handleUpdate(textUpdate('в девять утра'));
+
+    const [row] = await testDb()
+      .select({ consumedAt: messagesRaw.consumedAt, batchId: messagesRaw.batchId })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.text, 'в девять утра'));
+
+    expect(row?.batchId).toBeNull();
+    expect(row?.consumedAt).not.toBeNull();
+  });
+
+  it('несъеденное не помечается', async () => {
+    const { bot } = createTestBot({ consume: () => Promise.resolve(false) });
+
+    await bot.handleUpdate(textUpdate('купить хлеб'));
+
+    const [row] = await testDb()
+      .select({ consumedAt: messagesRaw.consumedAt })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.text, 'купить хлеб'));
+
+    expect(row?.consumedAt).toBeNull();
+  });
 });
 
 describe('настройка применяется на лету — условие готовности 4.9', () => {

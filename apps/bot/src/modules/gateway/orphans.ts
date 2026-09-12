@@ -49,7 +49,22 @@ function deliberate(): ReturnType<typeof sql> {
   return sql`(
     ${messagesRaw.text} like '/%'
     or (${messagesRaw.text} is null and ${messagesRaw.transcript} is null)
+    -- Съеденное как ответ на вопрос бота — обработано, не сирота
+    -- (найдено на бою 12.09.2026: «7:30» из опроса считалось неделю).
+    or ${messagesRaw.consumedAt} is not null
   )`;
+}
+
+/**
+ * Сообщение съедено как ответ на вопрос бота — имя, время, город,
+ * промокод — и в разбор не пойдёт. Отметка нужна счётчику сирот и панели.
+ */
+export async function markConsumed(
+  db: Executor,
+  messageId: string,
+  now = new Date(),
+): Promise<void> {
+  await db.update(messagesRaw).set({ consumedAt: now }).where(eq(messagesRaw.id, messageId));
 }
 
 /** Настоящие сироты: ни выгрузки, ни причины ею не быть. */
