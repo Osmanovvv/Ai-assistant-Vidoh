@@ -571,13 +571,20 @@ describe('разбор', () => {
   });
 
   it('правку без цели откладывает черновиком, а не превращает в задачу', async () => {
-    // Резолвер работает, но записей у человека ещё нет: цели для правки не
-    // нашлось. Задача «хотя нет, в пятницу» была бы задачей без задачи —
-    // выбор второго этапа здесь сохраняется намеренно.
+    /**
+     * Резолвер (подменённый) отвечает «это новая мысль», а извлечение из
+     * «хотя нет, в пятницу» единиц не даёт — как и настоящее: это обрывок,
+     * а не мысль. Задача «хотя нет, в пятницу» была бы задачей без задачи;
+     * слова ложатся черновиком, и человеку об этом сказано.
+     *
+     * До ревизии этапа 3 (A4-средняя) поздняя мысль в разбор не попадала
+     * вовсе — черновиком ложилось всё подряд, и настоящая мысль тоже.
+     */
     const prompts = await seedPrompts();
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу в четверг, хотя нет, в пятницу', offsetMs: 0 },
     ]);
+    const { sender, all } = recordingSender();
 
     const llm = echoingLlm({
       router: JSON.stringify({
@@ -587,13 +594,19 @@ describe('разбор', () => {
           { intent: 'PATCH', text: 'хотя нет, в пятницу' },
         ],
       }),
+      extractor: (request) =>
+        request.input === 'хотя нет, в пятницу'
+          ? JSON.stringify({ units: [] })
+          : JSON.stringify({
+              units: [{ text: request.input, isProject: false, isEmotion: false }],
+            }),
     });
 
     await processUserBatches(
       {
         db: testDb(),
         lock,
-        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm }),
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
       },
       userId,
     );
@@ -605,15 +618,100 @@ describe('разбор', () => {
     expect(parsed.map((item) => item.text)).toEqual(['Записать сына к врачу в четверг']);
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.text).toBe('хотя нет, в пятницу');
+    expect(drafts[0]?.draftReason).toContain('поздняя мысль');
+    expect(all.at(-1)).toContain(defaultTexts.answer.savedUnparsed);
+  });
+
+  it('мысль, принятая за правку после первой мысли, становится записью (ревизия этапа 3, A4-средняя)', async () => {
     /**
-     * Причина изменилась с появлением второго прохода (задача 3.24).
-     *
-     * На первом проходе цели нет вовсе — записей ещё не сохранили. На
-     * втором они уже есть, и подменённый резолвер отвечает «это новая
-     * мысль»; вставить её в разбор уже нечем, поэтому черновик. Главное
-     * при этом не изменилось: текст человека сохранён и задачей не стал.
+     * «Записать сына к врачу, купить молоко»: маршрутизатор счёл второе
+     * правкой к первому. Правка после мысли разбирается уже после
+     * сохранения; резолвер, глядя на записи, говорит «это новая мысль».
+     * Раньше вставить её в разбор было нечем: слова ложились черновиком
+     * с «Сохранила целиком», и обещание маршрутизатора «запись всё равно
+     * появится» было неправдой. Теперь для неё идёт свой проход
+     * извлечения и классификации — две дополнительных единицы работы
+     * модели, и только в этом редком случае.
      */
-    expect(drafts[0]?.draftReason).toContain('разбор выгрузки уже прошёл');
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      { kind: 'text', text: 'записать сына к врачу в четверг, купить молоко', offsetMs: 0 },
+    ]);
+    const { sender, all } = recordingSender();
+
+    // Свои сферы с ветками: поздняя запись должна дойти и до своей ветки.
+    const gateway = new FakeTopicGateway();
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'личное', sortOrder: 0, isDefault: true },
+        { userId, name: 'дом', sortOrder: 1, isDefault: false },
+      ]);
+    for (const row of await testDb().select().from(topics).where(eq(topics.userId, userId))) {
+      await ensureThread({ db: testDb(), gateway }, { topicId: row.id, chatId: 700 });
+    }
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'записать сына к врачу в четверг' },
+          { intent: 'PATCH', text: 'купить молоко' },
+        ],
+      }),
+      classifier: (request) =>
+        JSON.stringify({
+          items: unitsFromInput(request.input).map((text) => ({
+            text,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: text.includes('молоко') ? 'дом' : 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          })),
+        }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          topics: gateway,
+        }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
+    expect(saved.filter((item) => item.isDraft)).toHaveLength(0);
+    expect(saved.map((item) => [item.text, item.topic])).toEqual([
+      ['Записать сына к врачу в четверг', 'личное'],
+      ['Купить молоко', 'дом'],
+    ]);
+    expect(saved.every((item) => item.sourceBatchId !== null)).toBe(true);
+
+    // Второй проход извлечения и классификации — по одному вызову на каждое.
+    const calls = await testDb().select().from(aiCalls);
+    expect(calls.filter((call) => call.stage === 'extractor')).toHaveLength(2);
+    expect(calls.filter((call) => call.stage === 'classifier')).toHaveLength(2);
+
+    // Человеку не говорят «сохранила целиком»: всё разобрано, и дело в ответе.
+    expect(all.join('\n')).not.toContain(defaultTexts.answer.savedUnparsed);
+    expect(all.at(-1) ?? '').toContain('Купить молоко');
+
+    // Сводка ветки «дом» тронута поздней записью, как и любой другой.
+    const summaries = [...gateway.sent, ...gateway.edited].map((message) => message.text);
+    expect(summaries.some((text) => text.includes('Купить молоко'))).toBe(true);
   });
 
   it('на «привет» не разбирает ничего и отвечает коротко', async () => {
