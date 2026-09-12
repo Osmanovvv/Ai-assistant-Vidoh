@@ -5,7 +5,7 @@ import type { Logger } from 'pino';
 import { items, projectSteps } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { isoDateIn, localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
-import { applyDecision } from '../../modules/resolver/patch.js';
+import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { POSTPONE_DAYS, REMINDER_ACTION } from '../../modules/scheduler/reminder-actions.js';
 import { fromShortId } from '../../modules/shared/short-id.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
@@ -203,25 +203,6 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
      */
     await ctx.editMessageText(active.texts.reminders.projectLater);
   });
-}
-
-/**
- * Пустые изменения: применение ждёт все поля, меняются лишь названные.
- *
- * Точность — `none`, а не `day`: пустой срок применение и так не трогает,
- * но нейтральное значение здесь должно выглядеть нейтральным. Тот, кто
- * однажды добавит сюда срок и забудет про точность, получит `day` молча.
- */
-function emptyChanges() {
-  return {
-    note: '',
-    text: '',
-    deadline: '',
-    deadlineAccuracy: 'none' as const,
-    recurrenceKind: 'none' as const,
-    recurrenceInterval: 0,
-    recurrenceText: '',
-  };
 }
 
 /** «завтра» или «2 сентября» — то, что человек прочитает в ответе. */

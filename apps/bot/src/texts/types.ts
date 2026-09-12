@@ -185,9 +185,22 @@ export interface TextProfile {
     readonly buttonDelete: string;
     readonly buttonMove: string;
 
-    readonly done: string;
-    readonly snoozed: string;
-    readonly deleted: string;
+    /**
+     * Реплик «сделано» и «убрано» у карточки нет: кнопка идёт тем же
+     * путём, что голос и кнопка под напоминанием, и говорит теми же
+     * словами резолвера (ревизия этапа 3, C2). Своё у неё только то,
+     * чего у резолвера не бывает: «отложить» и нажатия впустую.
+     */
+    /** Отложено до дня с точным сроком (C1). */
+    readonly snoozedUntil: (date: string) => string;
+    /** Отложено, а срок неточный: «около» — не число. */
+    readonly snoozedApprox: (date: string) => string;
+    /** Кнопка старой карточки на закрытом деле (C3): статус словами. */
+    readonly closed: (status: string) => string;
+    /** Второе «сделано» у регулярного за день (C2). */
+    readonly doneToday: (title: string) => string;
+    /** «Отложить» на уже отложенном. */
+    readonly snoozedAlready: (date: string) => string;
     /**
      * Правка голосом, а не кнопками: §7 ТЗ строит её на речи, и учить
      * человека формам вместо разговора значит идти против продукта.

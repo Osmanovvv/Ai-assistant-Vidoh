@@ -25,7 +25,7 @@ import {
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
-import { applyDecision } from '../../modules/resolver/patch.js';
+import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { describeChange, undoButtons } from '../../modules/resolver/change-text.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textsFor } from '../../texts/index.js';
@@ -367,15 +367,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
         mode: 'replace',
         // Меняется один заголовок; остальные поля пустые, как их
         // присылает резолвер, когда правит только текст.
-        changes: {
-          note: '',
-          text,
-          deadline: '',
-          deadlineAccuracy: 'none',
-          recurrenceKind: 'none',
-          recurrenceInterval: 0,
-          recurrenceText: '',
-        },
+        changes: { ...emptyChanges(), text },
         spoken: text,
         timeZone: context.timeZone,
         reason: 'правка словами из карточки',

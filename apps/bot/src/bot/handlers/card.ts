@@ -5,9 +5,11 @@ import type { Logger } from 'pino';
 
 import { items, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { localDateParts } from '../../modules/classifier/dates.js';
+import { isoDateIn, localDateParts } from '../../modules/classifier/dates.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
-import { nextDeadlineAfterDone } from '../../modules/recurrence/recurrence.service.js';
+import { isRecurring } from '../../modules/recurrence/recurrence.service.js';
+import { describeChange } from '../../modules/resolver/change-text.js';
+import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
 import { moveItemToTopic } from '../../modules/topics/topics.service.js';
@@ -17,6 +19,7 @@ import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
+import { undoKeyboard } from './undo.js';
 
 /**
  * Карточка записи (§12.2 ТЗ, задача 2.18).
@@ -47,9 +50,6 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
  */
 
 export const CARD_PREFIX = 'i:';
-
-/** Сколько ждать отложенное дело. §11 подробностей не задаёт. */
-const SNOOZE_DAYS = 3;
 
 function shortDate(at: Date, timeZone: string): string {
   const parts = localDateParts(at, timeZone);
@@ -206,12 +206,52 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     });
   });
 
-  /** Общая часть трёх кнопок, меняющих статус. */
-  const changeStatus = (
-    prefix: string,
-    next: 'done' | 'snoozed' | 'cancelled',
-    reply: (texts: TextProfile) => string,
-  ): void => {
+  /**
+   * Нажатие, которое ничего не изменит, — и почему (ревизия этапа 3, C3).
+   *
+   * Карточка остаётся в чате навсегда, и кнопки на ней нажимают спустя
+   * дни. «Сделано» на уже закрытом деле переписывало дату закрытия на
+   * сегодня, и вечерний итог считал его заново; «Отложить» на убранном
+   * воскрешало его. Закрытое дело кнопками не трогается — человеку
+   * говорится, в каком оно состоянии.
+   */
+  function refusal(
+    action: ApplyAction,
+    item: Item,
+    texts: TextProfile,
+    timeZone: string,
+  ): string | undefined {
+    if (item.status === 'done' || item.status === 'cancelled') {
+      return texts.card.closed(texts.card.statusName(item.status));
+    }
+
+    if (
+      action === 'snooze' &&
+      item.status === 'snoozed' &&
+      item.deadlineAt !== null &&
+      item.deadlineAt.getTime() > Date.now()
+    ) {
+      return texts.card.snoozedAlready(shortDate(item.deadlineAt, timeZone));
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Общая часть трёх кнопок, меняющих запись.
+   *
+   * Все три идут через `applyDecision` — тем же путём, что голос и кнопка
+   * под напоминанием (ревизия этапа 3, C1 и C2). Раньше кнопка писала в
+   * базу напрямую: ни ревизии, ни отката, свои слова вместо общих, а у
+   * регулярного дела «Сделано» с карточки было не таким, как «сделала»
+   * голосом. Реплика и кнопка отмены — те же, что у резолвера, поэтому
+   * человеку не надо помнить, каким способом он отметил садик.
+   *
+   * Отсюда же и «Убрать» у регулярного дела: как «больше не надо» голосом
+   * (задача 3.8а), оно снимает правило, а запись оставляет — и говорит
+   * об этом. Второе «Убрать» уже уберёт запись, как обычную.
+   */
+  const decide = (prefix: string, action: ApplyAction, reason: string): void => {
     bot.callbackQuery(new RegExp(`^${prefix}`, 'u'), async (ctx) => {
       await ctx.answerCallbackQuery();
 
@@ -221,56 +261,60 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         return;
       }
 
-      /**
-       * Регулярное дело кнопкой закрывать нельзя (задача 3.8а).
-       *
-       * «Сделано» у него переносит срок на следующее повторение, а
-       * запись остаётся. Кнопка и голос обязаны вести себя одинаково:
-       * человек не должен запоминать, каким способом отмечать садик,
-       * чтобы список не зарос двенадцатью его копиями.
-       */
-      const moved =
-        next === 'done'
-          ? nextDeadlineAfterDone(active.item, { timeZone: active.timeZone, now: new Date() })
-          : undefined;
+      const refused = refusal(action, active.item, active.texts, active.timeZone);
+      if (refused !== undefined) {
+        await ctx.editMessageText(refused);
+        return;
+      }
 
-      // Отложенному делу срок сдвигается вперёд: иначе оно останется
-      // просроченным и полезет в выдачу тем же вечером.
-      const deadlineAt =
-        next === 'snoozed'
-          ? new Date(Date.now() + SNOOZE_DAYS * 24 * 60 * 60_000)
-          : (moved ?? active.item.deadlineAt);
+      const now = new Date();
+      const applied = await applyDecision(db, {
+        userId: active.userId,
+        itemId: active.item.id,
+        action,
+        changes: emptyChanges(),
+        timeZone: active.timeZone,
+        now,
+        reason,
+        changedBy: 'user',
+      });
 
-      await db
-        .update(items)
-        .set({
-          // У регулярного дела статус не меняется: оно не закрывается.
-          status: moved === undefined ? next : active.item.status,
-          // §5: когда закрыли, а не только что закрыто.
-          completedAt: next === 'done' && moved === undefined ? new Date() : null,
-          deadlineAt,
-          ...(next === 'snoozed' && active.item.deadlineAccuracy === null
-            ? { deadlineAccuracy: 'day' as const }
-            : {}),
-          updatedAt: new Date(),
-        })
-        .where(eq(items.id, active.item.id));
+      if (applied === undefined) {
+        /**
+         * Менять нечего. После отказов выше так бывает у одного случая:
+         * регулярное дело сегодня уже отмечали — второе «Сделано» за
+         * день срок не двигает (C2). Всё прочее — запись исчезла между
+         * чтением и записью.
+         */
+        const doneToday =
+          action === 'complete' &&
+          isRecurring(active.item) &&
+          active.item.completedAt !== null &&
+          isoDateIn(active.item.completedAt, active.timeZone) === isoDateIn(now, active.timeZone);
+
+        await ctx.editMessageText(
+          doneToday ? active.texts.card.doneToday(active.item.text) : active.texts.card.gone,
+        );
+        return;
+      }
 
       logger.info(
-        { userId: active.userId, status: next },
-        'Статус записи изменён кнопкой карточки',
+        { userId: active.userId, action, fields: applied.fields },
+        'Запись изменена кнопкой карточки',
       );
 
-      await ctx.editMessageText(reply(active.texts));
+      await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
+        reply_markup: undoKeyboard(applied.revisionId, active.texts),
+      });
 
       const chatId = ctx.chat?.id;
       if (chatId !== undefined) await refresh(active.userId, chatId, active.item.topic);
     });
   };
 
-  changeStatus(CARD_ACTION.done, 'done', (texts) => texts.card.done);
-  changeStatus(CARD_ACTION.snooze, 'snoozed', (texts) => texts.card.snoozed);
-  changeStatus(CARD_ACTION.remove, 'cancelled', (texts) => texts.card.deleted);
+  decide(CARD_ACTION.done, 'complete', 'нажата кнопка «Сделано» на карточке');
+  decide(CARD_ACTION.snooze, 'snooze', 'нажата кнопка «Отложить» на карточке');
+  decide(CARD_ACTION.remove, 'cancel', 'нажата кнопка «Убрать» на карточке');
 
   /**
    * Изменить: бот ждёт новый текст дела словами (задача 3.61).

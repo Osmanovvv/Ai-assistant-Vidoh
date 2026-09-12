@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { localDateParts } from '../classifier/dates.js';
 import {
-  isRuled,
   nextOccurrence,
   parseStoredRule,
   recurrenceRuleSchema,
@@ -200,7 +199,6 @@ describe('схема правила', () => {
   it('пропускает все пять видов', () => {
     for (const kind of ['daily', 'weekdays', 'weekly', 'monthly', 'yearly'] as const) {
       expect(recurrenceRuleSchema.safeParse(rule({ kind })).success, kind).toBe(true);
-      expect(isRuled(kind)).toBe(true);
     }
   });
 

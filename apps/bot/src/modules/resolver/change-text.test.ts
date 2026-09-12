@@ -123,6 +123,40 @@ describe('describeChange', () => {
     expect(text).toBe(defaultTexts.resolver.noted(ITEM.text));
   });
 
+  it('«отложить» называет день, до которого отложено (ревизия этапа 3, C1)', () => {
+    const snoozed: Applied = {
+      ...applied(['status', 'deadlineAt', 'deadlineAccuracy']),
+      action: 'snooze',
+      after: {
+        ...ITEM,
+        status: 'snoozed',
+        deadlineAt: new Date('2026-09-14T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+      },
+    };
+
+    expect(describeChange(snoozed, defaultTexts, MOSCOW)).toBe(
+      defaultTexts.card.snoozedUntil('15.09'),
+    );
+  });
+
+  it('«отложить» с неточным сроком не называет число как точное', () => {
+    const snoozed: Applied = {
+      ...applied(['status']),
+      action: 'snooze',
+      after: {
+        ...ITEM,
+        status: 'snoozed',
+        deadlineAt: new Date('2026-09-14T21:00:00.000Z'),
+        deadlineAccuracy: 'week',
+      },
+    };
+
+    expect(describeChange(snoozed, defaultTexts, MOSCOW)).toBe(
+      defaultTexts.card.snoozedApprox('15.09'),
+    );
+  });
+
   it('без сказанного — как раньше: прежние вызывающие не задеты', () => {
     /**
      * У правки из карточки и из ответа на вопрос слов человека нет.

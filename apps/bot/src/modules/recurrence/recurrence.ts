@@ -383,11 +383,3 @@ function monthsFromAnchor(anchor: DateParts, from: DateParts, months: number): D
   const elapsed = (from.year - anchor.year) * 12 + (from.month - anchor.month);
   return addMonths(anchor, elapsed + months);
 }
-
-/**
- * Уже ли пройдено повторение. Нужно третьему этапу: отметка выполнения
- * двигает срок вперёд, а не создаёт вторую запись.
- */
-export function isRuled(kind: RecurrenceKind): boolean {
-  return RULED_KINDS.has(kind);
-}

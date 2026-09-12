@@ -146,10 +146,27 @@ function priorityRank(item: Item): number {
  * классификация уже приводит их в согласие, но выдача не должна
  * зависеть от того, что кто-то раньше всё сделал правильно.
  */
-export function isShowable(item: Item): boolean {
+export function isShowable(item: Item, now: Date): boolean {
   if (item.isDraft) return false;
   if (item.type !== 'TASK') return false;
   if (item.priority === 'NONE' || item.priority === null) return false;
+
+  /**
+   * Отложенное скрыто ровно до своего дня (ревизия этапа 3, C1).
+   *
+   * «Отложить» — это «не сейчас», а не «никогда»: дело остаётся открытым
+   * для списков и планировщика, но выдача о нём молчит, пока не подошёл
+   * срок, к которому его отложили. С этого дня оно возвращается само —
+   * иначе «Напомню позже» было бы обещанием без исполнения. Отложенное
+   * без срока прятать не до чего — показывается.
+   */
+  if (
+    item.status === 'snoozed' &&
+    item.deadlineAt !== null &&
+    item.deadlineAt.getTime() > now.getTime()
+  ) {
+    return false;
+  }
 
   return OPEN_STATUS_SET.has(item.status);
 }
@@ -241,7 +258,7 @@ export function selectForOutput(items: readonly Item[], context: SelectContext):
     context.timeZone,
   );
 
-  const showable = items.filter((item) => isShowable(item));
+  const showable = items.filter((item) => isShowable(item, context.now));
 
   const ranked = [...showable].sort((left, right) => {
     const byBucket =
@@ -339,7 +356,7 @@ export function selectForToday(items: readonly Item[], context: SelectContext): 
     item.deadlineAt !== null && item.deadlineAt.getTime() >= tomorrowStart.getTime();
 
   return items
-    .filter((item) => isShowable(item))
+    .filter((item) => isShowable(item, context.now))
     .filter((item) => wanted.has(bucketOf(item, todayStart, tomorrowStart, undefined)))
     .filter((item) => !dueLater(item))
     .sort((left, right) => {

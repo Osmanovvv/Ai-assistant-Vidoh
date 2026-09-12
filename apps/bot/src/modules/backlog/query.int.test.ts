@@ -52,7 +52,7 @@ const embedder: EmbeddingProvider = {
 
 let userId = '';
 
-async function addItem(text: string, status: 'active' | 'snoozed'): Promise<void> {
+async function addItem(text: string, where: 'active' | 'background'): Promise<void> {
   await testDb()
     .insert(items)
     .values({
@@ -61,7 +61,9 @@ async function addItem(text: string, status: 'active' | 'snoozed'): Promise<void
       type: 'TASK',
       priority: 'SOON',
       topic: 'дети',
-      status,
+      status: 'active',
+      // Ушедшее в фон (§13.6) поиск находит, а «открытые» не отдают.
+      backgroundedAt: where === 'background' ? new Date() : null,
       embedding: vector(1, 0, 0),
     });
 }
@@ -85,14 +87,18 @@ describe('вопрос про дело, которое нашлось поиск
     expect(answer.kind === 'about' ? answer.items.length : 0).toBeGreaterThan(0);
   });
 
-  it('только отложенная — отвечает «ничего», а не шапкой в пустоту', async () => {
+  it('только ушедшая в фон — отвечает «ничего», а не шапкой в пустоту', async () => {
     /**
-     * Главная проверка. Отложенную запись поиск находит, а «открытые»
-     * не отдают — и человек получал заголовок «Вот что у меня про это
+     * Главная проверка. Запись в фоне поиск находит, а «открытые» не
+     * отдают — и человек получал заголовок «Вот что у меня про это
      * записано:» без единой строки под ним. Честное «ничего не
      * записано» он поймёт; пустую шапку прочтёт как поломку.
+     *
+     * До ревизии этапа 3 (C1) здесь была отложенная запись; теперь
+     * отложенное открыто и на вопрос отвечает — прятать его от «что там
+     * с садиком» было бы ложью.
      */
-    await addItem('записать сына в садик', 'snoozed');
+    await addItem('записать сына в садик', 'background');
 
     const answer = await answerBacklogQuery(
       { db: testDb(), embedder, logger },

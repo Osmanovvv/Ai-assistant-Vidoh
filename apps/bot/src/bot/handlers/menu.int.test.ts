@@ -3,7 +3,14 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, projectSteps, reminders, topics, userSettings } from '../../db/schema.js';
+import {
+  itemRevisions,
+  items,
+  projectSteps,
+  reminders,
+  topics,
+  userSettings,
+} from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { CARD_ACTION } from '../../modules/items/card-actions.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
@@ -12,6 +19,8 @@ import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { toShortId } from '../../modules/shared/short-id.js';
 import { registerCardHandlers } from './card.js';
+import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
+import { registerUndoHandlers } from './undo.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { BILLING_ACTION } from './billing.js';
 import { DELETE_STEP_ONE } from './privacy.js';
@@ -69,6 +78,8 @@ function createTestBot(gateway?: FakeTopicGateway): { bot: Bot; calls: ApiCall[]
     { db: testDb(), logger, ...(gateway === undefined ? {} : { topics: gateway }) },
     MENU_ACTION.root,
   );
+  // Кнопки карточки отвечают с отменой — как голос и напоминание.
+  registerUndoHandlers(bot, { db: testDb(), logger });
 
   return { bot, calls };
 }
@@ -541,7 +552,27 @@ describe('карточка записи', () => {
     );
   });
 
-  it('«Сделано» меняет статус и обновляет сводку темы', async () => {
+  /** Последняя правка сообщения: реплика на кнопку. */
+  const lastEdit = (calls: readonly ApiCall[]) =>
+    calls.filter((call) => call.method === 'editMessageText').at(-1);
+
+  const revisionsOf = async (itemId: string) =>
+    await testDb().select().from(itemRevisions).where(eq(itemRevisions.itemId, itemId));
+
+  /** Начало местного дня через три дня — куда «Отложить» уносит срок. */
+  const threeDaysAhead = (): Date => {
+    const iso = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(
+      new Date(Date.now() + 3 * 86_400_000),
+    );
+    return new Date(`${iso}T00:00:00.000+03:00`);
+  };
+
+  it('«Сделано» меняет статус, говорит словами резолвера и даёт отменить', async () => {
+    /**
+     * Ревизия этапа 3, C2: кнопка писала в базу напрямую — без ревизии,
+     * без отката, своими словами. Теперь она идёт тем же путём, что
+     * голос и кнопка под напоминанием.
+     */
     const gateway = new FakeTopicGateway();
     const { bot, calls } = createTestBot(gateway);
     await bot.init();
@@ -551,17 +582,75 @@ describe('карточка записи', () => {
 
     await bot.handleUpdate(callbackUpdate(`i:done:${toShortId(itemId)}`));
 
-    expect((await itemRow(itemId))?.status).toBe('done');
-    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
-      defaultTexts.card.done,
+    const row = await itemRow(itemId);
+    expect(row?.status).toBe('done');
+    expect(row?.completedAt).not.toBeNull();
+    expect(textOf(lastEdit(calls))).toBe(defaultTexts.resolver.completed('к врачу'));
+    expect(keyboardOf(lastEdit(calls))[0]?.callback_data).toMatch(
+      new RegExp(`^${UNDO_PREFIX}`, 'u'),
     );
+    expect(await revisionsOf(itemId)).toHaveLength(1);
     // §8.2: запись ушла из темы, значит сводка изменилась.
     expect(gateway.sent).toHaveLength(1);
   });
 
-  it('«Отложить» сдвигает срок вперёд, а не оставляет просроченным', async () => {
-    // Иначе отложенное дело полезет в выдачу тем же вечером.
-    const { bot } = createTestBot();
+  it('отмена под репликой карточки возвращает запись', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem({ owner: userId, text: 'к врачу', topic: 'личное' });
+    await bot.handleUpdate(callbackUpdate(`i:done:${toShortId(itemId)}`));
+
+    const undo = keyboardOf(lastEdit(calls))[0]?.callback_data ?? '';
+    await bot.handleUpdate(callbackUpdate(undo));
+
+    const row = await itemRow(itemId);
+    expect(row?.status).toBe('new');
+    expect(row?.completedAt).toBeNull();
+  });
+
+  it('«Сделано» у регулярного двигает срок и говорит об этом, а второе за день — нет', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem({
+      owner: userId,
+      text: 'оплатить садик',
+      topic: 'дом',
+      deadlineAt: new Date(Date.now() - 86_400_000),
+    });
+    await testDb()
+      .update(items)
+      .set({
+        recurrenceRule: { kind: 'monthly', interval: 1, anchor: '2026-01-05' },
+        recurrenceText: 'каждый месяц',
+        recurrenceSource: 'stated',
+      })
+      .where(eq(items.id, itemId));
+
+    await bot.handleUpdate(callbackUpdate(`i:done:${toShortId(itemId)}`));
+
+    const moved = await itemRow(itemId);
+    expect(moved?.status).not.toBe('done');
+    expect(moved?.deadlineAt?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    expect(textOf(lastEdit(calls))).toMatch(/^Готово\. «оплатить садик» — снова /u);
+    expect(await revisionsOf(itemId)).toHaveLength(1);
+
+    // Второе нажатие в тот же день — повтор, а не второе выполнение.
+    await bot.handleUpdate(callbackUpdate(`i:done:${toShortId(itemId)}`));
+
+    expect((await itemRow(itemId))?.deadlineAt?.getTime()).toBe(moved?.deadlineAt?.getTime());
+    expect(textOf(lastEdit(calls))).toBe(defaultTexts.card.doneToday('оплатить садик'));
+    expect(await revisionsOf(itemId)).toHaveLength(1);
+  });
+
+  it('«Отложить» уносит на три дня, называет день и оставляет ревизию', async () => {
+    /**
+     * Ревизия этапа 3, C1: отложенное исчезало навсегда, а реплика
+     * обещала «Напомню позже». Теперь дело открыто, срок — начало
+     * местного дня через три дня, и человеку назван этот день.
+     */
+    const { bot, calls } = createTestBot();
     await bot.init();
 
     const itemId = await addItem({
@@ -574,11 +663,42 @@ describe('карточка записи', () => {
     await bot.handleUpdate(callbackUpdate(`i:snz:${toShortId(itemId)}`));
 
     const row = await itemRow(itemId);
+    const until = threeDaysAhead();
     expect(row?.status).toBe('snoozed');
-    expect(row?.deadlineAt?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    expect(row?.deadlineAt?.toISOString()).toBe(until.toISOString());
+    expect(row?.deadlineAccuracy).toBe('day');
+
+    const [, month = '', day = ''] = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Europe/Moscow',
+    })
+      .format(until)
+      .split('-');
+    expect(textOf(lastEdit(calls))).toBe(defaultTexts.card.snoozedUntil(`${day}.${month}`));
+    expect(keyboardOf(lastEdit(calls))[0]?.callback_data).toMatch(
+      new RegExp(`^${UNDO_PREFIX}`, 'u'),
+    );
+    expect(await revisionsOf(itemId)).toHaveLength(1);
   });
 
-  it('«Убрать» не удаляет запись физически (§13.5)', async () => {
+  it('«Отложить» на уже отложенном ничего не меняет и говорит, до какого дня', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem({
+      owner: userId,
+      text: 'к врачу',
+      topic: 'личное',
+      deadlineAt: new Date('2030-03-04T21:00:00.000Z'),
+    });
+    await testDb().update(items).set({ status: 'snoozed' }).where(eq(items.id, itemId));
+
+    await bot.handleUpdate(callbackUpdate(`i:snz:${toShortId(itemId)}`));
+
+    expect(textOf(lastEdit(calls))).toBe(defaultTexts.card.snoozedAlready('05.03'));
+    expect(await revisionsOf(itemId)).toHaveLength(0);
+  });
+
+  it('«Убрать» не удаляет запись физически (§13.5) и говорит словами резолвера', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -589,9 +709,46 @@ describe('карточка записи', () => {
     const row = await itemRow(itemId);
     expect(row).toBeDefined();
     expect(row?.status).toBe('cancelled');
-    expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toBe(
-      defaultTexts.card.deleted,
+    expect(textOf(lastEdit(calls))).toBe(defaultTexts.resolver.cancelled('марафон'));
+    expect(await revisionsOf(itemId)).toHaveLength(1);
+  });
+
+  it('кнопки старой карточки на закрытом деле ничего не меняют (ревизия этапа 3, C3)', async () => {
+    /**
+     * Карточка остаётся в чате навсегда. «Сделано» на вчерашней карточке
+     * уже закрытого дела переписывало дату закрытия на сегодня — и
+     * вечерний итог считал его заново; «Отложить» на убранном воскрешало
+     * его в отложенные.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const closedAt = new Date('2026-09-01T10:00:00.000Z');
+    const doneId = await addItem({ owner: userId, text: 'к врачу', topic: 'личное' });
+    await testDb()
+      .update(items)
+      .set({ status: 'done', completedAt: closedAt })
+      .where(eq(items.id, doneId));
+    const removedId = await addItem({ owner: userId, text: 'марафон', topic: 'личное' });
+    await testDb().update(items).set({ status: 'cancelled' }).where(eq(items.id, removedId));
+
+    await bot.handleUpdate(callbackUpdate(`i:done:${toShortId(doneId)}`));
+    expect(textOf(lastEdit(calls))).toBe(
+      defaultTexts.card.closed(defaultTexts.card.statusName('done')),
     );
+    expect((await itemRow(doneId))?.completedAt?.toISOString()).toBe(closedAt.toISOString());
+
+    await bot.handleUpdate(callbackUpdate(`i:snz:${toShortId(removedId)}`));
+    expect(textOf(lastEdit(calls))).toBe(
+      defaultTexts.card.closed(defaultTexts.card.statusName('cancelled')),
+    );
+    expect((await itemRow(removedId))?.status).toBe('cancelled');
+
+    await bot.handleUpdate(callbackUpdate(`i:rm:${toShortId(doneId)}`));
+    expect((await itemRow(doneId))?.status).toBe('done');
+
+    expect(await revisionsOf(doneId)).toHaveLength(0);
+    expect(await revisionsOf(removedId)).toHaveLength(0);
   });
 
   it('«Изменить» просит написать текст и не съедает карточку', async () => {
