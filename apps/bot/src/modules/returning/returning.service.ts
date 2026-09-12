@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, ne } from 'drizzle-orm';
 
 import { batches, items } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -31,7 +31,7 @@ import { OPEN_STATUSES } from '../items/items.repo.js';
  */
 export const RETURN_AFTER_DAYS = 14;
 
-const DAY_MS = 24 * 60 * 60_000;
+export const DAY_MS = 24 * 60 * 60_000;
 
 /**
  * Была ли пауза перед этой выгрузкой.
@@ -65,10 +65,16 @@ export async function returningAfterPause(
  * Поэтому не `delete` и не статус «отменено»: человек не передумал делать
  * эти дела, он решил не держать их перед глазами. Отмена сказала бы про
  * него неправду, а удаление отняло бы то, чего он не отдавал.
+ *
+ * **«Старые» — созданные до `before`** (ревизия этапа 3, H1). Вопрос о
+ * возвращении уходит в начале разбора выгрузки, а её дела сохраняются
+ * секундами позже; без границы «с чистого листа» уносило и то, ради
+ * чего человек вернулся. Границу называет кнопка — момент открытия той
+ * выгрузки, в которой был задан вопрос.
  */
 export async function moveToBackground(
   db: Executor,
-  params: { readonly userId: string; readonly now?: Date | undefined },
+  params: { readonly userId: string; readonly now?: Date | undefined; readonly before: Date },
 ): Promise<number> {
   const moved = await db
     .update(items)
@@ -78,6 +84,7 @@ export async function moveToBackground(
         eq(items.userId, params.userId),
         eq(items.isDraft, false),
         isNull(items.backgroundedAt),
+        lt(items.createdAt, params.before),
         // Закрытые и отменённые убирать незачем: их и так не видно.
         // Список тот же, что у «записи в работе», иначе смыслы разойдутся.
         inArray(items.status, [...OPEN_STATUSES]),
@@ -86,4 +93,28 @@ export async function moveToBackground(
     .returning({ id: items.id });
 
   return moved.length;
+}
+
+/**
+ * Момент, до которого записи считаются старыми для этой кнопки.
+ *
+ * Кнопка несёт код выгрузки, в которой был задан вопрос: старое — всё,
+ * что было до её открытия. У кнопок прежней формы (без кода — они
+ * остались в чатах) граница — пауза §13.6 назад от «сейчас»: моложе
+ * паузы «старым» быть не может.
+ */
+export async function backgroundBoundary(
+  db: Executor,
+  params: { readonly userId: string; readonly batchId: string | undefined; readonly now: Date },
+): Promise<Date> {
+  const fallback = new Date(params.now.getTime() - RETURN_AFTER_DAYS * DAY_MS);
+  if (params.batchId === undefined) return fallback;
+
+  const [batch] = await db
+    .select({ openedAt: batches.openedAt })
+    .from(batches)
+    .where(and(eq(batches.id, params.batchId), eq(batches.userId, params.userId)))
+    .limit(1);
+
+  return batch?.openedAt ?? fallback;
 }

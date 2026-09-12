@@ -3,9 +3,10 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items } from '../../db/schema.js';
+import { batches, items } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
+import { toShortId } from '../../modules/shared/short-id.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -82,9 +83,14 @@ function edits(calls: readonly ApiCall[]): string[] {
     .map((call) => String(call.payload['text']));
 }
 
-async function sow(count: number): Promise<void> {
+const DAY = 24 * 60 * 60_000;
+
+/** Старые дела — сказанные задолго до возвращения. */
+async function sow(count: number, ageDays = 20): Promise<string[]> {
+  const ids: string[] = [];
+
   for (let index = 0; index < count; index++) {
-    await testDb()
+    const [row] = await testDb()
       .insert(items)
       .values({
         userId,
@@ -92,8 +98,14 @@ async function sow(count: number): Promise<void> {
         type: 'TASK',
         priority: 'SOON',
         topic: 'дом',
-      });
+        createdAt: new Date(Date.now() - ageDays * DAY),
+      })
+      .returning({ id: items.id });
+
+    ids.push(row?.id ?? '');
   }
+
+  return ids;
 }
 
 beforeEach(async () => {
@@ -135,6 +147,47 @@ describe('кнопка «Начать с чистого листа»', () => {
     // Статус не тронут: человек не отменял эти дела и не выполнял их.
     expect(all.every((one) => one.status === 'new')).toBe(true);
     expect(all.every((one) => one.text.startsWith('Дело номер'))).toBe(true);
+  });
+
+  it('сказанное при возвращении остаётся: кнопка знает свою выгрузку (ревизия этапа 3, H1)', async () => {
+    /**
+     * Приветствие уходит в начале разбора той самой выгрузки, а её дела
+     * сохраняются секундами позже. Кнопка несёт код выгрузки, и «старое»
+     * — это созданное до того, как она открылась.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    const [old] = await sow(1, 20);
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done', openedAt: new Date(Date.now() - 60_000) })
+      .returning({ id: batches.id });
+    const [fresh] = await sow(1, 0);
+
+    await bot.handleUpdate(
+      callbackUpdate(`${RETURNING_ACTION.fresh}:${toShortId(batch?.id ?? '')}`),
+    );
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.find((one) => one.id === old)?.backgroundedAt).not.toBeNull();
+    expect(rows.find((one) => one.id === fresh)?.backgroundedAt).toBeNull();
+    expect(edits(calls)).toEqual([defaultTexts.returning.moved(1)]);
+  });
+
+  it('старая кнопка без кода выгрузки не уносит сказанное за последние две недели', async () => {
+    // Кнопки прежней формы остаются в чатах; для них граница — пауза
+    // §13.6: моложе неё «старым» быть не может.
+    const { bot } = createTestBot();
+    await bot.init();
+    const [old] = await sow(1, 20);
+    const [recent] = await sow(1, 3);
+
+    await bot.handleUpdate(callbackUpdate(RETURNING_ACTION.fresh));
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.find((one) => one.id === old)?.backgroundedAt).not.toBeNull();
+    expect(rows.find((one) => one.id === recent)?.backgroundedAt).toBeNull();
   });
 
   it('уносить нечего — так и говорит, а не молчит', async () => {

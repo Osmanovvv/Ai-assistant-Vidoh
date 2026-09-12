@@ -877,6 +877,49 @@ describe('регулярное дело движется, а не множитс
     expect(after.recurrenceText).toBeNull();
   });
 
+  it('«больше не надо» снимает и срок, порождённый правилом (ревизия этапа 3, C3)', async () => {
+    /**
+     * Срок у регулярного дела — не слова человека, а дата, которую
+     * вычислило прошлое «сделано». Оставить её значило прислать «Завтра
+     * срок» после «больше не буду напоминать» и держать дело просроченным.
+     */
+    const item = await weekly('2026-08-30');
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'cancel',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(applied?.fields).toContain('deadlineAt');
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt).toBeNull();
+    expect(after.deadlineAccuracy).toBeNull();
+    expect(after.status).toBe('new');
+  });
+
+  it('снятое правило откатывается вместе со сроком', async () => {
+    const item = await weekly('2026-08-30');
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'cancel',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    await revertRevision(testDb(), { revisionId: applied?.revisionId ?? '', userId });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-30T21:00:00.000Z');
+    expect((after.recurrenceRule as { kind: string } | null)?.kind).toBe('weekly');
+  });
+
   it('у обычного дела выполнение по-прежнему закрывает запись', async () => {
     // Смягчение ради регулярных не должно расползтись на остальные.
     const item = await sow();
@@ -884,6 +927,74 @@ describe('регулярное дело движется, а не множитс
 
     expect(applied?.fields).toEqual(['status', 'completedAt']);
     expect((await reread(item.id)).status).toBe('done');
+  });
+});
+
+describe('правило на закрытой записи оживляет её (ревизия этапа 3, C7)', () => {
+  /**
+   * Главный сценарий 3.17а: «оплатить садик» четыре раза, все сделаны.
+   * Бот замечает ритм, человек жмёт «Да, запомни» — правило ложилось на
+   * закрытую запись, а закрытое не видят ни выдача, ни планировщик:
+   * «Запомнила» — и тишина навсегда.
+   */
+  it('закрытое дело с новым правилом снова в работе, срок — ближайшее повторение', async () => {
+    const item = await sow({
+      text: 'Оплатить садик',
+      status: 'done',
+      completedAt: new Date('2026-08-05T10:00:00.000Z'),
+      deadlineAt: new Date('2026-08-04T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+    });
+
+    const applied = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: {
+        ...NO_CHANGES,
+        deadline: '2026-08-05',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'monthly',
+        recurrenceInterval: 1,
+        recurrenceText: 'каждый месяц',
+      },
+      recurrenceSource: 'noticed',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(applied?.fields).toEqual(
+      expect.arrayContaining(['recurrenceRule', 'status', 'completedAt', 'deadlineAt']),
+    );
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.completedAt).toBeNull();
+    // «Сейчас» — 29.08; ближайшее пятое — 5 сентября, полночь по Москве.
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-04T21:00:00.000Z');
+    expect((after.recurrenceRule as { anchor: string } | null)?.anchor).toBe('2026-08-05');
+  });
+
+  it('открытое дело правило не двигает: срок остаётся его', async () => {
+    const item = await sow();
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: {
+        ...NO_CHANGES,
+        recurrenceKind: 'weekly',
+        recurrenceInterval: 1,
+        recurrenceText: 'каждую неделю',
+      },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
   });
 });
 

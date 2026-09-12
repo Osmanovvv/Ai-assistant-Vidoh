@@ -43,6 +43,7 @@ import {
 import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
+import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { saysNoStrength } from '../output/exhaustion.js';
@@ -681,7 +682,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.said = true;
       await tell(texts.returning.greeting, [
         { label: texts.returning.buttonContinue, action: RETURNING_ACTION.keep },
-        { label: texts.returning.buttonFresh, action: RETURNING_ACTION.fresh },
+        // Код выгрузки — граница «старого» для «С чистого листа» (H1).
+        {
+          label: texts.returning.buttonFresh,
+          action: `${RETURNING_ACTION.fresh}:${toShortId(batch.id)}`,
+        },
       ]);
     }
 
@@ -1050,11 +1055,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const header =
         answer.kind === 'today'
           ? texts.backlog.today
-          : answer.kind === 'about'
-            ? texts.backlog.about
-            : answer.kind === 'unavailable'
-              ? texts.backlog.unavailable
-              : texts.backlog.nothing;
+          : answer.kind === 'todayEmpty'
+            ? texts.menu.todayEmpty
+            : answer.kind === 'about'
+              ? texts.backlog.about
+              : answer.kind === 'unavailable'
+                ? texts.backlog.unavailable
+                : texts.backlog.nothing;
 
       /**
        * Шапка называет день — значит вчерашнее «завтра» в строке лишнее
@@ -1530,6 +1537,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const presented = await presentDump(ai, {
       composition,
       actions,
+      // «Сделать сейчас» ведёт к первому из показанных (E2).
+      firstItemId: selection.shown[0]?.id,
       hidden: selection.hidden,
       profile: context.textProfile,
       userId: batch.userId,

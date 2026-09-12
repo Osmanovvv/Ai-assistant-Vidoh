@@ -108,6 +108,32 @@ describe('вопрос про дело, которое нашлось поиск
     expect(answer.kind).toBe('nothing');
   });
 
+  it('«что на сегодня?» при пустом дне — «на сегодня пусто», а не «ничего не записано» (ревизия этапа 3, E16)', async () => {
+    /**
+     * У неё тридцать записей на следующую неделю; «ничего не записано»
+     * читалось как «записей нет». Пустой день — свой ответ, тот же, что
+     * у кнопки «Сегодня».
+     */
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'сдать отчёт',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'работа',
+        deadlineAt: new Date(Date.now() + 7 * 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на сегодня' },
+    );
+
+    expect(answer.kind).toBe('todayEmpty');
+  });
+
   it('без похожего вовсе — тоже «ничего»', async () => {
     // Обратная сторона: правило не должно превращать «нашлось» в
     // «ничего» всегда — иначе ответ по бэклогу перестал бы работать.

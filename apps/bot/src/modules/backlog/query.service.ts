@@ -8,7 +8,7 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { ModelPricing } from '../metering/pricing.js';
-import { effectiveEnergy, selectForToday } from '../output/filter.js';
+import { selectForToday } from '../output/filter.js';
 import { openItemsFor } from '../items/items.repo.js';
 import { outputContextOf } from '../users/state.repo.js';
 
@@ -61,6 +61,14 @@ export type BacklogAnswer =
   | { readonly kind: 'project'; readonly item: Item }
   /** Спрашивали про сегодня: список дел на сегодня. */
   | { readonly kind: 'today'; readonly items: readonly Item[] }
+  /**
+   * Спрашивали про сегодня, а на сегодня пусто (ревизия этапа 3, E16).
+   *
+   * Отдельный вид, а не `nothing`: «ничего не записано» — утверждение
+   * о всех делах человека, а у него тридцать записей на следующую
+   * неделю. Ответ тот же, что у кнопки «Сегодня».
+   */
+  | { readonly kind: 'todayEmpty' }
   /** Спрашивали про конкретное дело: что о нём известно. */
   | { readonly kind: 'about'; readonly items: readonly Item[] }
   /** Ничего похожего не нашлось. */
@@ -192,15 +200,13 @@ export async function answerBacklogQuery(
   if (asksAboutToday(params.text)) {
     const context = await outputContextOf(deps.db, params.userId);
     const today = selectForToday(await openItemsFor(deps.db, params.userId), {
-      energy: effectiveEnergy(context.state, context.energyDefault, {
-        now,
-        timeZone: context.timeZone,
-      }),
       now,
       timeZone: context.timeZone,
     });
 
-    return today.length === 0 ? { kind: 'nothing' } : { kind: 'today', items: today };
+    // Пустой день — не «ничего не записано» (ревизия этапа 3, E16):
+    // записи есть, просто не на сегодня.
+    return today.length === 0 ? { kind: 'todayEmpty' } : { kind: 'today', items: today };
   }
 
   if (deps.embedder === undefined) return { kind: 'nothing' };

@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 
 import type { Database } from '../../infra/db.js';
-import { moveItemsToOwnTopics, recalcDeadlines } from '../../modules/onboarding/backfill.js';
+import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import {
   ACTION,
@@ -28,15 +28,8 @@ import {
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
-import { removeThread } from '../../modules/topics/topics.service.js';
-import {
-  appendTopics,
-  archiveTopicsExcept,
-  listTopics,
-  normalizeTopicName,
-  topicsFor,
-  type ArchivedTopic,
-} from '../../modules/topics/topics.repo.js';
+import { retireTopics } from '../../modules/topics/retire.service.js';
+import { appendTopics, listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textsFor } from '../../texts/index.js';
 import { findByTgId, recordConsentIfAbsent } from '../../modules/users/users.repo.js';
@@ -378,45 +371,33 @@ export function registerOnboardingHandlers(
       await settings?.number('maxTopics'),
     );
 
-    /**
-     * Невыбранные сферы уходят в архив (задача 3.43).
-     *
-     * Базовые сферы теперь появляются на первой выгрузке, до опроса.
-     * Значит к этому шагу у человека уже есть темы, которых он мог не
-     * выбрать, — и его ответ обязан их убрать, иначе выбор пуст. Пустой
-     * ответ означает «базовый набор» и не архивирует ничего.
-     *
-     * Отказ архива не роняет опрос — тот же довод, что у переноса ниже.
-     */
-    let archived: readonly ArchivedTopic[] = [];
-    if (chosen.length > 0) {
-      try {
-        archived = await archiveTopicsExcept(db, userId, chosen);
-      } catch (error) {
-        logger.error({ err: error, userId }, 'Не удалось убрать невыбранные сферы в архив');
-      }
-    }
-
     await finish(db, userId, new Date());
 
     /**
-     * Задача 2.14: до этой минуты классификация шла по базовому набору
-     * §6.4. Записи в темах, которых человек не выбрал, переезжают в его
-     * тему по умолчанию — §6.4 предписывает ровно это.
+     * Невыбранные сферы уходят целиком (задача 3.43, 2.14; ревизия этапа
+     * 3, E1): архив → записи в тему по умолчанию (§6.4) → ветки снятых
+     * сфер из чата → сводки оставшихся. Связка та же, что в настройках
+     * (`retireTopics`), — раньше здесь была её единственная копия, а
+     * настройки делали только первый шаг.
      *
-     * Отказ переноса не должен ронять завершение опроса: темы созданы,
-     * пояс подтверждён, и человек обязан увидеть, что всё закончилось.
-     * Запись не в той теме — беда меньшая, чем застрявший опрос.
+     * Пустой ответ означает «базовый набор» и не архивирует ничего; но
+     * перенос записей нужен и тогда: до этой минуты классификация шла по
+     * базовому набору §6.4, и записи в темах, которых у человека нет,
+     * переезжают в его тему по умолчанию.
+     *
+     * Отказ любого шага не роняет опрос: темы созданы, пояс подтверждён,
+     * и человек обязан увидеть, что всё закончилось.
      */
-    let moved = 0;
-    let orphaned: readonly string[] = [];
-    try {
-      const retopic = await moveItemsToOwnTopics(db, userId, await topicsFor(db, userId));
-      moved = retopic.moved;
-      orphaned = retopic.orphaned;
-    } catch (error) {
-      logger.error({ err: error, userId }, 'Не удалось перенести записи в темы человека');
-    }
+    const chatId = ctx.chat?.id;
+    const retired = await retireTopics(
+      { db, logger, gateway },
+      {
+        userId,
+        keep: chosen.length > 0 ? chosen : (await listTopics(db, userId)).map((one) => one.name),
+        chatId,
+      },
+    );
+    const { archived, moved, orphaned, summaries } = retired;
 
     /**
      * Снятая сфера не предлагается обратно (ревизия этапов 1–2, дефект 29).
@@ -442,48 +423,6 @@ export function registerOnboardingHandlers(
      */
     const refused = new Set(archived.map((topic) => normalizeTopicName(topic.name)));
     const offered = orphaned.filter((name) => !refused.has(normalizeTopicName(name)));
-
-    /**
-     * §8.2 и §12.2: по ответам человека появляются ветки и закреплённые
-     * сводки в них. Делается здесь, а не отдельным обходом: сводка сама
-     * создаёт ветку, если её нет.
-     *
-     * Пустая тема тоже получает ветку со сводкой «пока пусто» — человек
-     * должен увидеть свою структуру целиком, а не только те сферы, куда
-     * уже что-то попало.
-     */
-    let summaries = 0;
-    const chatId = ctx.chat?.id;
-
-    /**
-     * Ветки архивных сфер убираются из чата: оставить их — значит
-     * показывать человеку структуру, от которой он только что отказался.
-     * Пропавшая ветка — не ошибка: он мог удалить её сам.
-     */
-    if (gateway && chatId !== undefined) {
-      for (const topic of archived) {
-        if (topic.tgThreadId === null) continue;
-        try {
-          await removeThread({ db, gateway, logger }, { chatId, threadId: topic.tgThreadId });
-        } catch (error) {
-          logger.warn({ err: error, topic: topic.name }, 'Не удалось убрать ветку архивной сферы');
-        }
-      }
-    }
-
-    if (gateway && chatId !== undefined) {
-      const context = await outputContextOf(db, userId);
-      summaries = await refreshSummaries(
-        { db, gateway, logger },
-        {
-          userId,
-          chatId,
-          topicNames: (await listTopics(db, userId)).map((topic) => topic.name),
-          timeZone: context.timeZone,
-          profile: context.textProfile,
-        },
-      );
-    }
 
     logger.info(
       {

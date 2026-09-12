@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 
 import { and, eq, not } from 'drizzle-orm';
 
-import { items, userSettings } from '../../db/schema.js';
+import { items, userSettings, type Item } from '../../db/schema.js';
 import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
 import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
@@ -12,9 +12,11 @@ import { describeProject } from '../../modules/projects/project-text.js';
 import { stepButtons } from '../../modules/projects/project-actions.js';
 import { contextOf, projectsOf } from '../../modules/projects/projects.service.js';
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
-import { effectiveEnergy, selectForToday } from '../../modules/output/filter.js';
+import { selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
-import { appendTopics, archiveTopicsExcept, listTopics } from '../../modules/topics/topics.repo.js';
+import { appendTopics, listTopics } from '../../modules/topics/topics.repo.js';
+import { retireTopics } from '../../modules/topics/retire.service.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
 import {
   cityOfZone,
   EVENING_TIMES,
@@ -107,7 +109,7 @@ export const MENU_ACTION = {
    * Действия свои, а не опросные: обработчики опроса сверяют шаг, и после
    * его прохождения молча ничего не делают. Служебные функции при этом те
    * же — `setMorning`, `setEvening`, `setTimezone`, `setPreferredName`,
-   * `appendTopics`/`archiveTopicsExcept`: нового поведения здесь нет,
+   * `appendTopics`/`retireTopics`: нового поведения здесь нет,
    * появилась связка, которой не было.
    */
   askMorning: 'menu:set:m',
@@ -241,6 +243,8 @@ export function registerMenuHandlers(
    * число, а человек получит другое — на эту связку стоит страж.
    */
   settings?: SettingsRegistry,
+  /** Шлюз веток — чтобы снятая в настройках сфера ушла из чата (E1). */
+  gateway?: TopicGateway,
 ): void {
   /** Кто нажал и с какими текстами ему отвечать. */
   async function acting(
@@ -655,15 +659,22 @@ export function registerMenuHandlers(
       /**
        * Сферы вне предложенного списка не трогаем.
        *
-       * archiveTopicsExcept убирает всё, чего нет в списке «оставить»,
-       * поэтому свои темы человека — заведённые не из этих девяти —
-       * обязаны в него попасть. Иначе снятие одной галочки увозило бы в
-       * архив всё остальное, что он вёл.
+       * Снятие убирает всё, чего нет в списке «оставить», поэтому свои
+       * темы человека — заведённые не из этих девяти — обязаны в него
+       * попасть. Иначе снятие одной галочки увозило бы в архив всё
+       * остальное, что он вёл.
+       *
+       * Сфера уходит целиком — архив, перенос дел, ветка, сводки
+       * (ревизия этапа 3, E1): раньше здесь был только архив, и дела
+       * снятой сферы пропадали из «Все задачи», а ветка висела в чате.
        */
-      await archiveTopicsExcept(
-        db,
-        active.userId,
-        mine.filter((one) => one !== name),
+      await retireTopics(
+        { db, logger, gateway },
+        {
+          userId: active.userId,
+          keep: mine.filter((one) => one !== name),
+          chatId: ctx.chat?.id,
+        },
       );
     } else {
       await appendTopics(db, active.userId, [name], await settings?.number('maxTopics'));
@@ -727,6 +738,24 @@ export function registerMenuHandlers(
     );
   });
 
+  /** Экран большой цели с ближайшими шагами — из «Больших целей» и с «Сделать сейчас». */
+  const showProject = async (
+    ctx: CallbackQueryContext<Context>,
+    item: Item,
+    texts: TextProfile,
+  ): Promise<void> => {
+    const context = await contextOf(db, item.id);
+
+    await show(
+      ctx,
+      describeProject(item, context, texts),
+      fitKeyboard([
+        ...stepButtons(context.next, texts).map((button) => [button]),
+        [{ label: texts.menu.buttonBack, action: MENU_ACTION.projects }],
+      ]),
+    );
+  };
+
   bot.callbackQuery(new RegExp(`^${MENU_ACTION.projectPrefix}`, 'u'), async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id);
@@ -752,17 +781,7 @@ export function registerMenuHandlers(
 
     if (!item) return;
 
-    const context = await contextOf(db, item.id);
-    const texts = active.texts;
-
-    await show(
-      ctx,
-      describeProject(item, context, texts),
-      fitKeyboard([
-        ...stepButtons(context.next, texts).map((button) => [button]),
-        [{ label: texts.menu.buttonBack, action: MENU_ACTION.projects }],
-      ]),
-    );
+    await showProject(ctx, item, active.texts);
   });
   // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
   /**
@@ -847,10 +866,7 @@ export function registerMenuHandlers(
     const now = new Date();
     const day = { now, timeZone: context.timeZone };
 
-    const today = selectForToday(await openItemsFor(db, active.userId), {
-      energy: effectiveEnergy(context.state, context.energyDefault, day),
-      ...day,
-    });
+    const today = selectForToday(await openItemsFor(db, active.userId), day);
 
     if (today.length === 0) {
       await show(ctx, active.texts.menu.todayEmpty, backKeyboard(active.texts));
@@ -901,42 +917,75 @@ export function registerMenuHandlers(
   /**
    * «Сделать сейчас» (§13.2: ведёт в режим выполнения).
    *
-   * Открывает карточку первого дела на сегодня — не список, а именно
-   * карточку: у кнопки написано «сделать», и человек должен оказаться там,
-   * где дело закрывается одним нажатием.
+   * Открывает карточку — не список, а именно карточку: у кнопки написано
+   * «сделать», и человек должен оказаться там, где дело закрывается одним
+   * нажатием.
    *
-   * Дело выбирается заново в момент нажатия, а не запоминается в
-   * обратном вызове: человек мог нажать через час, и за это время
-   * появилось более срочное.
+   * **Какую именно — говорит кнопка** (ревизия этапа 3, E2). Под ответом
+   * на выгрузку она несёт код первого показанного дела: ответ строится
+   * очередью выдачи с упомянутым в выгрузке, а «Сегодня» — другой, и
+   * «первое на сегодня» под только что показанным списком оказывалось
+   * не тем или пустым. Большая цель открывается своим экраном с шагами,
+   * как из «Больших целей». Без кода («Продолжаем» и кнопки прежней
+   * формы) — первое на сегодня, как раньше.
    */
-  bot.callbackQuery(ANSWER_ACTION.now, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const active = await acting(ctx.from.id);
-    if (!active) return;
+  bot.callbackQuery(
+    new RegExp(`^${ANSWER_ACTION.now}(?::([A-Za-z0-9_-]{22}))?$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const active = await acting(ctx.from.id);
+      if (!active) return;
 
-    const context = await outputContextOf(db, active.userId);
-    const now = new Date();
-    const today = selectForToday(await openItemsFor(db, active.userId), {
-      energy: effectiveEnergy(context.state, context.energyDefault, {
+      const code = ctx.match[1];
+      if (code !== undefined) {
+        const id = fromShortId(code);
+        const [named] =
+          id === undefined
+            ? []
+            : await db
+                .select()
+                .from(items)
+                .where(and(eq(items.id, id), eq(items.userId, active.userId)))
+                .limit(1);
+
+        if (!named) {
+          await show(ctx, active.texts.card.gone, backKeyboard(active.texts));
+          return;
+        }
+
+        if (named.isProject) {
+          await showProject(ctx, named, active.texts);
+          return;
+        }
+
+        await show(
+          ctx,
+          cardText(named, active.texts, active.timeZone),
+          cardKeyboard(named, active.texts, MENU_ACTION.root),
+        );
+        return;
+      }
+
+      const context = await outputContextOf(db, active.userId);
+      const now = new Date();
+      const today = selectForToday(await openItemsFor(db, active.userId), {
         now,
         timeZone: context.timeZone,
-      }),
-      now,
-      timeZone: context.timeZone,
-    });
+      });
 
-    const first = today[0];
-    if (first === undefined) {
-      await show(ctx, active.texts.menu.todayEmpty, backKeyboard(active.texts));
-      return;
-    }
+      const first = today[0];
+      if (first === undefined) {
+        await show(ctx, active.texts.menu.todayEmpty, backKeyboard(active.texts));
+        return;
+      }
 
-    await show(
-      ctx,
-      cardText(first, active.texts, active.timeZone),
-      cardKeyboard(first, active.texts, MENU_ACTION.root),
-    );
-  });
+      await show(
+        ctx,
+        cardText(first, active.texts, active.timeZone),
+        cardKeyboard(first, active.texts, MENU_ACTION.root),
+      );
+    },
+  );
 
   /**
    * «Оставить на потом» (§13.2: закрывает сессию без упреков).

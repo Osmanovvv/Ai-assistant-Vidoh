@@ -127,6 +127,7 @@ function everyCallbackData(): { where: string; data: string }[] {
     texts: defaultTexts,
     acknowledgement: 'Я тебя услышала.',
     actions: [LONG_TEXT],
+    firstItemId: randomUUID(),
     hidden: 3,
     tired: false,
   }).buttons) {
@@ -391,6 +392,7 @@ function everyRow(): { where: string; labels: string[] }[] {
         texts,
         acknowledgement: 'Я тебя услышала.',
         actions: [LONG_TEXT],
+        firstItemId: id,
         hidden: 3,
         tired: false,
       }).buttons,
@@ -414,7 +416,7 @@ function everyRow(): { where: string; labels: string[] }[] {
     fitKeyboard([
       [
         { label: texts.returning.buttonContinue, action: RETURNING_ACTION.keep },
-        { label: texts.returning.buttonFresh, action: RETURNING_ACTION.fresh },
+        { label: texts.returning.buttonFresh, action: `${RETURNING_ACTION.fresh}:${id}` },
       ],
     ]),
   );

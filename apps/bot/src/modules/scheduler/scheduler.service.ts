@@ -17,7 +17,7 @@ import { textsFor } from '../../texts/index.js';
 import type { TextProfile } from '../../texts/types.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
 import { openItemsFor, openItemsWhere } from '../items/items.repo.js';
-import { effectiveEnergy, selectForToday } from '../output/filter.js';
+import { selectForToday } from '../output/filter.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import { nudgeDue } from '../projects/projects.service.js';
@@ -481,10 +481,6 @@ async function composeOne(
     case 'morning': {
       const context = await outputContextOf(deps.db, reminder.userId);
       const today = selectForToday(await openItemsFor(deps.db, reminder.userId), {
-        energy: effectiveEnergy(context.state, context.energyDefault, {
-          now,
-          timeZone: context.timeZone,
-        }),
         now,
         timeZone: context.timeZone,
       });

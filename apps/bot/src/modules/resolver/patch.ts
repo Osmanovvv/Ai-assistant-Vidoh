@@ -12,7 +12,7 @@ import {
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
-import { resolveRecurrence } from '../recurrence/recurrence.js';
+import { nextOccurrence, resolveRecurrence } from '../recurrence/recurrence.js';
 import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.service.js';
 
 import { recordRevision } from './revisions.repo.js';
@@ -199,6 +199,17 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
       next.recurrenceRule = null;
       next.recurrenceText = null;
       next.recurrenceSource = null;
+      /**
+       * И срок, порождённый правилом (ревизия этапа 3, C3).
+       *
+       * Дата у регулярного дела — не слова человека, а то, что вычислило
+       * прошлое «сделано». Оставить её значило прислать «Завтра срок»
+       * после «больше не буду напоминать» и держать дело просроченным.
+       */
+      if (item.deadlineAt !== null) {
+        next.deadlineAt = null;
+        next.deadlineAccuracy = null;
+      }
       return next;
     }
 
@@ -376,6 +387,23 @@ function plan(item: Item, params: ApplyParams, now: Date): ItemPatch {
       next.recurrenceText = resolved.text;
       next.recurrenceSource =
         params.recurrenceSource ?? sourceOf(params.spoken ?? '', resolved.source);
+
+      /**
+       * Правило на закрытой записи оживляет её (ревизия этапа 3, C7).
+       *
+       * Главный сценарий 3.17а: «оплатить садик» четыре раза, все
+       * сделаны; бот заметил ритм, человек нажал «Да, запомни» — правило
+       * ложилось на закрытую запись, которую не видят ни выдача, ни
+       * планировщик. «Запомнила» — и тишина навсегда. Регулярное дело —
+       * живое по устройству: запись снова в работе, срок — ближайшее
+       * повторение от сегодня.
+       */
+      if (item.status === 'done' || item.status === 'cancelled') {
+        next.status = 'new';
+        if (item.completedAt !== null) next.completedAt = null;
+        next.deadlineAt = nextOccurrence(resolved.rule, { after: now, timeZone: params.timeZone });
+        next.deadlineAccuracy = 'day';
+      }
     }
   }
 

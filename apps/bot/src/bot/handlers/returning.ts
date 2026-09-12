@@ -3,7 +3,8 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
-import { moveToBackground } from '../../modules/returning/returning.service.js';
+import { backgroundBoundary, moveToBackground } from '../../modules/returning/returning.service.js';
+import { fromShortId } from '../../modules/shared/short-id.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
@@ -24,20 +25,37 @@ import { textsFor } from '../../texts/index.js';
  * «Сегодня» — она ведёт туда же, и своего экрана ей не нужно.
  */
 export function registerReturningHandlers(bot: Bot, db: Database, logger: Logger): void {
-  bot.callbackQuery(RETURNING_ACTION.fresh, async (ctx) => {
-    await ctx.answerCallbackQuery();
+  /**
+   * «С чистого листа» — с кодом выгрузки или без (ревизия этапа 3, H1).
+   *
+   * Код называет выгрузку, в которой был задан вопрос: старое — то, что
+   * было до неё, а сказанное при возвращении остаётся. Кнопки прежней
+   * формы без кода живут в чатах — для них граница считается от паузы.
+   */
+  bot.callbackQuery(
+    new RegExp(`^${RETURNING_ACTION.fresh}(?::([A-Za-z0-9_-]{22}))?$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
 
-    const user = await findByTgId(db, ctx.from.id);
-    if (!user) return;
+      const user = await findByTgId(db, ctx.from.id);
+      if (!user) return;
 
-    const context = await outputContextOf(db, user.id);
-    const texts = textsFor(context.textProfile);
-    const moved = await moveToBackground(db, { userId: user.id });
+      const context = await outputContextOf(db, user.id);
+      const texts = textsFor(context.textProfile);
+      const now = new Date();
+      const code = ctx.match[1];
+      const before = await backgroundBoundary(db, {
+        userId: user.id,
+        batchId: code === undefined ? undefined : fromShortId(code),
+        now,
+      });
+      const moved = await moveToBackground(db, { userId: user.id, now, before });
 
-    logger.info({ userId: user.id, moved }, 'Человек начал с чистого листа');
+      logger.info({ userId: user.id, moved, before }, 'Человек начал с чистого листа');
 
-    await ctx.editMessageText(
-      moved === 0 ? texts.returning.nothingToMove : texts.returning.moved(moved),
-    );
-  });
+      await ctx.editMessageText(
+        moved === 0 ? texts.returning.nothingToMove : texts.returning.moved(moved),
+      );
+    },
+  );
 }

@@ -4,7 +4,7 @@ import { users } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { titleUnderDayHeader } from '../modules/items/item-text.js';
 import { openItemsFor } from '../modules/items/items.repo.js';
-import { effectiveEnergy, selectForToday } from '../modules/output/filter.js';
+import { selectForToday } from '../modules/output/filter.js';
 import { morningText } from '../modules/scheduler/digest.js';
 import { outputContextOf } from '../modules/users/state.repo.js';
 import { textsFor } from '../texts/index.js';
@@ -68,10 +68,7 @@ try {
   const day = { now, timeZone: context.timeZone };
 
   const open = await openItemsFor(db, person.id);
-  const today = selectForToday(open, {
-    energy: effectiveEnergy(context.state, context.energyDefault, day),
-    ...day,
-  });
+  const today = selectForToday(open, day);
 
   const lines = [
     `Пояс: ${context.timeZone}. Открытых записей: ${String(open.length)}.`,

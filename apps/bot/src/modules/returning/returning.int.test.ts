@@ -18,6 +18,8 @@ import { moveToBackground, RETURN_AFTER_DAYS, returningAfterPause } from './retu
 
 const DAY = 24 * 60 * 60_000;
 const NOW = new Date('2026-09-01T09:00:00.000Z');
+/** Граница «до возвращения» дальше всех записей теста: уносится всё. */
+const EVERYTHING = new Date('2100-01-01T00:00:00.000Z');
 
 let userId = '';
 let seq = 0;
@@ -105,7 +107,7 @@ describe('«начать с чистого листа» ничего не уда
     await sow('Оплатить садик');
     await sow('Записаться к врачу');
 
-    expect(await moveToBackground(testDb(), { userId, now: NOW })).toBe(2);
+    expect(await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING })).toBe(2);
 
     const all = await testDb().select().from(items).where(eq(items.userId, userId));
     expect(all).toHaveLength(2);
@@ -114,7 +116,7 @@ describe('«начать с чистого листа» ничего не уда
 
   it('и остаются доступны через бэклог — §13.6 требует этого прямо', async () => {
     await sow('Оплатить садик');
-    await moveToBackground(testDb(), { userId, now: NOW });
+    await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING });
 
     const inTopic = await itemsOfTopic(testDb(), userId, 'быт');
 
@@ -123,7 +125,7 @@ describe('«начать с чистого листа» ничего не уда
 
   it('статус не меняется: человек не отменял эти дела', async () => {
     const id = await sow('Оплатить садик');
-    await moveToBackground(testDb(), { userId, now: NOW });
+    await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING });
 
     const [after] = await testDb().select().from(items).where(eq(items.id, id));
 
@@ -133,16 +135,36 @@ describe('«начать с чистого листа» ничего не уда
 
   it('повторное нажатие уносить уже нечего', async () => {
     await sow('Оплатить садик');
-    await moveToBackground(testDb(), { userId, now: NOW });
+    await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING });
 
-    expect(await moveToBackground(testDb(), { userId, now: NOW })).toBe(0);
+    expect(await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING })).toBe(0);
+  });
+
+  it('только что сказанное не уносит: граница — момент возвращения (ревизия этапа 3, H1)', async () => {
+    /**
+     * Приветствие уходит в начале разбора выгрузки, а её дела
+     * сохраняются секундами позже. Нажатие «С чистого листа» убирало
+     * всё открытое — включая мысли, ради которых человек вернулся.
+     */
+    const old = await sow('Оплатить садик');
+    await testDb()
+      .update(items)
+      .set({ createdAt: new Date(NOW.getTime() - 20 * DAY) })
+      .where(eq(items.id, old));
+    const fresh = await sow('Позвонить маме');
+
+    expect(await moveToBackground(testDb(), { userId, now: NOW, before: NOW })).toBe(1);
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.find((one) => one.id === old)?.backgroundedAt).not.toBeNull();
+    expect(rows.find((one) => one.id === fresh)?.backgroundedAt).toBeNull();
   });
 
   it('закрытые дела не трогает', async () => {
     const id = await sow('Уже сделано');
     await testDb().update(items).set({ status: 'done' }).where(eq(items.id, id));
 
-    expect(await moveToBackground(testDb(), { userId, now: NOW })).toBe(0);
+    expect(await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING })).toBe(0);
   });
 
   it('чужие записи не трогает', async () => {
@@ -154,7 +176,7 @@ describe('«начать с чистого листа» ничего не уда
     userId = mine;
 
     await sow('Моё');
-    await moveToBackground(testDb(), { userId, now: NOW });
+    await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING });
 
     const [untouched] = await testDb()
       .select()
