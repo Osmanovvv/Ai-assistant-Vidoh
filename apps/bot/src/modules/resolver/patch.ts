@@ -5,10 +5,9 @@ import type { Database } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import {
   isoDateIn,
-  localDateParts,
   nearestWeekday,
   resolveDeadline,
-  startOfDayInZone,
+  startOfDayAfter,
 } from '../classifier/dates.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
@@ -142,19 +141,9 @@ export interface Applied {
   readonly fields: readonly PatchableField[];
 }
 
-/**
- * Начало местного дня через `SNOOZE_DAYS` от сегодняшнего.
- *
- * Шаг в сутках делается до полудня, а не до полуночи: в ночь перевода
- * стрелок назад сутки на час длиннее, и полночь плюс трое суток — это
- * 23:00 позапрошлого дня, число на один меньше нужного. От полудня час
- * в любую сторону числа не меняет.
- */
+/** Начало местного дня через `SNOOZE_DAYS` от сегодняшнего. */
 function snoozeUntil(now: Date, timeZone: string): Date {
-  const todayStart = startOfDayInZone(localDateParts(now, timeZone), timeZone);
-  const noonThen = new Date(todayStart.getTime() + (SNOOZE_DAYS * 24 + 12) * 60 * 60_000);
-
-  return startOfDayInZone(localDateParts(noonThen, timeZone), timeZone);
+  return startOfDayAfter(now, SNOOZE_DAYS, timeZone);
 }
 
 /** Что станет с записью. Пустой объект означает «ничего не меняется». */

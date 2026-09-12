@@ -189,6 +189,8 @@ export const reserved: TextProfile = {
     undone: 'Вернула как было.',
     alreadyUndone: 'Это уже отменено.',
     undoGone: 'Этого изменения больше нет.',
+    undoOvertaken:
+      'После этого запись меняли ещё раз — не стала откатывать. Скажи словами, что вернуть.',
 
     question: (title) => `Это про «${title}» или отдельная история?`,
     buttonAttach: 'Добавить к прошлой',

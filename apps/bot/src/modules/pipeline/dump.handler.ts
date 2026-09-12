@@ -824,23 +824,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       if (outcome.kind === 'asked') {
         /**
-         * Второй вопрос за обмен задавать нельзя (§13.9).
-         *
-         * На повторном проходе вопрос уже мог быть задан первым, и тогда
-         * лучше черновик: два вопроса подряд — это допрос, а текст
-         * человека не теряется и так.
+         * Второй вопрос за обмен задавать нельзя (§13.9): два вопроса
+         * подряд — это допрос. Резолвер получает `questionTaken` и при
+         * занятом вопросе паркует правку сам, не заводя второй в базе
+         * (ревизия этапа 3, A2) — сюда приходит только первый.
          */
-        if (happened.asked) {
-          happened.parked = true;
-          await saveDraft(db, {
-            userId: batch.userId,
-            batchId: batch.id,
-            text: segment.text,
-            reason: 'цель нашлась, но вопрос за эту выгрузку уже задан (§13.9)',
-          });
-          return;
-        }
-
         happened.asked = true;
         happened.said = true;
         // §7.3: один короткий вопрос с двумя кнопками и заголовком
@@ -985,6 +973,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           timeZone: context.timeZone,
           ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
           ...(ownBatchOnly ? { onlyOwnBatch: true } : {}),
+          // Приветствие §13.6 и первая правка ставят `happened.asked`;
+          // резолвер читает его в момент вызова — правки идут по одной.
+          questionTaken: happened.asked,
           now,
         },
       );

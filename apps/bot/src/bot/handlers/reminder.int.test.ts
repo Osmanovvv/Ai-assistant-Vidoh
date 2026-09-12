@@ -3,7 +3,7 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { itemRevisions, items, projectSteps, type Item } from '../../db/schema.js';
+import { itemRevisions, items, projectSteps, users, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
@@ -211,6 +211,39 @@ describe('«Сделано»', () => {
 
     expect(edits(calls).at(-1)).toBe(defaultTexts.card.gone);
   });
+
+  it('на уже закрытом деле говорит, что оно закрыто, а не «больше нет» (ревизия этапа 3, C5)', async () => {
+    // Утром «Сегодня срок: к врачу», днём сказала «записалась», вечером
+    // нажала «Сделано» под утренним. Запись есть — она закрыта.
+    const item = await sow({ status: 'done', completedAt: new Date(Date.now() - DAY) });
+
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${REMINDER_ACTION.done}${toShortId(item.id)}`));
+
+    expect(edits(calls).at(-1)).toBe(
+      defaultTexts.card.closed(defaultTexts.card.statusName('done')),
+    );
+    expect((await reload(item.id))?.completedAt?.getTime()).toBe(item.completedAt?.getTime());
+  });
+
+  it('у регулярного, отмеченного сегодня, второе «Сделано» срок не двигает', async () => {
+    const item = await sow({
+      recurrenceRule: { kind: 'monthly', interval: 1, anchor: '2026-01-05' },
+      recurrenceText: 'каждый месяц',
+      recurrenceSource: 'stated',
+      completedAt: new Date(),
+    });
+
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${REMINDER_ACTION.done}${toShortId(item.id)}`));
+
+    expect(edits(calls).at(-1)).toBe(defaultTexts.card.doneToday(item.text));
+    expect((await reload(item.id))?.deadlineAt?.getTime()).toBe(item.deadlineAt?.getTime());
+  });
 });
 
 describe('«Перенести»', () => {
@@ -249,6 +282,28 @@ describe('«Перенести»', () => {
 
     expect(await revisionCount(item.id)).toBe(1);
     expect(keyboardOf(calls)).toContain(defaultTexts.resolver.buttonUndo);
+  });
+
+  it('через перевод стрелок назад сдвигает на день, а не на «те же сутки» (ревизия этапа 3, D6)', async () => {
+    /**
+     * Берлин, срок — воскресенье 25.10.2026 (в эту ночь стрелки уходят
+     * на час назад: сутки длятся 25 часов). «Сутки как 24 часа» давали
+     * 23:00 того же воскресенья, дата не менялась, и человек читал «Этой
+     * записи больше нет». Нужен понедельник 26.10, полночь по Берлину.
+     */
+    await testDb().update(users).set({ timezone: 'Europe/Berlin' }).where(eq(users.id, userId));
+    const item = await sow({
+      deadlineAt: new Date('2026-10-24T22:00:00.000Z'),
+      deadlineAccuracy: 'day',
+    });
+
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(`${REMINDER_ACTION.postpone}${toShortId(item.id)}`));
+
+    expect((await reload(item.id))?.deadlineAt?.toISOString()).toBe('2026-10-25T23:00:00.000Z');
+    expect(edits(calls).at(-1)).toMatch(/Перенесла/u);
   });
 });
 

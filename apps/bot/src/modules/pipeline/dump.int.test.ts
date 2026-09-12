@@ -28,6 +28,8 @@ import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
 import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
+import { QUESTION_ACTION } from '../resolver/change-text.js';
+import { toShortId } from '../shared/short-id.js';
 import { revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
@@ -1935,6 +1937,8 @@ interface Said {
   readonly kind: 'send' | 'edit';
   readonly text: string;
   readonly buttons: readonly string[];
+  /** Что несут кнопки — чтобы сверить показанный вопрос с открытым в базе. */
+  readonly actions: readonly string[];
 }
 
 function recordingSender(): {
@@ -1960,6 +1964,8 @@ function recordingSender(): {
 
   const labels = (keys: readonly { readonly label: string }[] | undefined): string[] =>
     (keys ?? []).map((one) => one.label);
+  const actions = (keys: readonly { readonly action: string }[] | undefined): string[] =>
+    (keys ?? []).map((one) => one.action);
 
   return {
     sent,
@@ -1971,14 +1977,14 @@ function recordingSender(): {
       send: ({ text, buttons: keys }) => {
         sent.push(text);
         all.push(text);
-        said.push({ kind: 'send', text, buttons: labels(keys) });
+        said.push({ kind: 'send', text, buttons: labels(keys), actions: actions(keys) });
         remember(keys);
         return Promise.resolve(1000 + sent.length);
       },
       edit: ({ text, buttons: keys }) => {
         edited.push(text);
         all.push(text);
-        said.push({ kind: 'edit', text, buttons: labels(keys) });
+        said.push({ kind: 'edit', text, buttons: labels(keys), actions: actions(keys) });
         remember(keys);
         return Promise.resolve('edited' as const);
       },
@@ -2899,6 +2905,75 @@ describe('правка доходит до резолвера (§7, задача
       .where(eq(pendingQuestions.userId, userId));
 
     expect(open?.segment).toBe('перенеси на пятницу');
+  });
+
+  it('две неоднозначные правки: один вопрос, и открыт в базе именно он (ревизия этапа 3, A2)', async () => {
+    /**
+     * Второй вопрос за выгрузку не задаётся (§13.9), но раньше резолвер
+     * успевал записать его в базу — и тем снять первый как
+     * `superseded`. Человек видел вопрос, которого уже нет: кнопки под
+     * ним вели в пустоту, а голосовой ответ применялся к невидимому
+     * второму.
+     */
+    const prompts = await seedPrompts();
+    await existingItem(null);
+    const { sender, said } = recordingSender();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'перенеси на пятницу. и врача тоже на пятницу', offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'PATCH', text: 'перенеси на пятницу' },
+          { intent: 'PATCH', text: 'врача тоже на пятницу' },
+        ],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.6,
+        changes: {
+          note: '',
+          text: '',
+          deadline: soon(),
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'не уверен',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const questions = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    const open = questions.filter((row) => row.outcome === null);
+
+    // Ровно один вопрос показан, ровно один открыт — и это один и тот же.
+    const shown = said.filter((one) => one.text.includes('отдельная история'));
+    expect(shown).toHaveLength(1);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.segment).toBe('перенеси на пятницу');
+    expect(shown[0]?.actions).toContain(`${QUESTION_ACTION.attach}${toShortId(open[0]?.id ?? '')}`);
+
+    // Вторая правка не потеряна — черновик.
+    const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
+    expect(drafts.map((row) => row.text)).toEqual(['врача тоже на пятницу']);
   });
 });
 

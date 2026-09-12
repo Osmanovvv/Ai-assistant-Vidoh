@@ -4,13 +4,19 @@ import type { Logger } from 'pino';
 
 import { items, projectSteps } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { isoDateIn, localDateParts, startOfDayInZone } from '../../modules/classifier/dates.js';
+import {
+  isoDateIn,
+  localDateParts,
+  startOfDayAfter,
+  startOfDayInZone,
+} from '../../modules/classifier/dates.js';
 import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { POSTPONE_DAYS, REMINDER_ACTION } from '../../modules/scheduler/reminder-actions.js';
 import { fromShortId } from '../../modules/shared/short-id.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
+import { buttonRefusal, nothingChangedReply } from './item-refusal.js';
 import { undoKeyboard } from './undo.js';
 
 /**
@@ -51,6 +57,26 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
     const itemId = itemIdOf(ctx.callbackQuery.data, REMINDER_ACTION.done);
     if (itemId === undefined) return;
 
+    const now = new Date();
+    const [item] = await db
+      .select()
+      .from(items)
+      .where(and(eq(items.id, itemId), eq(items.userId, active.userId)))
+      .limit(1);
+
+    if (!item) {
+      await ctx.editMessageText(active.texts.card.gone);
+      return;
+    }
+
+    // Закрытое голосом днём дело вечером под утренним напоминанием — «уже
+    // сделано», а не «больше нет» (ревизия этапа 3, C5).
+    const refused = buttonRefusal('complete', item, active.texts, active.timeZone, now);
+    if (refused !== undefined) {
+      await ctx.editMessageText(refused);
+      return;
+    }
+
     /**
      * Через `complete`, а не через прямую правку статуса.
      *
@@ -64,12 +90,15 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
       action: 'complete',
       changes: emptyChanges(),
       timeZone: active.timeZone,
+      now,
       reason: 'нажата кнопка «Сделано» под напоминанием',
       changedBy: 'user',
     });
 
     if (applied === undefined) {
-      await ctx.editMessageText(active.texts.card.gone);
+      await ctx.editMessageText(
+        nothingChangedReply('complete', item, active.texts, active.timeZone, now),
+      );
       return;
     }
 
@@ -110,7 +139,9 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
      */
     const from = item.deadlineAt ?? new Date();
     const base = from.getTime() < Date.now() ? new Date() : from;
-    const moved = new Date(base.getTime() + POSTPONE_DAYS * 24 * 60 * 60_000);
+    // День вперёд, а не 24 часа: через перевод стрелок это не одно и то
+    // же (ревизия этапа 3, D6).
+    const moved = startOfDayAfter(base, POSTPONE_DAYS, active.timeZone);
 
     const applied = await applyDecision(db, {
       userId: active.userId,

@@ -73,6 +73,7 @@ export function registerUndoHandlers(bot: Bot, deps: UndoDeps): void {
       reverted: texts.resolver.undone,
       already: texts.resolver.alreadyUndone,
       gone: texts.resolver.undoGone,
+      overtaken: texts.resolver.undoOvertaken,
     }[outcome.kind];
 
     await ctx.editMessageText(reply);
