@@ -103,6 +103,7 @@ export const reserved: TextProfile = {
     laterAccepted: 'Хорошо. Всё на месте, вернёмся когда захочешь.',
 
     savedUnparsed: 'Сохранила целиком. Разберу позже — ничего не потерялось.',
+    patchParked: 'Одну правку применить не вышло — слова сохранила. Скажи ещё раз, если важно.',
     nothingToParse: 'Я здесь. Расскажешь, что в голове?',
   },
 
@@ -186,6 +187,10 @@ export const reserved: TextProfile = {
     goOn: 'Продолжаем или на сегодня хватит?',
     buttonGoOn: 'Продолжаем',
     buttonEnough: 'На сегодня хватит',
+    unchanged: 'Там уже так — менять нечего.',
+    deadlineRefused: 'Срок не подошёл — не поменяла. Назови дату ещё раз.',
+    rememberFailed:
+      'Правило не легло: не на что опереться. Скажи словами, как часто и с какого дня.',
     undone: 'Вернула как было.',
     alreadyUndone: 'Это уже отменено.',
     undoGone: 'Этого изменения больше нет.',
@@ -195,7 +200,6 @@ export const reserved: TextProfile = {
     question: (title) => `Это про «${title}» или отдельная история?`,
     buttonAttach: 'Добавить к прошлой',
     buttonSeparate: 'Это новое',
-    attached: 'Добавила к прошлой.',
     leftoverSaved: 'Остальное из этой фразы сохранила отдельно — разберём потом.',
     separated: 'Хорошо, завела отдельно.',
     noticed: (title, dates, howOften) => `Ты писала про «${title}» ${dates}. Это ${howOften}?`,

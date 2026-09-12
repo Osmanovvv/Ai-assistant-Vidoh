@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
-import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
+import { applyDecision, appliedOf, emptyChanges } from '../../modules/resolver/patch.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../../modules/users/users.repo.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -105,22 +105,24 @@ async function sow(): Promise<Item> {
 }
 
 async function completeIt(item: Item): Promise<string> {
-  const applied = await applyDecision(testDb(), {
-    userId,
-    itemId: item.id,
-    action: 'complete',
-    changes: {
-      note: '',
-      text: '',
-      deadline: '',
-      deadlineAccuracy: 'none',
-      recurrenceKind: 'none',
-      recurrenceInterval: 0,
-      recurrenceText: '',
-    },
-    timeZone: MOSCOW,
-    now: NOW,
-  });
+  const applied = appliedOf(
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'complete',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      timeZone: MOSCOW,
+      now: NOW,
+    }),
+  );
 
   return applied?.revisionId ?? '';
 }
@@ -181,14 +183,16 @@ describe('нажатие', () => {
     // не знает, чего хочет человек, и оставляет запись как есть.
     const item = await sow();
     const revisionId = await completeIt(item);
-    await applyDecision(testDb(), {
-      userId,
-      itemId: item.id,
-      action: 'cancel',
-      changes: emptyChanges(),
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'cancel',
+        changes: emptyChanges(),
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const { bot, calls } = createTestBot();
     await bot.init();
@@ -226,22 +230,24 @@ describe('нажатие', () => {
       })
       .returning();
 
-    const applied = await applyDecision(testDb(), {
-      userId: stranger.id,
-      itemId: foreign?.id ?? '',
-      action: 'complete',
-      changes: {
-        note: '',
-        text: '',
-        deadline: '',
-        deadlineAccuracy: 'none',
-        recurrenceKind: 'none',
-        recurrenceInterval: 0,
-        recurrenceText: '',
-      },
-      timeZone: MOSCOW,
-      now: NOW,
-    });
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId: stranger.id,
+        itemId: foreign?.id ?? '',
+        action: 'complete',
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
 
     const { bot, calls } = createTestBot();
     await bot.init();

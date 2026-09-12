@@ -97,6 +97,12 @@ export type SegmentResult =
       readonly kind: 'parked';
       readonly reason: string;
       /**
+       * Чем кончилось применение, если цель нашлась (ревизия этапа 3,
+       * A3): по этому конвейер подбирает слово человеку. Пусто — цели
+       * не было, и говорить не о чем сверх «сохранила».
+       */
+      readonly said?: 'unchanged' | 'refused' | 'gone' | undefined;
+      /**
        * Стоит ли попробовать ещё раз после сохранения новых записей
        * (задача 3.24).
        *
@@ -306,7 +312,7 @@ export async function resolvePatchSegment(
 
   const mode = replaceInstead ? 'replace' : resolved.mode;
 
-  const applied = await applyDecision(deps.db, {
+  const outcome = await applyDecision(deps.db, {
     userId: params.userId,
     itemId: candidate.id,
     action: decision.action === 'new' ? 'update' : decision.action,
@@ -320,9 +326,29 @@ export async function resolvePatchSegment(
     changedBy: 'resolver',
   });
 
-  // Менять нечего — запись уже в этом состоянии. Ни ревизии, ни реплики:
-  // сообщение о том, чего не было, доверия не прибавляет.
-  if (applied === undefined) return { kind: 'parked', reason: 'запись уже в нужном состоянии' };
+  /**
+   * Не применилось — парковка с настоящей причиной и словом человеку
+   * (ревизия этапа 3, A3 и A4).
+   *
+   * Раньше все три исхода звались «запись уже в нужном состоянии», и
+   * черновик в панели врал разбирающему, а человек не слышал ничего.
+   * «Менять нечего» — правда только для `unchanged`; отвергнутый срок и
+   * исчезнувшая запись — свои причины и своя реплика.
+   */
+  if (outcome.kind !== 'applied') {
+    return {
+      kind: 'parked',
+      reason:
+        outcome.kind === 'unchanged'
+          ? 'запись уже в нужном состоянии'
+          : outcome.kind === 'refused'
+            ? `правка отвергнута: ${outcome.reason}`
+            : 'запись исчезла между поиском и правкой',
+      said: outcome.kind,
+    };
+  }
+
+  const { applied } = outcome;
 
   /**
    * Заголовок сменился — пересчитываем вектор (план 2.9).

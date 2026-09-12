@@ -36,7 +36,7 @@ export type PendingKind =
   | 'none'
   /** «К прошлой»: изменение применено, есть что отменять. */
   | 'applied'
-  /** «К прошлой», но запись уже в этом состоянии. */
+  /** «К прошлой», но применить не вышло — см. `why`. */
   | 'nothingToApply'
   /** «Это новое»: сказанное пойдёт в разбор этой выгрузки. */
   | 'separate'
@@ -48,6 +48,12 @@ export type PendingKind =
 export interface PendingResult {
   readonly kind: PendingKind;
   readonly applied?: Applied | undefined;
+  /**
+   * Почему «к прошлой» не применилось (ревизия этапа 3, A3): запись уже
+   * так, срок отвергнут или записи нет. Конвейер подбирает по этому
+   * слово — раньше на всё отвечал «Добавила к прошлой».
+   */
+  readonly why?: 'unchanged' | 'refused' | 'gone' | undefined;
   /**
    * Сказанное, которое надо разобрать вместе с этой выгрузкой.
    *
@@ -237,7 +243,7 @@ export async function settlePendingQuestion(
     return { kind: 'separate', carryOver: open.segment, leftoverSaved: await keepLeftover() };
   }
 
-  const applied = await applyDecision(db, {
+  const applying = await applyDecision(db, {
     userId: params.userId,
     itemId: open.itemId,
     action: open.action === 'complete' || open.action === 'cancel' ? open.action : 'update',
@@ -259,7 +265,7 @@ export async function settlePendingQuestion(
 
   const leftoverSaved = await keepLeftover();
 
-  return applied === undefined
-    ? { kind: 'nothingToApply', leftoverSaved }
-    : { kind: 'applied', applied, leftoverSaved };
+  return applying.kind === 'applied'
+    ? { kind: 'applied', applied: applying.applied, leftoverSaved }
+    : { kind: 'nothingToApply', why: applying.kind, leftoverSaved };
 }

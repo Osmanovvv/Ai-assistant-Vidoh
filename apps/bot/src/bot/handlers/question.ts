@@ -112,7 +112,7 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
       }
 
       const question = outcome.question;
-      const applied = await applyDecision(db, {
+      const applying = await applyDecision(db, {
         userId: active.userId,
         itemId: question.itemId,
         // Действие сохранялось строкой: в таблице ему незачем знать про
@@ -155,11 +155,29 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
         changedBy: 'user',
       });
 
-      if (!applied) {
-        // Менять оказалось нечего: запись уже в этом состоянии.
-        await ctx.editMessageText(active.texts.resolver.attached);
+      if (applying.kind !== 'applied') {
+        /**
+         * Не применилось — и человеку сказано почему (ревизия этапа 3,
+         * A3). Раньше на любой из трёх исходов бот отвечал «Добавила к
+         * прошлой» при нетронутой записи: срок в прошлом, дело за это
+         * время закрыто с карточки — всё читалось как «уже в нужном
+         * состоянии».
+         */
+        await ctx.editMessageText(
+          applying.kind === 'unchanged'
+            ? active.texts.resolver.unchanged
+            : applying.kind === 'refused'
+              ? active.texts.resolver.deadlineRefused
+              : active.texts.card.gone,
+        );
+        logger.info(
+          { userId: active.userId, itemId: question.itemId, outcome: applying.kind },
+          'Правка кнопкой не применилась',
+        );
         return;
       }
+
+      const { applied } = applying;
 
       await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
         reply_markup: undoKeyboard(applied.revisionId, active.texts),

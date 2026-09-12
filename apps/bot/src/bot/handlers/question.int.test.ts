@@ -390,6 +390,67 @@ describe('«Добавить к прошлой»', () => {
     expect(applied?.getUTCDay() === 5 || applied?.getUTCDay() === 4).toBe(true);
   });
 
+  it('срок в прошлом без дня недели — честный отказ, а не «Добавила к прошлой» (ревизия этапа 3, A3)', async () => {
+    /**
+     * «Перенеси на десятое», модель дала дату в прошлом. Пересчитать её
+     * кодом нельзя — дня недели в сказанном нет; раньше бот отвечал
+     * «Добавила к прошлой» без кнопки отмены при нетронутой записи.
+     */
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'перенеси на десятое',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '2026-01-10',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const { bot, calls } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    expect(edits(calls)).toEqual([defaultTexts.resolver.deadlineRefused]);
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+    expect(after?.deadlineAt).toBeNull();
+  });
+
+  it('запись уже в нужном состоянии — «менять нечего», а не «Добавила к прошлой»', async () => {
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'сделала',
+      action: 'complete',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+    await testDb()
+      .update(items)
+      .set({ status: 'done', completedAt: new Date() })
+      .where(eq(items.id, item.id));
+
+    const { bot, calls } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    expect(edits(calls)).toEqual([defaultTexts.resolver.unchanged]);
+  });
+
   it('вопрос про дополнение применяется дополнением, а не заменой', async () => {
     /**
      * **Задача 3.82, вторая половина.** Режима правки в таблице вопроса
