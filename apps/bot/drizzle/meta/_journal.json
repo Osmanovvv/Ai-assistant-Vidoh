@@ -330,6 +330,13 @@
       "when": 1789226848288,
       "tag": "0046_messages_consumed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789242973267,
+      "tag": "0047_users_consent_confirmed",
+      "breakpoints": true
     }
   ]
 }

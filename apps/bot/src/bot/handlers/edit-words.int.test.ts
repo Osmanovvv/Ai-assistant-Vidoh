@@ -9,7 +9,7 @@ import { createLogger } from '../../infra/logger.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { AWAITING_TTL_MS } from '../../modules/onboarding/awaiting.js';
 import { toShortId } from '../../modules/shared/short-id.js';
-import { upsertUser } from '../../modules/users/users.repo.js';
+import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited } from './awaiting.js';
@@ -74,6 +74,7 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
     incomingMiddleware({
       db: testDb(),
       queue: stubQueue,
+      privacyPolicyUrl: 'https://vydoh-app.ru/privacy',
       consume: consumeAwaited({ db: testDb(), logger }),
     }),
   );
@@ -161,6 +162,8 @@ async function awaitingOfUser(): Promise<string | null> {
 beforeEach(async () => {
   seq = 0;
   userId = (await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' })).id;
+  // Согласие нажато: без него выгрузка не заводится (§16).
+  await confirmConsent(testDb(), userId, { edition: '2026-10-01' });
 });
 
 afterEach(() => {

@@ -46,6 +46,8 @@ const DECISIONS: readonly {
         'timezone',
         'referralSource',
         'consentAt',
+        'consentConfirmedAt',
+        'consentEdition',
         'createdAt',
       ],
       internal: [

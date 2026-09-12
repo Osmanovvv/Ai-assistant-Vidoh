@@ -46,6 +46,9 @@ export interface ExportedData {
     readonly timezone: string;
     readonly referralSource: string | null;
     readonly consentAt: string | null;
+    /** Нажатие «Согласна» и редакция, на которую нажато (§16). */
+    readonly consentConfirmedAt: string | null;
+    readonly consentEdition: string | null;
     readonly createdAt: string;
   };
   readonly settings: {
@@ -251,6 +254,8 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       timezone: profile.timezone,
       referralSource: profile.referralSource,
       consentAt: iso(profile.consentAt),
+      consentConfirmedAt: iso(profile.consentConfirmedAt),
+      consentEdition: profile.consentEdition,
       createdAt: profile.createdAt.toISOString(),
     },
     settings: settings

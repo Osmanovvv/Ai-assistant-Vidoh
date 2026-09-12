@@ -207,10 +207,28 @@ describe('productionWarnings', () => {
    * `LOG_FILE` журнал живёт только в `docker logs`, а тот стирается
    * каждой выкладкой, и разбирать вчерашнее нечем.
    */
-  const healthy = { ACCOUNT_SPEND_DAILY_RUB: '300', LOG_FILE: '/app/logs/vydoh.log' };
+  const healthy = {
+    ACCOUNT_SPEND_DAILY_RUB: '300',
+    LOG_FILE: '/app/logs/vydoh.log',
+    PRIVACY_POLICY_EDITION: '2026-10-01',
+  };
 
   it('молчит на настоящих адресах и при заданном потолке', () => {
     expect(productionWarnings(parseWith(healthy))).toEqual([]);
+  });
+
+  it('без редакции политики предупреждает: согласия запишутся без редакции', () => {
+    /**
+     * Кнопка «Согласна» записывает редакцию политики, на которую нажато
+     * (§16, решение заказчицы 12.09.2026). Пока документы без даты,
+     * редакции нет — и об этом надо говорить при каждом старте, а не
+     * обнаружить на первом же вопросе «на что она соглашалась».
+     */
+    const { PRIVACY_POLICY_EDITION: _omitted, ...withoutEdition } = healthy;
+
+    expect(productionWarnings(parseWith(withoutEdition))).toEqual([
+      'PRIVACY_POLICY_EDITION не задана: согласия записываются без редакции политики',
+    ]);
   });
 
   it('ловит заглушку из .env.example в публичном адресе', () => {
@@ -253,7 +271,11 @@ describe('productionWarnings', () => {
     // Суточный и общий — независимые: задан любой, присмотр есть.
     expect(
       productionWarnings(
-        parseWith({ ACCOUNT_SPEND_CEILING_RUB: '3000', LOG_FILE: '/app/logs/vydoh.log' }),
+        parseWith({
+          ACCOUNT_SPEND_CEILING_RUB: '3000',
+          LOG_FILE: '/app/logs/vydoh.log',
+          PRIVACY_POLICY_EDITION: '2026-10-01',
+        }),
       ),
     ).toEqual([]);
   });

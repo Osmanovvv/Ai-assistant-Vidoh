@@ -1,6 +1,6 @@
-import { and, count, eq, isNull, lt, not, sql } from 'drizzle-orm';
+import { and, asc, count, eq, exists, isNull, lt, not, sql } from 'drizzle-orm';
 
-import { messagesRaw } from '../../db/schema.js';
+import { messagesRaw, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 
 /**
@@ -67,6 +67,17 @@ export async function markConsumed(
   await db.update(messagesRaw).set({ consumedAt: now }).where(eq(messagesRaw.id, messageId));
 }
 
+/**
+ * Человек нажал «Согласна». Без этого его сообщения не сироты, а ждущие
+ * (§16, решение заказчицы 12.09.2026): выгрузка по ним не заводится
+ * нарочно, и после нажатия их подхватит `releaseHeldMessages`.
+ */
+function consentConfirmed(): ReturnType<typeof exists> {
+  return exists(
+    sql`(select 1 from ${users} where ${users.id} = ${messagesRaw.userId} and ${users.consentConfirmedAt} is not null)`,
+  );
+}
+
 /** Настоящие сироты: ни выгрузки, ни причины ею не быть. */
 export async function countOrphanedMessages(
   db: Executor,
@@ -78,9 +89,41 @@ export async function countOrphanedMessages(
   const [row] = await db
     .select({ total: count() })
     .from(messagesRaw)
-    .where(and(isNull(messagesRaw.batchId), lt(messagesRaw.receivedAt, older), not(deliberate())));
+    .where(
+      and(
+        isNull(messagesRaw.batchId),
+        lt(messagesRaw.receivedAt, older),
+        not(deliberate()),
+        consentConfirmed(),
+      ),
+    );
 
   return row?.total ?? 0;
+}
+
+/**
+ * Сообщения человека, которые ждут нажатия «Согласна»: без выгрузки и
+ * без причины ею не быть, в порядке получения. После нажатия каждое
+ * уходит в буфер, как только что присланное.
+ *
+ * Отдельной отметки «ждёт согласия» нет, и это не пробел: до нажатия у
+ * человека других сообщений без выгрузки не бывает. Гейт согласия в
+ * приёме стоит **раньше** потолка выгрузок и пробного периода — то есть
+ * единственные, кто останавливает сообщение без выгрузки после согласия,
+ * до согласия не срабатывают; ответы на вопросы бота помечены
+ * `consumed_at`, команды и служебные — видны по тексту (`deliberate`).
+ * Появится ещё один способ оставить сообщение без выгрузки до согласия —
+ * понадобится отметка.
+ */
+export async function heldMessagesOf(
+  db: Executor,
+  userId: string,
+): Promise<readonly { readonly id: string; readonly threadId: number | null }[]> {
+  return await db
+    .select({ id: messagesRaw.id, threadId: messagesRaw.tgThreadId })
+    .from(messagesRaw)
+    .where(orphanedOnly(userId))
+    .orderBy(asc(messagesRaw.receivedAt));
 }
 
 /**

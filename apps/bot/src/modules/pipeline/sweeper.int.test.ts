@@ -6,7 +6,7 @@ import { createLogger } from '../../infra/logger.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { askQuestion } from '../resolver/questions.repo.js';
-import { upsertUser } from '../users/users.repo.js';
+import { confirmConsent, upsertUser } from '../users/users.repo.js';
 import { sweepOnce } from './sweeper.js';
 
 /**
@@ -36,6 +36,8 @@ let seq = 0;
 beforeEach(async () => {
   const user = await upsertUser(testDb(), { tgId: 800, firstName: 'Аня' });
   userId = user.id;
+  // Согласие нажато: сообщения до него — не сироты, а ждущие (§16).
+  await confirmConsent(testDb(), userId, { edition: '2026-10-01' });
   seq = 0;
 });
 
@@ -549,6 +551,39 @@ describe('сообщения без выгрузки видны', () => {
     });
 
     expect(result.orphanedMessages, 'сирота осталась невидимой').toBe(1);
+  });
+
+  it('сообщение до нажатия «Согласна» — не сирота: оно ждёт нажатия', async () => {
+    /**
+     * Без согласия выгрузка не заводится нарочно (§16, решение заказчицы
+     * 12.09.2026): слова сохранены и уйдут в разбор после кнопки. Считать
+     * их сиротами значило бы каждую минуту писать в журнал о том, что
+     * устроено так по замыслу — как было с ответами на вопросы опроса.
+     */
+    const HOUR = 60 * 60_000;
+    const waiting = await upsertUser(testDb(), { tgId: 801, firstName: 'Оля' });
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId: waiting.id,
+        updateId: 9_100_002,
+        tgChatId: 801,
+        tgMessageId: 9002,
+        kind: 'text',
+        text: 'записать сына к врачу',
+        receivedAt: at(-2 * HOUR),
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages).toBe(0);
   });
 
   it('ответ словами на вопрос бота сиротой не считается (найдено на бою 12.09.2026)', async () => {

@@ -42,6 +42,22 @@ export interface TextProfile {
     readonly hintText: string;
   };
 
+  /**
+   * Согласие на обработку данных — кнопкой «Согласна» (§16; решение
+   * заказчицы 12.09.2026, ответ 13). До нажатия выгрузки не разбираются,
+   * слова сохраняются и ждут. Это отступление от §13.1 её же ТЗ
+   * («никаких опросов до первой выгрузки») по её слову.
+   */
+  readonly consent: {
+    /** Первый экран до согласия: приветствие, политика, 18+, кнопка. */
+    readonly screen: (policyUrl: string) => string;
+    readonly button: string;
+    /** Человек написал раньше, чем нажал: слова сохранены, нужна кнопка. */
+    readonly required: (policyUrl: string) => string;
+    /** Нажал — опрос уже пройден или не ведётся: можно говорить. */
+    readonly accepted: string;
+  };
+
   readonly listening: {
     readonly acknowledged: string;
     readonly working: string;

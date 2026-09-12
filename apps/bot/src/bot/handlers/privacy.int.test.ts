@@ -15,8 +15,8 @@ import { createInvoice, nextInvId } from '../../modules/billing/billing.repo.js'
 import { applyPaymentEvent } from '../../modules/billing/subscription.service.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
-import { upsertUser } from '../../modules/users/users.repo.js';
-import { incomingMiddleware } from './incoming.js';
+import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
+import { CONSENT_ACTION, incomingMiddleware, releaseHeldMessages } from './incoming.js';
 import {
   DELETE_CANCEL,
   DELETE_STEP_ONE,
@@ -89,10 +89,16 @@ function createTestBot(
     return Promise.resolve({ ok: true, result } as never);
   });
 
+  const incoming = { db: testDb(), queue: stubQueue, privacyPolicyUrl: POLICY_URL };
   if (options.withIncoming !== false) {
-    bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue }));
+    bot.use(incomingMiddleware(incoming));
   }
-  registerStartHandlers(bot, { db: testDb(), logger, privacyPolicyUrl: POLICY_URL });
+  registerStartHandlers(bot, {
+    db: testDb(),
+    logger,
+    privacyPolicyUrl: POLICY_URL,
+    release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
+  });
 
   const gateway = options.gateway ?? new FakeTopicGateway();
   registerPrivacyHandlers(bot, {
@@ -368,10 +374,17 @@ describe('после удаления бот начинает с нуля', () =
 
     const [restored] = await testDb().select().from(users).where(eq(users.tgId, TG_ID));
     expect(restored).toBeDefined();
-    // Согласие получено заново, а не досталось в наследство от прошлой жизни.
-    expect(restored?.consentAt).not.toBeNull();
-    expect(await rowsFor(TG_ID)).toMatchObject({ users: 1, messages: 1 });
-    // Записи прошлой жизни не вернулись.
+    // Согласие не досталось в наследство от прошлой жизни: его снова
+    // нужно дать кнопкой, а слова ждут (§16).
+    expect(restored?.consentAt).toBeNull();
+    expect(restored?.consentConfirmedAt).toBeNull();
+    expect(await rowsFor(TG_ID)).toMatchObject({ users: 1, messages: 1, batches: 0 });
+
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+    const [agreed] = await testDb().select().from(users).where(eq(users.tgId, TG_ID));
+    expect(agreed?.consentAt).not.toBeNull();
+    // Записи прошлой жизни не вернулись — выгрузка одна, новая.
     expect((await rowsFor(TG_ID)).batches).toBe(1);
   });
 });
@@ -390,8 +403,8 @@ describe('команды не попадают в выгрузку', () => {
   });
 
   it('команда не считается согласием на обработку', async () => {
-    // §16 ТЗ: согласие — это первое сообщение после экрана с политикой,
-    // а не нажатие кнопки меню.
+    // §16 ТЗ: согласие — только кнопка «Согласна» (решение заказчицы
+    // 12.09.2026), а не команда и не нажатие кнопки меню.
     const { bot } = createTestBot();
 
     await bot.handleUpdate(textUpdate('/start'));
@@ -400,10 +413,11 @@ describe('команды не попадают в выгрузку', () => {
     expect(user?.consentAt).toBeNull();
   });
 
-  it('обычное сообщение после команды работает как обычно', async () => {
+  it('обычное сообщение после команды и кнопки «Согласна» работает как обычно', async () => {
     const { bot } = createTestBot();
 
     await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
     await bot.handleUpdate(textUpdate('надо записаться к врачу'));
 
     const dumps = await testDb().select().from(batches);
@@ -417,6 +431,8 @@ describe('команды не попадают в выгрузку', () => {
     // Признак команды берётся из разметки Telegram, а не из первого
     // символа: человек может начать фразу со слэша.
     const { bot } = createTestBot();
+    const person = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
+    await confirmConsent(testDb(), person.id, { edition: '2026-10-01' });
 
     await bot.handleUpdate(textUpdate('/ надо бы разобраться с этим'));
 

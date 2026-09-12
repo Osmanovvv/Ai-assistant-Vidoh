@@ -1,4 +1,4 @@
-import type { Bot } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
@@ -12,7 +12,8 @@ import {
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
 import type { QuestionSender } from '../../modules/presenter/telegram-sender.js';
-import { findByTgId } from '../../modules/users/users.repo.js';
+import { CONSENT_ACTION } from './incoming.js';
+import { confirmConsent, consentConfirmedOf, findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
 
 /**
@@ -56,6 +57,19 @@ export interface StartDeps {
   readonly db: Database;
   readonly logger: Logger;
   readonly privacyPolicyUrl: string;
+  /**
+   * Редакция политики и согласия, на которую нажимают «Согласна» (§16;
+   * решение заказчицы 12.09.2026). Пуста, пока документы не получили
+   * дату: согласие тогда записывается без редакции, и об этом сказано
+   * при старте.
+   */
+  readonly privacyPolicyEdition?: string | undefined;
+  /**
+   * Выпуск сообщений, присланных раньше нажатия: после кнопки они уходят
+   * в буфер выгрузки, как только что присланные (`releaseHeldMessages`).
+   * Без него слова до кнопки остались бы лежать — §16 такого не терпит.
+   */
+  readonly release?: ((userId: string, chatId: number | undefined) => Promise<number>) | undefined;
   /**
    * Отправитель вопросов опроса.
    *
@@ -128,7 +142,31 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
     ],
   ]);
 
+  /** Первый экран до согласия: приветствие, политика, 18+ и одна кнопка. */
+  const consentScreen = async (ctx: Context): Promise<void> => {
+    await ctx.reply(texts.consent.screen(privacyPolicyUrl), {
+      reply_markup: fitKeyboard([[{ label: texts.consent.button, action: CONSENT_ACTION.accept }]]),
+      parse_mode: 'Markdown',
+      link_preview_options: { is_disabled: true },
+    });
+  };
+
   bot.command('start', async (ctx) => {
+    /**
+     * Без нажатой «Согласна» — экран согласия, и ничего больше (§16;
+     * решение заказчицы 12.09.2026, ответ 13).
+     *
+     * Это отступление от §13.1 её же ТЗ («никаких опросов до первой
+     * выгрузки») по её слову: отдельное явное действие перед первой
+     * выгрузкой. Опрос при этом остаётся за кнопкой — один призыв к
+     * действию в одном обмене (§13.9), а не согласие и вопрос разом.
+     */
+    const user = ctx.from === undefined ? undefined : await findByTgId(db, ctx.from.id);
+    if (user !== undefined && !(await consentConfirmedOf(db, user.id))) {
+      await consentScreen(ctx);
+      return;
+    }
+
     /**
      * Приветствие и первый вопрос — **одним** сообщением (задача 3.61).
      *
@@ -157,6 +195,43 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
       parse_mode: 'Markdown',
       link_preview_options: { is_disabled: true },
     });
+  });
+
+  bot.callbackQuery(CONSENT_ACTION.accept, async (ctx) => {
+    const user = await findByTgId(db, ctx.from.id);
+    if (user === undefined) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    const confirmed = await confirmConsent(db, user.id, { edition: deps.privacyPolicyEdition });
+    await ctx.answerCallbackQuery();
+    logger.info(
+      { userId: user.id, edition: deps.privacyPolicyEdition ?? null, first: confirmed },
+      'Нажата «Согласна»',
+    );
+
+    /**
+     * После согласия — то, что раньше было первым экраном: первый вопрос
+     * опроса, если он ещё не начинался; иначе короткое «можно говорить».
+     * Приветствие второй раз не повторяется — оно уже над кнопкой.
+     */
+    const question = await firstQuestion(ctx.from.id);
+    if (question === undefined) {
+      await ctx.reply(texts.consent.accepted);
+    } else {
+      await ctx.reply(question.text, {
+        reply_markup: fitKeyboard(question.rows.map((row) => [...row])),
+        parse_mode: 'Markdown',
+        link_preview_options: { is_disabled: true },
+      });
+    }
+
+    // Сказанное до кнопки — в выгрузку, как только что присланное (§16).
+    if (deps.release !== undefined) {
+      const released = await deps.release(user.id, ctx.chat?.id);
+      if (released > 0) logger.info({ userId: user.id, released }, 'Выпущены ждавшие согласия');
+    }
   });
 
   bot.callbackQuery('start:voice', async (ctx) => {

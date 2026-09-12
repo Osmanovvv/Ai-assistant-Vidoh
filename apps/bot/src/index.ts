@@ -11,7 +11,11 @@ import { createBot } from './bot/bot.js';
 import { flushCassette } from './modules/ai/cassette/session.js';
 import { publishCommands } from './bot/commands.js';
 import { consumeAwaited } from './bot/handlers/awaiting.js';
-import { incomingMiddleware } from './bot/handlers/incoming.js';
+import {
+  incomingMiddleware,
+  releaseHeldMessages,
+  type IncomingDeps,
+} from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
 import { adminConfigFrom } from './http/admin/index.js';
 import { createEvalRunner } from './modules/admin/eval-run.js';
@@ -846,40 +850,46 @@ async function main(): Promise<void> {
   });
 
   // Порядок важен: приём и сохранение идут до любых обработчиков.
-  bot.use(
-    incomingMiddleware({
+  // Зависимости приёма — отдельным значением: ими же выпускаются
+  // сообщения, ждавшие нажатия «Согласна» (`registerStartHandlers`).
+  const incoming: IncomingDeps = {
+    db,
+    queue,
+    sender,
+    // §16: сообщение раньше нажатия «Согласна» встречает экран согласия.
+    privacyPolicyUrl: env.PRIVACY_POLICY_URL,
+    // §14: конец пробного периода приглашает оплатить — но только там,
+    // где оплата действительно есть (4.2).
+    payRails: Object.keys(providers) as Rail[],
+    // Ответ словами на вопрос опроса и правка записи из карточки
+    // (задача 3.61). Ждёт бот чего-то или нет — решает база.
+    consume: consumeAwaited({
       db,
-      queue,
-      sender,
-      // §14: конец пробного периода приглашает оплатить — но только там,
-      // где оплата действительно есть (4.2).
-      payRails: Object.keys(providers) as Rail[],
-      // Ответ словами на вопрос опроса и правка записи из карточки
-      // (задача 3.61). Ждёт бот чего-то или нет — решает база.
-      consume: consumeAwaited({
-        db,
-        logger,
-        // Вектор заголовка после правки словами из карточки (A5).
-        embedder,
-        spendGuard,
-        /**
-         * §14: промокод словами (задача 4.4).
-         *
-         * Приёмом ответа, а не командой: команда идёт мимо гейта и мимо
-         * потолка частоты, то есть даёт бесплатный неограниченный
-         * перебор кодов, а публикация в списке команд объявляет о
-         * скидках всем.
-         */
-        promo: createPromoConsumer({ db, settings, logger, providers, offerUrl: env.OFFER_URL }),
-      }),
-      // §14: размер пробного периода задаётся без выкладки (4.3).
-      settings,
+      logger,
+      // Вектор заголовка после правки словами из карточки (A5).
+      embedder,
+      spendGuard,
+      /**
+       * §14: промокод словами (задача 4.4).
+       *
+       * Приёмом ответа, а не командой: команда идёт мимо гейта и мимо
+       * потолка частоты, то есть даёт бесплатный неограниченный
+       * перебор кодов, а публикация в списке команд объявляет о
+       * скидках всем.
+       */
+      promo: createPromoConsumer({ db, settings, logger, providers, offerUrl: env.OFFER_URL }),
     }),
-  );
+    // §14: размер пробного периода задаётся без выкладки (4.3).
+    settings,
+  };
+  bot.use(incomingMiddleware(incoming));
   registerStartHandlers(bot, {
     db,
     logger,
     privacyPolicyUrl: env.PRIVACY_POLICY_URL,
+    privacyPolicyEdition: env.PRIVACY_POLICY_EDITION,
+    // После «Согласна» сказанное до кнопки уходит в выгрузку (§16).
+    release: (userId, chatId) => releaseHeldMessages(incoming, { userId, chatId }),
     onboarding: questions,
   });
   registerPrivacyHandlers(bot, {

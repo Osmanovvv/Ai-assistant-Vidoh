@@ -23,12 +23,12 @@ import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
-import { upsertUser } from '../../modules/users/users.repo.js';
+import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited, type AwaitingDeps } from './awaiting.js';
 import { createPromoConsumer } from './billing.js';
-import { incomingMiddleware } from './incoming.js';
+import { CONSENT_ACTION, incomingMiddleware, releaseHeldMessages } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
 import { registerStartHandlers } from './start.js';
 import type { QuestionSender } from '../../modules/presenter/telegram-sender.js';
@@ -116,19 +116,21 @@ function createTestBot(
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  bot.use(
-    incomingMiddleware({
-      db: testDb(),
-      queue: stubQueue,
-      // Ответ словами (задача 3.61): без этого текстовая реплика
-      // уходит в буфер выгрузки, как было до задачи.
-      consume: consumeAwaited({ db: testDb(), logger: log, promo }),
-    }),
-  );
+  const incoming = {
+    db: testDb(),
+    queue: stubQueue,
+    privacyPolicyUrl: POLICY_URL,
+    // Ответ словами (задача 3.61): без этого текстовая реплика
+    // уходит в буфер выгрузки, как было до задачи.
+    consume: consumeAwaited({ db: testDb(), logger: log, promo }),
+  };
+  bot.use(incomingMiddleware(incoming));
   registerStartHandlers(bot, {
     db: testDb(),
     logger,
     privacyPolicyUrl: POLICY_URL,
+    privacyPolicyEdition: EDITION,
+    release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
     ...(questions === undefined ? {} : { onboarding: questions }),
   });
   registerOnboardingHandlers(bot, testDb(), logger, gateway);
@@ -230,10 +232,106 @@ async function startedAt(step: number): Promise<void> {
     .where(eq(userSettings.userId, userId));
 }
 
+const EDITION = '2026-10-01';
+
 beforeEach(async () => {
   seq = 0;
   const user = await upsertUser(testDb(), { tgId: TG_ID, firstName: 'Аня' });
   userId = user.id;
+  // Согласие нажато: первый экран и опрос ниже — путь после него.
+  await confirmConsent(testDb(), userId, { edition: EDITION });
+});
+
+describe('согласие кнопкой «Согласна» (§16, решение заказчицы 12.09.2026)', () => {
+  async function withoutConsent(): Promise<void> {
+    await testDb()
+      .update(users)
+      .set({ consentConfirmedAt: null, consentEdition: null, consentAt: null })
+      .where(eq(users.id, userId));
+  }
+
+  it('первый экран без согласия — приветствие, политика, 18+ и одна кнопка; вопроса нет', async () => {
+    /**
+     * Отступление от §13.1 ТЗ («никаких опросов до первой выгрузки») по
+     * слову его автора: заказчица 12.09.2026 попросила отдельное явное
+     * действие перед первой выгрузкой. Опрос при этом остаётся за
+     * кнопкой — один призыв к действию в одном обмене (§13.9).
+     */
+    await withoutConsent();
+    const questions = recordingQuestions();
+    const { bot, calls } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('/start'));
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent).toHaveLength(1);
+    expect(textOf(sent[0])).toBe(defaultTexts.consent.screen(POLICY_URL));
+    expect(textOf(sent[0])).toContain('18');
+    expect(keyboardOf(sent[0]).map((button) => [button.text, button.callback_data])).toEqual([
+      [defaultTexts.consent.button, CONSENT_ACTION.accept],
+    ]);
+    expect(questions.asked).toEqual([]);
+    expect((await settingsOf())?.onboardingStep).toBe(0);
+  });
+
+  it('нажатие записывает согласие с редакцией и открывает опрос первым вопросом', async () => {
+    await withoutConsent();
+    const questions = recordingQuestions();
+    const { bot, calls } = createTestBot(questions.sender);
+    await bot.handleUpdate(textUpdate('/start'));
+
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+    const [row] = await testDb().select().from(users).where(eq(users.id, userId));
+    expect(row?.consentConfirmedAt).not.toBeNull();
+    expect(row?.consentEdition).toBe(EDITION);
+    expect(row?.consentAt).not.toBeNull();
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent).toHaveLength(2);
+    expect(textOf(sent[1])).toContain(defaultTexts.onboarding.nameConfirm('Аня'));
+    expect(keyboardOf(sent[1]).map((button) => button.text)).toContain(
+      defaultTexts.onboarding.buttonNameYes,
+    );
+    expect((await settingsOf())?.onboardingStep).not.toBe(0);
+  });
+
+  it('нажатие после пройденного опроса — короткое «можно говорить»', async () => {
+    await withoutConsent();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.done })
+      .where(eq(userSettings.userId, userId));
+    const questions = recordingQuestions();
+    const { bot, calls } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent.map(textOf)).toEqual([defaultTexts.consent.accepted]);
+  });
+
+  it('сказанное до нажатия ждёт и после нажатия уходит в выгрузку', async () => {
+    /**
+     * §16 — ничего не теряется: слова до кнопки сохранены, но не
+     * разбираются; после кнопки они подхватываются в выгрузку, как если
+     * бы пришли только что. Человеку не приходится повторять.
+     */
+    await withoutConsent();
+    const questions = recordingQuestions();
+    const { bot } = createTestBot(questions.sender);
+
+    await bot.handleUpdate(textUpdate('записать сына к врачу'));
+
+    const held = await testDb().select().from(messagesRaw).where(eq(messagesRaw.userId, userId));
+    expect(held).toHaveLength(1);
+    expect(held[0]?.batchId).toBeNull();
+
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+    const [after] = await testDb().select().from(messagesRaw).where(eq(messagesRaw.userId, userId));
+    expect(after?.batchId).not.toBeNull();
+  });
 });
 
 describe('до первой выгрузки', () => {
@@ -847,27 +945,6 @@ describe('опрос начинается с первого запуска (за
       1,
     );
     expect(questions.asked).toEqual([]);
-  });
-
-  it('ответ на вопрос опроса считается согласием (§16)', async () => {
-    /**
-     * Пока опрос шёл после выгрузки, сообщение человека всегда было
-     * раньше и согласие успевало записаться. Теперь опрос идёт первым, а
-     * отвечают на него кнопками — без этого бот узнавал бы имя, пояс и
-     * время, не имея согласия вовсе.
-     */
-    const questions = recordingQuestions();
-    const { bot } = createTestBot(questions.sender);
-
-    await bot.handleUpdate(textUpdate('/start'));
-
-    const [before] = await testDb().select().from(users).where(eq(users.id, userId));
-    expect(before?.consentAt, 'команда согласием не считается').toBeNull();
-
-    await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
-
-    const [after] = await testDb().select().from(users).where(eq(users.id, userId));
-    expect(after?.consentAt).not.toBeNull();
   });
 
   it('без отправителя вопросов первый запуск работает как прежде', async () => {
