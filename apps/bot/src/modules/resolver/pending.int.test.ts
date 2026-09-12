@@ -149,6 +149,25 @@ describe('ответ голосом делает то же, что кнопка'
   });
 });
 
+describe('неуверенный ответ с содержанием (ревизия этапа 3, B3)', () => {
+  it('«не помню, но перенеси врача на среду» — содержание сохранено, а не пропало', async () => {
+    /**
+     * Признак неуверенности читался раньше содержания: вопрос снимался,
+     * сегмент вопроса парковался, а сам ответ — «перенеси врача на
+     * среду» — не шёл ни в разбор, ни в черновик. Бот молчал.
+     */
+    await ask();
+
+    const result = await settle('не помню, но перенеси врача на среду');
+
+    expect(result.kind).toBe('unclear');
+    expect(result.leftoverSaved).toBe(true);
+    expect(await draftTexts()).toEqual(
+      expect.arrayContaining(['нет, в пятницу', 'не помню, но перенеси врача на среду']),
+    );
+  });
+});
+
 describe('человек не ответил и прислал новое', () => {
   it('вопрос снимается, к нему бот не возвращается', async () => {
     // §7.3: «продукт не имеет права превращаться в допрос».
@@ -412,7 +431,9 @@ describe('вопрос сняли, пока шла расшифровка (§9.1
     let pressed = false;
     const press = async (): Promise<void> => {
       pressed = true;
-      await answerQuestion(live, { questionId, userId, outcome: 'attached' });
+      // Тем же «сейчас», что и разбор: по настоящим часам вопрос из
+      // 2026 года давно протух, и кнопка ответила бы «неактуально» (B4).
+      await answerQuestion(live, { questionId, userId, outcome: 'attached', now: NOW });
     };
 
     const result = await settlePendingQuestion(pressedBeforeFirstUpdate(live, press), {
@@ -469,13 +490,30 @@ function pressedBeforeFirstUpdate(live: Database, press: () => Promise<void>): D
       },
     });
 
-  return new Proxy(live, {
-    get(target, key, receiver): unknown {
-      const value: unknown = Reflect.get(target, key, receiver);
-      if (key !== 'update' || intercepted) return value;
+  /**
+   * Перехватывается первый `update` — и в самой базе, и внутри
+   * транзакции: с ревизии этапа 3 (B1) пометка ответа идёт в
+   * `db.transaction`, и `tx` обязан быть под тем же прокси, иначе гонка
+   * не случится и страж будет мерить не то.
+   */
+  const wrap = <T extends object>(executor: T): T =>
+    new Proxy(executor, {
+      get(target, key, receiver): unknown {
+        const value: unknown = Reflect.get(target, key, receiver);
 
-      intercepted = true;
-      return (table: unknown) => deferred((value as (what: unknown) => object).call(target, table));
-    },
-  });
+        if (key === 'transaction') {
+          type Run = (fn: (tx: object) => Promise<unknown>) => Promise<unknown>;
+          return (fn: (tx: object) => Promise<unknown>) =>
+            (value as Run).call(target, (tx) => fn(wrap(tx)));
+        }
+
+        if (key !== 'update' || intercepted) return value;
+
+        intercepted = true;
+        return (table: unknown) =>
+          deferred((value as (what: unknown) => object).call(target, table));
+      },
+    });
+
+  return wrap(live);
 }

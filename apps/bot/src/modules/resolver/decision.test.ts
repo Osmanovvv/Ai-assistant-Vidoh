@@ -149,6 +149,30 @@ describe('второй сигнал: без подтверждения не ме
     expect(decide(answer(), [chosen], { now: NOW }).kind).toBe('ask');
   });
 
+  it('срок подтверждает только единственного: два дела на тот же день — неясность (ревизия этапа 3, A2)', () => {
+    /**
+     * «Врача перенеси» при двух делах на четверг: близость и свежесть
+     * единственности требуют, а срок — нет, и правка шла в первое
+     * попавшееся без вопроса.
+     */
+    const first = candidate({
+      id: 'i-1',
+      sources: ['deadline'],
+      updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000),
+      deadlineAt: new Date('2026-09-03T21:00:00.000Z'),
+    });
+    const second = candidate({
+      id: 'i-2',
+      sources: ['deadline'],
+      updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000),
+      deadlineAt: new Date('2026-09-03T21:00:00.000Z'),
+    });
+
+    const verdict = decide(answer(), [first, second], { now: NOW });
+
+    expect(verdict.kind).toBe('ask');
+  });
+
   it('совпадение по сроку подтверждает', () => {
     const dated = candidate({
       sources: ['deadline'],

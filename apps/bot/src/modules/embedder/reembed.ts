@@ -96,3 +96,39 @@ export async function reembedItem(
     return false;
   }
 }
+
+/**
+ * Заголовок сменился — вектор пересчитывается (план 2.9; ревизия этапа
+ * 3, A5).
+ *
+ * Обещание плана: «считается при создании записи **и при изменении
+ * заголовка**». Пересчёт стоял на одном пути из пяти — в голосовой
+ * правке, — а кнопка «Добавить к прошлой», голосовое «да, к прошлой»,
+ * правка словами из карточки и откат меняли заголовок без него: после
+ * «не к врачу, а к стоматологу» смысловой поиск §7.2 искал запись по
+ * словам, которых в ней уже нет. Теперь путь один: каждый, кто применил
+ * изменение, зовёт это.
+ *
+ * **Только при смене текста.** Срок, тема и правило вектора не касаются:
+ * он считается от заголовка. Платить за неизменившийся текст — тот же
+ * расход, за который проект уже бил себя по рукам.
+ *
+ * **После записи, а не внутри неё.** Внутри `applyDecision` висит
+ * `select … for update`, и платный вызов под открытой транзакцией держал
+ * бы строку запертой всё время ожидания сети.
+ */
+export async function reembedIfRetitled(
+  deps: ReembedDeps,
+  change: {
+    readonly after: { readonly id: string; readonly text: string; readonly userId: string };
+    readonly fields: readonly string[];
+  },
+): Promise<boolean> {
+  if (!change.fields.includes('text')) return false;
+
+  return await reembedItem(deps, {
+    itemId: change.after.id,
+    text: change.after.text,
+    userId: change.after.userId,
+  });
+}

@@ -46,6 +46,7 @@ import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
+import { reembedIfRetitled } from '../embedder/reembed.js';
 import { saysNoStrength } from '../output/exhaustion.js';
 import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
@@ -760,6 +761,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.said = true;
       rememberTopics(touchedTopics, settled.applied);
       mentioned.add(settled.applied.after.id);
+      // Заголовок мог смениться — вектор вслед (A5).
+      await reembedIfRetitled(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+          ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+          ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
+          ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+        },
+        settled.applied,
+      );
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await tell(
         describeChange(settled.applied, texts, context.timeZone),
@@ -912,6 +924,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         /**
          * На первом проходе это ещё мысль, на втором — уже поздно:
          * извлечение и сохранение прошли, и вставить её в разбор нечем.
+         * Слова ложатся черновиком, и человек слышит «Сохранила целиком»
+         * (A4). Второй прогон извлечения ради одного сегмента — отдельное
+         * решение с ценой в вызов модели; пока его нет, и обещание
+         * маршрутизатора говорит об этом прямо.
          */
         if (stage === 'before') {
           parsed.push(segment);

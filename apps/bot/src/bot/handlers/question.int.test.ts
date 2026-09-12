@@ -3,11 +3,12 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { aiCalls, batches, items, type Item } from '../../db/schema.js';
+import { aiCalls, batches, items, pendingQuestions, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import type { AiClientDeps } from '../../modules/ai/client.js';
 import { SpendCeilingError } from '../../infra/failures.js';
 import { MockLlmProvider } from '../../modules/ai/providers/mock.js';
+import { MockEmbeddingProvider } from '../../modules/embedder/providers/mock.js';
 import { PromptRegistry } from '../../modules/ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../../modules/ai/prompts/seed.js';
 import { CLASSIFIER_SCHEMA_NAME } from '../../modules/ai/schemas/index.js';
@@ -74,6 +75,7 @@ function createTestBot(
   ai: AiClientDeps,
   /** Реестр настроек: без него доступ считается открытым, как раньше. */
   settings?: SettingsRegistry,
+  embedder?: MockEmbeddingProvider,
 ): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
@@ -101,6 +103,7 @@ function createTestBot(
     ai,
     logger,
     ...(settings === undefined ? {} : { settings }),
+    ...(embedder === undefined ? {} : { embedder }),
   });
 
   return { bot, calls };
@@ -420,6 +423,82 @@ describe('«Добавить к прошлой»', () => {
     expect(edits(calls)).toEqual([defaultTexts.resolver.deadlineRefused]);
     const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
     expect(after?.deadlineAt).toBeNull();
+  });
+
+  it('новый заголовок получает новый вектор (ревизия этапа 3, A5)', async () => {
+    /**
+     * «Не к врачу, а к стоматологу» кнопкой: заголовок менялся, а вектор
+     * оставался от старых слов, и смысловой поиск §7.2 искал запись по
+     * тому, чего в ней уже нет. Пересчёт стоял только у голосовой правки.
+     */
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'не к врачу, а к стоматологу',
+      action: 'update',
+      changes: {
+        note: '',
+        text: 'Записать сына к стоматологу',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const embedder = new MockEmbeddingProvider();
+    const { bot } = createTestBot(classifierSaying('неважно'), undefined, embedder);
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+    expect(after?.text).toBe('Записать сына к стоматологу');
+    expect(after?.embedding).not.toBeNull();
+  });
+
+  it('отказ базы посреди применения не закрывает вопрос и не молчит (ревизия этапа 3, B1)', async () => {
+    /**
+     * Ответ помечался «применён» до применения, и не в одной
+     * транзакции: сорвётся `applyDecision` — вопрос уже закрыт как
+     * `attached`, правка не применена, повторное нажатие отвечает
+     * «неактуально». Правило на эмоции база отвергает ограничением —
+     * это и есть срыв.
+     */
+    await testDb()
+      .update(items)
+      .set({ type: 'EMOTION', priority: 'NONE' })
+      .where(eq(items.id, item.id));
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'это каждую неделю',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '2030-01-10',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'weekly',
+        recurrenceInterval: 1,
+        recurrenceText: 'каждую неделю',
+      },
+    });
+
+    const { bot, calls } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    expect(edits(calls)).toEqual([defaultTexts.resolver.applyFailed]);
+
+    const [row] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.id, question.id));
+    expect(row?.outcome).toBeNull();
+    expect(row?.resolvedAt).toBeNull();
   });
 
   it('запись уже в нужном состоянии — «менять нечего», а не «Добавила к прошлой»', async () => {

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
 
 import {
   batches,
@@ -8,6 +8,7 @@ import {
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
+import { saveDraft } from '../items/items.repo.js';
 
 /**
  * Открытый уточняющий вопрос (§7.3 ТЗ, задача 3.5).
@@ -152,6 +153,14 @@ export async function answerQuestion(
 ): Promise<AnswerOutcome> {
   const now = params.now ?? new Date();
 
+  /**
+   * Протухший вопрос считается снятым, даже если строка ещё открыта:
+   * время вышло раньше, чем человек нажал. Условие стоит в самом
+   * запросе (ревизия этапа 3, B4): раньше строка сперва помечалась
+   * «привязан»/«отдельно», а потом ответ отдавался как «неактуально» —
+   * и панель читала исход, которого не было. Такую строку закроет
+   * уборка, как `timeout`.
+   */
   const [row] = await db
     .update(pendingQuestions)
     .set({ resolvedAt: now, outcome: params.outcome })
@@ -160,15 +169,12 @@ export async function answerQuestion(
         eq(pendingQuestions.id, params.questionId),
         eq(pendingQuestions.userId, params.userId),
         isNull(pendingQuestions.resolvedAt),
+        gt(pendingQuestions.expiresAt, now),
       ),
     )
     .returning();
 
   if (!row) return { kind: 'stale' };
-
-  // Протухший вопрос считается снятым, даже если строка ещё открыта:
-  // время вышло раньше, чем человек нажал.
-  if (row.expiresAt.getTime() <= now.getTime()) return { kind: 'stale' };
 
   return { kind: 'answered', question: row };
 }
@@ -208,7 +214,29 @@ export async function expireQuestions(db: Executor, now = new Date()): Promise<n
         )`,
       ),
     )
-    .returning({ id: pendingQuestions.id });
+    .returning({
+      id: pendingQuestions.id,
+      userId: pendingQuestions.userId,
+      batchId: pendingQuestions.batchId,
+      segment: pendingQuestions.segment,
+    });
+
+  /**
+   * Сказанное не исчезает (§9.1; ревизия этапа 3, B2).
+   *
+   * Три исхода в `pending.ts` — снят выгрузкой, не прочитан, оказался
+   * мыслью — кладут сегмент черновиком; таймаут не клал, и «нет, в
+   * пятницу», оставшееся без ответа шесть часов, пропадало отовсюду,
+   * кроме журнала сообщений.
+   */
+  for (const row of rows) {
+    await saveDraft(db, {
+      userId: row.userId,
+      batchId: row.batchId,
+      text: row.segment,
+      reason: 'вопрос остался без ответа и истёк — слова сохранены',
+    });
+  }
 
   return rows.length;
 }

@@ -281,6 +281,8 @@ export interface TextProfile {
     readonly deadlineRefused: string;
     /** Правило не легло: не на что опереться (A3). */
     readonly rememberFailed: string;
+    /** Применение сорвалось (отказ базы) — вопрос остался открыт (B1). */
+    readonly applyFailed: string;
     readonly undone: string;
     /** Повторное нажатие: кнопка живёт в чате вечно. */
     readonly alreadyUndone: string;

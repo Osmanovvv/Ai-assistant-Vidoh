@@ -7,7 +7,7 @@ import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import { collectCandidates } from './candidates.js';
-import { reembedItem } from '../embedder/reembed.js';
+import { reembedIfRetitled } from '../embedder/reembed.js';
 import { applyDecision, emptyChanges, type Applied } from './patch.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
@@ -366,18 +366,16 @@ export async function resolvePatchSegment(
    * касаются: он считается от заголовка. Платить за неизменившийся
    * текст — это тот же расход, за который проект уже бил себя по рукам.
    */
-  if (applied.fields.includes('text')) {
-    await reembedItem(
-      {
-        db: deps.db,
-        ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
-        ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
-        ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
-        ...(deps.logger === undefined ? {} : { logger: deps.logger }),
-      },
-      { itemId: applied.after.id, text: applied.after.text, userId: params.userId },
-    );
-  }
+  await reembedIfRetitled(
+    {
+      db: deps.db,
+      ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+      ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+      ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    },
+    applied,
+  );
 
   return { kind: 'applied', applied };
 }

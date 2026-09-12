@@ -22,6 +22,7 @@ import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import { nudgeDue } from '../projects/projects.service.js';
 import { sweepHistory } from '../recurrence/history.service.js';
+import { withdrawOffer } from '../recurrence/suggestions.repo.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { outputContextOf } from '../users/state.repo.js';
 import { deadlineText, eveningText, morningText, projectText } from './digest.js';
@@ -411,6 +412,8 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
   });
 
   if (messageId === 0) {
+    // Что записали при сборке, снимаем: сообщения не было (C2).
+    await message.undoIfUnsent?.();
     await noteFailure(deps, reminder);
     return false;
   }
@@ -435,6 +438,12 @@ async function noteFailure(deps: SchedulerDeps, reminder: Reminder): Promise<voi
 interface ComposedReminder {
   readonly text: string;
   readonly buttons: readonly StatusButton[];
+  /**
+   * Что откатить, если сообщение не ушло (ревизия этапа 3, C2): у
+   * вечерней сводки с предложением регулярности — само предложение,
+   * записанное при сборке.
+   */
+  readonly undoIfUnsent?: (() => Promise<void>) | undefined;
 }
 
 /**
@@ -566,6 +575,7 @@ async function composeOne(
           mayDump,
         ),
         buttons: suggestButtons(found.suggestionId, texts),
+        undoIfUnsent: () => withdrawOffer(deps.db, found.suggestionId),
       };
     }
 

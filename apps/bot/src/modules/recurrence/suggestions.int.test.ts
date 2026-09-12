@@ -211,6 +211,19 @@ describe('предложение целиком: от похожих запис�
     expect(suggestion?.dates).toHaveLength(4);
   });
 
+  it('эмоции правило не предлагается: оно бывает только у дела (ревизия этапа 3, C8)', async () => {
+    const newest = await family(['2026-08-05', '2026-08-12', '2026-08-19', '2026-08-26']);
+    await testDb().update(items).set({ type: 'EMOTION' }).where(eq(items.id, newest.id));
+    const [emotion] = await testDb().select().from(items).where(eq(items.id, newest.id));
+
+    const suggestion = await suggestRecurrence(
+      { db: testDb() },
+      { userId, item: emotion!, now: new Date('2026-08-26T12:00:00.000Z') },
+    );
+
+    expect(suggestion).toBeUndefined();
+  });
+
   it('трёх записей без ритма недостаточно', async () => {
     const newest = await family(['2026-01-05', '2026-02-05', '2026-02-08']);
 

@@ -285,6 +285,47 @@ describe('отложить — решение с ревизией (ревизи�
   });
 });
 
+describe('«на следующую пятницу» в правке (ревизия этапа 3, A1-средняя)', () => {
+  it('дальняя пятница остаётся дальней: человек так и сказал', async () => {
+    /**
+     * Сегодня суббота 29.08. «Перенеси на следующую пятницу» — модель
+     * верно дала 11.09, а пересчёт по дню недели уводил на ближайшую,
+     * 04.09. У классификации исключение для «следующ…» есть с задачи
+     * 2.7; здесь его не было.
+     */
+    const item = await sow();
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-09-11', deadlineAccuracy: 'day' },
+      spoken: 'перенеси на следующую пятницу',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-09-10T21:00:00.000Z');
+  });
+
+  it('без «следующую» — ближайшая, как и было', async () => {
+    const item = await sow();
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: { ...NO_CHANGES, deadline: '2026-09-11', deadlineAccuracy: 'day' },
+      spoken: 'перенеси на пятницу',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineAt?.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+  });
+});
+
 describe('четыре исхода применения (ревизия этапа 3, A3)', () => {
   /**
    * «Записи нет», «менять нечего» и «срок отвергнут» были одним
@@ -1098,6 +1139,38 @@ describe('правило на закрытой записи оживляет е�
     // «Сейчас» — 29.08; ближайшее пятое — 5 сентября, полночь по Москве.
     expect(after.deadlineAt?.toISOString()).toBe('2026-09-04T21:00:00.000Z');
     expect((after.recurrenceRule as { anchor: string } | null)?.anchor).toBe('2026-08-05');
+  });
+
+  it('правило на бессрочной записи при отвергнутой дате получает срок — ближайшее повторение (C6)', async () => {
+    /**
+     * «Запомни, это каждую среду» про запись без срока, а дата от модели
+     * — в прошлом. Правило ложилось с якорем из сырой строки, а срок
+     * оставался пустым — и планировщик такую запись не видел никогда.
+     */
+    const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: {
+        ...NO_CHANGES,
+        deadline: '2026-08-05',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'weekly',
+        recurrenceInterval: 1,
+        recurrenceText: 'каждую среду',
+      },
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    const after = await reread(item.id);
+    expect((after.recurrenceRule as { kind: string } | null)?.kind).toBe('weekly');
+    // Ближайшая среда после субботы 29.08 — 2 сентября, полночь по Москве.
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-01T21:00:00.000Z');
+    expect(after.deadlineAccuracy).toBe('day');
   });
 
   it('открытое дело правило не двигает: срок остаётся его', async () => {

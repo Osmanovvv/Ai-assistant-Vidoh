@@ -71,6 +71,9 @@ export async function suggestRecurrence(
 
   // Уже регулярное дело — предлагать нечего.
   if (params.item.recurrenceRule !== null) return undefined;
+  // Правило бывает только у дела (ограничение базы
+  // `items_recurrence_task_only`; ревизия этапа 3, C8).
+  if (params.item.type !== 'TASK') return undefined;
   if (params.item.embedding === null) return undefined;
 
   const similar = await findSimilarItems(deps.db, {

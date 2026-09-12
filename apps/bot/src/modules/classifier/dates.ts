@@ -205,6 +205,18 @@ export function weekdayOf(instant: Date, timeZone: string): number {
  * «В четверг», сказанное в четверг, — это сегодня, а не через неделю:
  * человек говорит о ближайшем, иначе он сказал бы «в следующий».
  */
+/**
+ * Человек сам сказал «в следующий» — дальний день его выбор.
+ *
+ * Список закрытый: это правило, а не догадка. Одно на классификацию и на
+ * правку словами (ревизия этапа 3, A1-средняя): «перенеси на следующую
+ * пятницу» уводило на ближайшую, потому что у правки этого исключения не
+ * было.
+ */
+export function saysDistantWeek(words: string): boolean {
+  return /следующ|через недел|через две недел|через полторы недел|на той недел/iu.test(words);
+}
+
 export function nearestWeekday(
   weekday: number,
   context: { readonly now: Date; readonly timeZone: string },
@@ -466,9 +478,7 @@ export function resolveDeadline(
      * Тогда дальний день — его выбор, и трогать его нельзя. Список
      * закрытый: это правило, а не догадка.
      */
-    const distant = /следующ|через недел|через две недел|через полторы недел|на той недел/iu.test(
-      words,
-    );
+    const distant = saysDistantWeek(words);
 
     const off =
       named.length > 0 &&

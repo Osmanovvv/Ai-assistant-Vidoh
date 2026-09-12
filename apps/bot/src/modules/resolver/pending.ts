@@ -193,6 +193,25 @@ export async function settlePendingQuestion(
     await closeOpenQuestion(db, params.userId, 'superseded', now);
     await park('ответ на вопрос не прочитан');
 
+    /**
+     * Содержание за оговоркой не пропадает (ревизия этапа 3, B3).
+     *
+     * «Не помню, но перенеси врача на среду»: признак неуверенности
+     * читается раньше содержания, и «перенеси врача на среду» не шло ни
+     * в разбор, ни в черновик. Разбирать его как мысль нельзя —
+     * распоряжение стало бы записью (3.44), — но сохранить и сказать об
+     * этом можно.
+     */
+    if (answerRemainder(params.answerText) !== '') {
+      await saveDraft(db, {
+        userId: params.userId,
+        batchId: open.batchId,
+        text: params.answerText,
+        reason: 'ответ с оговоркой не прочитан — слова сохранены',
+      });
+      return { kind: 'unclear', leftoverSaved: true };
+    }
+
     return { kind: 'unclear' };
   }
 
@@ -222,13 +241,6 @@ export async function settlePendingQuestion(
     return true;
   };
 
-  const outcome = await answerQuestion(db, {
-    questionId: open.id,
-    userId: params.userId,
-    outcome: reading === 'attach' ? 'attached' : 'separate',
-    now,
-  });
-
   /**
    * Между чтением и ответом вопрос мог снять кто-то ещё — например
    * нажатие кнопки, пришедшее пока шла расшифровка.
@@ -237,31 +249,55 @@ export async function settlePendingQuestion(
    * кнопка, а слова сверх ответа спасать было некому — `keepLeftover`
    * объявлен выше, но сюда не доходил, и текст пропадал молча.
    */
-  if (outcome.kind === 'stale') return await rescueOrphanAnswer();
-
   if (reading === 'separate') {
+    const marked = await answerQuestion(db, {
+      questionId: open.id,
+      userId: params.userId,
+      outcome: 'separate',
+      now,
+    });
+    if (marked.kind === 'stale') return await rescueOrphanAnswer();
+
     return { kind: 'separate', carryOver: open.segment, leftoverSaved: await keepLeftover() };
   }
 
-  const applying = await applyDecision(db, {
-    userId: params.userId,
-    itemId: open.itemId,
-    action: open.action === 'complete' || open.action === 'cancel' ? open.action : 'update',
-    /**
-     * Режим правки из вопроса — §7.4 (задача 3.82).
-     *
-     * Голосовой ответ и нажатие кнопки обязаны вести себя одинаково:
-     * §7.3 требует этого прямо. Без режима оба применялись заменой, и
-     * подробность из вопроса про дополнение выбрасывалась.
-     */
-    ...(open.mode === 'append' ? { mode: 'append' as const } : {}),
-    changes: open.changes as ResolverAnswer['changes'],
-    spoken: open.segment,
-    timeZone: params.timeZone,
-    now,
-    reason: 'человек подтвердил голосом',
-    changedBy: 'user',
+  /**
+   * Пометка ответа и применение — одной транзакцией (ревизия этапа 3,
+   * B1). Раньше вопрос помечался «привязан» до применения: сорвётся
+   * применение — вопрос закрыт, правка не сделана, а повторный заход её
+   * не находит. Теперь при срыве откатывается и пометка.
+   */
+  const applying = await db.transaction(async (tx) => {
+    const marked = await answerQuestion(tx, {
+      questionId: open.id,
+      userId: params.userId,
+      outcome: 'attached',
+      now,
+    });
+    if (marked.kind === 'stale') return { kind: 'stale' } as const;
+
+    return await applyDecision(tx, {
+      userId: params.userId,
+      itemId: open.itemId,
+      action: open.action === 'complete' || open.action === 'cancel' ? open.action : 'update',
+      /**
+       * Режим правки из вопроса — §7.4 (задача 3.82).
+       *
+       * Голосовой ответ и нажатие кнопки обязаны вести себя одинаково:
+       * §7.3 требует этого прямо. Без режима оба применялись заменой, и
+       * подробность из вопроса про дополнение выбрасывалась.
+       */
+      ...(open.mode === 'append' ? { mode: 'append' as const } : {}),
+      changes: open.changes as ResolverAnswer['changes'],
+      spoken: open.segment,
+      timeZone: params.timeZone,
+      now,
+      reason: 'человек подтвердил голосом',
+      changedBy: 'user',
+    });
   });
+
+  if (applying.kind === 'stale') return await rescueOrphanAnswer();
 
   const leftoverSaved = await keepLeftover();
 

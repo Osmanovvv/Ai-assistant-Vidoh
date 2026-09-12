@@ -95,6 +95,10 @@ export async function sweepHistory(
         eq(items.userId, params.userId),
         eq(items.isDraft, false),
         isNotNull(items.embedding),
+        // Правило бывает только у дела (ограничение базы
+        // `items_recurrence_task_only`): эмоция «устала» каждый месяц —
+        // не регулярное дело (ревизия этапа 3, C8).
+        eq(items.type, 'TASK'),
         // Уже регулярное дело предлагать не о чем.
         sql`${items.recurrenceRule} is null`,
         inArray(items.status, FAMILY_STATUSES),
