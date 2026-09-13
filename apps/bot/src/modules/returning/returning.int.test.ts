@@ -160,6 +160,30 @@ describe('«начать с чистого листа» ничего не уда
     expect(rows.find((one) => one.id === fresh)?.backgroundedAt).toBeNull();
   });
 
+  it('регулярные дела остаются активными (решение заказчицы 13.09.2026, ответ 1.5)', async () => {
+    /**
+     * «Каждый вторник плавание» — то, что ВЫДОХ должен продолжать помнить и
+     * после паузы: человек однажды попросил, и «с чистого листа» не
+     * отменяет просьбу. Регулярное выключается только отдельно, по его
+     * слову. Ревизия этапа 3, H2 — закрыто её ответом.
+     */
+    const recurring = await sow('Плавание с сыном');
+    await testDb()
+      .update(items)
+      .set({
+        recurrenceRule: { kind: 'weekly', interval: 1, anchor: '2026-08-25' },
+        recurrenceSource: 'stated',
+      })
+      .where(eq(items.id, recurring));
+    const plain = await sow('Разобрать балкон');
+
+    expect(await moveToBackground(testDb(), { userId, now: NOW, before: EVERYTHING })).toBe(1);
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.find((row) => row.id === recurring)?.backgroundedAt).toBeNull();
+    expect(rows.find((row) => row.id === plain)?.backgroundedAt).not.toBeNull();
+  });
+
   it('закрытые дела не трогает', async () => {
     const id = await sow('Уже сделано');
     await testDb().update(items).set({ status: 'done' }).where(eq(items.id, id));
