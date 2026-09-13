@@ -32,7 +32,7 @@ import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import type { Applied } from '../resolver/patch.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
-import { effectiveEnergy, selectForOutput } from '../output/filter.js';
+import { effectiveEnergy, selectForOutput, type SelectionResult } from '../output/filter.js';
 import {
   createChosenTopics,
   firstStep,
@@ -1555,25 +1555,42 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       now,
     );
 
-    const selection = selectForOutput(await openItemsFor(db, batch.userId), {
-      energy: energyNow,
-      now,
-      timeZone: context.timeZone,
-      mentioned,
-      /**
-       * §13.7 и §21 п.7: «сил нет вовсе» — действие в ответе ровно одно.
-       *
-       * Предел ставится здесь, а не только через уровень сил: требование
-       * про **эту** выгрузку, и оно не должно зависеть от того, каким
-       * оказался сохранённый уровень. Два дела человеку, который только
-       * что сказал «сил нет», — это спор с ним.
-       *
-       * **Прочие состояния предела не ставят (задача 3.47).** «Задолбался»
-       * и «ничего не успеваю» дают три дела: так просил заказчик, и так
-       * же поступает главный эталон §13.2, где усталость названа прямо.
-       */
-      ...(noStrength ? { cap: 1 } : {}),
-    });
+    /**
+     * Одни чувства — старые дела не вытаскивать (решение заказчицы
+     * 13.09.2026, ответ 1.4; ревизия этапа 3, E19).
+     *
+     * §13.2 её ТЗ на монолог без дел подставлял три дела из бэклога. Она
+     * это отменила: человек поделился состоянием, а получил задачи — это
+     * давление. Выдача тогда пустая, а число скрытых честное: по нему
+     * ответ знает, что бэклог есть, и не говорит «ничего не висит».
+     * Кризис сюда не доходит — он остановлен раньше своим сценарием.
+     */
+    const feelingsOnly =
+      units.length > 0 &&
+      composition.tasks + composition.desires + composition.ideas + composition.infos === 0;
+
+    const open = await openItemsFor(db, batch.userId);
+    const selection: SelectionResult = feelingsOnly
+      ? { shown: [], hidden: open.length }
+      : selectForOutput(open, {
+          energy: energyNow,
+          now,
+          timeZone: context.timeZone,
+          mentioned,
+          /**
+           * §13.7 и §21 п.7: «сил нет вовсе» — действие в ответе ровно одно.
+           *
+           * Предел ставится здесь, а не только через уровень сил: требование
+           * про **эту** выгрузку, и оно не должно зависеть от того, каким
+           * оказался сохранённый уровень. Два дела человеку, который только
+           * что сказал «сил нет», — это спор с ним.
+           *
+           * **Прочие состояния предела не ставят (задача 3.47).** «Задолбался»
+           * и «ничего не успеваю» дают три дела: так просил заказчик, и так
+           * же поступает главный эталон §13.2, где усталость названа прямо.
+           */
+          ...(noStrength ? { cap: 1 } : {}),
+        });
 
     /**
      * §12.2: онбординг идёт после первой выгрузки. Начинается он, когда

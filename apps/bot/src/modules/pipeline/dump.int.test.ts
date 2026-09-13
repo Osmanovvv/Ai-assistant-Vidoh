@@ -1026,6 +1026,62 @@ describe('разбор', () => {
     expect(state?.energy ?? 'нет записи').toBe('нет записи');
   });
 
+  it('выгрузка из одних чувств старые дела не вытаскивает (решение заказчицы 13.09.2026, 1.4)', async () => {
+    /**
+     * §13.2 её ТЗ на монолог без дел подставлял три старых дела из
+     * бэклога. Заказчица отменила: «она поделилась состоянием, а ей в
+     * ответ выдали задачи» — давление. Коротко принять, дела не
+     * вытаскивать; посмотреть их можно по кнопке. Кризис — своим
+     * сценарием, он здесь не трогается.
+     */
+    const prompts = await seedPrompts();
+    for (const text of ['Записать сына к врачу', 'Оплатить садик', 'Разобрать балкон']) {
+      await testDb()
+        .insert(items)
+        .values({ userId, text, type: 'TASK', priority: 'NOW', topic: 'личное' });
+    }
+    await queuedBatchOf([{ kind: 'text', text: 'так устала, всё навалилось', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'так устала, всё навалилось',
+            type: 'EMOTION',
+            priority: 'NONE',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          },
+        ],
+      }),
+      presenter: JSON.stringify({ acknowledgement: 'Слышу. Много всего сразу.' }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply).toContain('Слышу. Много всего сразу.');
+    for (const text of ['Записать сына к врачу', 'Оплатить садик', 'Разобрать балкон']) {
+      expect(reply).not.toContain(text);
+    }
+    expect(reply).not.toContain(defaultTexts.answer.actionsLead);
+    expect(reply).not.toContain(defaultTexts.answer.nothingHidden);
+  });
+
   it('«сил нет вовсе» оставляет одно действие и снижает уровень', async () => {
     // §13.7, таблица сигналов: «Я сегодня вообще без сил» → признание в
     // одну строку и одно действие. Это единственный случай, когда выдача
