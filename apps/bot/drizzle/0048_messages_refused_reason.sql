@@ -1,0 +1,1 @@
+ALTER TABLE "messages_raw" ADD COLUMN "refused_reason" text;

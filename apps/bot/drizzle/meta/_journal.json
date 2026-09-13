@@ -337,6 +337,13 @@
       "when": 1789242973267,
       "tag": "0047_users_consent_confirmed",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789299973404,
+      "tag": "0048_messages_refused_reason",
+      "breakpoints": true
     }
   ]
 }
