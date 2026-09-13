@@ -49,6 +49,10 @@ export const PATCHABLE_FIELDS = [
   'completedAt',
   'deadlineAt',
   'deadlineAccuracy',
+  // Запрос №4: «Позже» снимает важность и ставит отметку. Резолвер
+  // словами этих полей не меняет — только действие с кнопки.
+  'priority',
+  'deferredAt',
 ] as const;
 
 export type PatchableField = (typeof PATCHABLE_FIELDS)[number];
@@ -65,7 +69,7 @@ type ItemPatch = Partial<Pick<Item, PatchableField>>;
  * того же рода — меняет запись и обязано оставить ревизию, — поэтому идёт
  * тем же путём, а не своей записью в базу.
  */
-export type ApplyAction = Exclude<ResolverAction, 'new'> | 'snooze';
+export type ApplyAction = Exclude<ResolverAction, 'new'> | 'snooze' | 'later';
 
 /** Сколько ждать отложенное дело. §11 подробностей не задаёт. */
 const SNOOZE_DAYS = 3;
@@ -232,6 +236,27 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     // Убранное — не сделанное: иначе вечерний итог посчитал бы его
     // закрытым сегодня.
     if (item.completedAt !== null) next.completedAt = null;
+    return { next };
+  }
+
+  if (params.action === 'later') {
+    /**
+     * «Позже» — «не сейчас и без даты» (запрос на изменение №4, решение
+     * заказчицы 13.09.2026).
+     *
+     * Срок и точность снимаются, важность — «когда-нибудь», дело остаётся
+     * открытым: из «Сегодня» и утреннего оно уходит, в «Все задачи» и в
+     * своей сфере — остаётся, и утром, когда дел мало, предлагается
+     * снова. Отметка `deferredAt` — что это решение человека (или
+     * нетронутое в разборе), а не просто бессрочное дело. Уснувшее
+     * кнопкой «Отложить» просыпается: «Позже» — не сон на три дня.
+     */
+    if (item.status === 'snoozed') next.status = 'active';
+    if (item.priority !== 'LATER') next.priority = 'LATER';
+    if (item.deadlineAt !== null) next.deadlineAt = null;
+    if (item.deadlineAccuracy !== null) next.deadlineAccuracy = null;
+    if (item.deferredAt === null) next.deferredAt = now;
+
     return { next };
   }
 
