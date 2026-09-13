@@ -327,6 +327,16 @@ export const reserved: TextProfile = {
     nothingToMove: 'Поле и так чистое.',
   },
 
+  review: {
+    headerYesterday: 'Вчера не дошли руки до:',
+    headerEarlier: 'Не дошли руки до:',
+    line: (n, text) => `${String(n)}. ${text}`,
+    buttonToday: (n) => `${String(n)} · На сегодня`,
+    buttonLater: (n) => `${String(n)} · Позже`,
+    buttonDrop: (n) => `${String(n)} · Убрать`,
+    offer: (text) => `Если захочется — из отложенного: ${text}`,
+  },
+
   reminders: {
     morningInvite: 'Доброе утро. Что на уме — наговори, разложу.',
     /**

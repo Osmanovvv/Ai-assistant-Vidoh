@@ -639,14 +639,20 @@ describe('список на сегодня', () => {
     expect(textsOf(selectForToday([tomorrow], forToday))).toEqual([]);
   });
 
-  it('сегодняшнее, просроченное и бессрочно-срочное — идут', () => {
+  it('сегодняшнее и бессрочно-срочное — идут; просроченное — нет (запрос №4, E13)', () => {
+    /**
+     * Решение заказчицы 13.09.2026: просроченное не висит первым в
+     * «Сегодня» день за днём — оно разбирается один раз утром, а
+     * нетронутое уходит в «Позже». При двадцати просроченных сегодняшние
+     * стояли на третьей странице (ревизия этапа 3, E13).
+     */
     const overdue = item({ text: 'просрочено', priority: 'SOON', deadlineAt: at('2026-09-01') });
     const now = item({ text: 'сегодня', priority: 'SOON', deadlineAt: at('2026-09-04') });
     const undated = item({ text: 'без срока, но сейчас', priority: 'NOW', deadlineAt: null });
 
     const shown = textsOf(selectForToday([overdue, now, undated], forToday));
 
-    expect(shown).toContain('просрочено');
+    expect(shown).not.toContain('просрочено');
     expect(shown).toContain('сегодня');
     expect(shown).toContain('без срока, но сейчас');
   });

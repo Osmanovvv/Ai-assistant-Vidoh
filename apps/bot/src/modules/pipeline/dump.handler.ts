@@ -1,7 +1,13 @@
 import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { items, type Batch, type EnergyLevelValue, type Item } from '../../db/schema.js';
+import {
+  items,
+  userSettings,
+  type Batch,
+  type EnergyLevelValue,
+  type Item,
+} from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
@@ -74,6 +80,8 @@ import type { BatchHandler } from './pipeline.service.js';
 import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
+import { autoDeferReviewed, markReviewed, reviewDue } from '../review/review.service.js';
+import { reviewRows } from '../scheduler/digest.js';
 
 /**
  * Разбор выгрузки целиком: от звука до ответа человеку.
@@ -269,6 +277,53 @@ async function refreshTouched(
  * показывали, потому что фейковый отправитель копил реплики списком, а не
  * правил одну.
  */
+/**
+ * Разбор вчерашнего отдельным сообщением — тем, у кого утренние
+ * выключены (запрос №4). См. вызов в конвейере.
+ */
+async function reviewAtInteraction(
+  db: Database,
+  deps: DumpHandlerDeps,
+  userId: string,
+  target: StatusTarget | undefined,
+  timeZone: string,
+  now: Date,
+): Promise<void> {
+  if (deps.onboarding === undefined || target === undefined) return;
+
+  const [settings] = await db
+    .select({ notificationsOn: userSettings.notificationsOn })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId))
+    .limit(1);
+  if (settings?.notificationsOn !== false) return;
+
+  await autoDeferReviewed(db, { userId, now, timeZone });
+  const review = await reviewDue(db, { userId, now, timeZone });
+  if (review === undefined) return;
+
+  const texts = textsFor((await outputContextOf(db, userId)).textProfile);
+  const lines = [
+    review.since === 'yesterday' ? texts.review.headerYesterday : texts.review.headerEarlier,
+    ...review.items.map((item, index) => texts.review.line(index + 1, titleWithoutDate(item.text))),
+  ];
+
+  const messageId = await deps.onboarding.ask({
+    chatId: target.chatId,
+    ...(target.threadId === undefined ? {} : { threadId: target.threadId }),
+    text: lines.join('\n'),
+    rows: reviewRows(texts, review),
+  });
+  // Не ушло — не показано: покажется в следующий раз.
+  if (messageId !== 0) {
+    await markReviewed(
+      db,
+      review.items.map((item) => item.id),
+      now,
+    );
+  }
+}
+
 async function alsoSay(
   deps: DumpHandlerDeps,
   target: StatusTarget | undefined,
@@ -1782,6 +1837,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         : presented.reply.text,
       presented.reply.buttons,
     );
+
+    /**
+     * Разбор вчерашнего при следующем обращении (запрос на изменение №4,
+     * решение заказчицы 13.09.2026): утренние выключены — просроченное
+     * разбирается здесь, отдельным сообщением после ответа, один раз;
+     * включены — его место утром, и здесь ничего не показывается.
+     * Нетронутое с прошлого показа перед этим уходит в «Позже» — то же
+     * правило, что у утреннего. Отправитель с рядами кнопок — тот же,
+     * что задаёт вопросы опроса.
+     */
+    await reviewAtInteraction(db, deps, batch.userId, target, context.timeZone, now);
 
     /**
      * §8.2: сводка темы обновляется правкой закреплённого сообщения.

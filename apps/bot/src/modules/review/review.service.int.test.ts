@@ -211,6 +211,14 @@ describe('offerFromLater — одно из отложенного, когда у
     expect(recent.id).not.toBe(older.id);
   });
 
+  it('только что отложенное тем же утром не предлагается: это было бы навязчиво', async () => {
+    // Нетронутое ушло в «Позже» этим утром — и тут же вернулось строкой
+    // «если захочется»? Нет: предлагается отложенное хотя бы сутки назад.
+    await sow({ deferredAt: new Date(NOW.getTime() - 60_000) });
+
+    expect(await offerFromLater(testDb(), { userId, now: NOW })).toBeUndefined();
+  });
+
   it('закрытое и убранное в фон не предлагается; нечего — undefined', async () => {
     await sow({ deferredAt: NOW, status: 'done' });
     await sow({ deferredAt: NOW, backgroundedAt: NOW });

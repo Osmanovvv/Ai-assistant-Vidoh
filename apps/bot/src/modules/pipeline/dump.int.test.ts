@@ -3594,9 +3594,11 @@ describe('выполнение и отмена голосом (§21 п.8, зад
 
   it('«что на сегодня» при длинном списке — восемь строк и «ещё N», а не тишина (ревизия этапа 3, E12)', async () => {
     /**
-     * Список «на сегодня» уходил без предела; при сотне просроченных
-     * текст пробивал 4096 знаков, Telegram отказывал, и человек получал
+     * Список «на сегодня» уходил без предела; при сотне дел текст
+     * пробивал 4096 знаков, Telegram отказывал, и человек получал
      * тишину. Кнопка «Сегодня» листает по восемь — голос отвечает так же.
+     * Дела — со сроком **сегодня**: просроченное в «Сегодня» больше не
+     * идёт (запрос №4), оно разбирается утром.
      */
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();
@@ -3609,8 +3611,9 @@ describe('выполнение и отмена голосом (§21 п.8, зад
           type: 'TASK',
           priority: 'SOON',
           topic: 'дом',
-          // Часы конвейера заморожены на T0: «вчера» — от них.
-          deadlineAt: at(-24 * 60 * 60_000),
+          // Часы конвейера заморожены на T0 (24.08 13:00 МСК): сегодня по
+          // Москве начинается в 21:00Z накануне.
+          deadlineAt: new Date('2026-08-23T21:00:00.000Z'),
           deadlineAccuracy: 'day',
         });
     }
@@ -3728,6 +3731,121 @@ describe('выполнение и отмена голосом (§21 п.8, зад
 
     const [restored] = await testDb().select().from(items).where(eq(items.id, itemId));
     expect(restored?.status).toBe('new');
+  });
+});
+
+describe('разбор вчерашнего при следующем обращении (запрос на изменение №4)', () => {
+  /**
+   * Решение заказчицы 13.09.2026 (ответ 1.2 нашего письма): утренние
+   * включены — разбор внутри утреннего; выключены — при следующем
+   * обращении к боту, один раз. Здесь — второй случай: отдельным
+   * сообщением после ответа на выгрузку.
+   */
+  async function overdue(text: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        deadlineAt: at(-2 * 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      })
+      .returning({ id: items.id });
+    return row?.id ?? '';
+  }
+
+  async function remindersOff(): Promise<void> {
+    await testDb()
+      .update(userSettings)
+      .set({ notificationsOn: false })
+      .where(eq(userSettings.userId, userId));
+  }
+
+  it('утренние выключены — разбор отдельным сообщением после ответа, с кнопками и отметкой', async () => {
+    const prompts = await seedPrompts();
+    await remindersOff();
+    const id = await overdue('Оплатить садик');
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    const questions = recordingQuestions();
+    const llm = echoingLlm();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    const review = questions.asked.find((text) => text.includes(defaultTexts.review.headerEarlier));
+    expect(review).toContain(defaultTexts.review.line(1, 'Оплатить садик'));
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, id));
+    expect(after?.reviewedAt).not.toBeNull();
+  });
+
+  it('второй раз в тот же день не показывается', async () => {
+    const prompts = await seedPrompts();
+    await remindersOff();
+    await overdue('Оплатить садик');
+    const questions = recordingQuestions();
+    const llm = echoingLlm();
+
+    for (const text of ['купить продукты', 'позвонить маме']) {
+      await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            llm,
+            onboarding: questions.sender,
+          }),
+        },
+        userId,
+      );
+    }
+
+    expect(
+      questions.asked.filter((text) => text.includes(defaultTexts.review.headerEarlier)),
+    ).toHaveLength(1);
+  });
+
+  it('утренние включены — при обращении разбор не показывается: его место утром', async () => {
+    const prompts = await seedPrompts();
+    await overdue('Оплатить садик');
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    const questions = recordingQuestions();
+    const llm = echoingLlm();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(questions.asked.some((text) => text.includes(defaultTexts.review.headerEarlier))).toBe(
+      false,
+    );
   });
 });
 
