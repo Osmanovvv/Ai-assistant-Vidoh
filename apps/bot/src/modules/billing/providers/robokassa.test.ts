@@ -175,6 +175,37 @@ describe('ссылка на оплату', () => {
 
     expect(new URL(yearly.url).searchParams.get('Recurring')).toBeNull();
     expect(yearly.autoRenews).toBe(false);
+
+    /**
+     * Способ оплаты (решение заказчицы 12.09.2026, ответ 12): месяц с
+     * автопродлением — только банковская карта, потому что дочерние
+     * списания идут только по карте; год — покупательница выбирает сама
+     * (СБП — после подтверждения Робокассой). `IncCurrLabel` в подпись не
+     * входит — по документации интерфейса оплаты.
+     */
+    expect(new URL(monthly.url).searchParams.get('IncCurrLabel')).toBe('BankCard');
+    expect(new URL(yearly.url).searchParams.get('IncCurrLabel')).toBeNull();
+  });
+
+  it('месяц без автопродления способ оплаты не навязывает', async () => {
+    // Карта нужна ради дочерних списаний; нет списаний — нет и требования.
+    const approved = createRobokassaProvider({ ...DEPS, recurringApproved: true });
+
+    const once = await approved.createCheckout({
+      userId: 'u1',
+      tgId: 42,
+      amount: 39_900,
+      currency: 'RUB',
+      title: 'Подписка',
+      description: 'Период',
+      plan: 'monthly',
+      renewable: false,
+      ref: 'r-7',
+      invoiceNumber: 1006,
+    });
+
+    expect(new URL(once.url).searchParams.get('Recurring')).toBeNull();
+    expect(new URL(once.url).searchParams.get('IncCurrLabel')).toBeNull();
   });
 
   it('обещание человеку и содержимое запроса не расходятся', async () => {
