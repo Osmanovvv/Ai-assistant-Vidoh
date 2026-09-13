@@ -174,6 +174,7 @@ export const reserved: TextProfile = {
     buttonDelete: 'Убрать',
     buttonMove: 'В другую сферу',
 
+    deferred: 'Убрала с сегодняшнего. Дело на месте — напомню, когда будет посвободнее.',
     snoozedUntil: (date) => `Отложила до ${date}. Верну на глаза, когда подойдёт срок.`,
     snoozedApprox: (date) => `Отложила. Срок около ${date} — верну на глаза, когда подойдёт.`,
     closed: (status) => `Это дело уже ${status}.`,

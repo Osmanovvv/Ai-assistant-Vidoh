@@ -45,6 +45,8 @@ export const RESTORABLE_FIELDS = [
   'recurrenceRule',
   'recurrenceText',
   'recurrenceSource',
+  // Запрос №4: «Позже» и его откат.
+  'deferredAt',
 ] as const;
 
 export type RestorableField = (typeof RESTORABLE_FIELDS)[number];

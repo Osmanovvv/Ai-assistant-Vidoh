@@ -123,6 +123,16 @@ describe('describeChange', () => {
     expect(text).toBe(defaultTexts.resolver.noted(ITEM.text));
   });
 
+  it('«позже» — без даты, с обещанием вернуть, когда будет место (запрос №4)', () => {
+    const later: Applied = {
+      ...applied(['priority', 'deadlineAt', 'deadlineAccuracy', 'deferredAt']),
+      action: 'later',
+      after: { ...ITEM, priority: 'LATER', deadlineAt: null, deadlineAccuracy: null },
+    };
+
+    expect(describeChange(later, defaultTexts, MOSCOW)).toBe(defaultTexts.card.deferred);
+  });
+
   it('«отложить» называет день, до которого отложено (ревизия этапа 3, C1)', () => {
     const snoozed: Applied = {
       ...applied(['status', 'deadlineAt', 'deadlineAccuracy']),

@@ -117,6 +117,8 @@ export interface ExportedData {
     readonly completedAt: string | null;
     /** §13.6: запись убрана «с чистого листа», но не удалена. */
     readonly backgroundedAt: string | null;
+    /** Запрос №4: когда дело ушло в «Позже». */
+    readonly deferredAt: string | null;
   }[];
   readonly dumps: readonly {
     readonly openedAt: string;
@@ -304,6 +306,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       updatedAt: item.updatedAt.toISOString(),
       completedAt: iso(item.completedAt),
       backgroundedAt: iso(item.backgroundedAt),
+      deferredAt: iso(item.deferredAt),
     })),
     dumps: dumps.map((dump) => ({
       openedAt: dump.openedAt.toISOString(),

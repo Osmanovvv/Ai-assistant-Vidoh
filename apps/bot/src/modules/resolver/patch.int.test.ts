@@ -191,6 +191,95 @@ describe('применение оставляет ревизию', () => {
   });
 });
 
+describe('«Позже» — снять срок, оставить дело (запрос на изменение №4)', () => {
+  /**
+   * Решение заказчицы 13.09.2026: «Позже» снимает дату и убирает дело из
+   * «Сегодня» и утреннего, но дело не теряется — остаётся в «Все задачи»
+   * и в своей сфере и возвращается, когда утром дел мало. Не «Отложить»
+   * (три дня и статус) и не фон: своя отметка `deferredAt`.
+   */
+  async function later(item: Item, now: Date) {
+    return appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'later',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now,
+      }),
+    );
+  }
+
+  it('просроченное теряет срок, важность «когда-нибудь», статус открытый, отметка стоит', async () => {
+    const item = await sow({
+      deadlineAt: new Date('2026-08-27T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+      priority: 'NOW',
+    });
+
+    const applied = await later(item, NOW);
+
+    expect(applied?.fields).toEqual(['priority', 'deadlineAt', 'deadlineAccuracy', 'deferredAt']);
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('new');
+    expect(after.deadlineAt).toBeNull();
+    expect(after.deadlineAccuracy).toBeNull();
+    expect(after.priority).toBe('LATER');
+    expect(after.deferredAt?.toISOString()).toBe(NOW.toISOString());
+  });
+
+  it('отложенное кнопкой «Отложить» возвращается в открытые: «Позже» — не сон', async () => {
+    const item = await sow({
+      status: 'snoozed',
+      deadlineAt: new Date('2026-09-05T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+    });
+
+    await later(item, NOW);
+
+    const after = await reread(item.id);
+    expect(after.status).toBe('active');
+    expect(after.deadlineAt).toBeNull();
+    expect(after.deferredAt).not.toBeNull();
+  });
+
+  it('уже в «Позже» без срока — менять нечего', async () => {
+    const item = await sow({
+      deadlineAt: null,
+      deadlineAccuracy: null,
+      priority: 'LATER',
+      deferredAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'later',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('unchanged');
+  });
+
+  it('откат возвращает срок и снимает отметку', async () => {
+    const item = await sow({
+      deadlineAt: new Date('2026-08-27T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+    });
+    const applied = await later(item, NOW);
+
+    await revertRevision(testDb(), { userId, revisionId: applied!.revisionId });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-27T21:00:00.000Z');
+    expect(after.deferredAt).toBeNull();
+  });
+});
+
 describe('отложить — решение с ревизией (ревизия этапа 3, C1)', () => {
   /**
    * Кнопка «Отложить» писала в базу напрямую: ни ревизии, ни отката.

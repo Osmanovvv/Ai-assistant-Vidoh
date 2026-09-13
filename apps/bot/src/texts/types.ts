@@ -208,6 +208,8 @@ export interface TextProfile {
      * чего у резолвера не бывает: «отложить» и нажатия впустую.
      */
     /** Отложено до дня с точным сроком (C1). */
+    /** «Позже» (запрос №4): дата снята, дело не потеряно, вернётся само. */
+    readonly deferred: string;
     readonly snoozedUntil: (date: string) => string;
     /** Отложено, а срок неточный: «около» — не число. */
     readonly snoozedApprox: (date: string) => string;
