@@ -522,6 +522,24 @@ export interface TextProfile {
     readonly nothingToMove: string;
   };
 
+  /**
+   * Разбор вчерашнего (запрос на изменение №4, решение заказчицы
+   * 13.09.2026). Без счётчика: §13 запрещает считать пропущенное. Номера
+   * в строках — не счёт, а адрес для кнопок.
+   */
+  readonly review: {
+    /** Всё из вчерашнего дня. */
+    readonly headerYesterday: string;
+    /** Есть и более давнее — «вчера» было бы неправдой. */
+    readonly headerEarlier: string;
+    readonly line: (n: number, text: string) => string;
+    readonly buttonToday: (n: number) => string;
+    readonly buttonLater: (n: number) => string;
+    readonly buttonDrop: (n: number) => string;
+    /** Одно из «Позже», когда утром дел мало: необязательное. */
+    readonly offer: (text: string) => string;
+  };
+
   readonly reminders: {
     /** Утро: приглашение выгрузить (§11). */
     readonly morningInvite: string;

@@ -1,3 +1,5 @@
+import type { Review } from '../review/review.service.js';
+import { toShortId } from '../shared/short-id.js';
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
@@ -54,6 +56,13 @@ export function morningText(
    * доступным на чтение, и напоминание о делах — чтение.
    */
   mayDump = true,
+  /**
+   * Разбор вчерашнего и одно из «Позже» (запрос на изменение №4). Разбор
+   * идёт после дел на сегодня: сперва день, потом хвост — и хвост один
+   * раз. Предложение из отложенного — последней строкой, как
+   * необязательное: не в списке дел и без «надо».
+   */
+  extra: { readonly review?: Review | undefined; readonly offer?: Item | undefined } = {},
 ): string {
   const lines = [mayDump ? texts.reminders.morningInvite : texts.reminders.needsPay];
 
@@ -63,8 +72,47 @@ export function morningText(
     for (const item of shown) lines.push(texts.reminders.line(titleUnderDayHeader(item, day)));
   }
 
+  if (extra.review !== undefined) {
+    lines.push(
+      '',
+      extra.review.since === 'yesterday'
+        ? texts.review.headerYesterday
+        : texts.review.headerEarlier,
+    );
+    extra.review.items.forEach((item, index) => {
+      lines.push(texts.review.line(index + 1, titleWithoutDate(item.text)));
+    });
+  }
+
+  if (extra.offer !== undefined) {
+    lines.push('', texts.review.offer(titleWithoutDate(extra.offer.text)));
+  }
+
   return lines.join('\n');
 }
+
+/** Ряды кнопок разбора: по ряду на дело, три кнопки с номером дела. */
+export function reviewRows(
+  texts: TextProfile,
+  review: Review,
+): readonly (readonly { readonly label: string; readonly action: string }[])[] {
+  return review.items.map((item, index) => {
+    const n = index + 1;
+    const code = toShortId(item.id);
+    return [
+      { label: texts.review.buttonToday(n), action: `${REVIEW_ACTION.today}:${code}` },
+      { label: texts.review.buttonLater(n), action: `${REVIEW_ACTION.later}:${code}` },
+      { label: texts.review.buttonDrop(n), action: `${REVIEW_ACTION.drop}:${code}` },
+    ];
+  });
+}
+
+/** Действия кнопок разбора: обработчик — `bot/handlers/review.ts`. */
+export const REVIEW_ACTION = {
+  today: 'review:today',
+  later: 'review:later',
+  drop: 'review:drop',
+} as const;
 
 /**
  * Вечерняя реплика: итог дня, приглашение и — если есть — один вопрос.

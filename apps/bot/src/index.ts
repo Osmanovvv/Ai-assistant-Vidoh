@@ -49,6 +49,7 @@ import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
 import { startInactivityLoop } from './modules/privacy/inactivity.service.js';
 import { registerQuestionHandlers } from './bot/handlers/question.js';
 import { registerReminderHandlers } from './bot/handlers/reminder.js';
+import { registerReviewHandlers } from './bot/handlers/review.js';
 import { registerReturningHandlers } from './bot/handlers/returning.js';
 import { registerSuggestHandlers } from './bot/handlers/suggest.js';
 import { registerUndoHandlers } from './bot/handlers/undo.js';
@@ -949,6 +950,8 @@ async function main(): Promise<void> {
   registerUndoHandlers(bot, { db, logger, topics: topicGateway, embedder, spendGuard });
   registerSuggestHandlers(bot, db, logger);
   registerReminderHandlers(bot, db, logger);
+  // Кнопки разбора вчерашнего под утренним (запрос на изменение №4).
+  registerReviewHandlers(bot, db, logger);
   // §21 п.6: закрыть шаг проекта. До задачи 3.82 это было нельзя ничем,
   // и «Сделано» в ответе о проекте оставалось пустым навсегда.
   registerProjectHandlers(bot, db, logger);

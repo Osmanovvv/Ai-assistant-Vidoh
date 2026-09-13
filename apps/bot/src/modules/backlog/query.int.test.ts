@@ -238,8 +238,10 @@ describe('вопрос про дело, которое нашлось поиск
     expect(answer.kind).toBe('about');
   });
 
-  it('«что на сегодня?» с просроченным — список', async () => {
-    await addItem('сдать отчёт', 'active', { deadlineAt: new Date(Date.now() - 24 * 60 * 60_000) });
+  it('«что на сегодня?» с делом на сегодня — список', async () => {
+    // Просроченное в «Сегодня» больше не идёт (запрос №4): оно
+    // разбирается утром. Сюда — дело со сроком в ближайший час.
+    await addItem('сдать отчёт', 'active', { deadlineAt: new Date(Date.now() + 60 * 60_000) });
 
     const answer = await answerBacklogQuery(
       { db: testDb(), embedder, logger },

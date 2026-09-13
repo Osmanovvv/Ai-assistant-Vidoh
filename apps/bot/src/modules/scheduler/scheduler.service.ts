@@ -1,3 +1,12 @@
+import {
+  autoDeferReviewed,
+  markOffered,
+  markReviewed,
+  offerFromLater,
+  reviewDue,
+  unmarkOffered,
+  unmarkReviewed,
+} from '../review/review.service.js';
 import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
@@ -26,7 +35,14 @@ import { withdrawOffer } from '../recurrence/suggestions.repo.js';
 import { withNextSteps } from '../projects/projects.service.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { outputContextOf } from '../users/state.repo.js';
-import { deadlineText, eveningText, morningText, projectText } from './digest.js';
+import {
+  deadlineText,
+  eveningText,
+  MORNING_ACTIONS_LIMIT,
+  morningText,
+  projectText,
+  reviewRows,
+} from './digest.js';
 import { deadlineKey, HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
@@ -418,7 +434,7 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
   const messageId = await deps.sender.ask({
     chatId: person.tgId,
     text: message.text,
-    rows: message.buttons.length === 0 ? [] : [message.buttons],
+    rows: [...(message.rows ?? []), ...(message.buttons.length === 0 ? [] : [message.buttons])],
   });
 
   if (messageId === 0) {
@@ -448,6 +464,11 @@ async function noteFailure(deps: SchedulerDeps, reminder: Reminder): Promise<voi
 interface ComposedReminder {
   readonly text: string;
   readonly buttons: readonly StatusButton[];
+  /**
+   * Несколько рядов кнопок — у утреннего с разбором вчерашнего (запрос
+   * №4): по ряду на дело. Задано — `buttons` идут последним рядом.
+   */
+  readonly rows?: readonly (readonly StatusButton[])[] | undefined;
   /**
    * Что откатить, если сообщение не ушло (ревизия этапа 3, C2): у
    * вечерней сводки с предложением регулярности — само предложение,
@@ -499,6 +520,26 @@ async function composeOne(
   switch (reminder.kind) {
     case 'morning': {
       const context = await outputContextOf(deps.db, reminder.userId);
+
+      /**
+       * Разбор вчерашнего (запрос на изменение №4, решение заказчицы
+       * 13.09.2026). Сперва нетронутое с прошлого разбора уходит в
+       * «Позже» — само, без повторного вопроса (ответ 1.2); потом
+       * отбирается новое: просроченное, ещё не показанное. Отметки
+       * ставятся при сборке и снимаются, если сообщение не ушло (C2), —
+       * иначе разбор, которого человек не видел, считался бы показанным.
+       */
+      await autoDeferReviewed(deps.db, {
+        userId: reminder.userId,
+        now,
+        timeZone: context.timeZone,
+      });
+      const review = await reviewDue(deps.db, {
+        userId: reminder.userId,
+        now,
+        timeZone: context.timeZone,
+      });
+
       const today = selectForToday(await openItemsFor(deps.db, reminder.userId), {
         now,
         timeZone: context.timeZone,
@@ -532,18 +573,37 @@ async function composeOne(
        */
       const mayDump = await mayDumpNow(deps, reminder.userId, now);
 
+      // Большая цель — ближайшим шагом (E17).
+      const actions = await withNextSteps(
+        deps.db,
+        today.filter((item) => !covered.has(item.id)),
+      );
+
+      /**
+       * Дел на утро меньше трёх — одно из «Позже» отдельной строкой, как
+       * необязательное (ответ 1.1). Каждое не чаще раза в неделю, по
+       * кругу от самого давнего — `offerFromLater`.
+       */
+      const offer =
+        actions.length < MORNING_ACTIONS_LIMIT
+          ? await offerFromLater(deps.db, { userId: reminder.userId, now })
+          : undefined;
+
+      const reviewedIds = review?.items.map((item) => item.id) ?? [];
+      await markReviewed(deps.db, reviewedIds, now);
+      if (offer !== undefined) await markOffered(deps.db, offer.id, now);
+
       return {
-        text: morningText(
-          texts,
-          // Большая цель — ближайшим шагом (E17).
-          await withNextSteps(
-            deps.db,
-            today.filter((item) => !covered.has(item.id)),
-          ),
-          { now, timeZone: context.timeZone },
-          mayDump,
-        ),
+        text: morningText(texts, actions, { now, timeZone: context.timeZone }, mayDump, {
+          review,
+          offer,
+        }),
         buttons: mayDump ? [] : payButtons(texts),
+        rows: review === undefined ? [] : reviewRows(texts, review),
+        undoIfUnsent: async () => {
+          await unmarkReviewed(deps.db, reviewedIds);
+          if (offer !== undefined) await unmarkOffered(deps.db, offer.id);
+        },
       };
     }
 

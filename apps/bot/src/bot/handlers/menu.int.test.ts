@@ -440,7 +440,12 @@ describe('меню', () => {
     expect(mine).toBeTruthy();
   });
 
-  it('«Сегодня» показывает просроченное и срочное, а не весь бэклог', async () => {
+  it('«Сегодня» показывает срочное, а не просроченное и не весь бэклог (запрос №4, E13)', async () => {
+    /**
+     * Решение заказчицы 13.09.2026: просроченное не висит первым в
+     * «Сегодня» день за днём — оно разбирается утром один раз, а
+     * нетронутое уходит в «Позже».
+     */
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -465,7 +470,7 @@ describe('меню', () => {
       (button) => button.text,
     );
 
-    expect(labels).toContain('просроченное');
+    expect(labels).not.toContain('просроченное');
     expect(labels).toContain('срочное');
     expect(labels).not.toContain('на потом');
   });
@@ -626,12 +631,8 @@ describe('«Сделать сейчас» открывает показанно�
     const { bot, calls } = createTestBot();
     await bot.init();
 
-    await addItem({
-      owner: userId,
-      text: 'к врачу',
-      topic: 'личное',
-      deadlineAt: new Date(Date.now() - 86_400_000),
-    });
+    // Бессрочное «сейчас»: просроченное в «Сегодня» больше не идёт (№4).
+    await addItem({ owner: userId, text: 'к врачу', topic: 'личное', priority: 'NOW' });
 
     await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.now));
 

@@ -134,6 +134,8 @@ export async function offerFromLater(
   params: { readonly userId: string; readonly now: Date },
 ): Promise<Item | undefined> {
   const threshold = new Date(params.now.getTime() - OFFER_AGAIN_AFTER_DAYS * 24 * 60 * 60_000);
+  // Отложенное только что — не предлагать тем же утром: это навязчиво.
+  const settled = new Date(params.now.getTime() - 24 * 60 * 60_000);
 
   const [row] = await db
     .select()
@@ -142,6 +144,7 @@ export async function offerFromLater(
       and(
         live(params.userId),
         isNotNull(items.deferredAt),
+        lt(items.deferredAt, settled),
         or(isNull(items.offeredAt), lt(items.offeredAt, threshold)),
       ),
     )
@@ -151,7 +154,21 @@ export async function offerFromLater(
   return row;
 }
 
+/** Сообщение не ушло — разбор не показан: отметка снимается (C2). */
+export async function unmarkReviewed(db: Executor, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(items)
+    .set({ reviewedAt: null })
+    .where(inArray(items.id, [...ids]));
+}
+
 /** Предложено утром — отметка, чтобы не повторять неделю. */
 export async function markOffered(db: Executor, id: string, now: Date): Promise<void> {
   await db.update(items).set({ offeredAt: now }).where(eq(items.id, id));
+}
+
+/** Сообщение не ушло — предложение не прозвучало: отметка снимается. */
+export async function unmarkOffered(db: Executor, id: string): Promise<void> {
+  await db.update(items).set({ offeredAt: null }).where(eq(items.id, id));
 }

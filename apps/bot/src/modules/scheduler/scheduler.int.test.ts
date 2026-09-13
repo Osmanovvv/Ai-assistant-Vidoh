@@ -12,6 +12,7 @@ import {
   reminders,
   userSettings,
   users,
+  type Item,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
@@ -912,6 +913,120 @@ describe('снижение частоты (3.17)', () => {
     await planReminders(deps(), { now: NOW });
 
     expect(await countReminders('morning')).toBe(11);
+  });
+});
+
+describe('разбор вчерашнего в утреннем (запрос на изменение №4)', () => {
+  /**
+   * Решение заказчицы 13.09.2026 (ответы 1.1–1.2): просроченное не висит
+   * первым в «Сегодня», а разбирается один раз утром — «Вчера не дошли
+   * руки до: …» с тремя кнопками на дело; нетронутое к следующему утру
+   * само уходит в «Позже»; при малом числе дел утром — одно из
+   * отложенного как необязательное.
+   */
+  const MORNING = new Date('2026-08-30T05:30:00.000Z');
+
+  async function plant(text: string, overrides: Partial<Item> = {}): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({ userId, text, type: 'TASK', priority: 'SOON', topic: 'быт', ...overrides })
+      .returning({ id: items.id });
+    return row?.id ?? '';
+  }
+
+  async function itemOf(id: string): Promise<Item> {
+    const [row] = await testDb().select().from(items).where(eq(items.id, id));
+    if (row === undefined) throw new Error('пропало');
+    return row;
+  }
+
+  async function morning(): Promise<Sent | undefined> {
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: MORNING });
+    return outbox.find((one) => one.text.includes(defaultTexts.reminders.morningInvite));
+  }
+
+  it('просроченное — в разборе с кнопками, а не в списке на сегодня; отметка стоит', async () => {
+    const overdue = await plant('Оплатить садик', {
+      deadlineAt: new Date('2026-08-28T21:00:00.000Z'), // 29.08 по Москве — вчера
+      deadlineAccuracy: 'day',
+    });
+    // Бессрочное «сейчас»: у дела со сроком на сегодня своё напоминание,
+    // и в сводке оно не повторяется.
+    await plant('Забрать посылку', { priority: 'NOW' });
+
+    const digest = await morning();
+
+    expect(digest?.text).toContain(defaultTexts.review.headerYesterday);
+    expect(digest?.text).toContain(defaultTexts.review.line(1, 'Оплатить садик'));
+    expect(digest?.buttons).toEqual([
+      defaultTexts.review.buttonToday(1),
+      defaultTexts.review.buttonLater(1),
+      defaultTexts.review.buttonDrop(1),
+    ]);
+
+    // В списке на сегодня — только сегодняшнее: просроченное не «первое».
+    const todayBlock = digest?.text.split(defaultTexts.review.headerYesterday)[0] ?? '';
+    expect(todayBlock).toContain('Забрать посылку');
+    expect(todayBlock).not.toContain('Оплатить садик');
+
+    expect((await itemOf(overdue)).reviewedAt?.toISOString()).toBe(MORNING.toISOString());
+  });
+
+  it('нетронутое после вчерашнего разбора уходит в «Позже» и не повторяется', async () => {
+    const untouched = await plant('Позвонить стоматологу', {
+      deadlineAt: new Date('2026-08-26T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+      reviewedAt: new Date('2026-08-29T05:30:00.000Z'),
+    });
+
+    const digest = await morning();
+
+    expect(digest?.text).not.toContain(defaultTexts.review.headerYesterday);
+    expect(digest?.text).not.toContain(defaultTexts.review.headerEarlier);
+    expect(digest?.text).not.toContain('Позвонить стоматологу');
+    const after = await itemOf(untouched);
+    expect(after.deadlineAt).toBeNull();
+    expect(after.deferredAt).not.toBeNull();
+  });
+
+  it('дел на утро меньше трёх — одно из «Позже» отдельной строкой, с отметкой', async () => {
+    const deferred = await plant('Разобрать балкон', {
+      deferredAt: new Date('2026-08-20T10:00:00.000Z'),
+      priority: 'LATER',
+    });
+
+    const digest = await morning();
+
+    expect(digest?.text).toContain(defaultTexts.review.offer('Разобрать балкон'));
+    expect((await itemOf(deferred)).offeredAt?.toISOString()).toBe(MORNING.toISOString());
+  });
+
+  it('дел на утро три и больше — из «Позже» ничего не предлагается', async () => {
+    await plant('Разобрать балкон', { deferredAt: new Date('2026-08-20T10:00:00.000Z') });
+    for (const text of ['Первое', 'Второе', 'Третье']) {
+      await plant(text, { priority: 'NOW' });
+    }
+
+    const digest = await morning();
+
+    expect(digest?.text).not.toContain('Разобрать балкон');
+  });
+
+  it('сорвавшаяся отправка снимает отметки: разбор и предложение покажутся завтра', async () => {
+    const overdue = await plant('Оплатить садик', {
+      deadlineAt: new Date('2026-08-28T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+    });
+    const deferred = await plant('Разобрать балкон', {
+      deferredAt: new Date('2026-08-20T10:00:00.000Z'),
+    });
+    sendFails = true;
+
+    await morning();
+
+    expect((await itemOf(overdue)).reviewedAt).toBeNull();
+    expect((await itemOf(deferred)).offeredAt).toBeNull();
   });
 });
 
