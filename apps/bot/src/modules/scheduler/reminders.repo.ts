@@ -184,30 +184,36 @@ export async function markSkipped(db: Executor, id: string, reason: SkipReason):
 }
 
 /**
- * Местная дата последнего отправленного утреннего, числом.
+ * Местная дата последнего **поставленного** утреннего, числом: отправленного
+ * или ещё ждущего отправки. Из неё считается «через день» и «раз в
+ * неделю» (3.17).
  *
- * Из неё считается «через день» и «раз в неделю» (3.17).
+ * **Поставленного, а не отправленного — находка с боя 13.09.2026.** Проход
+ * в 07:30:38 отправляет сегодняшнее и в ту же секунду раскладывает
+ * завтрашнее; если смотреть по отправленным, «последнее» в этот момент —
+ * ещё вчерашнее, «прошло два дня» ≥ «через день», и завтрашнее ставится
+ * всегда. Человек молчал восемь дней и получал утреннее каждый день.
+ * Пропущенные (`skipped_reason`) не считаются: заблокировал бота — отсчёт
+ * идёт от последнего настоящего.
  */
 export async function lastMorningDay(
   db: Executor,
   params: { readonly userId: string; readonly timeZone: string },
 ): Promise<number | undefined> {
   const [last] = await db
-    .select({ sentAt: reminders.sentAt })
+    .select({ dueAt: reminders.dueAt })
     .from(reminders)
     .where(
       and(
         eq(reminders.userId, params.userId),
         eq(reminders.kind, 'morning'),
-        sql`${reminders.sentAt} is not null`,
+        isNull(reminders.skippedReason),
       ),
     )
-    .orderBy(desc(reminders.sentAt))
+    .orderBy(desc(reminders.dueAt))
     .limit(1);
 
-  return last?.sentAt === undefined || last.sentAt === null
-    ? undefined
-    : localDayNumber(last.sentAt, params.timeZone);
+  return last === undefined ? undefined : localDayNumber(last.dueAt, params.timeZone);
 }
 
 /**

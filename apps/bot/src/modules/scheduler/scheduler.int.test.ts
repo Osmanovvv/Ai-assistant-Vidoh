@@ -858,6 +858,49 @@ describe('снижение частоты (3.17)', () => {
     expect(await countReminders('evening')).toBe(1);
   });
 
+  it('«через день» держится, когда завтрашнее планируется в секунду отправки сегодняшнего (находка с боя 13.09.2026)', async () => {
+    /**
+     * На бою человек молчал с 05.09, утренних подряд ушло восемь — а они
+     * шли каждый день. Проход в 07:30:38 отправляет сегодняшнее и в ту же
+     * секунду раскладывает завтрашнее; «последнее утреннее» на момент
+     * раскладки — ещё вчерашнее, «прошло два дня» ≥ «через день», и
+     * завтрашнее ставится всегда. Недельная частота не страдала: два
+     * меньше семи. Здесь — тот самый момент: сегодняшнее уже поставлено,
+     * ещё не отправлено, проход идёт после его срока.
+     */
+    for (let back = 1; back <= 5; back += 1) {
+      const day = new Date(NOW.getTime() - back * DAY).toISOString().slice(0, 10);
+      await ignoredMorning(day);
+    }
+    // Сегодняшнее поставлено вчерашним проходом и ждёт отправки.
+    await testDb()
+      .insert(reminders)
+      .values({
+        userId,
+        kind: 'morning',
+        dueAt: new Date('2026-08-30T05:30:00.000Z'),
+        dedupeKey: 'morning:2026-08-30',
+      });
+    expect(await ignoredStreak(testDb(), { userId, timeZone: 'Europe/Moscow' })).toBe(5);
+
+    await planReminders(deps(), { now: new Date('2026-08-30T05:30:38.000Z') });
+
+    // Завтрашнего нет: «через день» — это через день.
+    expect(await countReminders('morning')).toBe(6);
+
+    // И назавтра, когда сегодняшнее уже отправлено, — тоже нет.
+    await testDb()
+      .update(reminders)
+      .set({ sentAt: new Date('2026-08-30T05:30:38.000Z') })
+      .where(eq(reminders.dedupeKey, 'morning:2026-08-30'));
+    await planReminders(deps(), { now: new Date('2026-08-31T03:00:00.000Z') });
+    expect(await countReminders('morning')).toBe(6);
+
+    // Через день — ставится.
+    await planReminders(deps(), { now: new Date('2026-08-31T06:00:00.000Z') });
+    expect(await countReminders('morning')).toBe(7);
+  });
+
   it('после недели молчания утреннее возвращается', async () => {
     for (let back = 7; back <= 16; back += 1) {
       const day = new Date(NOW.getTime() - back * DAY).toISOString().slice(0, 10);
