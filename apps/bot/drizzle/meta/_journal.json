@@ -344,6 +344,13 @@
       "when": 1789299973404,
       "tag": "0048_messages_refused_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1789302068434,
+      "tag": "0049_users_inactivity_warned",
+      "breakpoints": true
     }
   ]
 }

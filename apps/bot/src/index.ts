@@ -46,6 +46,7 @@ import { registerProjectHandlers } from './bot/handlers/project.js';
 import { MENU_ACTION, registerMenuHandlers } from './bot/handlers/menu.js';
 import { registerOnboardingHandlers } from './bot/handlers/onboarding.js';
 import { registerPrivacyHandlers } from './bot/handlers/privacy.js';
+import { startInactivityLoop } from './modules/privacy/inactivity.service.js';
 import { registerQuestionHandlers } from './bot/handlers/question.js';
 import { registerReminderHandlers } from './bot/handlers/reminder.js';
 import { registerReturningHandlers } from './bot/handlers/returning.js';
@@ -1226,9 +1227,26 @@ async function main(): Promise<void> {
         })
       : () => undefined;
 
+  /**
+   * Удаление после 24 месяцев тишины (§16; решение заказчицы 12.09.2026,
+   * ответ 15; Политика п. 11.2): предупредить, через 30 дней без ответа
+   * — стереть тем же путём, что /delete_my_data. Только вместе с
+   * напоминаниями: без них бот и не пишет людям сам.
+   */
+  const stopInactivity = env.REMINDERS
+    ? startInactivityLoop({
+        db,
+        logger,
+        sender: questions,
+        topics: topicGateway,
+        providers,
+      })
+    : () => undefined;
+
   installShutdownHandlers(server, worker, broadcastWorker, async () => {
     stopSweep();
     stopRenewals();
+    stopInactivity();
     // Рассылка дорабатывает идущий проход: отправленное должно быть
     // помечено до закрытия базы (ревизия этапа 3, D7).
     await stopScheduler();
