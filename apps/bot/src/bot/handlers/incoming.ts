@@ -15,7 +15,7 @@ import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { BILLING_ACTION } from './billing.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
-import { heldMessagesOf, markConsumed } from '../../modules/gateway/orphans.js';
+import { heldMessagesOf, markConsumed, markRefused } from '../../modules/gateway/orphans.js';
 import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
 import { consentConfirmedOf } from '../../modules/users/users.repo.js';
@@ -282,6 +282,14 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       });
 
       if (!access.allowed) {
+        // Сохранено и нарочно без выгрузки — так и помечается, иначе
+        // через час это «сирота» в журнале каждую минуту (13.09.2026).
+        // Причина у отказа есть всегда (`accessOf`); тип держит её
+        // необязательной только ради разрешённого исхода.
+        if (access.why !== undefined) {
+          await markRefused(deps.db, outcome.messageId, access.why);
+        }
+
         const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
 
         /**
@@ -339,6 +347,8 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
     // иначе тридцатая мысль разбиралась бы по первому голосовому, а
     // остальные оставались без выгрузки (см. `isOverDumpLimit`).
     if (await isOverDumpLimit(deps.db, outcome.userId, { limits })) {
+      await markRefused(deps.db, outcome.messageId, 'dumpLimit');
+
       // Профиль спрашивается только там, где реплика действительно
       // уходит: это горячий путь, и лишний запрос на каждое сообщение
       // ради текста, который отправляется редко, не нужен.

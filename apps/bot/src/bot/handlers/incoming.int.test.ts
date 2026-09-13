@@ -296,6 +296,9 @@ describe('потолок выгрузок за сутки', () => {
     const saved = await testDb().select().from(messagesRaw).where(eq(messagesRaw.userId, userId));
     expect(saved).toHaveLength(1);
     expect(saved[0]?.text).toBe('записать сына к врачу');
+    // И помечено, почему без выгрузки: иначе через час это «сирота» в
+    // журнале, каждую минуту, — как было с ответами на опрос.
+    expect(saved[0]?.refusedReason).toBe('dumpLimit');
   });
 
   it('новая выгрузка при этом не заводится', async () => {
@@ -587,6 +590,8 @@ describe('пробный период и деградация (§14, задач�
     expect(saved[0]?.text).toBe('купить продукты');
     // Сохранено, но к выгрузке не привязано: разбор по нему не заводим.
     expect(saved[0]?.batchId).toBeNull();
+    // Причина записана — счётчику сирот и панели.
+    expect(saved[0]?.refusedReason).toBe('trial');
   });
 
   it('реплика про пробный период, а не «приходи завтра»', async () => {

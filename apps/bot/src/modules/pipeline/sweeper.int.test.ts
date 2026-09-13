@@ -553,6 +553,40 @@ describe('сообщения без выгрузки видны', () => {
     expect(result.orphanedMessages, 'сирота осталась невидимой').toBe(1);
   });
 
+  it('остановленное потолком или пробным периодом — не сирота: причина записана', async () => {
+    /**
+     * Гейт пробного периода и суточный потолок сохраняют сообщение и не
+     * заводят выгрузку — по замыслу (§14, §10.5). Без отметки счётчик
+     * через час считал его сиротой и писал об этом каждую минуту; с
+     * первым тестером, упёршимся в лимит, журнал наполнился бы ложными
+     * предупреждениями.
+     */
+    const HOUR = 60 * 60_000;
+
+    await testDb()
+      .insert(messagesRaw)
+      .values({
+        userId,
+        updateId: 9_100_003,
+        tgChatId: 800,
+        tgMessageId: 9003,
+        kind: 'text',
+        text: 'записать сына к врачу',
+        receivedAt: at(-2 * HOUR),
+        refusedReason: 'trial',
+      });
+
+    const result = await sweepOnce({
+      db: testDb(),
+      logger,
+      now: () => T0,
+      onOutcome: ignoreOutcome,
+      process: () => Promise.resolve(),
+    });
+
+    expect(result.orphanedMessages).toBe(0);
+  });
+
   it('сообщение до нажатия «Согласна» — не сирота: оно ждёт нажатия', async () => {
     /**
      * Без согласия выгрузка не заводится нарочно (§16, решение заказчицы

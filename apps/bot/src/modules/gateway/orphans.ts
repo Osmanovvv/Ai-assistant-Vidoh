@@ -52,7 +52,26 @@ function deliberate(): ReturnType<typeof sql> {
     -- Съеденное как ответ на вопрос бота — обработано, не сирота
     -- (найдено на бою 12.09.2026: «7:30» из опроса считалось неделю).
     or ${messagesRaw.consumedAt} is not null
+    -- Остановленное гейтом доступа или суточным потолком — нарочно без
+    -- выгрузки, причина записана (13.09.2026).
+    or ${messagesRaw.refusedReason} is not null
   )`;
+}
+
+/** Почему разбор по сообщению не заведён: причины гейта доступа и потолок. */
+export type RefusedReason = 'trial' | 'expired' | 'renewalFailed' | 'dumpLimit';
+
+/**
+ * Сообщение сохранено, а выгрузка по нему не заведена нарочно (§14 —
+ * доступа нет; §10.5 — потолок). Отметка нужна счётчику сирот и панели:
+ * без неё строка через час считалась бы потерей.
+ */
+export async function markRefused(
+  db: Executor,
+  messageId: string,
+  reason: RefusedReason,
+): Promise<void> {
+  await db.update(messagesRaw).set({ refusedReason: reason }).where(eq(messagesRaw.id, messageId));
 }
 
 /**
