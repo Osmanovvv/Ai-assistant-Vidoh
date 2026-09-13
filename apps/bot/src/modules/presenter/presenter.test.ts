@@ -207,6 +207,26 @@ describe('buildReply', () => {
     ]);
   });
 
+  it('одни чувства при непустом бэклоге: старых дел не показывает и не говорит, что ничего не висит', () => {
+    /**
+     * Решение заказчицы 13.09.2026 (ответ 1.4): поделилась состоянием —
+     * в ответ не выдают задачи. §13.2 её ТЗ предлагал три старых дела;
+     * она это отменила. Показать бэклог можно по кнопке, само — нет.
+     * «Больше ничего не висит» при пяти скрытых было бы ложью.
+     */
+    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 5, tired: true });
+
+    expect(reply.text).toContain(ack);
+    expect(reply.text).not.toContain(texts.answer.nothingHidden);
+    expect(reply.text).not.toContain(texts.answer.actionsLead);
+    expect(reply.text).toContain(texts.answer.questionEmotionOnly);
+    expect(countQuestions(reply.text)).toBe(1);
+    expect(reply.buttons.map((button) => button.label)).toEqual([
+      texts.answer.buttonShowAll,
+      texts.answer.buttonLater,
+    ]);
+  });
+
   it('ни дел, ни остатка — не обещает того, чего нет', () => {
     const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
 
