@@ -87,6 +87,13 @@ export const users = pgTable(
     consentConfirmedAt: timestamp('consent_confirmed_at', { withTimezone: true }),
     /** Редакция политики и согласия, на которую нажато (§16, ответ 13). */
     consentEdition: text('consent_edition'),
+    /**
+     * Предупреждение об удалении после 24 месяцев тишины отправлено
+     * (решение заказчицы 12.09.2026, ответ 15; Политика п. 11.2). Через
+     * 30 дней без обращения данные удаляются тем же путём, что
+     * /delete_my_data; обратился — отметка снимается, отсчёт заново.
+     */
+    inactivityWarnedAt: timestamp('inactivity_warned_at', { withTimezone: true }),
 
     /**
      * Пользователь заблокировал бота. Планировщик обязан это учитывать,

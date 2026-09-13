@@ -786,6 +786,12 @@ export interface TextProfile {
   };
 
   readonly privacy: {
+    /**
+     * 24 месяца тишины: предупреждение перед удалением (решение заказчицы
+     * 12.09.2026, ответ 15). Одно сообщение, без вопроса; путь остаться —
+     * любое сообщение, путь забрать данные — /export_my_data.
+     */
+    readonly inactivityWarning: string;
     readonly deleteFirstStep: string;
     readonly deleteSecondStep: string;
     readonly deleteConfirmButton: string;

@@ -48,6 +48,7 @@ const DECISIONS: readonly {
         'consentAt',
         'consentConfirmedAt',
         'consentEdition',
+        'inactivityWarnedAt',
         'createdAt',
       ],
       internal: [

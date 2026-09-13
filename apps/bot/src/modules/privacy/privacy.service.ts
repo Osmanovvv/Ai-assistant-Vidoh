@@ -49,6 +49,8 @@ export interface ExportedData {
     /** Нажатие «Согласна» и редакция, на которую нажато (§16). */
     readonly consentConfirmedAt: string | null;
     readonly consentEdition: string | null;
+    /** Предупреждение об удалении после 24 месяцев тишины (Политика п. 11.2). */
+    readonly inactivityWarnedAt: string | null;
     readonly createdAt: string;
   };
   readonly settings: {
@@ -256,6 +258,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       consentAt: iso(profile.consentAt),
       consentConfirmedAt: iso(profile.consentConfirmedAt),
       consentEdition: profile.consentEdition,
+      inactivityWarnedAt: iso(profile.inactivityWarnedAt),
       createdAt: profile.createdAt.toISOString(),
     },
     settings: settings

@@ -2,12 +2,11 @@ import { InputFile, type Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
-import { deleteUserData, exportUserData } from '../../modules/privacy/privacy.service.js';
-import { stopAllRenewals } from '../../modules/billing/subscription.service.js';
+import { eraseUser } from '../../modules/privacy/erase.service.js';
+import { exportUserData } from '../../modules/privacy/privacy.service.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
-import { removeThread } from '../../modules/topics/topics.service.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -128,77 +127,12 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
       return;
     }
 
-    /**
-     * Продление отменяется **до** удаления и **до** транзакции.
-     *
-     * До удаления — потому что ключ отмены уходит каскадом вместе с
-     * человеком. До транзакции — потому что держать замок на его строках,
-     * пока отвечает Telegram, значило бы поставить право на удаление в
-     * зависимость от чужой доступности.
-     */
-    const renewals =
-      deps.providers === undefined
-        ? { stopped: [], failed: [] }
-        : await stopAllRenewals(db, {
-            userId: user.id,
-            tgId,
-            providers: deps.providers,
-            logger,
-          });
-
-    const report = await deleteUserData(db, user.id);
-    logger.info(
-      {
-        tgId,
-        messages: report.messages,
-        dumps: report.dumps,
-        threads: report.threadIds.length,
-        renewalsStopped: renewals.stopped.length,
-        renewalsLeft: renewals.failed.length,
-      },
-      'Данные пользователя удалены по его запросу',
+    // Один путь стирания на команду и на удаление после тишины: продления,
+    // база, ветки — см. `eraseUser`.
+    const { renewals } = await eraseUser(
+      { db, logger, topics: deps.topics, providers: deps.providers },
+      { userId: user.id, tgId, chatId: ctx.chat?.id, why: 'по его запросу' },
     );
-
-    /**
-     * Ветки чистятся после базы, а не до, и поштучно в try/catch.
-     *
-     * Порядок такой потому, что главное здесь — удалить данные. Если
-     * Telegram откажет (режим тем выключен, ветку уже снесли руками, у
-     * бота нет прав), человек всё равно должен остаться удалённым:
-     * несработавшая уборка чата — это неопрятность, а несработавшее
-     * удаление — нарушение §16.
-     */
-    const chatId = ctx.chat?.id;
-
-    if (chatId !== undefined) {
-      /**
-       * Итог уборки — в журнал на уровне `info`, отказы — `warn`.
-       *
-       * Раньше отказ писался как `debug`, то есть в бою был невидим: когда
-       * 03.09.2026 человек после удаления увидел ветки на месте, ответить,
-       * удалял ли их бот, было нечем — пришлось звать Telegram напрямую.
-       * (Удалял: ветки были уже сняты, а клиент показывал кэш.)
-       */
-      let deleted = 0;
-      let gone = 0;
-      let failed = 0;
-
-      for (const threadId of report.threadIds) {
-        try {
-          const outcome = await removeThread(
-            { db, gateway: deps.topics, logger },
-            { chatId, threadId },
-          );
-          if (outcome === 'deleted') deleted++;
-          else gone++;
-        } catch (error) {
-          failed++;
-          logger.warn({ err: error, threadId }, 'Ветка не удалилась, данные это не меняет');
-        }
-      }
-
-      logger.info({ tgId, deleted, gone, failed }, 'Ветки после удаления данных');
-    }
 
     /**
      * Если продление отменить не удалось — говорим об этом словами.
