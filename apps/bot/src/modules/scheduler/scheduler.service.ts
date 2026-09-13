@@ -461,7 +461,7 @@ async function noteFailure(deps: SchedulerDeps, reminder: Reminder): Promise<voi
   }
 }
 
-interface ComposedReminder {
+export interface ComposedReminder {
   readonly text: string;
   readonly buttons: readonly StatusButton[];
   /**
@@ -510,6 +510,108 @@ function payButtons(texts: TextProfile): readonly { label: string; action: strin
   return [{ label: texts.menu.buttonSubscription, action: 'pay:open' }];
 }
 
+/**
+ * Утреннее для одного человека: дела на сегодня, разбор вчерашнего,
+ * одно из «Позже» (запрос на изменение №4). Отдельной функцией, потому
+ * что зовётся с двух сторон: из прохода планировщика и из служебного
+ * `send-morning` — посмотреть утреннее глазами, не дожидаясь утра.
+ * Отметки разбора ставятся здесь и снимаются `undoIfUnsent`, если
+ * сообщение не ушло.
+ */
+export async function composeMorning(
+  deps: SchedulerDeps,
+  texts: TextProfile,
+  params: { readonly userId: string; readonly now: Date },
+): Promise<ComposedReminder> {
+  const { userId, now } = params;
+  const context = await outputContextOf(deps.db, userId);
+
+  /**
+   * Разбор вчерашнего (запрос на изменение №4, решение заказчицы
+   * 13.09.2026). Сперва нетронутое с прошлого разбора уходит в
+   * «Позже» — само, без повторного вопроса (ответ 1.2); потом
+   * отбирается новое: просроченное, ещё не показанное. Отметки
+   * ставятся при сборке и снимаются, если сообщение не ушло (C2), —
+   * иначе разбор, которого человек не видел, считался бы показанным.
+   */
+  await autoDeferReviewed(deps.db, {
+    userId,
+    now,
+    timeZone: context.timeZone,
+  });
+  const review = await reviewDue(deps.db, {
+    userId,
+    now,
+    timeZone: context.timeZone,
+  });
+
+  const today = selectForToday(await openItemsFor(deps.db, userId), {
+    now,
+    timeZone: context.timeZone,
+  });
+
+  /**
+   * Дела, у которых сегодня своё напоминание по сроку, из сводки
+   * выпадают.
+   *
+   * Напоминание «сегодня срок» встаёт на то же местное утро, что и
+   * сводка: человек получал два сообщения подряд про одну запись.
+   * Остаётся то, что полезнее, — у отдельного есть кнопки «Сделано»
+   * и «Перенести».
+   */
+  const dayStart = startOfDayInZone(localDateParts(now, context.timeZone), context.timeZone);
+  const covered = await itemsWithDeadlineReminder(deps.db, {
+    userId,
+    from: dayStart,
+    to: new Date(dayStart.getTime() + DAY_MS),
+  });
+
+  /**
+   * Приглашение выгружать — только тому, кого бот пустит.
+   *
+   * Ревизия четвёртого этапа: «наговори, разложу» уходило каждое
+   * утро и тому, кому бот в ответ откажет. Приглашение, которое бот
+   * сам не исполнит, хуже молчания: оно повторяется ежедневно.
+   *
+   * Дела на сегодня остаются: §14 велит держать бэклог доступным на
+   * чтение, и напоминание о делах — чтение.
+   */
+  const mayDump = await mayDumpNow(deps, userId, now);
+
+  // Большая цель — ближайшим шагом (E17).
+  const actions = await withNextSteps(
+    deps.db,
+    today.filter((item) => !covered.has(item.id)),
+  );
+
+  /**
+   * Дел на утро меньше трёх — одно из «Позже» отдельной строкой, как
+   * необязательное (ответ 1.1). Каждое не чаще раза в неделю, по
+   * кругу от самого давнего — `offerFromLater`.
+   */
+  const offer =
+    actions.length < MORNING_ACTIONS_LIMIT
+      ? await offerFromLater(deps.db, { userId, now })
+      : undefined;
+
+  const reviewedIds = review?.items.map((item) => item.id) ?? [];
+  await markReviewed(deps.db, reviewedIds, now);
+  if (offer !== undefined) await markOffered(deps.db, offer.id, now);
+
+  return {
+    text: morningText(texts, actions, { now, timeZone: context.timeZone }, mayDump, {
+      review,
+      offer,
+    }),
+    buttons: mayDump ? [] : payButtons(texts),
+    rows: review === undefined ? [] : reviewRows(texts, review),
+    undoIfUnsent: async () => {
+      await unmarkReviewed(deps.db, reviewedIds);
+      if (offer !== undefined) await unmarkOffered(deps.db, offer.id);
+    },
+  };
+}
+
 async function composeOne(
   deps: SchedulerDeps,
   reminder: Reminder,
@@ -518,94 +620,8 @@ async function composeOne(
   timeZone: string,
 ): Promise<ComposedReminder | SkipReason> {
   switch (reminder.kind) {
-    case 'morning': {
-      const context = await outputContextOf(deps.db, reminder.userId);
-
-      /**
-       * Разбор вчерашнего (запрос на изменение №4, решение заказчицы
-       * 13.09.2026). Сперва нетронутое с прошлого разбора уходит в
-       * «Позже» — само, без повторного вопроса (ответ 1.2); потом
-       * отбирается новое: просроченное, ещё не показанное. Отметки
-       * ставятся при сборке и снимаются, если сообщение не ушло (C2), —
-       * иначе разбор, которого человек не видел, считался бы показанным.
-       */
-      await autoDeferReviewed(deps.db, {
-        userId: reminder.userId,
-        now,
-        timeZone: context.timeZone,
-      });
-      const review = await reviewDue(deps.db, {
-        userId: reminder.userId,
-        now,
-        timeZone: context.timeZone,
-      });
-
-      const today = selectForToday(await openItemsFor(deps.db, reminder.userId), {
-        now,
-        timeZone: context.timeZone,
-      });
-
-      /**
-       * Дела, у которых сегодня своё напоминание по сроку, из сводки
-       * выпадают.
-       *
-       * Напоминание «сегодня срок» встаёт на то же местное утро, что и
-       * сводка: человек получал два сообщения подряд про одну запись.
-       * Остаётся то, что полезнее, — у отдельного есть кнопки «Сделано»
-       * и «Перенести».
-       */
-      const dayStart = startOfDayInZone(localDateParts(now, context.timeZone), context.timeZone);
-      const covered = await itemsWithDeadlineReminder(deps.db, {
-        userId: reminder.userId,
-        from: dayStart,
-        to: new Date(dayStart.getTime() + DAY_MS),
-      });
-
-      /**
-       * Приглашение выгружать — только тому, кого бот пустит.
-       *
-       * Ревизия четвёртого этапа: «наговори, разложу» уходило каждое
-       * утро и тому, кому бот в ответ откажет. Приглашение, которое бот
-       * сам не исполнит, хуже молчания: оно повторяется ежедневно.
-       *
-       * Дела на сегодня остаются: §14 велит держать бэклог доступным на
-       * чтение, и напоминание о делах — чтение.
-       */
-      const mayDump = await mayDumpNow(deps, reminder.userId, now);
-
-      // Большая цель — ближайшим шагом (E17).
-      const actions = await withNextSteps(
-        deps.db,
-        today.filter((item) => !covered.has(item.id)),
-      );
-
-      /**
-       * Дел на утро меньше трёх — одно из «Позже» отдельной строкой, как
-       * необязательное (ответ 1.1). Каждое не чаще раза в неделю, по
-       * кругу от самого давнего — `offerFromLater`.
-       */
-      const offer =
-        actions.length < MORNING_ACTIONS_LIMIT
-          ? await offerFromLater(deps.db, { userId: reminder.userId, now })
-          : undefined;
-
-      const reviewedIds = review?.items.map((item) => item.id) ?? [];
-      await markReviewed(deps.db, reviewedIds, now);
-      if (offer !== undefined) await markOffered(deps.db, offer.id, now);
-
-      return {
-        text: morningText(texts, actions, { now, timeZone: context.timeZone }, mayDump, {
-          review,
-          offer,
-        }),
-        buttons: mayDump ? [] : payButtons(texts),
-        rows: review === undefined ? [] : reviewRows(texts, review),
-        undoIfUnsent: async () => {
-          await unmarkReviewed(deps.db, reviewedIds);
-          if (offer !== undefined) await unmarkOffered(deps.db, offer.id);
-        },
-      };
-    }
+    case 'morning':
+      return await composeMorning(deps, texts, { userId: reminder.userId, now });
 
     case 'evening': {
       const context = await outputContextOf(deps.db, reminder.userId);
