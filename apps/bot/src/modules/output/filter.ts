@@ -1,4 +1,4 @@
-import type { EnergyLevelValue, Item, ItemStatusValue } from '../../db/schema.js';
+import type { Item, ItemStatusValue } from '../../db/schema.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
 import { OPEN_STATUSES } from '../items/items.repo.js';
 
@@ -9,33 +9,24 @@ import { OPEN_STATUSES } from '../items/items.repo.js';
  * этом именно он определяет, что человек увидит. Поэтому здесь
  * **детерминированный код, а не модель**: иначе выдача плавает между
  * запусками, и критерии приёмки 1 и 7 невоспроизводимы. Один и тот же
- * набор записей при одинаковом уровне сил обязан давать одну и ту же
- * выдачу — всегда.
+ * набор записей обязан давать одну и ту же выдачу — всегда.
  *
  * Порядок и лимиты заданы планом, а не выдуманы здесь. Всё, что выбрано
  * произвольно, названо в комментариях явно.
  */
 
 /**
- * Сколько дел показывать при каком уровне сил.
+ * Сколько дел показывать в ответе на выгрузку.
  *
  * §13.2 ТЗ требует ограниченного списка: человек пришёл разгрузить голову,
- * а не получить второй список из двадцати пунктов. При «я на нуле» одно
- * дело — не скупость, а единственное, что в таком состоянии выполнимо.
- *
- * **Сегодня достижимы два уровня: `normal` и `empty`** (ревизия этапа 3,
- * E14). Уровень по умолчанию (`energy_default`) никто не пишет — ни
- * панель, ни опрос, — а понижает его только «сил нет вовсе» и только до
- * `empty` (задача 3.47). Строки `high` и `low` здесь потому, что перечень
- * уровней задан схемой базы и таблица обязана быть полной; поведения за
- * ними пока нет.
+ * а не получить второй список из двадцати пунктов. До 14.09.2026 предел
+ * зависел от уровня сил (3/3/2/1) и от «сил нет вовсе» в этой выгрузке
+ * (одно дело). Заказчица уровень сил отменила (правка 14.09.2026,
+ * п. 1.2: «самостоятельно делать вывод о силах женщины и хранить такой
+ * показатель не нужно»), и предел стал один. Короткая форма ответа при
+ * эмоции (§13.7) осталась — она в презентации и от числа не зависит.
  */
-export const LIMIT_BY_ENERGY: Readonly<Record<EnergyLevelValue, number>> = {
-  high: 3,
-  normal: 3,
-  low: 2,
-  empty: 1,
-};
+export const ANSWER_ACTIONS_LIMIT = 3;
 
 /**
  * Статусы, при которых дело ещё ждёт действия.
@@ -51,25 +42,8 @@ export const LIMIT_BY_ENERGY: Readonly<Record<EnergyLevelValue, number>> = {
 const OPEN_STATUS_SET: ReadonlySet<ItemStatusValue> = new Set(OPEN_STATUSES);
 
 export interface SelectContext {
-  readonly energy: EnergyLevelValue;
   readonly now: Date;
   readonly timeZone: string;
-  /**
-   * Предел на эту выдачу, если он строже, чем даёт уровень сил.
-   *
-   * §13.7 и §21 п.7: в выгрузке, где человек сказал «сил нет вовсе»,
-   * действие ровно одно. Это про ответ на эту выгрузку, а не про уровень
-   * сил на весь день. Прочие состояния — «задолбался», «ничего не
-   * успеваю» — предела не ставят (задача 3.47): так просил заказчик, и
-   * так же поступает главный эталон §13.2, где усталость названа прямо.
-   *
-   * Найдено сквозным тестом этапа: каждый модуль был прав по своему
-   * тесту, а требование ТЗ «выдача сокращена до одного действия» не
-   * выполнялось ни одним из них. До 3.47 предел ставила любая эмоция —
-   * этот комментарий тогда говорил так, и его пришлось поправить
-   * (ревизия этапа 3, E14).
-   */
-  readonly cap?: number | undefined;
   /**
    * Записи, о которых человек говорил **в этой выгрузке**: и заведённые
    * сейчас, и поправленные, и те, что он повторил, а они уже были.
@@ -299,31 +273,10 @@ export function selectForOutput(items: readonly Item[], context: SelectContext):
     return byBucket === 0 ? compareWithin(left, right) : byBucket;
   });
 
-  const limit = Math.min(LIMIT_BY_ENERGY[context.energy], context.cap ?? Number.MAX_SAFE_INTEGER);
-
-  return { shown: ranked.slice(0, limit), hidden: Math.max(0, ranked.length - limit) };
-}
-
-/**
- * Действующий уровень сил.
- *
- * Названный уровень живёт до конца суток человека: «я на нуле» сказанное
- * утром не должно решать за него неделю. После смены суток выдача снова
- * берёт значение по умолчанию из настроек.
- */
-export function effectiveEnergy(
-  state: { readonly energy: EnergyLevelValue; readonly energyAt: Date } | undefined,
-  fallback: EnergyLevelValue,
-  context: { readonly now: Date; readonly timeZone: string },
-): EnergyLevelValue {
-  if (!state) return fallback;
-
-  const said = localDateParts(state.energyAt, context.timeZone);
-  const today = localDateParts(context.now, context.timeZone);
-
-  const sameDay = said.year === today.year && said.month === today.month && said.day === today.day;
-
-  return sameDay ? state.energy : fallback;
+  return {
+    shown: ranked.slice(0, ANSWER_ACTIONS_LIMIT),
+    hidden: Math.max(0, ranked.length - ANSWER_ACTIONS_LIMIT),
+  };
 }
 
 /**

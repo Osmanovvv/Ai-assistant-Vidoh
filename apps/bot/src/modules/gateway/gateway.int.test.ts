@@ -61,7 +61,6 @@ describe('acceptUpdate: приём и немедленное сохранени�
 
     const settings = await db.query.userSettings.findMany();
     expect(settings).toHaveLength(1);
-    expect(settings[0]?.energyDefault).toBe('normal');
     expect(settings[0]?.notificationsOn).toBe(true);
   });
 

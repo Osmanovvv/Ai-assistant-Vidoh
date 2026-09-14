@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Item } from '../../db/schema.js';
-import {
-  LIMIT_BY_ENERGY,
-  effectiveEnergy,
-  isShowable,
-  selectForOutput,
-  selectForToday,
-} from './filter.js';
+import { ANSWER_ACTIONS_LIMIT, isShowable, selectForOutput, selectForToday } from './filter.js';
 
 /**
  * Выдача — единственный шаг конвейера без спецификации в ТЗ, и при этом
@@ -62,7 +56,7 @@ function item(overrides: Partial<Item> = {}): Item {
 /** Дата в поясе Москвы как момент начала суток. */
 const day = (iso: string) => new Date(`${iso}T00:00:00.000+03:00`);
 
-const context = { energy: 'normal' as const, now: NOW, timeZone: MOSCOW };
+const context = { now: NOW, timeZone: MOSCOW };
 
 describe('что вообще попадает в выдачу', () => {
   it('задача с приоритетом попадает', () => {
@@ -199,7 +193,7 @@ describe('порядок', () => {
       deadlineAccuracy: 'day',
     });
 
-    const result = selectForOutput([later, sooner], { ...context, energy: 'high' });
+    const result = selectForOutput([later, sooner], context);
 
     expect(result.shown.map((row) => row.id)).toEqual([sooner.id, later.id]);
   });
@@ -246,23 +240,17 @@ describe('лимиты по уровню сил', () => {
     item({ priority: 'NOW' }),
   ];
 
-  it('таблица лимитов соответствует плану', () => {
-    expect(LIMIT_BY_ENERGY).toEqual({ high: 3, normal: 3, low: 2, empty: 1 });
+  it('показывает до трёх дел — уровня сил нет (правка заказчицы 14.09.2026, п. 1.2)', () => {
+    // Прежде лимит зависел от уровня сил (3/3/2/1). Она отменила сам
+    // уровень: «самостоятельно делать вывод о силах женщины и хранить
+    // такой показатель не нужно». Лимит один и виден снаружи.
+    expect(ANSWER_ACTIONS_LIMIT).toBe(3);
+
+    const result = selectForOutput(many(), context);
+
+    expect(result.shown).toHaveLength(3);
+    expect(result.hidden).toBe(2);
   });
-
-  for (const [energy, expected] of [
-    ['high', 3],
-    ['normal', 3],
-    ['low', 2],
-    ['empty', 1],
-  ] as const) {
-    it(`при «${energy}» показывает ${String(expected)}`, () => {
-      const result = selectForOutput(many(), { ...context, energy });
-
-      expect(result.shown).toHaveLength(expected);
-      expect(result.hidden).toBe(5 - expected);
-    });
-  }
 
   it('когда дел меньше лимита, скрытых нет', () => {
     const result = selectForOutput([item(), item()], context);
@@ -279,7 +267,7 @@ describe('лимиты по уровню сил', () => {
     // Иначе бот скажет «остальное сохранила» про пять эмоций.
     const result = selectForOutput(
       [item({ priority: 'NOW' }), item({ type: 'EMOTION', priority: 'NONE' })],
-      { ...context, energy: 'empty' },
+      context,
     );
 
     expect(result.shown).toHaveLength(1);
@@ -346,70 +334,6 @@ describe('воспроизводимость', () => {
   });
 });
 
-describe('effectiveEnergy', () => {
-  it('без состояния берёт значение из настроек', () => {
-    expect(effectiveEnergy(undefined, 'normal', { now: NOW, timeZone: MOSCOW })).toBe('normal');
-  });
-
-  it('названный сегодня уровень действует', () => {
-    const state = { energy: 'empty' as const, energyAt: new Date('2026-09-04T05:00:00.000Z') };
-
-    expect(effectiveEnergy(state, 'normal', { now: NOW, timeZone: MOSCOW })).toBe('empty');
-  });
-
-  it('названный вчера — уже нет', () => {
-    // «Я на нуле» сказанное утром не должно решать за человека неделю.
-    const state = { energy: 'empty' as const, energyAt: new Date('2026-09-03T05:00:00.000Z') };
-
-    expect(effectiveEnergy(state, 'normal', { now: NOW, timeZone: MOSCOW })).toBe('normal');
-  });
-
-  it('смена суток считается по поясу человека', () => {
-    // 4 сентября 20:30 по Москве — это уже 5 сентября во Владивостоке,
-    // значит для владивостокского человека уровень вчерашний.
-    const state = { energy: 'low' as const, energyAt: new Date('2026-09-04T09:00:00.000Z') };
-    const now = new Date('2026-09-04T17:30:00.000Z');
-
-    expect(effectiveEnergy(state, 'normal', { now, timeZone: MOSCOW })).toBe('low');
-    expect(effectiveEnergy(state, 'normal', { now, timeZone: 'Asia/Vladivostok' })).toBe('normal');
-  });
-});
-
-describe('предел на выдачу (§13.7)', () => {
-  /**
-   * Найдено сквозным тестом этапа 2. Каждый модуль был прав по своему
-   * тесту: фильтр показывал два дела при «сил мало», обработчик снижал
-   * уровень до «мало» при состоянии в выгрузке. А требование §21 п.7 —
-   * «выдача сокращена до одного действия» — не выполнял никто.
-   */
-
-  it('сокращает выдачу до одного действия', () => {
-    const items = [
-      item({ text: 'оплатить садик', priority: 'NOW', sourceOrder: 1 }),
-      item({ text: 'записаться к врачу', priority: 'NOW', sourceOrder: 2 }),
-      item({ text: 'купить корм', priority: 'SOON', sourceOrder: 3 }),
-    ];
-
-    const result = selectForOutput(items, { ...context, energy: 'low', cap: 1 });
-
-    expect(result.shown).toHaveLength(1);
-    expect(result.hidden).toBe(2);
-  });
-
-  it('не расширяет выдачу, если предел мягче уровня сил', () => {
-    // Предел — это ограничение, а не разрешение: «на нуле» остаётся одним
-    // делом, даже если попросить показать пять.
-    const items = [
-      item({ text: 'оплатить садик', priority: 'NOW', sourceOrder: 1 }),
-      item({ text: 'записаться к врачу', priority: 'NOW', sourceOrder: 2 }),
-    ];
-
-    const result = selectForOutput(items, { ...context, energy: 'empty', cap: 5 });
-
-    expect(result.shown).toHaveLength(1);
-  });
-});
-
 /**
  * Большая цель не занимает место в тройке действий (§13.2).
  *
@@ -425,7 +349,6 @@ describe('проект не вытесняет выполнимые дела', (
     const second = item({ text: 'записать к врачу' });
 
     const result = selectForOutput([project, first, second], {
-      energy: 'normal',
       now: NOW,
       timeZone: MOSCOW,
     });
@@ -444,7 +367,6 @@ describe('проект не вытесняет выполнимые дела', (
     const other = item({ text: 'купить продукты' });
 
     const result = selectForOutput([other, project], {
-      energy: 'normal',
       now: NOW,
       timeZone: MOSCOW,
     });
@@ -455,7 +377,6 @@ describe('проект не вытесняет выполнимые дела', (
   it('выгрузка из одной большой цели не остаётся без действия', () => {
     // Совсем убрать проект нельзя: человек остался бы с пустым ответом.
     const result = selectForOutput([item({ isProject: true, text: 'день рождения сына' })], {
-      energy: 'normal',
       now: NOW,
       timeZone: MOSCOW,
     });
@@ -509,7 +430,6 @@ describe('выдача про то, что человек только что с
   const mentioned = new Set(said.map((one) => one.id));
   const select = (marks?: ReadonlySet<string>) =>
     selectForOutput([...old, ...said], {
-      energy: 'normal',
       now: THEN,
       timeZone: MOSCOW,
       ...(marks === undefined ? {} : { mentioned: marks }),
@@ -557,7 +477,6 @@ describe('выдача про то, что человек только что с
     });
 
     const result = selectForOutput([overdue, ...old, ...said], {
-      energy: 'normal',
       now: THEN,
       timeZone: MOSCOW,
       mentioned,
@@ -578,7 +497,6 @@ describe('выдача про то, что человек только что с
     });
 
     const result = selectForOutput([today, ...old, ...said], {
-      energy: 'normal',
       now: THEN,
       timeZone: MOSCOW,
       mentioned,
@@ -591,7 +509,6 @@ describe('выдача про то, что человек только что с
     // Вопрос «что у нас сегодня» новых записей не создаёт, и пометка
     // приходит пустая. Ответ на такой вопрос обязан остаться прежним.
     const result = selectForOutput([...old, ...said], {
-      energy: 'normal',
       now: THEN,
       timeZone: MOSCOW,
       mentioned: new Set<string>(),
@@ -624,7 +541,7 @@ describe('список на сегодня', () => {
   /** Полдень 4 сентября 2026 по Москве. */
   const today = new Date('2026-09-04T09:00:00.000Z');
   const at = (iso: string): Date => new Date(`${iso}T00:00:00.000+03:00`);
-  const forToday = { energy: 'normal' as const, now: today, timeZone: MOSCOW };
+  const forToday = { now: today, timeZone: MOSCOW };
 
   const textsOf = (items: readonly Item[]): string[] => items.map((one) => one.text);
 
