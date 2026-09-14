@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { TOPIC_CHOICES } from '../onboarding/onboarding.service.js';
+import { TOPIC_CHOICES } from './choices.js';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 /**
@@ -94,7 +94,7 @@ function creations(): readonly { readonly file: string; readonly call: string }[
   for (const file of productFiles()) {
     const source = readFileSync(file, 'utf8');
 
-    for (const name of ['createChosenTopics', 'createTopics', 'appendTopics']) {
+    for (const name of ['createBaseTopics', 'createTopics', 'appendTopics']) {
       // Объявление функции — не вызов: искать надо тех, кто её зовёт.
       if (source.includes(`export async function ${name}(`)) continue;
 
@@ -130,9 +130,12 @@ describe('предел числа тем доезжает до всех созд
      */
     const calls = creations();
 
+    // Базовый набор на первой выгрузке, сферы по содержанию, настройки
+    // (шаг опроса ушёл 14.09.2026 — правка заказчицы, п. 1.1).
     expect(calls.length).toBeGreaterThanOrEqual(3);
     expect(calls.map((one) => one.file)).toContain('modules/pipeline/dump.handler.ts');
-    expect(calls.map((one) => one.file)).toContain('bot/handlers/onboarding.ts');
+    expect(calls.map((one) => one.file)).toContain('modules/topics/adopt.ts');
+    expect(calls.map((one) => one.file)).toContain('bot/handlers/menu.ts');
   });
 
   it('умолчание предела не ниже числа сфер, которые бот предлагает', () => {

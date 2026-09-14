@@ -489,6 +489,8 @@ export interface TextProfile {
     /** Сферы отмечаются нажатием, поэтому подсказка про повторное. */
     readonly askTopics: string;
     readonly buttonTopicsDone: string;
+    /** Включённая сфера на экране настроек. §12.4: эмодзи как маркер, не украшение. */
+    readonly topicChosen: (name: string) => string;
 
     /** Что стало после правки: человек должен видеть новое значение. */
     readonly savedMorning: (time: string) => string;
@@ -657,27 +659,12 @@ export interface TextProfile {
     readonly eveningSaved: (time: string) => string;
     readonly timeNotUnderstood: string;
 
-    readonly topics: string;
-    readonly buttonTopicsDone: string;
-    /** Отметка выбранной сферы. §12.4: эмодзи как маркер, не украшение. */
-    readonly topicChosen: (name: string) => string;
-
-    readonly finished: string;
-    /** Ни одной сферы не выбрано: берём базовый набор §6.4 и не спорим. */
-    readonly finishedDefault: string;
-
     /**
-     * §6.4: дела, не попавшие ни в одну выбранную сферу, уходят в тему по
-     * умолчанию, **а бот предлагает создать новую**. Предлагает, а не
-     * создаёт: создавать темы без спроса запрещено.
+     * Опрос закончен — после вечера. Шаг «какие сферы важны» и
+     * предложение добавить сферу ушли 14.09.2026 (правка заказчицы,
+     * п. 1.1): сферы бот заводит сам по содержанию.
      */
-    readonly offerTopics: (names: readonly string[]) => string;
-    readonly buttonAddTopics: string;
-    readonly buttonSkipTopics: string;
-    readonly topicsAdded: (names: readonly string[]) => string;
-    readonly topicsNotAdded: string;
-    /** Больше сфер, чем продукт готов держать (§6.4: количество ограничено). */
-    readonly topicsLimit: string;
+    readonly finished: string;
   };
 
   /**

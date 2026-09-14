@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { testDb } from '../../test/db.js';
-import { createChosenTopics, TOPIC_CHOICES } from '../onboarding/onboarding.service.js';
+import { TOPIC_CHOICES } from './choices.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
   appendTopics,
+  createBaseTopics,
   createTopics,
+  DEFAULT_TOPIC_NAMES,
   FALLBACK_TOPIC,
   listTopics,
   MAX_TOPICS,
@@ -42,31 +44,19 @@ async function names(): Promise<readonly string[]> {
 }
 
 describe('предел числа тем на начальном наборе', () => {
-  it('выбор из девяти сфер обрезается до предела', async () => {
-    /**
-     * Тот самый случай из находки: девять сфер на выбор против предела
-     * три. Прежде создавались все девять.
-     */
-    const result = await createChosenTopics(testDb(), userId, [...TOPIC_CHOICES], 3);
+  it('предложенные сферы целиком обрезаются до предела', async () => {
+    const created = await createTopics(
+      testDb(),
+      userId,
+      TOPIC_CHOICES.map((name) => ({ name })),
+      3,
+    );
 
-    expect(result.created).toBe(3);
+    expect(created).toBe(3);
     expect(await names()).toHaveLength(3);
   });
 
   it('умолчание из кода тоже предел, а не «сколько попросили»', async () => {
-    /**
-     * Без реестра настроек работает умолчание из кода — и оно тоже
-     * предел, иначе стенд и любой вызов без реестра жили бы без него.
-     *
-     * Сверка с `MAX_TOPICS`, а не с числом: само число закреплено
-     * отдельно, стражем «умолчание не ниже числа сфер на выбор»
-     * (`topics-limit.wiring.test.ts`). Держать его здесь вторым
-     * экземпляром значило бы иметь два источника правды об одном
-     * умолчании — и правили бы их порознь.
-     *
-     * Просим заведомо больше умолчания: список из сфер плюс придуманные
-     * названия. Не будь предела — создались бы все.
-     */
     const tooMany = [
       ...TOPIC_CHOICES,
       ...Array.from({ length: 5 }, (_unused, index) => `сфера ${String(index + 1)}`),
@@ -74,19 +64,19 @@ describe('предел числа тем на начальном наборе', 
 
     expect(tooMany.length).toBeGreaterThan(MAX_TOPICS);
 
-    await createChosenTopics(testDb(), userId, tooMany);
+    await createTopics(
+      testDb(),
+      userId,
+      tooMany.map((name) => ({ name })),
+    );
 
     expect(await names()).toHaveLength(MAX_TOPICS);
   });
 
   it('тема по умолчанию остаётся даже под самым тесным пределом', async () => {
-    /**
-     * На «личном» §6.4 держит всё, что не попало ни в одну тему. Обрежь
-     * список подряд — и оно бы не поместилось: записи ушли бы в первую
-     * попавшуюся ветку, а увидеть это можно было бы только по чужой
-     * жалобе.
-     */
-    await createChosenTopics(testDb(), userId, ['семья', 'здоровье', 'работа'], 1);
+    // Базовый набор §6.4 под пределом один — одна тема, и это «личное»:
+    // туда уходит всё, что не подошло ни к одной.
+    await createBaseTopics(testDb(), userId, 1);
 
     expect(await names()).toEqual([FALLBACK_TOPIC]);
 
@@ -95,21 +85,21 @@ describe('предел числа тем на начальном наборе', 
     expect(only?.isDefault).toBe(true);
   });
 
-  it('базовый набор при пустом ответе тоже под пределом', async () => {
-    // Пустой ответ означает базовый набор §6.4 — пять сфер. Предел два
-    // означает два, иначе «значение задаётся в настройках» неправда.
-    const result = await createChosenTopics(testDb(), userId, [], 2);
+  it('базовый набор на первой выгрузке тоже под пределом', async () => {
+    // Базовый набор §6.4 — пять сфер. Предел два означает два, иначе
+    // «значение задаётся в настройках» неправда.
+    const created = await createBaseTopics(testDb(), userId, 2);
 
-    expect(result.fallback).toBe(true);
+    expect(created).toBe(2);
     expect(await names()).toHaveLength(2);
   });
 
-  it('список короче предела не обрезается и не переставляется', async () => {
+  it('базовый набор короче предела не обрезается и не переставляется', async () => {
     // Обрезка не должна трогать обычный случай: порядок ветвей — это
     // порядок в списке чата, и тасовать его без просьбы человека нельзя.
-    await createChosenTopics(testDb(), userId, ['семья', 'личное', 'работа'], 8);
+    await createBaseTopics(testDb(), userId, 8);
 
-    expect(await names()).toEqual(['семья', 'личное', 'работа']);
+    expect(await names()).toEqual([...DEFAULT_TOPIC_NAMES]);
   });
 
   it('предел один и тот же на создании и на добавлении сферы', async () => {

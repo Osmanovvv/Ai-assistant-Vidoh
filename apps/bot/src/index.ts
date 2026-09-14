@@ -917,7 +917,7 @@ async function main(): Promise<void> {
     providers,
   });
   registerMembershipHandlers(bot, db, logger);
-  registerOnboardingHandlers(bot, db, logger, topicGateway, settings);
+  registerOnboardingHandlers(bot, db, logger);
   registerMenuHandlers(bot, db, logger, settings, topicGateway);
 
   // Команды платёжной платформы — после приёма: сперва сохраняем

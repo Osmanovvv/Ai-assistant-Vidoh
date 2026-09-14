@@ -14,6 +14,7 @@ import { zoneOfCity } from '../../modules/onboarding/cities.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
   cityOfZone,
+  finish,
   onboardingStateOf,
   questionFor,
   setTimezone,
@@ -268,7 +269,11 @@ export function consumeAwaited(deps: AwaitingDeps) {
       await setEvening(db, userId, time);
       await ctx.reply(texts.onboarding.eveningSaved(time));
       logger.info({ userId, time }, 'Вечернее время задано словами');
-      await askNext(ctx, userId, STEP.topics);
+      // Вечер — последний вопрос (правка заказчицы 14.09.2026, п. 1.1):
+      // шага про сферы нет, опрос закрывается.
+      await finish(db, userId, new Date());
+      logger.info({ userId }, 'Онбординг пройден');
+      await ctx.reply(texts.onboarding.finished);
       return true;
     }
 

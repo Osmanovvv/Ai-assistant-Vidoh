@@ -84,6 +84,15 @@ export interface ClassifiedItem {
   readonly type: ItemType;
   readonly priority: Priority;
   readonly topic: string;
+  /**
+   * Модель назвала тему не из списка человека (правка заказчицы
+   * 14.09.2026, п. 1.1: сферу по содержанию заводит бот сам). Здесь она
+   * не заводится — классификация чистая, а это запись в базу; запись
+   * пока лежит в теме по умолчанию, а конвейер решает, создать ли новую.
+   * Имя уже приведено к виду записи; мусор (символы, длинная фраза) сюда
+   * не попадает.
+   */
+  readonly wantedTopic?: string | undefined;
   readonly isProject: boolean;
   readonly deadline?: ResolvedDeadline | undefined;
   /** Регулярность (задача 2.18а). Поле у `TASK`, как и признак проекта. */
@@ -153,6 +162,26 @@ function isActionable(type: ItemType): boolean {
  */
 function canBeProject(type: ItemType): boolean {
   return type === 'TASK' || type === 'DESIRE';
+}
+
+/**
+ * Имя сферы из ответа модели — или ничего.
+ *
+ * Модель отвечает свободным текстом, и в поле темы может оказаться что
+ * угодно: символы, пустота, целая фраза. Сфера — это одно-два слова
+ * буквами, не длиннее того, что влезает в кнопку настроек вместе с
+ * префиксом (`menu:set:t:` — 11 байт, кириллица по два, предел 64).
+ * Не подошло — сфера не предлагается, запись остаётся в теме по
+ * умолчанию: ошибка в сторону «без сферы» стоит одного взгляда, ошибка
+ * в сторону мусорной ветки в чате — уборки руками.
+ */
+export function topicNameFrom(raw: string): string | undefined {
+  const name = raw.trim().replaceAll(/\s+/gu, ' ').toLowerCase();
+
+  if (name.length < 2 || name.length > 24) return undefined;
+  if (!/^[а-яё]+(?: [а-яё]+)?$/u.test(name)) return undefined;
+
+  return name;
 }
 
 function normalizeTopic(text: string): string {
@@ -275,9 +304,11 @@ export function correctItems(
       corrections.project++;
     }
 
-    // §6.4 ТЗ: создавать темы без спроса запрещено.
+    // Тема не из списка — в тему по умолчанию, а названное имя отдаётся
+    // конвейеру: заводить сферу или нет, решает он (п. 1.1).
     const topic = byNormalized.get(normalizeTopic(item.topic));
     if (topic === undefined) corrections.topic++;
+    const wantedTopic = topic === undefined ? topicNameFrom(item.topic) : undefined;
 
     const accuracy: DeadlineAccuracy = item.deadlineAccuracy;
     const resolved = resolveDeadline(
@@ -531,6 +562,7 @@ export function correctItems(
       type,
       priority: withUrgency,
       topic: topic ?? ctx.defaultTopic,
+      ...(wantedTopic === undefined ? {} : { wantedTopic }),
       isProject,
       deadline: withRule,
       recurrence,

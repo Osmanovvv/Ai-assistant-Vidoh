@@ -372,6 +372,13 @@
       "when": 1789402768713,
       "tag": "0052_drop_energy_level",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1789406554634,
+      "tag": "0053_onboarding_steps_without_topics",
+      "breakpoints": true
     }
   ]
 }

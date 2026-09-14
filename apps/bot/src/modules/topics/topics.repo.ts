@@ -226,6 +226,28 @@ async function linkOrphanItems(
  */
 export const MAX_TOPICS = SETTINGS.maxTopics.fallback;
 
+/**
+ * Базовый набор сфер §6.4 — на первой разобранной выгрузке (задача
+ * 3.43), под пределом из настроек. Тема по умолчанию («личное») создаётся
+ * при любом пределе: туда уходит всё, что не подошло ни к одной.
+ *
+ * До 14.09.2026 набор потом уточнял опрос («какие сферы важны»);
+ * заказчица шаг убрала (её правка, п. 1.1) — дальше сферы заводит бот по
+ * содержанию, а человек правит их в настройках.
+ */
+export async function createBaseTopics(
+  db: Executor,
+  userId: string,
+  maxTopics?: number,
+): Promise<number> {
+  return await createTopics(
+    db,
+    userId,
+    DEFAULT_TOPIC_NAMES.map((name) => ({ name, isDefault: name === FALLBACK_TOPIC })),
+    maxTopics,
+  );
+}
+
 export interface AppendResult {
   readonly added: readonly string[];
   /** Часть сфер не добавлена: упёрлись в предел. */

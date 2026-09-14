@@ -79,8 +79,8 @@ function deps(provider: MockLlmProvider, prompts: PromptRegistry) {
   };
 }
 
-const params = (text: string) => ({
-  units: [{ text, isProject: false, isEmotion: false }],
+const params = (...texts: readonly string[]) => ({
+  units: texts.map((text) => ({ text, isProject: false, isEmotion: false })),
   topics: TOPICS,
   defaultTopic: 'личное',
   timeZone: MOSCOW,
@@ -185,8 +185,13 @@ describe('желание не становится задачей', () => {
 });
 
 describe('темы', () => {
-  it('незнакомая тема заменяется темой по умолчанию', async () => {
-    // §6.4 ТЗ запрещает создавать темы без спроса.
+  it('незнакомая тема заменяется темой по умолчанию, а названное моделью имя отдаётся отдельно', async () => {
+    /**
+     * Классификация тем не заводит — это запись в базу, а она чистая.
+     * Но и не теряет названное: с правки заказчицы 14.09.2026 (п. 1.1)
+     * сферу по содержанию создаёт конвейер, и ему нужно имя, которое
+     * модель назвала. Запись до его решения лежит в теме по умолчанию.
+     */
     const prompts = await prepare();
     const provider = new MockLlmProvider({
       responses: [answer([{ topic: 'саморазвитие' }])],
@@ -197,7 +202,48 @@ describe('темы', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items[0]?.topic).toBe('личное');
+    expect(result.items[0]?.wantedTopic).toBe('саморазвитие');
     expect(result.corrections.topic).toBe(1);
+  });
+
+  it('названное имя приводится к виду записи: без краёв и лишних пробелов, строчными', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ topic: '  Само Развитие ' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('дело'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.wantedTopic).toBe('само развитие');
+  });
+
+  it('пустое или мусорное имя темы не предлагается вовсе', async () => {
+    // Символы вместо слова, длинная фраза — не название сферы. Запись в
+    // теме по умолчанию, предложения нет.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          { topic: '   ' },
+          { topic: '???' },
+          { topic: 'дела которые надо сделать до конца месяца' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('дело', 'второе дело', 'третье дело'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const item of result.items) {
+      expect(item.topic).toBe('личное');
+      expect(item.wantedTopic).toBeUndefined();
+    }
   });
 
   it('тема узнаётся независимо от регистра и «ё»', async () => {

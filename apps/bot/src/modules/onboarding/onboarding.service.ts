@@ -4,7 +4,6 @@ import { userSettings, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { dropPending } from '../scheduler/reminders.repo.js';
-import { createTopics, DEFAULT_TOPIC_NAMES, FALLBACK_TOPIC } from '../topics/topics.repo.js';
 
 /**
  * Онбординг (задача 2.13).
@@ -37,14 +36,20 @@ import { createTopics, DEFAULT_TOPIC_NAMES, FALLBACK_TOPIC } from '../topics/top
  * своей репликой, и ответ на предыдущий правит ту же реплику.
  */
 
-/** Шаги по порядку. Ноль — не начинался, последний плюс один — закончен. */
+/**
+ * Шаги по порядку. Ноль — не начинался, последний плюс один — закончен.
+ *
+ * До 14.09.2026 пятым шёл вопрос «какие сферы важны», а «закончен» был
+ * шестым. Заказчица шаг убрала (её правка, п. 1.1: сферы — внутренняя
+ * организация бота, он заводит их по содержанию сам); миграция 0053
+ * перевела прежние 5 и 6 в 5.
+ */
 export const STEP = {
   name: 1,
   timezone: 2,
   morning: 3,
   evening: 4,
-  topics: 5,
-  done: 6,
+  done: 5,
 } as const;
 
 export type StepNumber = (typeof STEP)[keyof typeof STEP];
@@ -74,23 +79,6 @@ export const TIMEZONES: readonly { readonly city: string; readonly zone: string 
 export const MORNING_TIMES = ['07:00', '08:00', '09:00', '10:00'] as const;
 export const EVENING_TIMES = ['20:00', '21:00', '22:00'] as const;
 
-/**
- * Сферы на выбор: базовый набор §6.4 плюс те, что чаще всего называют
- * отдельно. Автоматически создавать темы §6.4 запрещает, поэтому здесь
- * только предложение, а решает человек.
- */
-export const TOPIC_CHOICES = [
-  'семья',
-  'здоровье',
-  'работа',
-  'покупки',
-  'дом',
-  'дети',
-  'деньги',
-  'учёба',
-  'личное',
-] as const;
-
 export interface Button {
   readonly label: string;
   readonly action: string;
@@ -118,86 +106,11 @@ export const ACTION = {
   morningPrefix: 'onb:morning:',
   eveningPrefix: 'onb:evening:',
   eveningOff: 'onb:evening:off',
-  topicPrefix: 'onb:topic:',
-  topicsDone: 'onb:topics:done',
-  /** `onb:add:3,6` — номера сфер в TOPIC_CHOICES, а не их названия. */
-  addTopicsPrefix: 'onb:add:',
-  addTopicsSkip: 'onb:add:no',
 } as const;
-
-/**
- * Сколько сфер предлагать за раз (§6.4, предложение создать новую тему).
- *
- * Две. Не потому, что больше не влезет в кнопку, а потому что вопрос из
- * четырёх сфер — это уже анкета, а разгрузка не должна в неё
- * превращаться. Остальные предложатся, когда снова понадобятся.
- */
-const MAX_OFFERED = 2;
-
-/**
- * Названия сфер в кнопку кладутся **номерами**, а не текстом.
- *
- * `callback_data` ограничена 64 байтами, а кириллица весит по два байта
- * на знак: «покупки» и «здоровье» вместе — уже 31 байт, и это без
- * префикса. Номера в закрытом списке всегда короткие, а список закрытый:
- * он в коде, а не в базе.
- */
-export function encodeTopicOffer(names: readonly string[]): string | undefined {
-  const numbers = names
-    .map((name) => TOPIC_CHOICES.indexOf(name as (typeof TOPIC_CHOICES)[number]))
-    .filter((index) => index >= 0)
-    .slice(0, MAX_OFFERED);
-
-  if (numbers.length === 0) return undefined;
-
-  return `${ACTION.addTopicsPrefix}${numbers.join(',')}`;
-}
-
-/** Обратное преобразование. Мусор в данных даёт пустой список, а не отказ. */
-export function decodeTopicOffer(data: string): readonly string[] {
-  if (!data.startsWith(ACTION.addTopicsPrefix)) return [];
-
-  const tail = data.slice(ACTION.addTopicsPrefix.length);
-  if (tail === '' || tail === 'no') return [];
-
-  return tail
-    .split(',')
-    .map((part) => Number(part))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < TOPIC_CHOICES.length)
-    .map((index) => TOPIC_CHOICES[index] as string);
-}
-
-/**
- * Предложение добавить сферу (§6.4).
- *
- * Возвращает `undefined`, если предлагать нечего: ни одного известного
- * названия. Молчание тут правильнее пустого вопроса.
- */
-export function offerTopicsQuestion(
-  texts: TextProfile,
-  names: readonly string[],
-): Question | undefined {
-  const action = encodeTopicOffer(names);
-  if (action === undefined) return undefined;
-
-  const offered = decodeTopicOffer(action);
-
-  return {
-    text: texts.onboarding.offerTopics(offered),
-    rows: [
-      [
-        { label: texts.onboarding.buttonAddTopics, action },
-        { label: texts.onboarding.buttonSkipTopics, action: ACTION.addTopicsSkip },
-      ],
-    ],
-  };
-}
 
 export interface QuestionContext {
   readonly texts: TextProfile;
   readonly name: string;
-  /** Уже отмеченные сферы: состояние живёт в клавиатуре самой реплики. */
-  readonly chosen?: readonly string[] | undefined;
   /**
    * Это первый вопрос опроса — к нему добавляется рамка.
    *
@@ -333,9 +246,6 @@ ${text}`
         ],
       };
 
-    case STEP.topics:
-      return { text: onboarding.topics, rows: topicRows(texts, context.chosen ?? []) };
-
     default:
       return undefined;
   }
@@ -378,53 +288,6 @@ export function timezoneQuestion(texts: TextProfile): Question {
  */
 export function cityOfZone(zone: string): string | undefined {
   return TIMEZONES.find((item) => item.zone === zone)?.city;
-}
-
-/**
- * Клавиатура выбора сфер. Отмеченные помечаются галочкой в подписи, и
- * это же служит хранилищем: состояние выбора живёт в самой реплике, а не
- * в базе. Так оно не теряется при перезапуске и не требует колонки.
- */
-export function topicRows(
-  texts: TextProfile,
-  chosen: readonly string[],
-  /**
-   * Приставка действия. По умолчанию — опроса.
-   *
-   * Параметром, а не второй копией сборки: экран настроек §12.1 показывает
-   * те же сферы теми же кнопками, но своим действием — обработчик опроса
-   * сверяет шаг, и после опроса он бы просто промолчал. Две сборки одной
-   * клавиатуры однажды разошлись бы, и ровно это уже случилось с
-   * раскладкой по ширине.
-   */
-  prefix: string = ACTION.topicPrefix,
-): readonly (readonly Button[])[] {
-  const marked = new Set(chosen);
-  const rows: Button[][] = [];
-
-  for (let index = 0; index < TOPIC_CHOICES.length; index += 3) {
-    rows.push(
-      TOPIC_CHOICES.slice(index, index + 3).map((name) => ({
-        label: marked.has(name) ? texts.onboarding.topicChosen(name) : name,
-        action: `${prefix}${name}`,
-      })),
-    );
-  }
-
-  rows.push([{ label: texts.onboarding.buttonTopicsDone, action: ACTION.topicsDone }]);
-
-  return rows;
-}
-
-/** Обратно из подписи: галочка — признак выбора. */
-export function chosenFromLabels(labels: readonly string[], texts: TextProfile): string[] {
-  const chosen: string[] = [];
-
-  for (const name of TOPIC_CHOICES) {
-    if (labels.includes(texts.onboarding.topicChosen(name))) chosen.push(name);
-  }
-
-  return chosen;
 }
 
 export interface OnboardingState {
@@ -567,46 +430,4 @@ export async function setEvening(db: Executor, userId: string, time: string | nu
 
   // То же, что у утреннего: см. `setMorning`.
   await dropPending(db, userId);
-}
-
-export interface TopicsResult {
-  readonly created: number;
-  /** Человек не выбрал ничего, взят базовый набор §6.4. */
-  readonly fallback: boolean;
-}
-
-/**
- * Создаёт темы по выбору человека.
- *
- * Ничего не выбрано — берётся базовый набор §6.4. Оставить человека без
- * тем нельзя: классификация без списка не работает, а спорить с ним,
- * заставляя выбрать, значит превращать разгрузку в анкету.
- */
-export async function createChosenTopics(
-  db: Executor,
-  userId: string,
-  chosen: readonly string[],
-  /**
-   * Предел числа тем из настроек (§6.4, §15) — см. `createTopics`.
-   *
-   * Начальный набор шёл мимо предела: сфер на выбор девять, и человек,
-   * отметивший все, получал девять ветвей даже при умолчании восемь.
-   * Без реестра работает умолчание из кода.
-   */
-  maxTopics?: number,
-): Promise<TopicsResult> {
-  const names = chosen.length > 0 ? chosen : [...DEFAULT_TOPIC_NAMES];
-
-  // Тема по умолчанию нужна §6.4: туда уходит всё, что не подошло ни к
-  // одной. Если человек не выбрал «личное», ею становится последняя.
-  const withDefault = names.includes(FALLBACK_TOPIC) ? names : [...names, FALLBACK_TOPIC];
-
-  const created = await createTopics(
-    db,
-    userId,
-    withDefault.map((name) => ({ name, isDefault: name === FALLBACK_TOPIC })),
-    maxTopics,
-  );
-
-  return { created, fallback: chosen.length === 0 };
 }
