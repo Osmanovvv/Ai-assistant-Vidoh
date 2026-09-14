@@ -305,6 +305,7 @@ export const reserved: TextProfile = {
     askName: 'Как тебя звать?',
     askTopics: 'Отметь свои сферы. Нажатие включает и выключает, потом нажми «Готово».',
     buttonTopicsDone: 'Готово',
+    topicChosen: (name) => `✓ ${name}`,
 
     savedMorning: (time) => `Готово, утром теперь в ${time}.`,
     savedEvening: (time) => `Готово, вечером теперь в ${time}.`,
@@ -408,23 +409,7 @@ export const reserved: TextProfile = {
     eveningSaved: (time) => `Вечером буду писать в ${time}.`,
     timeNotUnderstood: 'Не разобрала время — оставила как было. Разберу как мысль.',
 
-    topics: 'Какие сферы жизни у тебя главные? Отметь свои и нажми «Готово».',
-    buttonTopicsDone: 'Готово',
-    topicChosen: (name) => `✓ ${name}`,
-
     finished: 'Всё, больше не спрашиваю. Дальше просто говори.',
-    finishedDefault: 'Хорошо, разложу по обычным сферам. Дальше просто говори.',
-
-    offerTopics: (names) =>
-      `Часть дел не подошла ни к одной выбранной сфере — они про ${names.join(' и ')}. ` +
-      'Добавить такую сферу?',
-    buttonAddTopics: 'Добавить',
-    buttonSkipTopics: 'Не надо',
-    topicsAdded: (names) =>
-      `Добавила: ${names.join(', ')}. Новые дела буду складывать туда. ` +
-      'Уже разобранные остались там, где лежат.',
-    topicsNotAdded: 'Хорошо, не добавляю.',
-    topicsLimit: 'Сфер уже достаточно — больше не добавляю, иначе в них потеряешься.',
   },
 
   safety: {

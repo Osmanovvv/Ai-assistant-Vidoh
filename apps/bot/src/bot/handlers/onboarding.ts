@@ -1,17 +1,12 @@
 import type { Bot, CallbackQueryContext, Context, InlineKeyboard } from 'grammy';
 import type { Logger } from 'pino';
-import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 
 import type { Database } from '../../infra/db.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import {
   ACTION,
-  chosenFromLabels,
-  createChosenTopics,
-  decodeTopicOffer,
   finish,
-  offerTopicsQuestion,
   onboardingStateOf,
   questionFor,
   setEvening,
@@ -19,19 +14,12 @@ import {
   setStep,
   setTimezone,
   timezoneQuestion,
-  topicRows,
   STEP,
   TIMEZONES,
   type OnboardingState,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
-import type { TopicGateway } from '../../modules/topics/gateway.js';
-import { refreshSummaries } from '../../modules/topics/summary.service.js';
-import { retireTopics } from '../../modules/topics/retire.service.js';
-import { appendTopics, listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
-import { outputContextOf } from '../../modules/users/state.repo.js';
-import { textsFor } from '../../texts/index.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 
 /**
@@ -76,35 +64,7 @@ export function keyboardOf(question: Question): InlineKeyboard {
   return fitKeyboard(question.rows);
 }
 
-/** Подписи кнопок текущей реплики: в них живёт состояние выбора сфер. */
-function labelsOf(ctx: CallbackQueryContext<Context>): string[] {
-  return (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? [])
-    .flat()
-    .map((button) => button.text);
-}
-
-export function registerOnboardingHandlers(
-  bot: Bot,
-  db: Database,
-  logger: Logger,
-  /**
-   * Ветки личного чата (§8, задачи 2.15 и 2.16). Без него онбординг
-   * работает целиком — просто веток и сводок не появится, а это и есть
-   * плоский режим §8.2.
-   */
-  gateway?: TopicGateway,
-  /**
-   * Реестр настроек — ради предела числа тем (§15, ревизия этапа).
-   *
-   * Настройка «Сколько тем» была объявлена в панели и не читалась никем:
-   * предел оставался константой в коде, человек менял число и видел
-   * «Сохранено», а не менялось ничего.
-   *
-   * Необязателен: без него работает умолчание из кода, и это законное
-   * состояние — так собран, например, стенд проверок.
-   */
-  settings?: SettingsRegistry,
-): void {
+export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logger): void {
   async function show(
     ctx: CallbackQueryContext<Context>,
     question: Question | undefined,
@@ -296,13 +256,31 @@ export function registerOnboardingHandlers(
     await advance(ctx, active, STEP.evening);
   });
 
+  /**
+   * Вечер — последний вопрос (правка заказчицы 14.09.2026, п. 1.1).
+   *
+   * Прежде за ним шёл шаг «какие сферы важны». Она его убрала: сферы —
+   * внутренняя организация бота, он заводит их сам по содержанию
+   * (`topics/adopt.ts`), а человек при желании правит в настройках.
+   * Базовый набор появляется на первой разобранной выгрузке (3.43), и
+   * опросу здесь делать нечего — только закрыться.
+   */
+  async function complete(
+    ctx: CallbackQueryContext<Context>,
+    active: { userId: string; state: OnboardingState },
+  ): Promise<void> {
+    await finish(db, active.userId, new Date());
+    logger.info({ userId: active.userId }, 'Онбординг пройден');
+    await ctx.editMessageText(active.state.texts.onboarding.finished);
+  }
+
   bot.callbackQuery(ACTION.eveningOff, async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id, STEP.evening);
     if (!active) return;
 
     await setEvening(db, active.userId, null);
-    await advance(ctx, active, STEP.topics);
+    await complete(ctx, active);
   });
 
   bot.callbackQuery(new RegExp(`^${ACTION.eveningPrefix}`, 'u'), async (ctx) => {
@@ -314,222 +292,6 @@ export function registerOnboardingHandlers(
     if (!TIME_RE.test(time)) return;
 
     await setEvening(db, active.userId, time);
-    await advance(ctx, active, STEP.topics);
-  });
-
-  // ── Сферы жизни ───────────────────────────────────────────────────────
-  bot.callbackQuery(new RegExp(`^${ACTION.topicPrefix}`, 'u'), async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const active = await acting(ctx.from.id, STEP.topics);
-    if (!active) return;
-
-    const name = ctx.callbackQuery.data.slice(ACTION.topicPrefix.length);
-    const { texts } = active.state;
-
-    // Отмеченное читается из клавиатуры самой реплики: состояние выбора
-    // живёт там, а не в базе. Так оно не теряется при перезапуске и не
-    // требует колонки под промежуточный выбор.
-    const chosen = new Set(chosenFromLabels(labelsOf(ctx), texts));
-
-    if (chosen.has(name)) chosen.delete(name);
-    else chosen.add(name);
-
-    await ctx.editMessageText(texts.onboarding.topics, {
-      reply_markup: keyboardOf({
-        text: texts.onboarding.topics,
-        rows: topicRows(texts, [...chosen]),
-      }),
-    });
-  });
-
-  bot.callbackQuery(ACTION.topicsDone, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const active = await acting(ctx.from.id, STEP.topics);
-    if (!active) return;
-
-    const { userId, state } = active;
-    const chosen = chosenFromLabels(labelsOf(ctx), state.texts);
-    /**
-     * Предел числа тем — из настроек (§6.4, §15; ревизия панели).
-     *
-     * Прежде его читало только согласие добавить сферу, а начальный набор
-     * шёл мимо: сфер на выбор девять, и человек, отметивший все, получал
-     * девять ветвей даже при умолчании восемь. Заказчица смотрела на своё
-     * число, а бот жил по чужому.
-     */
-    const result = await createChosenTopics(
-      db,
-      userId,
-      chosen,
-      await settings?.number('maxTopics'),
-    );
-
-    await finish(db, userId, new Date());
-
-    /**
-     * Невыбранные сферы уходят целиком (задача 3.43, 2.14; ревизия этапа
-     * 3, E1): архив → записи в тему по умолчанию (§6.4) → ветки снятых
-     * сфер из чата → сводки оставшихся. Связка та же, что в настройках
-     * (`retireTopics`), — раньше здесь была её единственная копия, а
-     * настройки делали только первый шаг.
-     *
-     * Пустой ответ означает «базовый набор» и не архивирует ничего; но
-     * перенос записей нужен и тогда: до этой минуты классификация шла по
-     * базовому набору §6.4, и записи в темах, которых у человека нет,
-     * переезжают в его тему по умолчанию.
-     *
-     * Отказ любого шага не роняет опрос: темы созданы, пояс подтверждён,
-     * и человек обязан увидеть, что всё закончилось.
-     */
-    const chatId = ctx.chat?.id;
-    const retired = await retireTopics(
-      { db, logger, gateway },
-      {
-        userId,
-        keep: chosen.length > 0 ? chosen : (await listTopics(db, userId)).map((one) => one.name),
-        chatId,
-      },
-    );
-    const { archived, moved, orphaned, summaries } = retired;
-
-    /**
-     * Снятая сфера не предлагается обратно (ревизия этапов 1–2, дефект 29).
-     *
-     * С задачи 3.43 базовые сферы есть до опроса, и дела в них уже лежат.
-     * Человек снимает «покупки» галочкой → тема уходит в архив → её дела
-     * переезжают в «личное» → имя «покупки» возвращается из переноса как
-     * потерянное — и следующая же реплика спрашивала: «добавить покупки?».
-     * Выбор человека возвращался к нему вопросом в том же обмене.
-     *
-     * §6.4 просит предлагать сферу, которой человеку **не хватило**, а не
-     * ту, от которой он только что отказался. Поэтому из потерянных имён
-     * вычитаются архивированные этим же ответом. Остальные — например,
-     * «дети» у того, кто их не отмечал и такой темы никогда не имел, —
-     * предлагаются по-прежнему.
-     *
-     * Сравнение по общему правилу имён (регистр, «ё»): имя в записи и имя
-     * темы — одна и та же строка из списка, но правило одно на проект.
-     *
-     * `orphaned` в журнале остаётся полным: разбирающему важно видеть,
-     * откуда переехали дела, а `offered` рядом показывает, что из этого
-     * дошло до вопроса и почему разница не пустая.
-     */
-    const refused = new Set(archived.map((topic) => normalizeTopicName(topic.name)));
-    const offered = orphaned.filter((name) => !refused.has(normalizeTopicName(name)));
-
-    logger.info(
-      {
-        userId,
-        created: result.created,
-        archived: archived.map((topic) => topic.name),
-        fallback: result.fallback,
-        moved,
-        orphaned,
-        offered,
-        summaries,
-      },
-      'Онбординг пройден',
-    );
-
-    /**
-     * §6.4: дела, не подошедшие ни к одной выбранной сфере, ушли в тему
-     * по умолчанию — **и бот предлагает создать новую**. Предлагает, а не
-     * создаёт: создавать темы без спроса запрещено.
-     *
-     * Это то самое «при следующем удобном случае» из §6.4, и удобнее
-     * случая нет: человек только что выбирал сферы и держит это в голове.
-     *
-     * Найдено на живой выкладке этапа 2: потерянные названия сфер
-     * записывались в журнал и больше никуда. У человека десять покупок
-     * ушло в «личное», а сказать ему об этом было некому.
-     *
-     * Предлагается `offered`, а не всё потерянное: снятые этим же ответом
-     * сферы отсеяны выше.
-     */
-    const finishedText = result.fallback
-      ? state.texts.onboarding.finishedDefault
-      : state.texts.onboarding.finished;
-
-    const offer = offered.length > 0 ? offerTopicsQuestion(state.texts, offered) : undefined;
-
-    if (offer === undefined) {
-      await ctx.editMessageText(finishedText);
-      return;
-    }
-
-    /**
-     * Двумя сообщениями, а не одним склеенным: склейка в коде — это
-     * реплика, собранная не в словаре (инвариант 4). А по существу это и
-     * есть два разных высказывания: опрос закончен, и отдельно —
-     * единственный открытый вопрос, что §13.9 и допускает.
-     */
-    await ctx.editMessageText(finishedText);
-    await ctx.reply(offer.text, { reply_markup: keyboardOf(offer) });
-  });
-
-  /**
-   * Согласие добавить сферу (§6.4).
-   *
-   * Шаг онбординга уже «пройден», поэтому проверки шага здесь нет: это
-   * не вопрос опроса, а отдельное предложение после него. Но человек
-   * должен быть известен — иначе нажатие пришло из ниоткуда.
-   */
-  bot.callbackQuery(new RegExp(`^${ACTION.addTopicsPrefix}(?!no$)`, 'u'), async (ctx) => {
-    await ctx.answerCallbackQuery();
-
-    const user = await findByTgId(db, ctx.from.id);
-    if (!user) return;
-
-    const names = decodeTopicOffer(ctx.callbackQuery.data);
-    if (names.length === 0) return;
-
-    const context = await outputContextOf(db, user.id);
-    const texts = textsFor(context.textProfile);
-
-    const maxTopics = await settings?.number('maxTopics');
-
-    const { added, limited } = await appendTopics(db, user.id, names, maxTopics);
-
-    if (added.length === 0) {
-      await ctx.editMessageText(
-        limited ? texts.onboarding.topicsLimit : texts.onboarding.topicsNotAdded,
-      );
-      return;
-    }
-
-    // Ветка и закреплённая сводка появляются сразу: человек согласился на
-    // сферу, а не на строчку в базе.
-    const chatId = ctx.chat?.id;
-    if (gateway && chatId !== undefined) {
-      try {
-        await refreshSummaries(
-          { db, gateway, logger },
-          {
-            userId: user.id,
-            chatId,
-            topicNames: added,
-            timeZone: context.timeZone,
-            profile: context.textProfile,
-          },
-        );
-      } catch (error) {
-        // Тема создана, а ветка — дело поправимое: она появится, когда в
-        // неё понадобится написать. Ронять согласие из-за этого нельзя.
-        logger.error({ err: error, userId: user.id }, 'Не удалось создать ветку новой сферы');
-      }
-    }
-
-    logger.info({ userId: user.id, added, limited }, 'Сферы добавлены по просьбе человека');
-    await ctx.editMessageText(texts.onboarding.topicsAdded(added));
-  });
-
-  bot.callbackQuery(ACTION.addTopicsSkip, async (ctx) => {
-    await ctx.answerCallbackQuery();
-
-    const user = await findByTgId(db, ctx.from.id);
-    if (!user) return;
-
-    const context = await outputContextOf(db, user.id);
-    await ctx.editMessageText(textsFor(context.textProfile).onboarding.topicsNotAdded);
+    await complete(ctx, active);
   });
 }

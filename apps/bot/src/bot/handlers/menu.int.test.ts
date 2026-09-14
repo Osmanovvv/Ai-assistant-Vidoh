@@ -1219,6 +1219,41 @@ describe('настройки §12.1: времена, пояс, сферы, им�
     expect(left).toContain('мотоцикл');
   });
 
+  it('сфера, заведённая ботом по содержанию, видна в настройках и снимается там же', async () => {
+    /**
+     * Правка заказчицы 14.09.2026 (п. 1.1): сферы заводит бот сам, а
+     * человек при желании исправляет. Исправить можно только то, что
+     * видно: экран настроек показывал девять предложенных сфер, и своя
+     * «мотоцикл» на нём не появлялась — снять её было негде.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    await addTopic(userId, 'работа');
+    await addTopic(userId, 'мотоцикл');
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
+
+    const keyboard = calls.at(-1)?.payload['reply_markup'] as {
+      inline_keyboard: { text: string; callback_data: string }[][];
+    };
+    const buttons = keyboard.inline_keyboard.flat();
+    expect(buttons.map((button) => button.callback_data)).toContain(
+      MENU_ACTION.topicSetPrefix + 'мотоцикл',
+    );
+    // Отмечена как своя — галочкой, как и предложенные.
+    expect(buttons.map((button) => button.text)).toContain(
+      defaultTexts.settings.topicChosen('мотоцикл'),
+    );
+    // «Готово» на экране одно — своё, не опросное.
+    expect(
+      buttons.filter((button) => button.text === defaultTexts.settings.buttonTopicsDone),
+    ).toHaveLength(1);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'мотоцикл'));
+
+    expect(await myTopics()).toEqual(['работа']);
+  });
+
   it('«Имя» ждёт ответа словами — и своим видом ожидания', async () => {
     /**
      * Вид ожидания свой, а не опросный: ответ на опросе двигает опрос

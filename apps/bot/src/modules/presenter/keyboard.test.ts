@@ -6,13 +6,12 @@ import { cardKeyboard } from '../../bot/handlers/card.js';
 import { keyboardOf as keyboardOfAwaiting } from '../../bot/handlers/awaiting.js';
 import { keyboardOf as keyboardOfOnboarding } from '../../bot/handlers/onboarding.js';
 import {
-  offerTopicsQuestion,
   questionFor,
   timezoneQuestion,
-  topicRows,
   STEP,
   type Question,
 } from '../onboarding/onboarding.service.js';
+import { topicRows } from '../topics/choices.js';
 import { defaultTexts } from '../../texts/index.js';
 import { fitKeyboard, packButtons, packRows, rowFits } from './keyboard.js';
 
@@ -222,13 +221,15 @@ const questionsOfOnboarding = (): { where: string; question: Question }[] => {
   }
 
   found.push({ where: 'города', question: timezoneQuestion(texts) });
+  // Экран сфер в настройках: предложенные с отметками и своя, заведённая
+  // ботом по содержанию (правка заказчицы 14.09.2026, п. 1.1).
   found.push({
     where: 'сферы с отметками',
-    question: { text: texts.onboarding.topics, rows: topicRows(texts, ['семья', 'здоровье']) },
+    question: {
+      text: texts.settings.askTopics,
+      rows: topicRows(texts, ['семья', 'здоровье', 'саморазвитие'], 'menu:set:t:'),
+    },
   });
-
-  const offer = offerTopicsQuestion(texts, ['здоровье', 'покупки']);
-  if (offer) found.push({ where: 'предложение сферы', question: offer });
 
   return found;
 };
@@ -246,8 +247,11 @@ describe('клавиатуры опроса уходят разложенным�
     // достаточно переименовать шаг, чтобы список схлопнулся.
     const questions = questionsOfOnboarding();
 
-    expect(questions.length).toBeGreaterThanOrEqual(7);
+    // Четыре шага, города и сферы настроек: шаг про сферы и предложение
+    // сферы ушли 14.09.2026 (правка заказчицы, п. 1.1).
+    expect(questions.length).toBeGreaterThanOrEqual(6);
     expect(questions.map((one) => one.where)).toContain('города');
+    expect(questions.map((one) => one.where)).toContain('сферы с отметками');
   });
 
   for (const { path, build } of builders) {

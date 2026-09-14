@@ -25,9 +25,8 @@ import {
   setMorning,
   setTimezone,
   TIMEZONES,
-  topicRows,
-  TOPIC_CHOICES,
 } from '../../modules/onboarding/onboarding.service.js';
+import { isChoice, topicRows } from '../../modules/topics/choices.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
@@ -653,11 +652,13 @@ export function registerMenuHandlers(
     if (!active) return;
 
     const name = ctx.callbackQuery.data.slice(MENU_ACTION.topicSetPrefix.length);
-
-    if (!TOPIC_CHOICES.includes(name as (typeof TOPIC_CHOICES)[number])) return;
-
     const mine = await myTopicNames(active.userId);
     const has = mine.includes(name);
+
+    // Снять можно любую свою сферу — и заведённую ботом по содержанию
+    // (правка заказчицы 14.09.2026, п. 1.1); включить с этого экрана —
+    // только предложенную: чужое имя в callback_data не заводит ничего.
+    if (!has && !isChoice(name)) return;
 
     /**
      * Убрать последнюю сферу нельзя.

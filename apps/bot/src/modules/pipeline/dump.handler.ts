@@ -34,7 +34,6 @@ import type { Applied } from '../resolver/patch.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { selectForOutput, type SelectionResult } from '../output/filter.js';
 import {
-  createChosenTopics,
   firstStep,
   onboardingStateOf,
   questionFor,
@@ -64,9 +63,10 @@ import {
   type CrisisContour,
   type CrisisOutcome,
 } from '../safety/crisis.js';
+import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
-import { topicsFor } from '../topics/topics.repo.js';
+import { createBaseTopics, topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -1312,27 +1312,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      *
      * §8.1 обещает: «женщина открывает бота и сразу видит ветки по сферам
      * жизни». §13.1 запрещает опрос до первой выгрузки. Вместе это значит
-     * одно: ветки не могут ждать ответов. Базовый набор §6.4 — и так
-     * то, что создаётся при пустом ответе; здесь он создаётся раньше, а
-     * шаг «какие сферы важны» потом его уточняет: невыбранное уходит в
-     * архив, выбранное добавляется.
+     * одно: ветки не могут ждать ответов. Базовый набор §6.4 создаётся
+     * здесь; шага «какие сферы важны» с 14.09.2026 нет (правка заказчицы,
+     * п. 1.1) — дальше сферы заводит бот по содержанию (`adopt.ts`), а
+     * человек правит их в настройках.
      */
     const known = await topicsFor(db, batch.userId);
     const spheresCreated = known.own
       ? false
-      : (
-          await createChosenTopics(
-            db,
-            batch.userId,
-            [],
-            // Предел числа тем — из настроек (§6.4; ревизия панели).
-            // Базовых сфер пять, и при пределе ниже пяти этот путь был
-            // единственным, который мог его обойти: ветки создаются
-            // раньше любых ответов человека, то есть до шага «какие
-            // сферы важны», где предел уже соблюдается.
-            await deps.settings?.number('maxTopics'),
-          )
-        ).created > 0;
+      : // Предел числа тем — из настроек (§6.4; ревизия панели): базовых
+        // сфер пять, и при пределе ниже пяти этот путь его обходил.
+        (await createBaseTopics(db, batch.userId, await deps.settings?.number('maxTopics'))) > 0;
     if (spheresCreated) {
       deps.logger?.info({ userId: batch.userId }, 'Базовые сферы созданы на первой выгрузке');
     }
@@ -1369,13 +1359,33 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     /**
+     * Сферы по содержанию (правка заказчицы 14.09.2026, п. 1.1): модель
+     * назвала сферу не из списка — бот заводит её сам, в пределах
+     * настройки и не возвращая выключенных человеком.
+     *
+     * **Не из ветки.** Написав в ветку «здоровье», человек уже выбрал
+     * сферу сам; догадка модели о новой сфере его выбор не перебивает —
+     * «если не уверен — лучше без новой сферы» (её слова). В общем чате
+     * контекста нет, и названное моделью — единственное указание.
+     */
+    const adopted =
+      threadTopic === undefined
+        ? await adoptWantedTopics(db, {
+            userId: batch.userId,
+            units: classified.items,
+            maxTopics: await deps.settings?.number('maxTopics'),
+            logger: deps.logger,
+          })
+        : { units: classified.items };
+
+    /**
      * §8.1: тема ветки — умолчание, а не приказ.
      *
      * Классификация уже получила её параметром `defaultTopic`, но тот
      * срабатывает только на теме, которой у человека нет, — то есть в
      * бою никогда. Подстановка живёт здесь: см. thread-topic.ts.
      */
-    const units = applyThreadTopic(classified.items, {
+    const units = applyThreadTopic(adopted.units, {
       threadTopic: threadTopic?.name,
       catchAllTopic: topics.defaultName,
     });
@@ -1533,7 +1543,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         return await park(`поздняя мысль: классификация не удалась: ${lateClassified.problem}`);
       }
 
-      const lateUnits = applyThreadTopic(lateClassified.items, {
+      // Сферы по содержанию — и у поздней записи (п. 1.1), тем же путём
+      // и с той же оговоркой про ветку.
+      const lateAdopted =
+        threadTopic === undefined
+          ? await adoptWantedTopics(db, {
+              userId: batch.userId,
+              units: lateClassified.items,
+              maxTopics: await deps.settings?.number('maxTopics'),
+              logger: deps.logger,
+            })
+          : { units: lateClassified.items };
+      const lateUnits = applyThreadTopic(lateAdopted.units, {
         threadTopic: threadTopic?.name,
         catchAllTopic: topics.defaultName,
       });

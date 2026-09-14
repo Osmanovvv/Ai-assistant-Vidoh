@@ -2,22 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import { defaultTexts, profiles } from '../../texts/index.js';
 import {
-  chosenFromLabels,
-  decodeTopicOffer,
-  encodeTopicOffer,
   firstStep,
-  offerTopicsQuestion,
   questionFor,
   timezoneQuestion,
-  topicRows,
   ACTION,
   MORNING_TIMES,
   EVENING_TIMES,
   STEP,
   TIMEZONES,
-  TOPIC_CHOICES,
   type Question,
 } from './onboarding.service.js';
+import { isChoice, TOPIC_CHOICES, topicRows } from '../topics/choices.js';
 
 /**
  * Онбординг (задача 2.13).
@@ -58,23 +53,16 @@ describe('вопросы', () => {
     expect(questionFor(STEP.timezone, { texts, name })).toBeDefined();
     expect(questionFor(STEP.morning, { texts, name })).toBeDefined();
     expect(questionFor(STEP.evening, { texts, name })).toBeDefined();
-    expect(questionFor(STEP.topics, { texts, name })).toBeDefined();
 
     expect(questionFor(STEP.done, { texts, name })).toBeUndefined();
     expect(questionFor(0, { texts, name })).toBeUndefined();
   });
 
-  it('перерисованная клавиатура сфер не меняет идентификаторов кнопок', () => {
-    // Отметка меняет подпись, но не действие: иначе повторное нажатие
-    // на уже отмеченную сферу уходило бы в никуда.
-    const plain = topicRows(texts, [])
-      .flat()
-      .map((button) => button.action);
-    const marked = topicRows(texts, ['семья', 'работа'])
-      .flat()
-      .map((button) => button.action);
-
-    expect(marked).toEqual(plain);
+  it('вечер — последний шаг: вопроса про сферы нет (правка заказчицы 14.09.2026, п. 1.1)', () => {
+    // Шагов ровно четыре, «закончен» — пятый; шестого, где раньше жили
+    // сферы, нет. Прежние значения 5 и 6 в базе переводит миграция 0053.
+    expect(STEP).toEqual({ name: 1, timezone: 2, morning: 3, evening: 4, done: 5 });
+    expect(questionFor(STEP.evening + 1, { texts, name })).toBeUndefined();
   });
 
   it('в каждой реплике не больше одного вопроса', () => {
@@ -205,53 +193,59 @@ describe('часовые пояса', () => {
   });
 });
 
-describe('выбор сфер', () => {
-  it('без выбора кнопки без галочек', () => {
-    const rows = topicRows(texts, []);
+describe('сферы в настройках', () => {
+  const prefix = 'menu:set:t:';
+
+  it('без своих сфер — только предложенные, без галочек', () => {
+    const rows = topicRows(texts, [], prefix);
     const labels = rows.flat().map((button) => button.label);
 
-    expect(labels).toContain('семья');
-    expect(labels).not.toContain(texts.onboarding.topicChosen('семья'));
+    expect(labels).toEqual([...TOPIC_CHOICES]);
   });
 
-  it('отмеченное помечается галочкой', () => {
-    const labels = topicRows(texts, ['семья', 'работа'])
+  it('включённое помечается галочкой', () => {
+    const labels = topicRows(texts, ['семья', 'работа'], prefix)
       .flat()
       .map((button) => button.label);
 
-    expect(labels).toContain(texts.onboarding.topicChosen('семья'));
-    expect(labels).toContain(texts.onboarding.topicChosen('работа'));
+    expect(labels).toContain(texts.settings.topicChosen('семья'));
+    expect(labels).toContain(texts.settings.topicChosen('работа'));
     expect(labels).toContain('здоровье');
   });
 
-  it('кнопка «Готово» всегда последняя', () => {
-    const rows = topicRows(texts, []);
-    const last = rows.at(-1) ?? [];
-
-    expect(last).toHaveLength(1);
-    expect(last[0]?.action).toBe(ACTION.topicsDone);
-  });
-
-  it('выбор читается обратно из подписей', () => {
-    // Состояние выбора живёт в клавиатуре самой реплики, а не в базе:
-    // так оно не теряется при перезапуске и не требует колонки.
-    const labels = topicRows(texts, ['дети', 'деньги'])
+  it('перерисованная клавиатура не меняет идентификаторов кнопок', () => {
+    // Отметка меняет подпись, но не действие: иначе повторное нажатие
+    // на уже отмеченную сферу уходило бы в никуда.
+    const plain = topicRows(texts, [], prefix)
       .flat()
-      .map((button) => button.label);
-
-    expect(chosenFromLabels(labels, texts)).toEqual(['дети', 'деньги']);
-  });
-
-  it('порядок выбора не влияет на результат', () => {
-    const first = topicRows(texts, ['деньги', 'дети'])
+      .map((button) => button.action);
+    const marked = topicRows(texts, ['семья', 'работа'], prefix)
       .flat()
-      .map((button) => button.label);
+      .map((button) => button.action);
 
-    expect(chosenFromLabels(first, texts)).toEqual(['дети', 'деньги']);
+    expect(marked).toEqual(plain);
   });
 
-  it('чужие подписи не считаются выбором', () => {
-    expect(chosenFromLabels(['что-то своё', '✓ несуществующая'], texts)).toEqual([]);
+  it('своя сфера, заведённая ботом по содержанию, стоит после предложенных — с галочкой', () => {
+    // Правка заказчицы 14.09.2026 (п. 1.1): исправить сферу человек может
+    // только ту, что видит.
+    const buttons = topicRows(texts, ['семья', 'саморазвитие'], prefix).flat();
+
+    expect(buttons.at(-1)).toEqual({
+      label: texts.settings.topicChosen('саморазвитие'),
+      action: `${prefix}саморазвитие`,
+    });
+    expect(buttons.filter((button) => button.action.endsWith('саморазвитие'))).toHaveLength(1);
+  });
+
+  it('предложенная сфера не задваивается своей', () => {
+    const actions = topicRows(texts, ['семья'], prefix)
+      .flat()
+      .map((button) => button.action);
+
+    expect(actions.filter((action) => action === `${prefix}семья`)).toHaveLength(1);
+    expect(isChoice('семья')).toBe(true);
+    expect(isChoice('саморазвитие')).toBe(false);
   });
 
   it('базовый набор §6.4 целиком есть среди предложений', () => {
@@ -302,60 +296,6 @@ describe('словарь', () => {
         expect(text.trim().length).toBeGreaterThan(0);
       }
     }
-  });
-});
-
-describe('предложение добавить сферу (§6.4)', () => {
-  /**
-   * ТЗ §6.4: «Если новая запись не подходит ни к одной теме, она уходит в
-   * тему по умолчанию, а бот при следующем удобном случае предлагает
-   * создать новую». Требование было в ТЗ и в плане, а в коде потерянные
-   * названия сфер только писались в журнал. Нашлось на живой выкладке.
-   */
-
-  it('кладёт в кнопку номера сфер, а не их названия', () => {
-    // Кириллица весит два байта на знак, а callback_data ограничена 64.
-    const action = encodeTopicOffer(['покупки']);
-
-    expect(action).toBe(`${ACTION.addTopicsPrefix}3`);
-    expect(Buffer.byteLength(action ?? '', 'utf8')).toBeLessThanOrEqual(64);
-  });
-
-  it('возвращает названия обратно', () => {
-    const action = encodeTopicOffer(['здоровье', 'покупки']);
-
-    expect(decodeTopicOffer(action ?? '')).toEqual(['здоровье', 'покупки']);
-  });
-
-  it('предлагает не больше двух сфер', () => {
-    // Вопрос из четырёх сфер — это анкета, а разгрузка в неё не
-    // превращается. Остальные предложатся, когда снова понадобятся.
-    const names = decodeTopicOffer(encodeTopicOffer(['семья', 'здоровье', 'работа']) ?? '');
-
-    expect(names).toHaveLength(2);
-  });
-
-  it('незнакомую сферу предложить нельзя', () => {
-    // Закрытый список — не прихоть: номер в кнопке имеет смысл только
-    // пока список в коде. Своё название человек назовёт сам, когда
-    // появится такая возможность.
-    expect(encodeTopicOffer(['ремонт дачи'])).toBeUndefined();
-    expect(offerTopicsQuestion(defaultTexts, ['ремонт дачи'])).toBeUndefined();
-  });
-
-  it('мусор в данных даёт пустой список, а не отказ', () => {
-    // callback_data приходит снаружи, подделать её можно.
-    expect(decodeTopicOffer('onb:add:99')).toEqual([]);
-    expect(decodeTopicOffer('onb:add:абв')).toEqual([]);
-    expect(decodeTopicOffer('onb:add:no')).toEqual([]);
-    expect(decodeTopicOffer('чужое')).toEqual([]);
-  });
-
-  it('вопрос называет сферы человеку и даёт два ответа', () => {
-    const question = offerTopicsQuestion(defaultTexts, ['покупки']);
-
-    expect(question?.text).toContain('покупки');
-    expect(question?.rows.flat()).toHaveLength(2);
   });
 });
 

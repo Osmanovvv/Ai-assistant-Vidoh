@@ -16,13 +16,11 @@ import {
   ACTION,
   onboardingStateOf,
   STEP,
-  topicRows,
   type Button,
 } from '../../modules/onboarding/onboarding.service.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
-import { createTopics, listTopics } from '../../modules/topics/topics.repo.js';
 import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -136,7 +134,7 @@ function createTestBot(
     release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
     ...(questions === undefined ? {} : { onboarding: questions }),
   });
-  registerOnboardingHandlers(bot, testDb(), logger, gateway);
+  registerOnboardingHandlers(bot, testDb(), logger);
 
   return { bot, calls };
 }
@@ -389,31 +387,19 @@ describe('полный путь', () => {
     await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}09:00`));
     expect((await settingsOf())?.onboardingStep).toBe(STEP.evening);
 
+    // Вечер — последний вопрос: шага про сферы больше нет (правка
+    // заказчицы 14.09.2026, п. 1.1 — сферы бот заводит сам по содержанию).
     await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}22:00`));
-    expect((await settingsOf())?.onboardingStep).toBe(STEP.topics);
-
-    // Отмечаем две сферы, затем «Готово».
-    await bot.handleUpdate(
-      callbackUpdate(`${ACTION.topicPrefix}семья`, topicRows(defaultTexts, [])),
-    );
-    await bot.handleUpdate(
-      callbackUpdate(`${ACTION.topicPrefix}здоровье`, topicRows(defaultTexts, ['семья'])),
-    );
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
-    );
+    expect((await settingsOf())?.onboardingStep).toBe(STEP.done);
+    expect((await settingsOf())?.onboardingDoneAt).not.toBeNull();
 
     const settings = await settingsOf();
-    expect(settings?.onboardingStep).toBe(STEP.done);
-    expect(settings?.onboardingDoneAt).not.toBeNull();
     expect(settings?.morningTime).toBe('09:00:00');
     expect(settings?.eveningTime).toBe('22:00:00');
 
-    // §6.4: тема по умолчанию должна быть, иначе запись, не попавшая ни в
-    // одну, потеряется на проверке целостности.
-    expect(await topicNames()).toEqual(['здоровье', 'личное', 'семья']);
-    const [fallback] = await testDb().select().from(topics).where(eq(topics.name, 'личное'));
-    expect(fallback?.isDefault).toBe(true);
+    // Опрос сфер не заводит и не трогает: базовый набор появляется на
+    // первой разобранной выгрузке (задача 3.43), дальше — по содержанию.
+    expect(await topicNames()).toEqual([]);
 
     const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
     expect(textOf(last)).toBe(defaultTexts.onboarding.finished);
@@ -505,7 +491,7 @@ describe('напоминания', () => {
     const settings = await settingsOf();
     expect(settings?.eveningOn).toBe(false);
     expect(settings?.eveningTime).toBe('21:00:00');
-    expect(settings?.onboardingStep).toBe(STEP.topics);
+    expect(settings?.onboardingStep).toBe(STEP.done);
   });
 
   it('подделанное время не проходит', async () => {
@@ -520,81 +506,18 @@ describe('напоминания', () => {
   });
 });
 
-describe('сферы жизни', () => {
-  it('повторное нажатие снимает отметку', async () => {
-    const { bot, calls } = createTestBot();
-    await bot.init();
-    await startedAt(STEP.topics);
-
-    await bot.handleUpdate(
-      callbackUpdate(`${ACTION.topicPrefix}работа`, topicRows(defaultTexts, ['работа'])),
-    );
-
-    const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
-    const keyboard = last?.payload['reply_markup'] as {
-      inline_keyboard: { text: string }[][];
-    };
-    const labels = keyboard.inline_keyboard.flat().map((button) => button.text);
-
-    expect(labels).toContain('работа');
-    expect(labels).not.toContain(defaultTexts.onboarding.topicChosen('работа'));
-  });
-
-  it('без выбора берётся базовый набор §6.4 и об этом честно говорится', async () => {
-    // Оставить человека без тем нельзя: классификация без списка не
-    // работает. Спорить с ним, заставляя выбрать, — тоже: разгрузка не
-    // должна превращаться в анкету.
-    const { bot, calls } = createTestBot();
-    await bot.init();
-    await startedAt(STEP.topics);
-
-    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, [])));
-
-    expect(await topicNames()).toEqual(['здоровье', 'личное', 'покупки', 'работа', 'семья']);
-
-    const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
-    expect(textOf(last)).toBe(defaultTexts.onboarding.finishedDefault);
-  });
-
-  it('повторное «Готово» не задваивает темы', async () => {
-    // Кнопка остаётся в истории чата, и нажать её второй раз человек
-    // может через неделю.
-    const { bot } = createTestBot();
-    await bot.init();
-    await startedAt(STEP.topics);
-
-    const keyboard = topicRows(defaultTexts, ['семья']);
-    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, keyboard));
-    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, keyboard));
-
-    expect(await topicNames()).toEqual(['личное', 'семья']);
-  });
-
-  it('выбранное «личное» не задваивается темой по умолчанию', async () => {
-    const { bot } = createTestBot();
-    await bot.init();
-    await startedAt(STEP.topics);
-
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['личное', 'дети'])),
-    );
-
-    expect(await topicNames()).toEqual(['дети', 'личное']);
-  });
-});
-
 describe('устаревшие нажатия', () => {
   it('кнопка из прошлого шага не откатывает опрос назад', async () => {
     // Кнопки остаются в истории чата. Без сверки с текущим шагом такое
     // нажатие вернуло бы человека к вопросу про утро.
     const { bot } = createTestBot();
     await bot.init();
-    await startedAt(STEP.topics);
+    await startedAt(STEP.evening);
 
     await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
     await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
 
-    expect((await settingsOf())?.onboardingStep).toBe(STEP.topics);
+    expect((await settingsOf())?.onboardingStep).toBe(STEP.evening);
   });
 
   it('и не перезаписывает уже выбранное', async () => {
@@ -700,24 +623,18 @@ describe('домиграция первой выгрузки', () => {
     // День остался тем же днём — уже в её поясе, а не в московском.
     expect(await localDeadline(itemId, 'Asia/Vladivostok')).toBe('2026-08-27');
 
-    // Дальше по опросу до сфер жизни.
+    // Дальше по опросу до конца: шага про сферы нет (правка 14.09.2026,
+    // п. 1.1), тема записи остаётся той, что дал разбор.
     await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
     await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
 
-    // Выбирает «дети» и «деньги» — «здоровья» среди них нет.
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['дети', 'деньги'])),
-    );
+    expect((await settingsOf())?.onboardingStep).toBe(STEP.done);
 
-    // Порядок — как сортирует JS по кодам символов: «деньги» раньше «дети».
-    expect(await topicNames()).toEqual(['деньги', 'дети', 'личное']);
-
-    // §6.4: запись из темы, которой у неё нет, уехала в тему по умолчанию.
     const [row] = await testDb()
       .select({ topic: items.topic })
       .from(items)
       .where(eq(items.id, itemId));
-    expect(row?.topic).toBe('личное');
+    expect(row?.topic).toBe('здоровье');
   });
 
   it('выбранная тема сохраняется, срок всё равно пересчитан', async () => {
@@ -730,9 +647,6 @@ describe('домиграция первой выгрузки', () => {
     await bot.handleUpdate(callbackUpdate(`${ACTION.timezonePrefix}Asia/Omsk`));
     await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
     await bot.handleUpdate(callbackUpdate(ACTION.eveningOff));
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['здоровье'])),
-    );
 
     expect(await localDeadline(itemId, 'Asia/Omsk')).toBe('2026-08-27');
 
@@ -757,114 +671,6 @@ describe('домиграция первой выгрузки', () => {
 
     expect(await timezoneOf()).toEqual({ zone: 'Europe/Moscow', confirmed: true });
     expect(await localDeadline(itemId, 'Europe/Moscow')).toBe('2026-08-27');
-  });
-});
-
-describe('предложение добавить сферу (§6.4)', () => {
-  /**
-   * ТЗ §6.4: дела, не подошедшие ни к одной выбранной сфере, уходят в
-   * тему по умолчанию, **а бот предлагает создать новую**. План обещал
-   * это на задаче 2.15, но в коде потерянные названия только писались в
-   * журнал. Нашлось на живой выкладке этапа 2: у человека десять покупок
-   * ушло в «личное», и сказать ему об этом было некому.
-   */
-
-  async function dumpItemIn(topic: string): Promise<void> {
-    await testDb().insert(items).values({
-      userId,
-      text: 'купить пуфики',
-      type: 'TASK',
-      priority: 'LATER',
-      topic,
-      sourceOrder: 0,
-    });
-  }
-
-  /** Проходит онбординг до сфер и выбирает названные. */
-  async function finishOnboarding(bot: Bot, chosen: readonly string[]): Promise<void> {
-    await startedAt(STEP.timezone);
-    await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
-    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
-    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
-    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, chosen)));
-  }
-
-  it('после онбординга бот предлагает сферу, в которую дела не попали', async () => {
-    const { bot, calls } = createTestBot();
-    await bot.init();
-
-    await dumpItemIn('покупки');
-    await finishOnboarding(bot, ['семья', 'здоровье']);
-
-    const offer = calls.filter((call) => call.method === 'sendMessage').at(-1);
-
-    expect(String(offer?.payload['text'])).toContain('покупки');
-    // Кнопки «Добавить» и «Не надо» — решает человек, а не бот.
-    expect(JSON.stringify(offer?.payload['reply_markup'])).toContain(ACTION.addTopicsPrefix);
-  });
-
-  it('согласие создаёт сферу и не трогает порядок прежних', async () => {
-    const { bot } = createTestBot();
-    await bot.init();
-
-    await dumpItemIn('покупки');
-    await finishOnboarding(bot, ['семья', 'здоровье']);
-
-    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
-
-    // Новая сфера дописана в конец: встань она первой — человеку
-    // перетасовало бы весь список без его просьбы. Проверяется именно
-    // порядок сортировки, а не алфавит: названия помощник сортирует сам.
-    const rows = await testDb()
-      .select({ name: topics.name, order: topics.sortOrder })
-      .from(topics)
-      .where(eq(topics.userId, userId))
-      .orderBy(topics.sortOrder);
-
-    expect(rows.map((row) => row.name)).toEqual(['семья', 'здоровье', 'личное', 'покупки']);
-    expect(rows.at(-1)?.order).toBeGreaterThan(rows.at(-2)?.order ?? 0);
-  });
-
-  it('отказ ничего не создаёт', async () => {
-    const { bot } = createTestBot();
-    await bot.init();
-
-    await dumpItemIn('покупки');
-    await finishOnboarding(bot, ['семья', 'здоровье']);
-    const before = await topicNames();
-
-    await bot.handleUpdate(callbackUpdate(ACTION.addTopicsSkip));
-
-    expect(await topicNames()).toEqual(before);
-  });
-
-  it('без потерянных сфер предложения нет', async () => {
-    // Лишний вопрос дороже отсутствующего: §13.9 не терпит болтовни.
-    const { bot, calls } = createTestBot();
-    await bot.init();
-
-    await dumpItemIn('здоровье');
-    await finishOnboarding(bot, ['семья', 'здоровье']);
-
-    const texts = calls
-      .filter((call) => call.method === 'sendMessage')
-      .map((call) => String(call.payload['text']));
-
-    expect(texts.join(' ')).not.toContain('Добавить такую сферу');
-  });
-
-  it('повторное согласие не плодит двойников', async () => {
-    const { bot } = createTestBot();
-    await bot.init();
-
-    await dumpItemIn('покупки');
-    await finishOnboarding(bot, ['семья', 'здоровье']);
-
-    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
-    await bot.handleUpdate(callbackUpdate(`${ACTION.addTopicsPrefix}3`));
-
-    const names = await topicNames();
-    expect(names.filter((name) => name === 'покупки')).toHaveLength(1);
   });
 });
 
@@ -965,182 +771,6 @@ describe('опрос начинается с первого запуска (за
   });
 });
 
-describe('сферы, появившиеся до опроса (задача 3.43)', () => {
-  /**
-   * Базовые сферы теперь создаются на первой выгрузке. К шагу «какие
-   * сферы важны» они уже есть — и ответ человека обязан их убрать, иначе
-   * выбор ничего не значит.
-   */
-
-  const BASE = ['семья', 'здоровье', 'работа', 'покупки', 'личное'] as const;
-
-  async function baseSpheresWithThreads(): Promise<void> {
-    await createTopics(
-      testDb(),
-      userId,
-      BASE.map((name) => ({ name, isDefault: name === 'личное' })),
-    );
-    // Две ветки уже созданы в чате — как после первой выгрузки.
-    await testDb().update(topics).set({ tgThreadId: 501 }).where(eq(topics.name, 'работа'));
-    await testDb().update(topics).set({ tgThreadId: 502 }).where(eq(topics.name, 'покупки'));
-  }
-
-  async function itemIn(topic: string): Promise<string> {
-    const [row] = await testDb().select().from(topics).where(eq(topics.name, topic));
-    const [item] = await testDb()
-      .insert(items)
-      .values({
-        userId,
-        text: 'купить пуфики',
-        type: 'TASK',
-        priority: 'LATER',
-        topic,
-        topicId: row?.id ?? null,
-        sourceOrder: 0,
-      })
-      .returning({ id: items.id });
-    return item?.id ?? '';
-  }
-
-  async function walkToSpheres(bot: Bot): Promise<void> {
-    await startedAt(STEP.timezone);
-    await bot.handleUpdate(callbackUpdate(ACTION.timezoneMoscow));
-    await bot.handleUpdate(callbackUpdate(`${ACTION.morningPrefix}08:00`));
-    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}21:00`));
-  }
-
-  it('невыбранные сферы уходят в архив, их ветки убраны, дела переехали', async () => {
-    const gateway = new FakeTopicGateway();
-    const { bot } = createTestBot(undefined, gateway);
-    await bot.init();
-
-    await baseSpheresWithThreads();
-    const itemId = await itemIn('покупки');
-    await walkToSpheres(bot);
-
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
-    );
-
-    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
-    expect(alive).toEqual(['здоровье', 'личное', 'семья']);
-
-    // Строки в базе остались, помечены архивными.
-    const all = await testDb().select().from(topics).where(eq(topics.userId, userId));
-    expect(
-      all
-        .filter((topic) => topic.isArchived)
-        .map((topic) => topic.name)
-        .sort(),
-    ).toEqual(['покупки', 'работа']);
-
-    // Ветки архивных сфер убраны из чата — обе, у которых они были.
-    expect(gateway.deletedThreads.map((thread) => thread.threadId).sort()).toEqual([501, 502]);
-
-    // Дело из «покупок» уехало в тему по умолчанию вместе со ссылкой.
-    const [moved] = await testDb().select().from(items).where(eq(items.id, itemId));
-    const fallback = all.find((topic) => topic.name === 'личное');
-    expect(moved?.topic).toBe('личное');
-    expect(moved?.topicId).toBe(fallback?.id);
-  });
-
-  it('пустой выбор оставляет базовый набор как есть', async () => {
-    const gateway = new FakeTopicGateway();
-    const { bot } = createTestBot(undefined, gateway);
-    await bot.init();
-
-    await baseSpheresWithThreads();
-    await walkToSpheres(bot);
-
-    await bot.handleUpdate(callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, [])));
-
-    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
-    expect(alive).toEqual(['здоровье', 'личное', 'покупки', 'работа', 'семья']);
-    expect(gateway.deletedThreads).toHaveLength(0);
-  });
-
-  it('снятую сферу бот не предлагает создать в той же реплике', async () => {
-    /**
-     * Ревизия этапов 1–2, дефект 29. Порядок «наговорил → потом закончил
-     * опрос» законен (§12.2 разрешает не отвечать). Дела из снятой
-     * сферы переезжают в «личное» — это §6.4, и сосед выше это проверяет.
-     * А вот вопрос «добавить покупки?» задавать нельзя: человек только
-     * что снял эту сферу галочкой. §6.4 просит предлагать сферу, которой
-     * человеку **не хватило**, а не ту, от которой он отказался.
-     */
-    const gateway = new FakeTopicGateway();
-    const { bot, calls } = createTestBot(undefined, gateway);
-    await bot.init();
-
-    await baseSpheresWithThreads();
-    await itemIn('покупки');
-    await walkToSpheres(bot);
-
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
-    );
-
-    const sent = calls.filter((call) => call.method === 'sendMessage');
-    expect(sent.map((call) => textOf(call)).join(' ')).not.toContain('покупки');
-    expect(
-      sent.some((call) =>
-        keyboardOf(call).some((button) => button.callback_data?.startsWith(ACTION.addTopicsPrefix)),
-      ),
-    ).toBe(false);
-  });
-
-  it('сфера, которой у человека не было, предлагается по-прежнему — а снятая рядом с ней нет', async () => {
-    // Исключение снятых не должно выключить предложение целиком: дела
-    // про «детей» ни к одной сфере не подошли, и §6.4 велит спросить.
-    const gateway = new FakeTopicGateway();
-    const { bot, calls } = createTestBot(undefined, gateway);
-    await bot.init();
-
-    await baseSpheresWithThreads();
-    await itemIn('покупки');
-    await itemIn('дети');
-    await walkToSpheres(bot);
-
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'здоровье'])),
-    );
-
-    const offer = calls.filter((call) => call.method === 'sendMessage').at(-1);
-    expect(textOf(offer)).toContain('дети');
-    expect(textOf(offer)).not.toContain('покупки');
-    expect(
-      keyboardOf(offer).some((button) => button.callback_data?.startsWith(ACTION.addTopicsPrefix)),
-    ).toBe(true);
-  });
-
-  it('выбранное сверх базового добавляется, а не упирается в существующее', async () => {
-    const gateway = new FakeTopicGateway();
-    const { bot } = createTestBot(undefined, gateway);
-    await bot.init();
-
-    await baseSpheresWithThreads();
-    await walkToSpheres(bot);
-
-    await bot.handleUpdate(
-      callbackUpdate(ACTION.topicsDone, topicRows(defaultTexts, ['семья', 'дети'])),
-    );
-
-    const alive = (await listTopics(testDb(), userId)).map((topic) => topic.name).sort();
-    expect(alive).toEqual(['дети', 'личное', 'семья']);
-  });
-});
-
-/**
- * Ответ словами вместо кнопки (задача 3.61).
- *
- * Пять пунктов заказчика от 04.09.2026, из них здесь два: своё имя
- * («может кто-то хочет, чтобы её называли Леночка») и своё время («если
- * человек хочет 7-30»).
- *
- * Опрос был целиком на кнопках намеренно: свободный ответ приходит
- * обычным сообщением и попадает в буфер выгрузки. Поэтому главное, что
- * проверяется ниже, — **мысль человека не теряется ни в одном случае**.
- */
 describe('ответ словами', () => {
   async function awaitingOfUser(): Promise<string | null> {
     return (await settingsOf())?.awaitingInput ?? null;
@@ -1239,7 +869,7 @@ describe('ответ словами', () => {
   });
 
   it('вечернее время словами тоже принимается', async () => {
-    const { bot } = createTestBot(recordingQuestions().sender);
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
     await bot.init();
     await startedAt(STEP.evening);
 
@@ -1249,7 +879,12 @@ describe('ответ словами', () => {
     const settings = await settingsOf();
     expect(settings?.eveningTime).toBe('21:45:00');
     expect(settings?.eveningOn).toBe(true);
-    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.topics);
+    // Последний ответ словами закрывает опрос (правка 14.09.2026, п. 1.1).
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.done);
+    const texts = calls
+      .filter((call) => call.method === 'sendMessage')
+      .map((call) => String(call.payload['text']));
+    expect(texts.at(-1)).toBe(defaultTexts.onboarding.finished);
   });
 
   it('не время — настройка не меняется, мысль идёт в разбор', async () => {
