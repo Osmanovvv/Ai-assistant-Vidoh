@@ -22,7 +22,6 @@ import {
   topics,
   userSettings,
   users,
-  userState,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
@@ -120,10 +119,6 @@ async function seedUser(tgId: number): Promise<string> {
     .returning({ id: items.id });
 
   const itemId = seeded[0]?.id ?? '';
-
-  await testDb()
-    .insert(userState)
-    .values({ userId: user.id, energy: 'low', energyAt: new Date('2026-08-26T06:00:00.000Z') });
 
   /**
    * Строка рассылки (задача 4.10).
@@ -279,7 +274,6 @@ describe('exportUserData', () => {
     // Согласие кнопкой — с моментом и редакцией (решение заказчицы 12.09.2026).
     expect(data?.profile.consentConfirmedAt).not.toBeNull();
     expect(data?.profile.consentEdition).toBe('2026-10-01');
-    expect(data?.settings?.energyDefault).toBe('normal');
     expect(data?.messages).toHaveLength(2);
     expect(data?.dumps).toHaveLength(1);
   });
@@ -306,15 +300,6 @@ describe('exportUserData', () => {
 
     expect(data?.topics.map((topic) => topic.name)).toEqual(['здоровье', 'личное']);
     expect(data?.topics.find((topic) => topic.name === 'личное')?.isDefault).toBe(true);
-  });
-
-  it('отдаёт то, что бот вывел сам: уровень сил', async () => {
-    // Это не слова человека, а вывод о нём. Тем более отдавать надо:
-    // иначе выгрузка показывает не всё, что о нём известно.
-    const data = await exportUserData(testDb(), userId);
-
-    expect(data?.state?.energy).toBe('low');
-    expect(data?.state?.energyAt).toMatch(/^2026-08-26T06:00/u);
   });
 
   it('отдаёт настройки, появившиеся после 1.20', async () => {
@@ -375,7 +360,6 @@ describe('deleteUserData', () => {
     // ходу проекта, и «ничего не осталось» должно оставаться правдой.
     expect(await testDb().select().from(items)).toHaveLength(0);
     expect(await testDb().select().from(topics)).toHaveLength(0);
-    expect(await testDb().select().from(userState)).toHaveLength(0);
 
     /**
      * Строка рассылки уходит, а сама рассылка остаётся.

@@ -18,7 +18,6 @@ import {
   topics,
   users,
   userSettings,
-  userState,
 } from '../../db/schema.js';
 import { RedisLock } from '../../infra/lock.js';
 import { createRedis } from '../../infra/redis.js';
@@ -1020,10 +1019,6 @@ describe('разбор', () => {
     // Форма всё равно короткая: §13.7 требует выхода из разговора.
     expect(reply).toContain(defaultTexts.answer.closingTired);
     expect(countQuestions(reply)).toBe(0);
-
-    // И уровень сил не снижен: досада — не «сил нет».
-    const [state] = await testDb().select().from(userState);
-    expect(state?.energy ?? 'нет записи').toBe('нет записи');
   });
 
   it('выгрузка из одних чувств старые дела не вытаскивает (решение заказчицы 13.09.2026, 1.4)', async () => {
@@ -1086,10 +1081,14 @@ describe('разбор', () => {
     expect(buttons).toEqual([]);
   });
 
-  it('«сил нет вовсе» оставляет одно действие и снижает уровень', async () => {
-    // §13.7, таблица сигналов: «Я сегодня вообще без сил» → признание в
-    // одну строку и одно действие. Это единственный случай, когда выдача
-    // сжимается до одной строки.
+  it('«сил нет вовсе» больше не режет выдачу: уровень сил не выводится (правка заказчицы 14.09.2026, п. 1.2)', async () => {
+    /**
+     * §13.7 её ТЗ на «я на нуле» оставлял одно дело и снижал уровень сил
+     * до конца дня. 14.09 она это отменила: «самостоятельно делать вывод
+     * о силах женщины и хранить такой показатель не нужно». Дел — до
+     * трёх, как всегда; короткая форма (§13.7, закрытие без вопроса)
+     * остаётся — она про эмоцию в выгрузке, а не про уровень.
+     */
     const prompts = await seedPrompts();
     await queuedBatchOf([{ kind: 'text', text: 'дела и совсем нет сил', offsetMs: 0 }]);
     const { sender, all } = recordingSender();
@@ -1108,16 +1107,12 @@ describe('разбор', () => {
       userId,
     );
 
-    const [state] = await testDb().select().from(userState);
-    expect(state?.energy).toBe('empty');
-
-    // Дело ровно одно, и это первое сказанное, а не произвольное:
-    // порядок внутри выгрузки сохранён.
     const reply = all.at(-1) ?? '';
     expect(reply).toContain('Первое дело');
-    expect(reply).not.toContain('второе дело');
-    expect(reply).not.toContain('третье дело');
+    expect(reply).toContain('Второе дело');
+    expect(reply).toContain('Третье дело');
     expect(reply).toContain(defaultTexts.answer.closingTired);
+    expect(countQuestions(reply)).toBe(0);
   });
 
   it('в выдачу идут и записи прошлых выгрузок, а не только новые', async () => {

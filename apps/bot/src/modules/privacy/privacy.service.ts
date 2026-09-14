@@ -7,7 +7,6 @@ import {
   topics,
   userSettings,
   users,
-  userState,
   itemRevisions,
   pendingQuestions,
   projectSteps,
@@ -61,7 +60,6 @@ export interface ExportedData {
     readonly quietHoursOn: boolean;
     readonly quietFrom: string;
     readonly quietTo: string;
-    readonly energyDefault: string;
     readonly textProfile: string;
     readonly onboardingDoneAt: string | null;
     /**
@@ -71,15 +69,6 @@ export interface ExportedData {
      * он сказал сам, и оно тем более его.
      */
     readonly preferredName: string | null;
-  } | null;
-  /**
-   * Сегодняшний уровень сил — вывод бота о человеке, а не его слова.
-   * §16 требует отдавать и это: иначе выгрузка показывает не всё, что о
-   * нём известно.
-   */
-  readonly state: {
-    readonly energy: string;
-    readonly energyAt: string;
   } | null;
   readonly topics: readonly {
     readonly name: string;
@@ -201,8 +190,6 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     .where(eq(messagesRaw.userId, userId))
     .orderBy(messagesRaw.receivedAt);
 
-  const [state] = await db.select().from(userState).where(eq(userState.userId, userId)).limit(1);
-
   const ownTopics = await db
     .select()
     .from(topics)
@@ -272,13 +259,11 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
           quietHoursOn: settings.quietHoursOn,
           quietFrom: settings.quietFrom,
           quietTo: settings.quietTo,
-          energyDefault: settings.energyDefault,
           textProfile: settings.textProfile,
           onboardingDoneAt: iso(settings.onboardingDoneAt),
           preferredName: settings.preferredName,
         }
       : null,
-    state: state ? { energy: state.energy, energyAt: state.energyAt.toISOString() } : null,
     topics: ownTopics.map((topic) => ({
       name: topic.name,
       emoji: topic.emoji,

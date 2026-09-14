@@ -33,9 +33,6 @@ const tgId = (name: string) => bigint(name, { mode: 'number' });
 const createdAt = (name = 'created_at') =>
   timestamp(name, { withTimezone: true }).notNull().defaultNow();
 
-/** §5.1 ТЗ, справочник energy. */
-export const energyLevel = pgEnum('energy_level', ['empty', 'low', 'normal', 'high']);
-
 /** Вид входящего сообщения. Расширяется по мере появления новых типов. */
 export const messageKind = pgEnum('message_kind', ['text', 'voice', 'audio', 'other']);
 
@@ -144,8 +141,6 @@ export const userSettings = pgTable('user_settings', {
    */
   quietFrom: time('quiet_from').notNull().default('22:00'),
   quietTo: time('quiet_to').notNull().default('08:00'),
-
-  energyDefault: energyLevel('energy_default').notNull().default('normal'),
 
   /**
    * Профиль текстов (§13.8 ТЗ, задача 2.11). В первой версии значение
@@ -843,34 +838,6 @@ export const items = pgTable(
      */
   ],
 );
-
-/**
- * Изменчивое состояние человека (задача 2.10).
- *
- * Уровень сил — не настройка, а сегодняшнее самочувствие: от него зависит,
- * сколько дел показать. В §5 ТЗ такого поля нет, есть только значение по
- * умолчанию в настройках, и этого мало: «я на нуле» сказанное утром не
- * должно действовать вечно.
- *
- * Поэтому уровень живёт до конца суток человека, а потом выдача снова
- * берёт значение по умолчанию из настроек. Смена суток считается по его
- * часовому поясу, а не по нашему.
- */
-export const userState = pgTable('user_state', {
-  userId: uuid('user_id')
-    .primaryKey()
-    .references(() => users.id, { onDelete: 'cascade' }),
-
-  energy: energyLevel('energy').notNull(),
-
-  /**
-   * Когда уровень был назван. По этой отметке и часовому поясу человека
-   * решается, действует ли он ещё.
-   */
-  energyAt: timestamp('energy_at', { withTimezone: true }).notNull().defaultNow(),
-
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
 
 /**
  * Темы — сферы жизни человека (§5, §6.4 ТЗ).
@@ -1995,8 +1962,6 @@ export type BatchStatus = (typeof batchStatus.enumValues)[number];
 export type AiCall = typeof aiCalls.$inferSelect;
 export type NewAiCall = typeof aiCalls.$inferInsert;
 export type AiStage = (typeof aiStage.enumValues)[number];
-export type UserState = typeof userState.$inferSelect;
-export type EnergyLevelValue = (typeof energyLevel.enumValues)[number];
 export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
 export type ItemTypeValue = (typeof itemType.enumValues)[number];

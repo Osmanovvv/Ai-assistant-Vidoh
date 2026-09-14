@@ -1,13 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import {
-  items,
-  userSettings,
-  type Batch,
-  type EnergyLevelValue,
-  type Item,
-} from '../../db/schema.js';
+import { items, userSettings, type Batch, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import type { AiClientDeps } from '../ai/client.js';
@@ -38,7 +32,7 @@ import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import type { Applied } from '../resolver/patch.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
-import { effectiveEnergy, selectForOutput, type SelectionResult } from '../output/filter.js';
+import { selectForOutput, type SelectionResult } from '../output/filter.js';
 import {
   createChosenTopics,
   firstStep,
@@ -54,7 +48,6 @@ import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
-import { saysNoStrength } from '../output/exhaustion.js';
 import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
@@ -75,7 +68,7 @@ import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
 import { topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
-import { lowerEnergy, outputContextOf } from '../users/state.repo.js';
+import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
 import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
@@ -385,39 +378,6 @@ async function withEmbeddings(
   }
 
   return result;
-}
-
-/**
- * §13.7: высказанное состояние уменьшает объём выдачи и больше ничего.
- *
- * **Уровень снижает только «сил нет вовсе» (задача 3.47).** Прежде любая
- * эмоция опускала уровень до «мало», а сверху ещё стоял предел «одно
- * дело» — и человек, сказавший «задолбался всё это в голове держать»,
- * получал на двадцать дел одну строку. Заказчик попросил показывать три
- * самых важных, и ТЗ это различие делает само: «вообще без сил» — одно
- * действие, «ничего не успеваю» — сокращённая выдача, а главный эталон
- * §13.2 при названной усталости показывает три.
- *
- * Короткая форма §13.7 при этом остаётся при любой эмоции: она задаётся
- * составом выгрузки в представлении, а не уровнем сил.
- */
-async function applyEmotion(
-  db: Database,
-  deps: DumpHandlerDeps,
-  userId: string,
-  emotions: readonly string[],
-  current: EnergyLevelValue,
-  now: Date,
-): Promise<EnergyLevelValue> {
-  if (!emotions.some((text) => saysNoStrength(text))) return current;
-
-  const lowered = await lowerEnergy(db, userId, 'empty', { at: now, current });
-  if (lowered) {
-    deps.logger?.info({ userId }, 'Уровень сил снижен: человек сказал, что сил нет');
-    return 'empty';
-  }
-
-  return current;
 }
 
 export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
@@ -1597,19 +1557,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
     const composition = composeOf(units);
-    /** Слова человека о состоянии: по ним решается, сколько дел показать. */
-    const emotionTexts = units.filter((unit) => unit.type === 'EMOTION').map((unit) => unit.text);
-    const noStrength = emotionTexts.some((text) => saysNoStrength(text));
-
-    const energyNow = await applyEmotion(
-      db,
-      deps,
-      batch.userId,
-      emotionTexts,
-      effectiveEnergy(context.state, context.energyDefault, { now, timeZone: context.timeZone }),
-      now,
-    );
-
     /**
      * Одни чувства — старые дела не вытаскивать (решение заказчицы
      * 13.09.2026, ответ 1.4; ревизия этапа 3, E19), а ответ — одно
@@ -1628,25 +1575,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const open = await openItemsFor(db, batch.userId);
     const selection: SelectionResult = feelingsOnly
       ? { shown: [], hidden: open.length }
-      : selectForOutput(open, {
-          energy: energyNow,
-          now,
-          timeZone: context.timeZone,
-          mentioned,
-          /**
-           * §13.7 и §21 п.7: «сил нет вовсе» — действие в ответе ровно одно.
-           *
-           * Предел ставится здесь, а не только через уровень сил: требование
-           * про **эту** выгрузку, и оно не должно зависеть от того, каким
-           * оказался сохранённый уровень. Два дела человеку, который только
-           * что сказал «сил нет», — это спор с ним.
-           *
-           * **Прочие состояния предела не ставят (задача 3.47).** «Задолбался»
-           * и «ничего не успеваю» дают три дела: так просил заказчик, и так
-           * же поступает главный эталон §13.2, где усталость названа прямо.
-           */
-          ...(noStrength ? { cap: 1 } : {}),
-        });
+      : /**
+         * Уровня сил больше нет (правка заказчицы 14.09.2026, п. 1.2):
+         * ни «сил нет вовсе» с одним делом (§13.7, §21 п.7 её ТЗ), ни
+         * сохранённого на день состояния. Дел — до трёх всегда; короткая
+         * форма при эмоции остаётся в презентации.
+         */
+        selectForOutput(open, { now, timeZone: context.timeZone, mentioned });
 
     /**
      * §12.2: онбординг идёт после первой выгрузки. Начинается он, когда

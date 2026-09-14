@@ -365,6 +365,13 @@
       "when": 1789400827200,
       "tag": "0051_billing_consents_period_edition",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1789402768713,
+      "tag": "0052_drop_energy_level",
+      "breakpoints": true
     }
   ]
 }

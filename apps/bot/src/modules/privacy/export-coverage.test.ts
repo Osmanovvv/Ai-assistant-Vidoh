@@ -77,7 +77,6 @@ const DECISIONS: readonly {
         // Границы тишины человек выставил сам — как и времена выше.
         'quietFrom',
         'quietTo',
-        'energyDefault',
         'textProfile',
         'onboardingDoneAt',
         // Имя, которое человек назвал себе сам (задача 3.61). Факт о нём,
@@ -97,14 +96,6 @@ const DECISIONS: readonly {
         'awaitingSince',
         'updatedAt',
       ],
-    },
-  },
-  {
-    name: 'user_state',
-    columns: Object.keys(getTableColumns(schema.userState)),
-    decision: {
-      exported: ['energy', 'energyAt'],
-      internal: ['userId', 'updatedAt'],
     },
   },
   {
