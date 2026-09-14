@@ -257,6 +257,7 @@ async function seedUser(tgId: number): Promise<string> {
     amountMinor: 39_900,
     currency: 'rub',
     offerUrl: 'https://vydoh.test/oferta',
+    period: 'P1M',
   });
 
   return user.id;

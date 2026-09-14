@@ -57,6 +57,8 @@ export interface StartDeps {
   readonly db: Database;
   readonly logger: Logger;
   readonly privacyPolicyUrl: string;
+  /** Адрес Согласия на обработку данных — вторая ссылка экрана (п. 2.2). */
+  readonly consentUrl: string;
   /**
    * Редакция политики и согласия, на которую нажимают «Согласна» (§16;
    * решение заказчицы 12.09.2026). Пуста, пока документы не получили
@@ -80,7 +82,7 @@ export interface StartDeps {
 }
 
 export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
-  const { db, logger, privacyPolicyUrl, onboarding: sender } = deps;
+  const { db, logger, privacyPolicyUrl, consentUrl, onboarding: sender } = deps;
 
   /**
    * Начинает опрос, если он ещё не начинался.
@@ -142,9 +144,9 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
     ],
   ]);
 
-  /** Первый экран до согласия: приветствие, политика, 18+ и одна кнопка. */
+  /** Первый экран до согласия: приветствие, две ссылки, 18+ и одна кнопка. */
   const consentScreen = async (ctx: Context): Promise<void> => {
-    await ctx.reply(texts.consent.screen(privacyPolicyUrl), {
+    await ctx.reply(texts.consent.screen(privacyPolicyUrl, consentUrl), {
       reply_markup: fitKeyboard([[{ label: texts.consent.button, action: CONSENT_ACTION.accept }]]),
       parse_mode: 'Markdown',
       link_preview_options: { is_disabled: true },

@@ -193,38 +193,60 @@ describe('buildReply', () => {
     ]);
   });
 
-  it('действий нет — вопрос другой, но всё равно один', () => {
+  it('действий нет — вопроса нет: начинать не с чего', () => {
     // Ноль показано при скрытых не бывает: фильтр показывает всё
-    // годное до предела (ревизия этапа 3, E19).
+    // годное до предела (ревизия этапа 3, E19). Прежний вопрос
+    // «разобрать что-нибудь из дел?» ушёл вместе с ответом на одни
+    // чувства (правка 14.09.2026, п. 1.5); «с чего начнём?» без единого
+    // названного дела — пустое место.
     const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
 
     expect(reply.text).toContain(texts.answer.nothingHidden);
-    expect(reply.text).toContain(texts.answer.questionEmotionOnly);
-    expect(countQuestions(reply.text)).toBe(1);
+    expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonShowAll,
       texts.answer.buttonLater,
     ]);
   });
 
-  it('одни чувства при непустом бэклоге: старых дел не показывает и не говорит, что ничего не висит', () => {
+  it('одни чувства при непустом бэклоге: только признание — без дел, вопроса и кнопок', () => {
     /**
-     * Решение заказчицы 13.09.2026 (ответ 1.4): поделилась состоянием —
-     * в ответ не выдают задачи. §13.2 её ТЗ предлагал три старых дела;
-     * она это отменила. Показать бэклог можно по кнопке, само — нет.
-     * «Больше ничего не висит» при пяти скрытых было бы ложью.
+     * Решение заказчицы 13.09.2026 (ответ 1.4) и правка 14.09.2026
+     * (п. 1.5): поделилась состоянием — в ответ не выдают задачи и не
+     * превращают сказанное в продуктивность. §13.2 её ТЗ предлагал три
+     * старых дела; 13.09 она это отменила, 14.09 добавила: «отвечаем
+     * коротко и спокойно» — значит ни вопроса «разобрать что-нибудь?»,
+     * ни кнопок к делам. «Больше ничего не висит» при пяти скрытых было
+     * бы ложью — и её тоже нет.
      */
-    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 5, tired: true });
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      actions: [],
+      hidden: 5,
+      tired: true,
+      feelingsOnly: true,
+    });
 
-    expect(reply.text).toContain(ack);
-    expect(reply.text).not.toContain(texts.answer.nothingHidden);
-    expect(reply.text).not.toContain(texts.answer.actionsLead);
-    expect(reply.text).toContain(texts.answer.questionEmotionOnly);
-    expect(countQuestions(reply.text)).toBe(1);
-    expect(reply.buttons.map((button) => button.label)).toEqual([
-      texts.answer.buttonShowAll,
-      texts.answer.buttonLater,
-    ]);
+    expect(reply.text).toBe(ack);
+    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.buttons).toEqual([]);
+  });
+
+  it('одни чувства при пустом бэклоге — то же: одно признание', () => {
+    // Правило про сообщение, а не про бэклог: «ничего не висит» и вопрос
+    // здесь так же неуместны, как и дела.
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      actions: [],
+      hidden: 0,
+      tired: true,
+      feelingsOnly: true,
+    });
+
+    expect(reply.text).toBe(ack);
+    expect(reply.buttons).toEqual([]);
   });
 
   it('ни дел, ни остатка — не обещает того, чего нет', () => {

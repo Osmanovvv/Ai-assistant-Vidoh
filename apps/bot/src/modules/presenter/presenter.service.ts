@@ -117,6 +117,12 @@ export interface BuildReplyParams {
    * оказалось бы два открытых вопроса подряд, чего §13.9 не допускает.
    */
   readonly omitQuestion?: boolean | undefined;
+  /**
+   * В выгрузке одни чувства, новых дел нет (правка заказчицы
+   * 14.09.2026, п. 1.5). Ответ — одно признание: без старых дел, без
+   * вопроса, без кнопок к делам.
+   */
+  readonly feelingsOnly?: boolean | undefined;
 }
 
 /**
@@ -127,6 +133,23 @@ export function buildReply(params: BuildReplyParams): Reply {
   const { texts, actions, hidden, tired } = params;
   const answer = texts.answer;
   const lines: string[] = [params.acknowledgement];
+
+  /**
+   * Одни чувства — только признание (правка заказчицы 14.09.2026,
+   * п. 1.5; продолжение решения 13.09.2026, ответ 1.4).
+   *
+   * 13.09 она отменила три старых дела из §13.2 её ТЗ на монолог без
+   * дел; тогда под признанием остались вопрос «разобрать что-нибудь из
+   * дел?» и кнопки к бэклогу. 14.09 она добавила: «не пытаемся
+   * превращать эмоциональную выгрузку в продуктивность… отвечаем коротко
+   * и спокойно». Вопрос про дела и кнопка «Показать все» — это то самое
+   * превращение, только вежливое; убраны. Бэклог никуда не делся — он в
+   * /menu и в утреннем. Кризис сюда не доходит: остановлен раньше своим
+   * сценарием.
+   */
+  if (params.feelingsOnly === true) {
+    return { text: params.acknowledgement, buttons: [] };
+  }
   const doNow = {
     label: answer.buttonDoNow,
     action:
@@ -144,18 +167,15 @@ export function buildReply(params: BuildReplyParams): Reply {
      * остальное сохранила» стояла на несуществующий случай и не
      * печаталась никогда (ревизия этапа 3, E19); убрана вместе с текстом.
      *
-     * Скрытые есть — это выгрузка из одних чувств при непустом бэклоге
-     * (решение заказчицы 13.09.2026, ответ 1.4). §13.2 её ТЗ на такой
-     * монолог подставлял три старых дела; она это отменила: «поделилась
-     * состоянием, а ей в ответ выдали задачи» — давление. Дела не
-     * показываются и «ничего не висит» не говорится — это была бы ложь;
-     * посмотреть бэклог можно кнопкой.
-     *
-     * Вопрос «с чего начнём» здесь бессмысленен, поэтому спрашиваем о
-     * другом — но всё равно один раз.
+     * Скрытые есть — сюда это доходит только не из одних чувств (те
+     * отвечены выше одним признанием): например, всё сказанное оказалось
+     * уже записанным, а бэклог полон. «Ничего не висит» тогда было бы
+     * ложью — не говорится; посмотреть бэклог можно кнопкой. Вопроса
+     * нет: «с чего начнём?» без единого названного дела — не вопрос, а
+     * пустое место; прежний «разобрать что-нибудь из дел?» ушёл вместе
+     * с ответом на одни чувства (п. 1.5).
      */
     if (hidden === 0) lines.push('', answer.nothingHidden);
-    if (params.omitQuestion !== true) lines.push('', answer.questionEmotionOnly);
 
     return {
       text: lines.join('\n'),
@@ -318,6 +338,8 @@ export interface PresentParams {
   readonly batchId?: string | undefined;
   /** См. `BuildReplyParams.omitQuestion`. */
   readonly omitQuestion?: boolean | undefined;
+  /** См. `BuildReplyParams.feelingsOnly`. */
+  readonly feelingsOnly?: boolean | undefined;
   /**
    * Быстрое добавление (§13.3, задача 3.9).
    *
@@ -432,6 +454,7 @@ export async function presentDump(
       hidden: params.hidden,
       tired,
       omitQuestion: params.omitQuestion,
+      feelingsOnly: params.feelingsOnly,
     }),
     promptVersion,
     replaced: checked.replaced,

@@ -75,6 +75,7 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
       db: testDb(),
       queue: stubQueue,
       privacyPolicyUrl: 'https://vydoh-app.ru/privacy',
+      consentUrl: 'https://vydoh-app.ru/consent',
       consume: consumeAwaited({ db: testDb(), logger }),
     }),
   );

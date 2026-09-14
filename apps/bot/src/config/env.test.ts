@@ -16,6 +16,7 @@ const valid: Record<string, string> = {
   PUBLIC_URL: 'https://bot.vydoh.test',
   PRIVACY_POLICY_URL: 'https://vydoh.test/privacy',
   OFFER_URL: 'https://vydoh.test/oferta',
+  CONSENT_URL: 'https://vydoh.test/consent',
   BOT_TOKEN: FAKE_TOKEN,
   BOT_WEBHOOK_SECRET: 'a'.repeat(32),
   DATABASE_URL: 'postgres://vydoh:vydoh@localhost:5434/vydoh',
@@ -188,6 +189,40 @@ describe('адрес оферты', () => {
   });
 });
 
+describe('адрес согласия на обработку данных', () => {
+  /**
+   * Вторая ссылка на экране /start — на само Согласие, а не только на
+   * Политику (правка заказчицы 14.09.2026, п. 2.2). Устроена как адрес
+   * оферты: без переменной — заглушка, чтобы боевой .env без неё не
+   * ронял выкладку, а в бою заглушка ловится предупреждением.
+   */
+  it('без переменной берётся заглушка', () => {
+    expect(parseWith({ CONSENT_URL: undefined }).CONSENT_URL).toBe(
+      'https://example.invalid/consent',
+    );
+  });
+
+  it('должен быть по https', () => {
+    expect(() => parseWith({ CONSENT_URL: 'http://vydoh.test/consent' })).toThrow(
+      EnvValidationError,
+    );
+  });
+
+  it('заглушка в бою ловится тем же предупреждением, что у политики', () => {
+    const warnings = productionWarnings(
+      parseWith({
+        ACCOUNT_SPEND_DAILY_RUB: '300',
+        LOG_FILE: '/app/logs/vydoh.log',
+        PRIVACY_POLICY_EDITION: '2026-10-01',
+        OFFER_EDITION: '2026-10-01',
+        CONSENT_URL: undefined,
+      }),
+    );
+
+    expect(warnings).toEqual(['CONSENT_URL указывает на заглушку из .env.example']);
+  });
+});
+
 describe('productionWarnings', () => {
   /**
    * **Три случая ниже переписаны 06.09.2026 (задача 3.79).**
@@ -211,6 +246,7 @@ describe('productionWarnings', () => {
     ACCOUNT_SPEND_DAILY_RUB: '300',
     LOG_FILE: '/app/logs/vydoh.log',
     PRIVACY_POLICY_EDITION: '2026-10-01',
+    OFFER_EDITION: '2026-10-01',
   };
 
   it('молчит на настоящих адресах и при заданном потолке', () => {
@@ -228,6 +264,17 @@ describe('productionWarnings', () => {
 
     expect(productionWarnings(parseWith(withoutEdition))).toEqual([
       'PRIVACY_POLICY_EDITION не задана: согласия записываются без редакции политики',
+    ]);
+  });
+
+  it('без редакции оферты предупреждает: согласия на автосписания запишутся без редакции', () => {
+    // История согласий хранит редакцию оферты, действовавшую в момент
+    // согласия (п. 7.2.2; правка заказчицы 14.09.2026, п. 2.3). Пока
+    // документы без даты — предупреждение при каждом старте.
+    const { OFFER_EDITION: _omitted, ...withoutEdition } = healthy;
+
+    expect(productionWarnings(parseWith(withoutEdition))).toEqual([
+      'OFFER_EDITION не задана: согласия на автосписания записываются без редакции оферты',
     ]);
   });
 
@@ -275,6 +322,7 @@ describe('productionWarnings', () => {
           ACCOUNT_SPEND_CEILING_RUB: '3000',
           LOG_FILE: '/app/logs/vydoh.log',
           PRIVACY_POLICY_EDITION: '2026-10-01',
+          OFFER_EDITION: '2026-10-01',
         }),
       ),
     ).toEqual([]);
