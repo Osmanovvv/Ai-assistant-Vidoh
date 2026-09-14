@@ -137,6 +137,11 @@ export interface BillingHandlerDeps {
    */
   readonly offerUrl: string;
   /**
+   * Редакция оферты, действующая сейчас (`OFFER_EDITION`), — пишется в
+   * историю согласий (п. 2.3). Пуста, пока документы без даты.
+   */
+  readonly offerEdition?: string | undefined;
+  /**
    * Провайдеры по рельсам. Рельс без провайдера просто не показывается:
    * кнопка, за которой нет провайдера, обманывает.
    *
@@ -696,6 +701,9 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
             amountMinor: price.amountMinor,
             currency: price.currency,
             offerUrl: deps.offerUrl,
+            offerEdition: deps.offerEdition,
+            // Месяц с автопродлением — единственный периодический тариф.
+            period: 'P1M',
           });
 
     await sendCheckout(deps, ctx, {
@@ -869,6 +877,24 @@ export function registerBillingHandlers(bot: Bot, deps: BillingHandlerDeps): voi
       if (invoice?.userId == null) {
         deps.logger.warn({ ref }, 'Оплата звёздами по метке, которой нет в счетах');
         await ctx.answerPreCheckoutQuery(false, (await textsOf(deps)).billing.checkoutFailed);
+        return;
+      }
+
+      /**
+       * Счёт одноразовый — как обещает оферта (правка заказчицы
+       * 14.09.2026, п. 2.5). Сообщение со счётом остаётся в чате, и его
+       * кнопка живая: второе нажатие принимало деньги, а разбирать их
+       * приходилось руками. Продления сюда не попадают — их Telegram
+       * списывает сам, без подтверждения, — так что закрытый счёт здесь
+       * всегда повторное нажатие человека. Отказ — с объяснением и дорогой
+       * к новому счёту.
+       */
+      if (invoice.status !== 'created') {
+        deps.logger.warn(
+          { ref, status: invoice.status },
+          'Повторная оплата закрытого счёта звёздами отклонена',
+        );
+        await ctx.answerPreCheckoutQuery(false, (await textsOf(deps)).billing.invoiceAlreadyPaid);
         return;
       }
 

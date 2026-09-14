@@ -57,6 +57,7 @@ import {
 const logger = createLogger({ level: 'silent' });
 const TG_ID = 7480;
 const OFFER_URL = 'https://vydoh.test/oferta';
+const OFFER_EDITION = '2026-10-01';
 
 interface ApiCall {
   readonly method: string;
@@ -131,7 +132,14 @@ function createTestBot(providers: Partial<Record<Rail, PaymentProvider>>): {
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerBillingHandlers(bot, { db: testDb(), settings, logger, providers, offerUrl: OFFER_URL });
+  registerBillingHandlers(bot, {
+    db: testDb(),
+    settings,
+    logger,
+    providers,
+    offerUrl: OFFER_URL,
+    offerEdition: OFFER_EDITION,
+  });
 
   /**
    * Команды платёжной платформы регистрируются отдельно (ревизия этапа).
@@ -660,8 +668,9 @@ describe('согласие на автосписания — §14, оферта 
   it('согласие записывается с тем, что человек видел, и привязывается к счёту', async () => {
     /**
      * Оферта п. 7.2.2 и требование Робокассы «сохраняйте историю
-     * согласий»: дата, тариф, сумма, адрес оферты — и счёт, в который
-     * согласие вылилось.
+     * согласий»: дата, тариф, сумма, валюта и рельс, периодичность,
+     * редакция оферты (правка заказчицы 14.09.2026, п. 2.3: один состав
+     * во всех документах) — и счёт, в который согласие вылилось.
      */
     const { bot } = createTestBot({
       'robokassa:smz': fakeProvider({ name: 'robokassa:smz', autoRenews: true }),
@@ -682,6 +691,10 @@ describe('согласие на автосписания — §14, оферта 
       // Валюта — как её пишет цена тарифа, а не как удобно тесту.
       currency: 'RUB',
       offerUrl: OFFER_URL,
+      // Периодичность — записью, а не выводом из тарифа: строка должна
+      // читаться сама по себе (ISO 8601: раз в месяц).
+      period: 'P1M',
+      offerEdition: OFFER_EDITION,
     });
     expect(consents[0]?.invoiceId, 'согласие не привязано к счёту').toBe(invoice?.id);
   });
@@ -1000,6 +1013,36 @@ describe('оплата звёздами приходит апдейтом', () =
     const answer = calls.find((call) => call.method === 'answerPreCheckoutQuery');
 
     expect(answer?.payload['ok']).toBe(false);
+  });
+
+  it('уже оплаченный счёт второй раз не подтверждается: ссылка одноразовая', async () => {
+    /**
+     * Оферта: «одну ссылку можно оплатить один раз» — и код приводится к
+     * оферте (правка заказчицы 14.09.2026, п. 2.5). Старое сообщение со
+     * счётом остаётся в чате, кнопка на нём живая; второе нажатие
+     * раньше принимало деньги, а разбирать их приходилось руками.
+     */
+    await starsInvoice('звёздный-повтор');
+    const { bot, calls } = createTestBot({ 'telegram:stars': stars() });
+    await bot.init();
+    await bot.handleUpdate(paymentUpdate({ ref: 'звёздный-повтор', charge: 'charge-повтор' }));
+
+    seq += 1;
+    await bot.handleUpdate({
+      update_id: 750_000 + seq,
+      pre_checkout_query: {
+        id: '3',
+        from: { id: TG_ID, is_bot: false, first_name: 'Нина' },
+        currency: 'XTR',
+        total_amount: 150,
+        invoice_payload: 'звёздный-повтор',
+      },
+    });
+
+    const answer = calls.find((call) => call.method === 'answerPreCheckoutQuery');
+
+    expect(answer?.payload['ok']).toBe(false);
+    expect(answer?.payload['error_message']).toBe(defaultTexts.billing.invoiceAlreadyPaid);
   });
 
   it('успешная оплата продлевает подписку и человек об этом узнаёт', async () => {

@@ -37,6 +37,10 @@ export async function recordRenewalConsent(
     readonly amountMinor: number;
     readonly currency: string;
     readonly offerUrl: string;
+    /** Редакция оферты в момент согласия; нет — документы без даты. */
+    readonly offerEdition?: string | undefined;
+    /** Периодичность списаний, ISO 8601 (`P1M`). */
+    readonly period: string;
   },
 ): Promise<string> {
   const [row] = await db
@@ -48,6 +52,8 @@ export async function recordRenewalConsent(
       amountMinor: params.amountMinor,
       currency: params.currency,
       offerUrl: params.offerUrl,
+      offerEdition: params.offerEdition ?? null,
+      period: params.period,
     })
     .returning({ id: billingConsents.id });
 

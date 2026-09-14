@@ -49,11 +49,14 @@ export interface TextProfile {
    * («никаких опросов до первой выгрузки») по её слову.
    */
   readonly consent: {
-    /** Первый экран до согласия: приветствие, политика, 18+, кнопка. */
-    readonly screen: (policyUrl: string) => string;
+    /**
+     * Первый экран до согласия: приветствие, две ссылки — Политика и
+     * само Согласие (правка заказчицы 14.09.2026, п. 2.2), 18+, кнопка.
+     */
+    readonly screen: (policyUrl: string, consentUrl: string) => string;
     readonly button: string;
     /** Человек написал раньше, чем нажал: слова сохранены, нужна кнопка. */
-    readonly required: (policyUrl: string) => string;
+    readonly required: (policyUrl: string, consentUrl: string) => string;
     /** Нажал — опрос уже пройден или не ведётся: можно говорить. */
     readonly accepted: string;
   };
@@ -109,8 +112,6 @@ export interface TextProfile {
      * а здесь их ноль.
      */
     readonly closingTired: string;
-    /** §13.7: эмоциональный монолог без дел — одна реплика и один вопрос. */
-    readonly questionEmotionOnly: string;
 
     /**
      * Быстрое добавление (§13.3, задача 3.9).
@@ -781,6 +782,8 @@ export interface TextProfile {
     readonly renewNote: string;
     /** Не удалось выставить счёт. */
     readonly checkoutFailed: string;
+    /** Второе нажатие «Заплатить» на уже оплаченном счёте (п. 2.5). */
+    readonly invoiceAlreadyPaid: string;
     /** Ответ на /paysupport — требование правил Telegram. */
     readonly paySupport: string;
     /** Ответ на /terms — требование правил Telegram. */

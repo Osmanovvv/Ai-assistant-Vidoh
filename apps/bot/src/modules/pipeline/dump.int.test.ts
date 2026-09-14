@@ -1041,7 +1041,7 @@ describe('разбор', () => {
         .values({ userId, text, type: 'TASK', priority: 'NOW', topic: 'личное' });
     }
     await queuedBatchOf([{ kind: 'text', text: 'так устала, всё навалилось', offsetMs: 0 }]);
-    const { sender, all } = recordingSender();
+    const { sender, all, buttons } = recordingSender();
 
     const llm = echoingLlm({
       classifier: JSON.stringify({
@@ -1080,6 +1080,10 @@ describe('разбор', () => {
     }
     expect(reply).not.toContain(defaultTexts.answer.actionsLead);
     expect(reply).not.toContain(defaultTexts.answer.nothingHidden);
+    // Правка 14.09.2026 (п. 1.5): коротко и спокойно — ни вопроса, ни
+    // кнопок к делам под признанием.
+    expect(reply).not.toContain('?');
+    expect(buttons).toEqual([]);
   });
 
   it('«сил нет вовсе» оставляет одно действие и снижает уровень', async () => {

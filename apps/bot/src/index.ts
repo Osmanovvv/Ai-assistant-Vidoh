@@ -828,7 +828,14 @@ async function main(): Promise<void> {
    * `pre_checkout_query` ждать нельзя вовсе — на него надо ответить за
    * десять секунд, иначе платёж не состоится.
    */
-  registerBillingHandlers(bot, { db, settings, logger, providers, offerUrl: env.OFFER_URL });
+  registerBillingHandlers(bot, {
+    db,
+    settings,
+    logger,
+    providers,
+    offerUrl: env.OFFER_URL,
+    offerEdition: env.OFFER_EDITION,
+  });
 
   /**
    * Команды `/paysupport`, `/terms` и `/support` — **после** приёма.
@@ -860,6 +867,7 @@ async function main(): Promise<void> {
     sender,
     // §16: сообщение раньше нажатия «Согласна» встречает экран согласия.
     privacyPolicyUrl: env.PRIVACY_POLICY_URL,
+    consentUrl: env.CONSENT_URL,
     // §14: конец пробного периода приглашает оплатить — но только там,
     // где оплата действительно есть (4.2).
     payRails: Object.keys(providers) as Rail[],
@@ -889,6 +897,7 @@ async function main(): Promise<void> {
     db,
     logger,
     privacyPolicyUrl: env.PRIVACY_POLICY_URL,
+    consentUrl: env.CONSENT_URL,
     privacyPolicyEdition: env.PRIVACY_POLICY_EDITION,
     // После «Согласна» сказанное до кнопки уходит в выгрузку (§16).
     release: (userId, chatId) => releaseHeldMessages(incoming, { userId, chatId }),

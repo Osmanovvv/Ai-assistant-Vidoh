@@ -46,6 +46,7 @@ import type { QuestionSender } from '../../modules/presenter/telegram-sender.js'
 
 const logger = createLogger({ level: 'silent' });
 const POLICY_URL = 'https://vydoh.test/privacy';
+const CONSENT_URL = 'https://vydoh.test/consent';
 const TG_ID = 5151;
 
 interface ApiCall {
@@ -120,6 +121,7 @@ function createTestBot(
     db: testDb(),
     queue: stubQueue,
     privacyPolicyUrl: POLICY_URL,
+    consentUrl: CONSENT_URL,
     // Ответ словами (задача 3.61): без этого текстовая реплика
     // уходит в буфер выгрузки, как было до задачи.
     consume: consumeAwaited({ db: testDb(), logger: log, promo }),
@@ -129,6 +131,7 @@ function createTestBot(
     db: testDb(),
     logger,
     privacyPolicyUrl: POLICY_URL,
+    consentUrl: CONSENT_URL,
     privacyPolicyEdition: EDITION,
     release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
     ...(questions === undefined ? {} : { onboarding: questions }),
@@ -265,7 +268,11 @@ describe('согласие кнопкой «Согласна» (§16, решен
 
     const sent = calls.filter((call) => call.method === 'sendMessage');
     expect(sent).toHaveLength(1);
-    expect(textOf(sent[0])).toBe(defaultTexts.consent.screen(POLICY_URL));
+    expect(textOf(sent[0])).toBe(defaultTexts.consent.screen(POLICY_URL, CONSENT_URL));
+    // Две ссылки — на Политику и на само Согласие (правка 14.09.2026,
+    // п. 2.2): документы обещают обе.
+    expect(textOf(sent[0])).toContain(`](${POLICY_URL})`);
+    expect(textOf(sent[0])).toContain(`](${CONSENT_URL})`);
     expect(textOf(sent[0])).toContain('18');
     expect(keyboardOf(sent[0]).map((button) => [button.text, button.callback_data])).toEqual([
       [defaultTexts.consent.button, CONSENT_ACTION.accept],

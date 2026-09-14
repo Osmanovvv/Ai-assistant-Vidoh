@@ -157,6 +157,12 @@ export const envSchema = z.object({
    * записываются без редакции, и об этом говорится при старте.
    */
   PRIVACY_POLICY_EDITION: z.string().trim().min(1).optional(),
+  /**
+   * Редакция оферты — дата из её шапки. Пишется в историю согласий на
+   * автосписания (оферта п. 7.2.2; правка заказчицы 14.09.2026, п. 2.3).
+   * Необязательна по той же причине, что редакция политики.
+   */
+  OFFER_EDITION: z.string().trim().min(1).optional(),
 
   /**
    * Адрес публичной оферты (§14, требование Робокассы к автосписаниям).
@@ -169,6 +175,15 @@ export const envSchema = z.object({
    * политики.
    */
   OFFER_URL: httpsUrl.default('https://example.invalid/oferta'),
+
+  /**
+   * Адрес Согласия на обработку персональных данных — вторая ссылка на
+   * экране /start рядом с Политикой (§16; правка заказчицы 14.09.2026,
+   * п. 2.2: документы обещают обе). Устроен как адрес оферты: заглушка по
+   * умолчанию, чтобы боевой `.env` без переменной выкладку не ронял, и
+   * предупреждение в бою, пока заглушка не заменена.
+   */
+  CONSENT_URL: httpsUrl.default('https://example.invalid/consent'),
 
   /**
    * Админ-панель (§15 ТЗ, задача 4.5).
@@ -581,6 +596,7 @@ export function productionWarnings(env: Env): readonly string[] {
     ['PUBLIC_URL', env.PUBLIC_URL],
     ['PRIVACY_POLICY_URL', env.PRIVACY_POLICY_URL],
     ['OFFER_URL', env.OFFER_URL],
+    ['CONSENT_URL', env.CONSENT_URL],
   ] as const) {
     if (PLACEHOLDER_HOSTS.has(new URL(value).hostname)) {
       warnings.push(`${name} указывает на заглушку из .env.example`);
@@ -590,6 +606,12 @@ export function productionWarnings(env: Env): readonly string[] {
   // Согласие без редакции — согласие неизвестно на что (§16).
   if (env.PRIVACY_POLICY_EDITION === undefined) {
     warnings.push('PRIVACY_POLICY_EDITION не задана: согласия записываются без редакции политики');
+  }
+
+  if (env.OFFER_EDITION === undefined) {
+    warnings.push(
+      'OFFER_EDITION не задана: согласия на автосписания записываются без редакции оферты',
+    );
   }
 
   /**

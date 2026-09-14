@@ -39,6 +39,7 @@ import { registerStartHandlers } from './start.js';
 
 const logger = createLogger({ level: 'silent' });
 const POLICY_URL = 'https://vydoh.test/privacy';
+const CONSENT_URL = 'https://vydoh.test/consent';
 const TG_ID = 4242;
 
 interface ApiCall {
@@ -89,7 +90,12 @@ function createTestBot(
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  const incoming = { db: testDb(), queue: stubQueue, privacyPolicyUrl: POLICY_URL };
+  const incoming = {
+    db: testDb(),
+    queue: stubQueue,
+    privacyPolicyUrl: POLICY_URL,
+    consentUrl: CONSENT_URL,
+  };
   if (options.withIncoming !== false) {
     bot.use(incomingMiddleware(incoming));
   }
@@ -97,6 +103,7 @@ function createTestBot(
     db: testDb(),
     logger,
     privacyPolicyUrl: POLICY_URL,
+    consentUrl: CONSENT_URL,
     release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
   });
 

@@ -36,6 +36,7 @@ import { incomingMiddleware } from './incoming.js';
 
 const TG_ID = 7373;
 const POLICY_URL = 'https://vydoh-app.ru/privacy';
+const CONSENT_URL = 'https://vydoh-app.ru/consent';
 
 interface ApiCall {
   readonly method: string;
@@ -120,6 +121,7 @@ function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] }
       db: testDb(),
       queue: stubQueue,
       privacyPolicyUrl: POLICY_URL,
+      consentUrl: CONSENT_URL,
       ...(options.sender === undefined ? {} : { sender: options.sender }),
       ...(options.settings === undefined ? {} : { settings: options.settings }),
       ...(options.consume === undefined ? {} : { consume: options.consume }),
@@ -241,7 +243,10 @@ describe('согласие кнопкой «Согласна» (§16, решен
 
     const replies = calls.filter((call) => call.method === 'sendMessage');
     expect(replies).toHaveLength(1);
-    expect(replies[0]?.payload['text']).toBe(defaultTexts.consent.required(POLICY_URL));
+    expect(replies[0]?.payload['text']).toBe(
+      defaultTexts.consent.required(POLICY_URL, CONSENT_URL),
+    );
+    expect(replies[0]?.payload['text']).toContain(`](${CONSENT_URL})`);
 
     const markup = replies[0]?.payload['reply_markup'] as {
       inline_keyboard: { text: string; callback_data: string }[][];
@@ -919,7 +924,15 @@ describe('настройка применяется на лету — услов
       } as never),
     );
 
-    bot.use(incomingMiddleware({ db: testDb(), queue, settings, privacyPolicyUrl: POLICY_URL }));
+    bot.use(
+      incomingMiddleware({
+        db: testDb(),
+        queue,
+        settings,
+        privacyPolicyUrl: POLICY_URL,
+        consentUrl: CONSENT_URL,
+      }),
+    );
 
     // Умолчание из кода: тридцать секунд.
     await bot.handleUpdate(textUpdate('первая мысль'));
@@ -1062,7 +1075,14 @@ describe('порядок регистрации: служебное сообще
       providers: {},
     });
 
-    bot.use(incomingMiddleware({ db: testDb(), queue: stubQueue, privacyPolicyUrl: POLICY_URL }));
+    bot.use(
+      incomingMiddleware({
+        db: testDb(),
+        queue: stubQueue,
+        privacyPolicyUrl: POLICY_URL,
+        consentUrl: CONSENT_URL,
+      }),
+    );
 
     await bot.init();
     await bot.handleUpdate(paymentUpdate());
@@ -1163,7 +1183,14 @@ describe('осиротевшее закрытие снимается вмест�
     );
 
     bot.use(
-      incomingMiddleware({ db: testDb(), queue, settings, limits, privacyPolicyUrl: POLICY_URL }),
+      incomingMiddleware({
+        db: testDb(),
+        queue,
+        settings,
+        limits,
+        privacyPolicyUrl: POLICY_URL,
+        consentUrl: CONSENT_URL,
+      }),
     );
 
     // Первое сообщение ставит закрытие по тишине.

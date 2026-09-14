@@ -42,6 +42,8 @@ export interface IncomingDeps {
    * ссылки на политику просил бы согласиться неизвестно с чем.
    */
   readonly privacyPolicyUrl: string;
+  /** Адрес Согласия на обработку данных — вторая ссылка гейта (п. 2.2). */
+  readonly consentUrl: string;
   readonly limits?: BufferLimits;
   /**
    * Системные значения: отсюда берётся размер пробного периода (4.3).
@@ -232,7 +234,7 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
     if (!(await consentConfirmedOf(deps.db, outcome.userId))) {
       const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
 
-      await ctx.reply(texts.consent.required(deps.privacyPolicyUrl), {
+      await ctx.reply(texts.consent.required(deps.privacyPolicyUrl, deps.consentUrl), {
         reply_markup: new InlineKeyboard().text(texts.consent.button, CONSENT_ACTION.accept),
         parse_mode: 'Markdown',
         link_preview_options: { is_disabled: true },
