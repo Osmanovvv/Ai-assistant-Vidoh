@@ -166,7 +166,8 @@ export const reserved: TextProfile = {
   card: {
     topicLabel: 'Сфера',
     deadlineLabel: 'Срок',
-    deadlineApprox: (date) => `около ${date}`,
+    deadlineWeek: (mondayDate) => `на неделе с ${mondayDate}`,
+    deadlineMonth: (monthName) => `в ${monthName}`,
     statusLabel: 'Статус',
     recurrenceLabel: 'Повторяется',
     statusName: (status) => STATUS_NAMES[status] ?? status,

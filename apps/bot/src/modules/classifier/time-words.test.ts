@@ -476,7 +476,10 @@ describe('«сегодня» и «завтра» считает код (зада
     expect(outcome.ok).toBe(true);
     if (outcome.ok && outcome.deadline) {
       expect(outcome.corrected).toBeUndefined();
-      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-09-01');
+      // Не «сегодня», а неделя, и хранится она понедельником (31.08 по
+      // Москве — 30.08T21:00Z): срок не опровергнут, а уложен на начало периода.
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-30');
+      expect(outcome.deadline.accuracy).toBe('week');
     }
   });
 });

@@ -193,8 +193,13 @@ export interface TextProfile {
   readonly card: {
     readonly topicLabel: string;
     readonly deadlineLabel: string;
-    /** Срок с неточной датой: «на следующей неделе» — это не число. */
-    readonly deadlineApprox: (date: string) => string;
+    /**
+     * Неточный срок — периодом, не числом (15.09.2026): неделя хранится
+     * понедельником, и карточка называет неделю с него; месяц — по
+     * имени, в предложном падеже («в октябре»).
+     */
+    readonly deadlineWeek: (mondayDate: string) => string;
+    readonly deadlineMonth: (monthName: string) => string;
     readonly statusLabel: string;
     /** Регулярность — словами человека, а не нашим пересказом правила. */
     readonly recurrenceLabel: string;
