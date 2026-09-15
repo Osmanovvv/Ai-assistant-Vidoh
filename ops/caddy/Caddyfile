@@ -8,6 +8,14 @@
 # ops/caddy/certs после перехода не нужен, и WEBHOOK_CERTIFICATE_PATH
 # из .env надо убрать, иначе Telegram продолжит проверять цепочку по нему.
 
+# `www.` ведёт на сам домен: A-запись для www Beget заводит сам, а без
+# этого блока у www не было бы сертификата, и рукопожатие рвалось бы —
+# человек, набравший адрес с www, увидел бы ошибку браузера (15.09.2026).
+# Сертификат для www Caddy выпускает так же сам.
+www.vydoh-app.ru {
+	redir https://vydoh-app.ru{uri} permanent
+}
+
 {$SITE_ADDRESS} {
 	encode zstd gzip
 
