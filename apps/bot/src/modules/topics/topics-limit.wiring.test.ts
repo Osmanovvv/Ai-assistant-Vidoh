@@ -94,7 +94,7 @@ function creations(): readonly { readonly file: string; readonly call: string }[
   for (const file of productFiles()) {
     const source = readFileSync(file, 'utf8');
 
-    for (const name of ['createBaseTopics', 'createTopics', 'appendTopics']) {
+    for (const name of ['appendTopics', 'ensureTopics', 'settleTopics']) {
       // Объявление функции — не вызов: искать надо тех, кто её зовёт.
       if (source.includes(`export async function ${name}(`)) continue;
 
@@ -130,11 +130,13 @@ describe('предел числа тем доезжает до всех созд
      */
     const calls = creations();
 
-    // Базовый набор на первой выгрузке и сферы по содержанию (шаг опроса
-    // ушёл 14.09.2026, экран сфер в настройках — 15.09.2026).
-    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // Сферы под записи (16.09.2026, обе точки конвейера) и сферы по
+    // содержанию (шаг опроса ушёл 14.09.2026, экран сфер — 15.09.2026,
+    // базовый набор на первой выгрузке — 16.09.2026).
+    expect(calls.length).toBeGreaterThanOrEqual(3);
     expect(calls.map((one) => one.file)).toContain('modules/pipeline/dump.handler.ts');
     expect(calls.map((one) => one.file)).toContain('modules/topics/adopt.ts');
+    expect(calls.map((one) => one.file)).toContain('modules/topics/ensure.ts');
   });
 
   it('умолчание предела не ниже числа сфер, которые бот предлагает', () => {

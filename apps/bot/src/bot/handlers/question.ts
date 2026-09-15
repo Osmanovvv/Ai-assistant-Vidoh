@@ -10,6 +10,7 @@ import { classifyUnits } from '../../modules/classifier/classifier.service.js';
 import { saveDraft, saveItems } from '../../modules/items/items.repo.js';
 import { applyDecision } from '../../modules/resolver/patch.js';
 import { answerQuestion } from '../../modules/resolver/questions.repo.js';
+import { settleTopics } from '../../modules/topics/ensure.js';
 import { topicsFor } from '../../modules/topics/topics.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -375,10 +376,19 @@ async function createFromSegment(
     return await keep('ответ «это новое», разобрать не удалось');
   }
 
+  // Сфера под запись — как в конвейере выгрузки (16.09.2026): базовые
+  // имена модели подсказаны, а тема заводится вместе с первой записью.
+  const { units } = await settleTopics(deps.db, {
+    userId: params.userId,
+    units: classified.items,
+    defaultTopic: topics.defaultName,
+    maxTopics: await deps.settings?.number('maxTopics'),
+  });
+
   await saveItems(deps.db, {
     userId: params.userId,
     batchId: params.batchId,
-    items: classified.items,
+    items: units,
   });
 
   return true;

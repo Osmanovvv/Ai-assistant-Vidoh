@@ -67,7 +67,8 @@ import { rememberMentioned } from '../presenter/pick.service.js';
 import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
-import { createBaseTopics, topicsFor } from '../topics/topics.repo.js';
+import { settleTopics } from '../topics/ensure.js';
+import { topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -1338,32 +1339,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // ── Классификация ───────────────────────────────────────────────────
     /**
-     * Базовые сферы появляются на первой разобранной выгрузке, а не на
-     * онбординге (задача 3.43).
+     * Сферы — только под записи (заказчица, 16.09.2026).
      *
-     * До этого темы рождались только на последнем шаге опроса. Проджект
-     * заказчицы застрял на предпоследнем — не ответил и стал наговаривать
-     * дальше, как §12.2 и разрешает. Итог: тридцать две записи с метками
-     * сфер и ни одной ветки в чате. Его слова: «он даже по сферам не
-     * распределяет».
-     *
-     * §8.1 обещает: «женщина открывает бота и сразу видит ветки по сферам
-     * жизни». §13.1 запрещает опрос до первой выгрузки. Вместе это значит
-     * одно: ветки не могут ждать ответов. Базовый набор §6.4 создаётся
-     * здесь; шага «какие сферы важны» с 14.09.2026 нет (правка заказчицы,
-     * п. 1.1) — дальше сферы заводит бот по содержанию (`adopt.ts`), а
-     * человек правит их в настройках.
+     * С задачи 3.43 первая разобранная выгрузка заводила базовый набор
+     * из пяти сфер и все пять веток разом. Заказчица по видео: «он
+     * сразу насоздавал много тем… кто не в теме — зачем это?». Базовые
+     * имена теперь только подсказка модели (`topicsFor` отдаёт их, пока
+     * своих тем нет); темы и ветки появляются вместе с первой записью в
+     * них — `settleTopics` ниже, после раскладки.
      */
-    const known = await topicsFor(db, batch.userId);
-    const spheresCreated = known.own
-      ? false
-      : // Предел числа тем — из настроек (§6.4; ревизия панели): базовых
-        // сфер пять, и при пределе ниже пяти этот путь его обходил.
-        (await createBaseTopics(db, batch.userId, await deps.settings?.number('maxTopics'))) > 0;
-    if (spheresCreated) {
-      deps.logger?.info({ userId: batch.userId }, 'Базовые сферы созданы на первой выгрузке');
-    }
-    const topics = spheresCreated ? await topicsFor(db, batch.userId) : known;
+    const topics = await topicsFor(db, batch.userId);
 
     const classified = await classifyUnits(heavy, {
       units: extracted.units,
@@ -1422,10 +1407,21 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * срабатывает только на теме, которой у человека нет, — то есть в
      * бою никогда. Подстановка живёт здесь: см. thread-topic.ts.
      */
-    const units = applyThreadTopic(adopted.units, {
+    const placed = applyThreadTopic(adopted.units, {
       threadTopic: threadTopic?.name,
       catchAllTopic: topics.defaultName,
     });
+
+    // Темы под записи: заводятся те, куда что-то легло, под пределом из
+    // настроек; не поместившееся — в тему по умолчанию (`ensure.ts`).
+    const withTopics = await settleTopics(db, {
+      userId: batch.userId,
+      units: placed,
+      defaultTopic: topics.defaultName,
+      maxTopics: await deps.settings?.number('maxTopics'),
+    });
+    // Изменяемый список: поздние мысли дописываются в него ниже.
+    const units = [...withTopics.units];
 
     // ── Сохранение ──────────────────────────────────────────────────────
     /**
@@ -1591,9 +1587,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
               logger: deps.logger,
             })
           : { units: lateClassified.items };
-      const lateUnits = applyThreadTopic(lateAdopted.units, {
+      const latePlaced = applyThreadTopic(lateAdopted.units, {
         threadTopic: threadTopic?.name,
         catchAllTopic: topics.defaultName,
+      });
+      const { units: lateUnits } = await settleTopics(db, {
+        userId: batch.userId,
+        units: latePlaced,
+        defaultTopic: topics.defaultName,
+        maxTopics: await deps.settings?.number('maxTopics'),
       });
 
       // Повторы — против всех открытых записей, включая только что
@@ -1883,9 +1885,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
            * только по сохранённым: повтор запись не заводит, но человек о
            * ней сейчас говорил, и её тема тоже считается затронутой.
            */
-          topicNames: spheresCreated
-            ? [...topics.names]
-            : [...new Set([...units.map((item) => item.topic), ...touchedTopics])],
+          topicNames: [...new Set([...units.map((item) => item.topic), ...touchedTopics])],
           timeZone: context.timeZone,
           profile: context.textProfile,
         },

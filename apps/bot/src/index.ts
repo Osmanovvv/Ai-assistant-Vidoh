@@ -17,6 +17,7 @@ import {
   type IncomingDeps,
 } from './bot/handlers/incoming.js';
 import { registerMembershipHandlers } from './bot/handlers/membership.js';
+import { registerServiceMessageHandlers } from './bot/handlers/service-messages.js';
 import { adminConfigFrom } from './http/admin/index.js';
 import { createEvalRunner } from './modules/admin/eval-run.js';
 import {
@@ -919,6 +920,9 @@ async function main(): Promise<void> {
     providers,
   });
   registerMembershipHandlers(bot, db, logger);
+  // Служебные строки Telegram о наших ветках и закреплениях — прочь
+  // (заказчица, 16.09.2026).
+  registerServiceMessageHandlers(bot, logger);
   registerOnboardingHandlers(bot, db, logger);
   registerMenuHandlers(bot, db, logger);
 
