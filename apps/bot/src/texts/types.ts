@@ -94,6 +94,12 @@ export interface TextProfile {
     readonly acknowledgementFallback: string;
     /** То же, когда в выгрузке есть эмоция: §13.7 требует одной строки. */
     readonly acknowledgementTiredFallback: string;
+    /**
+     * Счёт дел следом за признанием (заказчица, 16.09.2026): «У тебя шесть
+     * дел.» Подстановка — уже склонённая: «одно дело», «два дела», «пять
+     * дел»; считает код, не модель.
+     */
+    readonly acknowledgementTasks: (tasks: string) => string;
 
     readonly actionsLead: string;
     /** §13.7: при «я на нуле» предлагается ровно одно дело. */

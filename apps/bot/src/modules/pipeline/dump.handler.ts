@@ -1786,7 +1786,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const actions = (await withNextSteps(db, selection.shown)).map((item) => item.text);
 
-    const presented = await presentDump(ai, {
+    const presented = presentDump({
       composition,
       actions,
       // «Сделать сейчас» ведёт к первому из показанных (E2).
@@ -1830,7 +1830,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         shown: selection.shown.length,
         hidden: selection.hidden,
         corrections: classified.corrections,
-        acknowledgementReplaced: presented.replaced,
       },
       'Выгрузка разобрана',
     );

@@ -9,12 +9,14 @@ import {
 } from '../../texts/rules.js';
 import { toShortId } from '../shared/short-id.js';
 import {
+  acknowledgementOf,
   ANSWER_ACTION,
   buildActionsReply,
   buildReply,
   composeOf,
   countQuestions,
-  sanitizeAcknowledgement,
+  type DumpComposition,
+  presentDump,
 } from './presenter.service.js';
 
 /**
@@ -30,7 +32,16 @@ import {
 
 const texts = defaultTexts;
 
-const ack = 'Я тебя услышала. Три дела и одна большая цель.';
+const ack = 'Я тебя услышала. У тебя три дела.';
+
+const NOTHING: DumpComposition = {
+  tasks: 0,
+  desires: 0,
+  ideas: 0,
+  infos: 0,
+  emotions: 0,
+  hasProject: false,
+};
 
 describe('buildReply', () => {
   const batchId = '22222222-2222-4222-8222-222222222222';
@@ -196,13 +207,18 @@ describe('правка из панели и склейка §13.2', () => {
     const texts = textsFor();
     let most = 0;
 
-    // Ответ на выгрузку: признание (словарная замена при молчании модели)
-    // и вопрос «оставить или выбрать».
+    // Ответ на выгрузку: признание из состава и вопрос «оставить или
+    // выбрать».
     for (const tired of [false, true]) {
-      const acknowledgement = sanitizeAcknowledgement('', texts, { tired }).text;
-      const built = buildReply({ texts, acknowledgement, batchId: undefined });
+      for (const tasks of [0, 1, 6]) {
+        const acknowledgement = acknowledgementOf(
+          { ...NOTHING, tasks, emotions: tired ? 1 : 0 },
+          texts,
+        );
+        const built = buildReply({ texts, acknowledgement, batchId: undefined });
 
-      most = Math.max(most, countQuestions(built.text));
+        most = Math.max(most, countQuestions(built.text));
+      }
     }
 
     // Список по кнопке «Выбрать главное» — своего вопроса не несёт.
@@ -272,7 +288,7 @@ describe('правка из панели и склейка §13.2', () => {
     const texts = textsFor();
     const built = buildReply({
       texts,
-      acknowledgement: sanitizeAcknowledgement('', texts, { tired: false }).text,
+      acknowledgement: acknowledgementOf(NOTHING, texts),
     });
 
     expect(built.text).toContain(said);
@@ -280,99 +296,98 @@ describe('правка из панели и склейка §13.2', () => {
   });
 });
 
-describe('sanitizeAcknowledgement', () => {
-  it('годное признание пропускает как есть', () => {
-    const result = sanitizeAcknowledgement(`  ${ack}  `, texts, { tired: false });
+describe('acknowledgementOf — признание из состава (заказчица, 16.09.2026)', () => {
+  /**
+   * «У тебя шесть дел, все обычные» — сказала модель на видео заказчицы;
+   * она ответила: «достаточно сразу: „Я тебя услышала. У тебя шесть дел"».
+   * Признание собирается кодом: слова-числа до десяти, дальше цифрами,
+   * склонение — дело / дела / дел.
+   */
+  const withTasks = (tasks: number, emotions = 0): string =>
+    acknowledgementOf({ ...NOTHING, tasks, emotions }, texts);
 
-    expect(result.text).toBe(ack);
-    expect(result.replaced).toBe(false);
+  afterEach(() => {
+    applyOverrides(new Map());
   });
 
-  it('вопрос в признании заменяется: иначе в реплике два вопроса', () => {
-    const result = sanitizeAcknowledgement('Услышала. С чего начнём?', texts, { tired: false });
-
-    expect(result.replaced).toBe(true);
-    expect(result.text).toBe(texts.answer.acknowledgementFallback);
+  it('«Я тебя услышала. У тебя шесть дел.»', () => {
+    expect(withTasks(6)).toBe('Я тебя услышала. У тебя шесть дел.');
   });
 
-  it('при усталости подставляется своя замена', () => {
-    const result = sanitizeAcknowledgement('', texts, { tired: true });
-
-    expect(result.text).toBe(texts.answer.acknowledgementTiredFallback);
+  it('склоняет: одно дело, два дела, пять дел; после десяти — цифрами', () => {
+    expect(withTasks(1)).toBe('Я тебя услышала. У тебя одно дело.');
+    expect(withTasks(2)).toBe('Я тебя услышала. У тебя два дела.');
+    expect(withTasks(4)).toBe('Я тебя услышала. У тебя четыре дела.');
+    expect(withTasks(5)).toBe('Я тебя услышала. У тебя пять дел.');
+    expect(withTasks(10)).toBe('Я тебя услышала. У тебя десять дел.');
+    expect(withTasks(11)).toBe('Я тебя услышала. У тебя 11 дел.');
+    expect(withTasks(21)).toBe('Я тебя услышала. У тебя 21 дело.');
+    expect(withTasks(22)).toBe('Я тебя услышала. У тебя 22 дела.');
   });
 
-  it.each([
-    ['Поняла. Тебе бы отдохнуть.', 'совет отдохнуть'],
-    ['Слышу. Попробуй подышать минуту.', 'совет подышать'],
-    ['Это похоже на выгорание.', 'рассуждение о выгорании'],
-    ['Ты слишком много на себя берёшь.', 'объяснение состояния'],
-    ['Спасибо, что поделилась.', 'благодарность за откровенность'],
-    ['Ты молодец.', 'похвала без повода'],
-    ['Не переживай, всё будет хорошо.', 'утешение'],
-  ])('запрещённое §13.7 заменяется: %s', (raw) => {
-    // §13.7 — прямое требование заказчика: бот не работает терапевтом.
-    // Промпт об этом просит, но промпт — просьба, а не гарантия.
-    const result = sanitizeAcknowledgement(raw, texts, { tired: true });
-
-    expect(result.replaced).toBe(true);
-    expect(result.reason).toContain('§13.7');
+  it('без дел — только признание', () => {
+    expect(withTasks(0)).toBe(texts.answer.acknowledgementFallback);
   });
 
-  it('несколько строк, длинное и эмодзи — тоже замена', () => {
-    expect(sanitizeAcknowledgement('Первая\nвторая', texts, { tired: false }).replaced).toBe(true);
-    expect(sanitizeAcknowledgement('а'.repeat(201), texts, { tired: false }).replaced).toBe(true);
-    expect(sanitizeAcknowledgement('Услышала 🙂', texts, { tired: false }).replaced).toBe(true);
+  it('при высказанном состоянии — тон усталости, счёт остаётся', () => {
+    expect(withTasks(2, 1)).toBe('Поняла. Сегодня тяжело. У тебя два дела.');
+    expect(withTasks(0, 1)).toBe(texts.answer.acknowledgementTiredFallback);
   });
 
-  it('серия восклицательных заменяется, один восклицательный — нет', () => {
-    /**
-     * Дефект ревизии второго этапа. §13.9 «восклицательные не идут
-     * сериями» стерёг словарь и правку из панели, а признание — тот
-     * единственный кусок ответа, который пишет модель, — нет:
-     * «Услышала!! Ну и денёк.» уходило человеку. Причина названа тем же
-     * параграфом, что и в отказе на записи, — так у правила один дом.
-     */
-    const shouted = sanitizeAcknowledgement('Услышала!! Ну и денёк.', texts, { tired: false });
+  it('правка признания из панели доезжает и в счёт', () => {
+    applyOverrides(new Map([['answer.acknowledgementFallback', 'Услышала тебя.']]));
 
-    expect(shouted.replaced).toBe(true);
-    expect(shouted.text).toBe(texts.answer.acknowledgementFallback);
-    expect(shouted.reason).toContain('§13.9');
-
-    // Один восклицательный законен: правило про серии, а не про знак.
-    expect(sanitizeAcknowledgement('Услышала! Три дела.', texts, { tired: false }).replaced).toBe(
-      false,
+    expect(acknowledgementOf({ ...NOTHING, tasks: 3 }, textsFor())).toBe(
+      'Услышала тебя. У тебя три дела.',
     );
   });
+});
 
-  it('общее правило §13 — то же, что судит правку в панели, слово в слово', () => {
-    /**
-     * Связка, а не наличие строки. Презентер обязан **звать** общее
-     * правило, а не переписывать его своими словами: иначе следующее
-     * правило §13 приедет в панель и не приедет сюда — ровно так
-     * потерялась серия восклицательных. Если презентер заведёт свою
-     * копию, причина разойдётся с панельной — и здесь покраснеет.
-     */
-    for (const raw of [
-      'Услышала!! Ну и денёк.',
-      'Поняла. Тебе бы отдохнуть.',
-      'Услышала 🙂',
-      'Разобрать дела? Или хватит?',
-    ]) {
-      const shared = contentRefusal(raw);
+describe('presentDump — ответ на выгрузку целиком', () => {
+  const composition: DumpComposition = { ...NOTHING, tasks: 3, desires: 1, hasProject: true };
+  const params = { composition, actions: ['Записать сына к врачу', 'Позвонить маме'], hidden: 4 };
 
-      expect(shared, raw).toBeDefined();
-      expect(sanitizeAcknowledgement(raw, texts, { tired: false }).reason, raw).toBe(shared);
-    }
+  it('признание из состава, вопрос «оставить или выбрать», две кнопки, дел под признанием нет', () => {
+    const result = presentDump(params);
+
+    expect(result.reply.text.startsWith('Я тебя услышала. У тебя три дела.')).toBe(true);
+    expect(result.reply.text).not.toContain('— Записать сына к врачу');
+    expect(result.reply.text).toContain(texts.answer.keepOrPick);
+    expect(countQuestions(result.reply.text)).toBe(1);
+    expect(result.reply.buttons.map((button) => button.label)).toEqual([
+      texts.answer.buttonKeep,
+      texts.answer.buttonPick,
+    ]);
   });
 
-  it('«ванна» в деле законна, «прими ванну» — нет', () => {
-    // Запрет на слова вместо фраз ловил бы «купить ванну» и заменял
-    // годное признание. Правило, которое врёт, потом отключают целиком.
-    expect(
-      sanitizeAcknowledgement('Услышала. Дела по дому и ванна.', texts, { tired: false }).replaced,
-    ).toBe(false);
-    expect(sanitizeAcknowledgement('Прими ванну и ложись.', texts, { tired: false }).replaced).toBe(
-      true,
+  it('высказанное состояние при делах — тон усталости и те же две кнопки', () => {
+    /**
+     * §13.7 её ТЗ при усталости сокращал список и закрывал разговор.
+     * С решением 15.09.2026 списка под признанием нет ни у кого; закрывать
+     * нечего, а усталость живёт в самом признании.
+     */
+    const result = presentDump({
+      composition: { ...composition, tasks: 1, emotions: 2 },
+      actions: ['Записать сына к врачу'],
+      hidden: 7,
+    });
+
+    expect(result.reply.text.startsWith('Поняла. Сегодня тяжело. У тебя одно дело.')).toBe(true);
+    expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
+    expect(countQuestions(result.reply.text)).toBe(1);
+    expect(result.reply.buttons).toHaveLength(2);
+  });
+
+  it('быстрое добавление — «Записала», без кнопок', () => {
+    expect(presentDump({ ...params, quickAdd: true }).reply).toEqual({
+      text: texts.answer.added,
+      buttons: [],
+    });
+  });
+
+  it('неизвестный профиль берёт словарь по умолчанию', () => {
+    expect(presentDump({ ...params, profile: 'тёплый-которого-нет' }).reply.text).toContain(
+      texts.answer.keepOrPick,
     );
   });
 });
@@ -412,11 +427,10 @@ describe('словарь', () => {
       for (const value of Object.values(profile.answer)) {
         if (typeof value !== 'string') continue;
 
-        const result = sanitizeAcknowledgement(value, profile, { tired: false });
         // Вопросы в словаре законны — это наш единственный вопрос.
         if (value.includes('?')) continue;
 
-        expect(result.replaced, `«${value}»`).toBe(false);
+        expect(contentRefusal(value), `«${value}»`).toBeUndefined();
       }
     }
   });

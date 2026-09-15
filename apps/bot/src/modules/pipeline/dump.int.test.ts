@@ -586,9 +586,8 @@ describe('разбор', () => {
     const calls = await testDb().select().from(aiCalls);
     const stages = new Set(calls.map((call) => call.stage));
 
-    expect(stages).toEqual(
-      new Set(['speech', 'router', 'extractor', 'classifier', 'embedder', 'presenter']),
-    );
+    // Признание собирается кодом (16.09.2026): этапа презентера в учёте нет.
+    expect(stages).toEqual(new Set(['speech', 'router', 'extractor', 'classifier', 'embedder']));
     expect(calls.every((call) => call.ok)).toBe(true);
     expect(calls.every((call) => call.batchId !== null)).toBe(true);
   });
@@ -1095,7 +1094,9 @@ describe('разбор', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('Слышу. Много всего сразу.');
+    // Одни чувства: тон усталости из словаря, счёта дел нет (16.09.2026).
+    expect(reply).toContain(defaultTexts.answer.acknowledgementTiredFallback);
+    expect(reply).not.toContain('У тебя');
     for (const text of ['Записать сына к врачу', 'Оплатить садик', 'Разобрать балкон']) {
       expect(reply).not.toContain(text);
     }
@@ -2653,7 +2654,8 @@ describe('мягкий лимит расхода', () => {
     // полной: §10.5 называет тяжёлыми извлечение, классификацию и
     // резолвер, а одна фраза признания стоит копейки.
     expect(byStage.get('router')).toEqual(['mock:light']);
-    expect(byStage.get('presenter')).toEqual(['mock:full']);
+    // Признание собирается кодом (16.09.2026): у презентера вызова нет.
+    expect(byStage.get('presenter')).toBeUndefined();
   });
 
   it('человек ничего не замечает: ответ тот же и лишних сообщений нет', async () => {

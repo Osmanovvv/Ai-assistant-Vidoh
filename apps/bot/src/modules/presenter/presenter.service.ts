@@ -1,8 +1,6 @@
-import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import { toShortId } from '../shared/short-id.js';
-import type { ItemType, PresenterAcknowledgement } from '../ai/schemas/index.js';
+import type { ItemType } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { contentRefusal } from '../../texts/rules.js';
 
 /**
  * Ответ на выгрузку (задача 2.11).
@@ -232,68 +230,56 @@ export function buildActionsReply(params: ActionsReplyParams): Reply {
   — уходило человеку с «Услышала!!». Найдено ревизией второго этапа.
 */
 
-/** §13.2 требует одной фразы, §13.9 — одной-двух на реплику вне выдачи. */
-const MAX_LENGTH = 200;
+/**
+ * Признание — из состава, кодом (заказчица, 16.09.2026).
+ *
+ * До этого признание просилось у модели (presenter@1) и проверялось
+ * правилами §13; на видео заказчицы модель сказала «У тебя шесть дел,
+ * все обычные», и она ответила: «достаточно сразу: „Я тебя услышала.
+ * У тебя шесть дел"». Ровно это и собирается — без вызова, без расхода и
+ * без сюрпризов в формулировке. Тон усталости остаётся словарным
+ * (§13.7), счёт дел — склонённым: «одно дело», «два дела», «пять дел»;
+ * до десяти словами, дальше цифрами.
+ */
+const TASK_WORDS = [
+  '',
+  'одно',
+  'два',
+  'три',
+  'четыре',
+  'пять',
+  'шесть',
+  'семь',
+  'восемь',
+  'девять',
+  'десять',
+] as const;
 
-export interface SanitizedAcknowledgement {
-  readonly text: string;
-  /** Заменено ли признание словарным. Ненулевое — повод к промпту. */
-  readonly replaced: boolean;
-  readonly reason?: string;
+function tasksPhrase(count: number): string {
+  const number = count <= 10 ? (TASK_WORDS[count] ?? String(count)) : String(count);
+  const tail = count % 100;
+  const last = count % 10;
+  const noun =
+    tail >= 11 && tail <= 14
+      ? 'дел'
+      : last === 1
+        ? 'дело'
+        : last >= 2 && last <= 4
+          ? 'дела'
+          : 'дел';
+
+  return `${number} ${noun}`;
 }
 
-export function sanitizeAcknowledgement(
-  raw: string,
-  texts: TextProfile,
-  options: { readonly tired: boolean },
-): SanitizedAcknowledgement {
-  /**
-   * Замена здесь не перепроверяется, и это не пробел.
-   *
-   * Правила ниже — про ответ модели. Словарная замена приходит либо из
-   * кода, где её стерегут проверки словаря, либо из правки в панели —
-   * а правку судят на записи тем же §13, и вопроса в ней быть не может:
-   * она стоит в одном ответе с нашим вопросом (`BESIDE_QUESTION` в
-   * `texts/rules.ts`). Второй судья на выходе считал бы одно и то же
-   * дважды и однажды разошёлся бы с первым молча.
-   */
-  const fallback = options.tired
-    ? texts.answer.acknowledgementTiredFallback
-    : texts.answer.acknowledgementFallback;
+export function acknowledgementOf(composition: DumpComposition, texts: TextProfile): string {
+  const opening =
+    composition.emotions > 0
+      ? texts.answer.acknowledgementTiredFallback
+      : texts.answer.acknowledgementFallback;
 
-  const reject = (reason: string): SanitizedAcknowledgement => ({
-    text: fallback,
-    replaced: true,
-    reason,
-  });
+  if (composition.tasks <= 0) return opening;
 
-  const text = raw.trim();
-
-  /**
-   * Общее правило судит первым, и оно то же, что на записи в панели:
-   * пустота, серия восклицательных (§13.9), фразы из запретов §13.7,
-   * украшательские эмодзи. Оно зовётся, а не переписывается, — иначе
-   * следующее правило §13 приедет в панель и не приедет сюда, как уже
-   * было с серией восклицательных. Причина отказа тоже его: в журнале
-   * она читается так же, как в панели.
-   */
-  const shared = contentRefusal(text);
-  if (shared !== undefined) return reject(shared);
-
-  // Дальше признание строже словарной реплики: общее правило разрешает
-  // один «?», а здесь и один означал бы два вопроса в ответе — свой у
-  // нас уже есть, и §13.9 этого не допускает.
-  if (text.includes('?')) return reject('вопрос в признании');
-
-  if (text.includes('\n')) return reject('признание в несколько строк');
-  if (text.length > MAX_LENGTH) return reject('признание длиннее одной фразы');
-
-  // §13.9: эмодзи только как маркеры приоритета и статуса, то есть не в
-  // тексте реплики. Общее правило пускает звезду тарифа; в признании
-  // ей взяться неоткуда.
-  if (/\p{Extended_Pictographic}/u.test(text)) return reject('эмодзи в признании');
-
-  return { text, replaced: false };
+  return `${opening} ${texts.answer.acknowledgementTasks(tasksPhrase(composition.tasks))}`;
 }
 
 export interface PresentParams {
@@ -322,42 +308,15 @@ export interface PresentParams {
 
 export interface PresentResult {
   readonly reply: Reply;
-  readonly promptVersion: string | null;
-  /** Признание заменено словарным: либо модель молчит, либо нарушила правила. */
-  readonly replaced: boolean;
   readonly reason?: string;
 }
 
-/** Что видит модель. Полных текстов здесь нет — только состав и заголовки. */
-function buildInput(params: PresentParams): string {
-  const { composition: parts } = params;
-
-  const lines = [
-    'Состав выгрузки:',
-    `- дел: ${String(parts.tasks)}`,
-    `- желаний: ${String(parts.desires)}`,
-    `- идей: ${String(parts.ideas)}`,
-    `- фактов: ${String(parts.infos)}`,
-    `- высказанных состояний: ${String(parts.emotions)}`,
-    `- большая составная цель среди дел: ${parts.hasProject ? 'есть' : 'нет'}`,
-  ];
-
-  if (params.actions.length > 0) {
-    lines.push('', 'Что будет предложено сделать:');
-    lines.push(...params.actions.map((text, index) => `${String(index + 1)}. ${text}`));
-  }
-
-  lines.push('', `Остаётся сохранённым, без показа: ${String(params.hidden)}.`);
-
-  return lines.join('\n');
-}
-
-export async function presentDump(
-  deps: AiClientDeps,
-  params: PresentParams,
-): Promise<PresentResult> {
+/**
+ * Ответ на выгрузку: признание из состава, вопрос «оставить или выбрать»
+ * и две кнопки. Модели здесь нет с 16.09.2026 (`acknowledgementOf`).
+ */
+export function presentDump(params: PresentParams): PresentResult {
   const texts = textsFor(params.profile);
-  const tired = params.composition.emotions > 0;
 
   /**
    * Быстрое добавление отвечает до всякой модели.
@@ -370,64 +329,18 @@ export async function presentDump(
   if (params.quickAdd === true) {
     return {
       reply: { text: texts.answer.added, buttons: [] },
-      promptVersion: null,
-      replaced: false,
       reason: 'быстрое добавление',
     };
-  }
-
-  let raw = '';
-  let promptVersion: string | null = null;
-  let problem: string | undefined;
-
-  /**
-   * Недоступность модели здесь не пробрасывается наружу — единственное
-   * место в конвейере, где это так.
-   *
-   * На остальных этапах отказ означает «выгрузка не разобрана», её надо
-   * вернуть в очередь и попробовать снова. Здесь разбор уже сделан и
-   * записи уже сохранены: повтор прогнал бы заново маршрутизатор,
-   * извлечение и классификацию — второй раз за чужие деньги и с риском
-   * создать те же записи дважды. И всё это ради одной фразы, которая в
-   * словаре и так есть.
-   */
-  try {
-    const outcome = await requestStructured<PresenterAcknowledgement>(deps, {
-      stage: 'presenter',
-      input: buildInput(params),
-      userId: params.userId,
-      batchId: params.batchId,
-    });
-
-    promptVersion = outcome.promptVersion;
-    if (outcome.ok) raw = outcome.value.acknowledgement;
-    else problem = outcome.problem;
-  } catch (error) {
-    problem = error instanceof Error ? error.message : 'модель недоступна';
-  }
-
-  const checked = sanitizeAcknowledgement(raw, texts, { tired });
-
-  if (checked.replaced) {
-    deps.logger?.warn(
-      { promptVersion, reason: problem ?? checked.reason },
-      'Признание заменено словарным',
-    );
   }
 
   return {
     reply: buildReply({
       texts,
-      acknowledgement: checked.text,
+      acknowledgement: acknowledgementOf(params.composition, texts),
       batchId: params.batchId,
       omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
     }),
-    promptVersion,
-    replaced: checked.replaced,
-    ...(problem === undefined && checked.reason === undefined
-      ? {}
-      : { reason: problem ?? checked.reason ?? '' }),
   };
 }
 
