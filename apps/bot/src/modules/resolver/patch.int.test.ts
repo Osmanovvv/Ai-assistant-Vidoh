@@ -1540,6 +1540,8 @@ describe('день недели в правке считает код, а не �
     /**
      * «На следующей неделе» — не день недели, и подменять его конкретной
      * пятницей значило бы придумать точность, которой человек не давал.
+     * Хранится неделя понедельником (15.09.2026): 11.09 — пятница, её
+     * неделя начинается 07.09; точность остаётся недельной.
      */
     const item = await sow({ deadlineAt: null, deadlineAccuracy: null });
 
@@ -1556,7 +1558,7 @@ describe('день недели в правке считает код, а не �
     );
 
     const after = await reread(item.id);
-    expect(asDate(after.deadlineAt)).toBe('2026-09-11');
+    expect(asDate(after.deadlineAt)).toBe('2026-09-07');
     expect(after.deadlineAccuracy).toBe('week');
   });
 });

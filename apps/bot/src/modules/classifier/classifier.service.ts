@@ -12,6 +12,7 @@ import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
+import { quoteInSpeech } from './time-words.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -446,12 +447,32 @@ export function correctItems(
        */
       const anchor = deadline === undefined ? item.deadline : isoDateIn(deadline.at, ctx.timeZone);
 
-      const resolvedRecurrence = resolveRecurrence({
+      const fromModel = resolveRecurrence({
         kind: item.recurrenceKind,
         interval: item.recurrenceInterval,
         text: item.recurrenceText,
         deadline: anchor,
       });
+
+      /**
+       * Фраза без правила держится только на словах человека (ручной
+       * прогон 15.09.2026). Правила нет — значит единственное, что уйдёт
+       * в карточку, это строка «Повторяется: …», и она обязана быть его
+       * словами: «опять ... ещё надо», сшитое моделью многоточием из
+       * «Завтра опять надо отвести машину на мойку, ещё надо», человек
+       * своими не узнает. Тот же приём, что у цитаты о сроке: дословно
+       * есть в речи — остаётся; нет — повторения нет. С правилом фраза
+       * не проверяется: правило само по себе основание. Без речи
+       * проверять нечем — поведение прежнее.
+       */
+      const speechToCheck = ctx.speech ?? ctx.spoken;
+      const resolvedRecurrence: ResolvedRecurrence =
+        fromModel.rule === undefined &&
+        fromModel.text !== undefined &&
+        speechToCheck !== undefined &&
+        !quoteInSpeech(fromModel.text, speechToCheck)
+          ? { problem: 'фраза повторения не из слов человека' }
+          : fromModel;
 
       if (resolvedRecurrence.text !== undefined) {
         /**

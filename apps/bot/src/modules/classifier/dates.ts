@@ -200,6 +200,29 @@ export function weekdayOf(instant: Date, timeZone: string): number {
 }
 
 /**
+ * Начало периода неточного срока: неделя — понедельник, месяц — первое
+ * число, в поясе человека.
+ *
+ * Ручной прогон 15.09.2026 (вторник): «на следующей неделе» модель
+ * вернула 22.09 — вторник через неделю — с точностью `week`. Всё вокруг
+ * считало, что неделя хранится понедельником (`filter.ts`, мягкий
+ * возврат планировщика): возврат ушёл бы утром вторника вместо
+ * понедельника, карточка говорила бы «около 22 сентября». Дата модели —
+ * день внутри периода, хранить надо начало периода — и считать его
+ * должен код, а не модель.
+ */
+export function periodStartOf(at: Date, accuracy: 'week' | 'month', timeZone: string): Date {
+  if (accuracy === 'month') {
+    const parts = localDateParts(at, timeZone);
+    return startOfDayInZone({ year: parts.year, month: parts.month, day: 1 }, timeZone);
+  }
+
+  // Понедельник — 1, воскресенье — 0: до понедельника назад 0…6 дней.
+  const back = (weekdayOf(at, timeZone) + 6) % 7;
+  return back === 0 ? at : startOfDayAfter(at, -back, timeZone);
+}
+
+/**
  * Ближайшая дата с нужным днём недели, начиная с сегодня.
  *
  * «В четверг», сказанное в четверг, — это сегодня, а не через неделю:
@@ -328,6 +351,19 @@ export function resolveDeadline(
   }
 
   const at = startOfDayInZone(parts, context.timeZone);
+
+  /**
+   * Неточный срок укладывается на начало периода (см. `periodStartOf`).
+   * «На выходных» — исключение: там период начинается субботой, её
+   * ставит ветка ниже; недельную точность от модели при слове «выходные»
+   * тоже оставляем как есть.
+   */
+  const weekendSaid =
+    context.said !== undefined && /(?<!\p{L})выходн/u.test(context.said.toLowerCase());
+  const settled = (instant: Date): Date =>
+    raw.accuracy === 'month' || (raw.accuracy === 'week' && !weekendSaid)
+      ? periodStartOf(instant, raw.accuracy, context.timeZone)
+      : instant;
 
   // Проверка на существование числа: 31 февраля превратится в 3 марта,
   // и такой срок принимать нельзя.
@@ -498,11 +534,11 @@ export function resolveDeadline(
 
       return {
         ok: true,
-        deadline: { at: nearest, accuracy: raw.accuracy },
+        deadline: { at: settled(nearest), accuracy: raw.accuracy },
         corrected: 'weekday',
       };
     }
   }
 
-  return { ok: true, deadline: { at, accuracy: raw.accuracy } };
+  return { ok: true, deadline: { at: settled(at), accuracy: raw.accuracy } };
 }

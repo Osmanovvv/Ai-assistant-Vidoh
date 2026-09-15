@@ -56,6 +56,26 @@ function shortDate(at: Date, timeZone: string): string {
   return `${String(parts.day).padStart(2, '0')}.${String(parts.month).padStart(2, '0')}`;
 }
 
+/** Месяц в предложном падеже: «в октябре». Не реплика — склонение. */
+const MONTHS_IN = [
+  'январе',
+  'феврале',
+  'марте',
+  'апреле',
+  'мае',
+  'июне',
+  'июле',
+  'августе',
+  'сентябре',
+  'октябре',
+  'ноябре',
+  'декабре',
+] as const;
+
+function monthNameIn(at: Date, timeZone: string): string {
+  return MONTHS_IN[localDateParts(at, timeZone).month - 1] ?? '';
+}
+
 /** Текст карточки: заголовок, тема, срок, статус. */
 export function cardText(item: Item, texts: TextProfile, timeZone: string): string {
   const card = texts.card;
@@ -73,11 +93,14 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
     const date = shortDate(item.deadlineAt, timeZone);
     // Неточный срок числом называть нельзя: «на следующей неделе» — это
     // не четвёртое сентября, и напоминание по нему сработает не тогда.
-    lines.push(
-      `${card.deadlineLabel}: ${
-        item.deadlineAccuracy === 'day' ? date : card.deadlineApprox(date)
-      }`,
-    );
+    // Неделя хранится понедельником, месяц — первым числом (`dates.ts`).
+    const deadline =
+      item.deadlineAccuracy === 'week'
+        ? card.deadlineWeek(date)
+        : item.deadlineAccuracy === 'month'
+          ? card.deadlineMonth(monthNameIn(item.deadlineAt, timeZone))
+          : date;
+    lines.push(`${card.deadlineLabel}: ${deadline}`);
   }
 
   // Регулярность показывается словами человека, а не нашим пересказом

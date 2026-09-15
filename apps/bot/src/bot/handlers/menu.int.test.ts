@@ -665,9 +665,15 @@ describe('карточка записи', () => {
     expect(card).toContain(defaultTexts.card.statusName('new'));
   });
 
-  it('неточный срок числом не называет', async () => {
-    // «На следующей неделе» — это не четвёртое сентября, и напоминание по
-    // такому числу сработает не тогда.
+  it('неточный срок называет периодом, а не числом', async () => {
+    /**
+     * «На следующей неделе» — это не четвёртое сентября, и напоминание по
+     * такому числу сработает не тогда. Прежде карточка писала «около
+     * 04.09» — число всё равно стояло, и ручной прогон 15.09.2026 на бою
+     * показал «около 22.09» на «на следующей неделе»: заказчица 15.09
+     * как раз просила не ставить искусственный срок. Неделя хранится
+     * понедельником — карточка называет неделю с него; месяц — по имени.
+     */
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -675,14 +681,32 @@ describe('карточка записи', () => {
       owner: userId,
       text: 'разобрать шкаф',
       topic: 'дом',
-      deadlineAt: new Date('2026-09-03T21:00:00.000Z'),
+      // Понедельник 07.09.2026, начало суток по Москве.
+      deadlineAt: new Date('2026-09-06T21:00:00.000Z'),
     });
     await testDb().update(items).set({ deadlineAccuracy: 'week' }).where(eq(items.id, itemId));
 
     await bot.handleUpdate(callbackUpdate(`i:${toShortId(itemId)}`));
 
+    const week = textOf(calls.filter((call) => call.method === 'editMessageText').at(-1));
+    expect(week).toContain(
+      `${defaultTexts.card.deadlineLabel}: ${defaultTexts.card.deadlineWeek('07.09')}`,
+    );
+    expect(week).not.toContain('около');
+
+    const monthly = await addItem({
+      owner: userId,
+      text: 'пройти диспансеризацию',
+      topic: 'здоровье',
+      // 01.10.2026 по Москве.
+      deadlineAt: new Date('2026-09-30T21:00:00.000Z'),
+    });
+    await testDb().update(items).set({ deadlineAccuracy: 'month' }).where(eq(items.id, monthly));
+
+    await bot.handleUpdate(callbackUpdate(`i:${toShortId(monthly)}`));
+
     expect(textOf(calls.filter((call) => call.method === 'editMessageText').at(-1))).toContain(
-      defaultTexts.card.deadlineApprox('04.09'),
+      `${defaultTexts.card.deadlineLabel}: ${defaultTexts.card.deadlineMonth('октябре')}`,
     );
   });
 

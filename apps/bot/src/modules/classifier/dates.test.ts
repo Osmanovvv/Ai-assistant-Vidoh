@@ -171,6 +171,47 @@ describe('resolveDeadline', () => {
     expect(month.deadline.accuracy).toBe('month');
   });
 
+  it('неточный срок хранится началом периода: неделя — понедельником, месяц — первым числом', () => {
+    /**
+     * Ручной прогон 15.09.2026 (вторник) на бою: «записаться к
+     * стоматологу на следующей неделе» → модель вернула 22.09, вторник
+     * через неделю, с точностью `week`. Код вокруг считает, что неделя
+     * хранится понедельником (`filter.ts`, планировщик мягкого возврата):
+     * возврат ушёл бы во вторник 22-го, а не утром понедельника 21-го,
+     * и карточка говорила бы «около 22 сентября». Дата модели — это
+     * день внутри периода; хранится начало периода.
+     */
+    const tuesday = { now: new Date('2026-09-15T05:00:00.000Z'), timeZone: 'Asia/Omsk' };
+
+    const week = resolveDeadline(
+      { deadline: '2026-09-22', accuracy: 'week' },
+      { ...tuesday, said: 'записаться к стоматологу на следующей неделе' },
+    );
+    if (!week.ok || !week.deadline) throw new Error('ожидался срок');
+    // Понедельник 21.09, начало суток по Омску (UTC+6).
+    expect(week.deadline.at.toISOString()).toBe('2026-09-20T18:00:00.000Z');
+    expect(week.deadline.accuracy).toBe('week');
+
+    const month = resolveDeadline(
+      { deadline: '2026-10-15', accuracy: 'month' },
+      { ...tuesday, said: 'в октябре пройти диспансеризацию' },
+    );
+    if (!month.ok || !month.deadline) throw new Error('ожидался срок');
+    expect(month.deadline.at.toISOString()).toBe('2026-09-30T18:00:00.000Z');
+    expect(month.deadline.accuracy).toBe('month');
+  });
+
+  it('«на выходных» началом периода не трогается: суббота остаётся субботой', () => {
+    const tuesday = { now: new Date('2026-09-15T05:00:00.000Z'), timeZone: 'Asia/Omsk' };
+
+    const weekend = resolveDeadline(
+      { deadline: '2026-09-19', accuracy: 'week' },
+      { ...tuesday, said: 'разобрать балкон на выходных' },
+    );
+    if (!weekend.ok || !weekend.deadline) throw new Error('ожидался срок');
+    expect(weekend.deadline.at.toISOString()).toBe('2026-09-18T18:00:00.000Z');
+  });
+
   it('сегодняшний срок принимается', () => {
     // «В четверг», сказанное в четверг, может означать сегодня.
     const outcome = resolveDeadline({ deadline: '2026-09-04', accuracy: 'day' }, context);

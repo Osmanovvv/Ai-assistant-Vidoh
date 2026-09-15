@@ -597,6 +597,67 @@ describe('регулярность (задача 2.18а)', () => {
     expect(result.corrections.recurrence).toBe(1);
   });
 
+  it('непонятая регулярность без правила держится только на словах человека', async () => {
+    /**
+     * Ручной прогон 15.09.2026 на бою: «Завтра опять надо отвести машину
+     * на мойку, ещё надо» → вид `unclear`, фраза «опять ... ещё надо».
+     * Правила нет, а фраза ушла в карточку строкой «Повторяется: опять
+     * ... ещё надо» — человек своих слов в ней не узнает, потому что он
+     * их так не говорил. Тот же приём, что у цитаты о сроке: без правила
+     * фраза остаётся, только если она дословно есть в речи.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'отвести машину на мойку',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'unclear',
+            recurrenceInterval: 1,
+            recurrenceText: 'опять ... ещё надо',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('отвести машину на мойку'),
+      speech: 'Завтра опять надо отвести машину на мойку, ещё надо.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence).toBeUndefined();
+    expect(result.corrections.recurrence).toBe(1);
+  });
+
+  it('непонятая регулярность, сказанная дословно, остаётся фразой и при речи', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'танцы',
+            deadline: '2026-09-08',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'unclear',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый вторник и четверг',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('танцы'),
+      speech: 'Танцы у дочки теперь каждый вторник и четверг, не забыть.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.recurrence?.text).toBe('каждый вторник и четверг');
+  });
+
   it('регулярность у не-задачи снимается в коде', async () => {
     // §5.1: регулярность — поле у TASK, как проект и делегируемость.
     // База это же запрещает ограничением, но полагаться на то, что до
