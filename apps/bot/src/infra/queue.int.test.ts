@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 import type { Job, Queue, Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -214,6 +216,25 @@ describe('scheduleBatchClose', () => {
     await scheduleBatchClose(queue, { batchId: other, userId: USER, delayMs: 30_000 });
 
     expect(await queue.getDelayedCount()).toBe(2);
+  });
+});
+
+describe('в Redis нет текста человека', () => {
+  it('задания очереди несут только идентификаторы', () => {
+    /**
+     * Хвост заказчицы к публикации (15.09.2026): «проверить Redis на
+     * пользовательские тексты». Redis у нас держит очередь заданий и
+     * замки; текст живёт в Postgres. Страж читает объявление заданий:
+     * появись в нём поле с текстом — покраснеет здесь, а не в политике.
+     */
+    const source = readFileSync(fileURLToPath(new URL('./queue.ts', import.meta.url)), 'utf8');
+    const start = source.indexOf('export type PipelineJob =');
+    // Объединение из объектов: последний член кончается на «};».
+    const declaration = source.slice(start, source.indexOf('};', start) + 2);
+    const fields = [...declaration.matchAll(/readonly (\w+):/gu)].map((match) => match[1]);
+
+    expect(fields.length).toBeGreaterThan(0);
+    expect(new Set(fields)).toEqual(new Set(['kind', 'batchId', 'userId']));
   });
 });
 

@@ -485,17 +485,11 @@ export interface TextProfile {
     readonly buttonEvening: string;
     readonly buttonCity: string;
     readonly buttonName: string;
-    readonly buttonTopics: string;
 
     readonly askMorning: string;
     readonly askEvening: string;
     readonly askCity: string;
     readonly askName: string;
-    /** Сферы отмечаются нажатием, поэтому подсказка про повторное. */
-    readonly askTopics: string;
-    readonly buttonTopicsDone: string;
-    /** Включённая сфера на экране настроек. §12.4: эмодзи как маркер, не украшение. */
-    readonly topicChosen: (name: string) => string;
 
     /** Что стало после правки: человек должен видеть новое значение. */
     readonly savedMorning: (time: string) => string;
@@ -503,7 +497,6 @@ export interface TextProfile {
     readonly savedEveningOff: string;
     readonly savedCity: (city: string) => string;
     readonly savedName: (name: string) => string;
-    readonly savedTopics: (list: string) => string;
 
     /**
      * Последнюю сферу убрать нельзя.
@@ -511,7 +504,6 @@ export interface TextProfile {
      * Классификация без списка не работает, и человек без тем получил бы
      * записи в никуда. Отказ говорит причину, а не «нельзя».
      */
-    readonly lastTopicKept: string;
   };
 
   /**

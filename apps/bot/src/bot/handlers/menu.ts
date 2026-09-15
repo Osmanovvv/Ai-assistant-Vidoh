@@ -14,9 +14,7 @@ import { contextOf, projectsOf, withNextSteps } from '../../modules/projects/pro
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
-import { appendTopics, listTopics } from '../../modules/topics/topics.repo.js';
-import { retireTopics } from '../../modules/topics/retire.service.js';
-import type { TopicGateway } from '../../modules/topics/gateway.js';
+import { listTopics } from '../../modules/topics/topics.repo.js';
 import {
   cityOfZone,
   EVENING_TIMES,
@@ -26,9 +24,7 @@ import {
   setTimezone,
   TIMEZONES,
 } from '../../modules/onboarding/onboarding.service.js';
-import { isChoice, topicRows } from '../../modules/topics/choices.js';
 import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
-import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
@@ -104,19 +100,20 @@ export const MENU_ACTION = {
   toggleQuiet: 'menu:set:q',
 
   /**
-   * Остальные четыре величины §12.1: времена, пояс, сферы и имя.
+   * Остальные величины §12.1: времена, пояс и имя. Сфер здесь нет с
+   * 15.09.2026 (правка заказчицы): их заводит бот по содержанию, человек
+   * перекладывает запись кнопкой «В другую сферу», а самими сферами не
+   * управляет.
    *
    * Действия свои, а не опросные: обработчики опроса сверяют шаг, и после
    * его прохождения молча ничего не делают. Служебные функции при этом те
-   * же — `setMorning`, `setEvening`, `setTimezone`, `setPreferredName`,
-   * `appendTopics`/`retireTopics`: нового поведения здесь нет,
-   * появилась связка, которой не было.
+   * же — `setMorning`, `setEvening`, `setTimezone`, `setPreferredName`:
+   * нового поведения здесь нет, появилась связка, которой не было.
    */
   askMorning: 'menu:set:m',
   askEvening: 'menu:set:e',
   askCity: 'menu:set:c',
   askName: 'menu:set:n',
-  askTopics: 'menu:set:t',
   /** `menu:set:m:08:00` — выбранное время из готовых. */
   morningPrefix: 'menu:set:m:',
   eveningPrefix: 'menu:set:e:',
@@ -124,8 +121,6 @@ export const MENU_ACTION = {
   /** `menu:set:c:Asia/Omsk` — 24 байта, предел callback_data 64. */
   cityPrefix: 'menu:set:c:',
   /** `menu:set:t:работа` — переключить сферу. */
-  topicSetPrefix: 'menu:set:t:',
-  topicsSetDone: 'menu:set:t!',
   /** Ввод словами: своё время, свой город, имя. */
   ownMorning: 'menu:set:m!',
   ownEvening: 'menu:set:e!',
@@ -230,22 +225,7 @@ function itemsKeyboard(
   return keyboard.text(texts.menu.buttonBack, back);
 }
 
-export function registerMenuHandlers(
-  bot: Bot,
-  db: Database,
-  logger: Logger,
-  /**
-   * Реестр настроек — ради предела числа тем (§6.4).
-   *
-   * Необязателен, как и у остальных обработчиков: без него работает
-   * умолчание из кода, и стенд проверок поднимается без реестра. Но
-   * передать его обязательно, иначе заказчица поставит в панели своё
-   * число, а человек получит другое — на эту связку стоит страж.
-   */
-  settings?: SettingsRegistry,
-  /** Шлюз веток — чтобы снятая в настройках сфера ушла из чата (E1). */
-  gateway?: TopicGateway,
-): void {
+export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): void {
   /** Кто нажал и с какими текстами ему отвечать. */
   async function acting(
     tgId: number,
@@ -383,7 +363,6 @@ export function registerMenuHandlers(
         { label: texts.settings.buttonCity, action: MENU_ACTION.askCity },
         { label: texts.settings.buttonName, action: MENU_ACTION.askName },
       ],
-      [{ label: texts.settings.buttonTopics, action: MENU_ACTION.askTopics }],
       [{ label: texts.menu.buttonBack, action: MENU_ACTION.root }],
     ]);
 
@@ -611,96 +590,13 @@ export function registerMenuHandlers(
     await showSettings(ctx, active.texts.settings.savedCity(cityOfZone(zone) ?? zone));
   });
 
-  // ── Сферы: те же кнопки, что на опросе, но своим действием ────────────
-  /** Что человек ведёт сейчас — из базы, а не из подписей клавиатуры. */
-  async function myTopicNames(userId: string): Promise<readonly string[]> {
-    return (await listTopics(db, userId)).map((one) => one.name);
-  }
-
-  async function showTopicsScreen(
-    ctx: CallbackQueryContext<Context>,
-    note?: string,
-  ): Promise<void> {
-    const active = await acting(ctx.from.id);
-    if (!active) return;
-
-    const mine = await myTopicNames(active.userId);
-
-    await askOnSettings(ctx, note ?? active.texts.settings.askTopics, [
-      ...topicRows(active.texts, mine, MENU_ACTION.topicSetPrefix),
-      [{ label: active.texts.settings.buttonTopicsDone, action: MENU_ACTION.topicsSetDone }],
-    ]);
-  }
-
-  bot.callbackQuery(MENU_ACTION.askTopics, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await showTopicsScreen(ctx);
-  });
-
-  bot.callbackQuery(MENU_ACTION.topicsSetDone, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const active = await acting(ctx.from.id);
-    if (!active) return;
-
-    const mine = await myTopicNames(active.userId);
-
-    await showSettings(ctx, active.texts.settings.savedTopics(mine.join(', ')));
-  });
-
-  bot.callbackQuery(new RegExp(`^${MENU_ACTION.topicSetPrefix}`, 'u'), async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const active = await acting(ctx.from.id);
-    if (!active) return;
-
-    const name = ctx.callbackQuery.data.slice(MENU_ACTION.topicSetPrefix.length);
-    const mine = await myTopicNames(active.userId);
-    const has = mine.includes(name);
-
-    // Снять можно любую свою сферу — и заведённую ботом по содержанию
-    // (правка заказчицы 14.09.2026, п. 1.1); включить с этого экрана —
-    // только предложенную: чужое имя в callback_data не заводит ничего.
-    if (!has && !isChoice(name)) return;
-
-    /**
-     * Убрать последнюю сферу нельзя.
-     *
-     * Классификация без списка не работает: записи ушли бы в никуда, а
-     * человек узнал бы об этом по пустому разбору. Отказ называет причину.
-     */
-    if (has && mine.length === 1) {
-      await showTopicsScreen(ctx, active.texts.settings.lastTopicKept);
-      return;
-    }
-
-    if (has) {
-      /**
-       * Сферы вне предложенного списка не трогаем.
-       *
-       * Снятие убирает всё, чего нет в списке «оставить», поэтому свои
-       * темы человека — заведённые не из этих девяти — обязаны в него
-       * попасть. Иначе снятие одной галочки увозило бы в архив всё
-       * остальное, что он вёл.
-       *
-       * Сфера уходит целиком — архив, перенос дел, ветка, сводки
-       * (ревизия этапа 3, E1): раньше здесь был только архив, и дела
-       * снятой сферы пропадали из «Все задачи», а ветка висела в чате.
-       */
-      await retireTopics(
-        { db, logger, gateway },
-        {
-          userId: active.userId,
-          keep: mine.filter((one) => one !== name),
-          chatId: ctx.chat?.id,
-        },
-      );
-    } else {
-      await appendTopics(db, active.userId, [name], await settings?.number('maxTopics'));
-    }
-
-    logger.info({ userId: active.userId, topic: name, was: has }, 'Сфера переключена из настроек');
-
-    await showTopicsScreen(ctx);
-  });
+  /**
+   * Сфер в настройках нет (правка заказчицы 15.09.2026): «пользователь
+   * может исправить сферу записи, но не должен администрировать сами
+   * сферы». Экран включения/выключения снят вместе с кнопкой; сферы
+   * заводит бот по содержанию (`topics/adopt.ts`), а запись человек
+   * перекладывает кнопкой «В другую сферу» на карточке.
+   */
   // ── Подсказки «как со мной говорить» §12.1 ───────────────────────────
   /**
    * Текст берётся у приветствия, а не пишется свой: подсказка одна и та

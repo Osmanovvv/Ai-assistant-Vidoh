@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { testDb } from '../../test/db.js';
-import { TOPIC_CHOICES } from './choices.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
   appendTopics,
@@ -44,11 +43,23 @@ async function names(): Promise<readonly string[]> {
 }
 
 describe('предел числа тем на начальном наборе', () => {
-  it('предложенные сферы целиком обрезаются до предела', async () => {
+  const NINE = [
+    'семья',
+    'здоровье',
+    'работа',
+    'покупки',
+    'дом',
+    'дети',
+    'деньги',
+    'учёба',
+    'личное',
+  ];
+
+  it('девять сфер целиком обрезаются до предела', async () => {
     const created = await createTopics(
       testDb(),
       userId,
-      TOPIC_CHOICES.map((name) => ({ name })),
+      NINE.map((name) => ({ name })),
       3,
     );
 
@@ -58,7 +69,7 @@ describe('предел числа тем на начальном наборе', 
 
   it('умолчание из кода тоже предел, а не «сколько попросили»', async () => {
     const tooMany = [
-      ...TOPIC_CHOICES,
+      ...NINE,
       ...Array.from({ length: 5 }, (_unused, index) => `сфера ${String(index + 1)}`),
     ];
 

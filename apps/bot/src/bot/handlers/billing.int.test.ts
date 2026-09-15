@@ -1340,4 +1340,13 @@ describe('команды, которых требуют правила Telegram'
       defaultTexts.billing.terms,
     ]);
   });
+
+  it('/terms про удаление говорит одно и то же с документами: по просьбе или после 24 месяцев', () => {
+    // Правка заказчицы 15.09.2026: «данные удаляются только по просьбе» —
+    // старая формулировка; везде одна логика — вручную или автоматически
+    // после срока неактивности (Политика, п. 11.2).
+    expect(defaultTexts.billing.terms).not.toMatch(/только по/iu);
+    expect(defaultTexts.billing.terms).toMatch(/24 месяц/u);
+    expect(defaultTexts.billing.terms).toContain('/delete_my_data');
+  });
 });
