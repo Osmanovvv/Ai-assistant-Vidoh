@@ -15,6 +15,8 @@ import {
   billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
+  documentVersions,
+  documents,
   items,
   itemRevisions,
   messagesRaw,
@@ -30,6 +32,7 @@ import { CLASSIFIER_SCHEMA_NAME, PRESENTER_SCHEMA_NAME } from '../modules/ai/sch
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { hashPassword } from '../http/admin/password.js';
+import { documentsRouter } from '../http/documents.js';
 import { createServer } from '../http/server.js';
 import { TextsRegistry } from '../texts/registry.js';
 import type { Database } from '../infra/db.js';
@@ -92,6 +95,10 @@ if (seedUrl !== undefined) {
   // Правки реплик — тоже состояние стенда: остаться от прошлого прогона
   // им нельзя, иначе снимок внешнего вида менялся бы от чужой правки.
   await seeded.delete(textOverrides);
+  // Документы — тоже: проверка редактора начинает с пустого списка и
+  // считает версии, оставшиеся от прошлого прогона сбили бы счёт.
+  await seeded.delete(documentVersions);
+  await seeded.delete(documents);
   await seeded.delete(broadcastDeliveries);
   await seeded.delete(broadcasts);
   await seeded.delete(aiCalls);
@@ -749,6 +756,9 @@ const app = createServer({
     ? {}
     : {
         adminDb: seeded,
+        // Публичные страницы документов — чтобы «открыть страницу» из
+        // раздела «Документы» вело куда надо и на стенде.
+        documentsRouter: documentsRouter({ db: seeded }),
         /**
          * Реестр значений без кэша (задача 4.9).
          *

@@ -36,6 +36,8 @@ export interface ServerDeps {
    * пароля»: недонастроенная панель обязана быть закрытой, иначе
    * забытая строка в `.env` открывает содержимое чужих выгрузок.
    */
+  /** Публичные страницы документов (оферта, политика, соглашение, согласие). */
+  readonly documentsRouter?: Router | undefined;
   readonly admin?: AdminAuthConfig | undefined;
   /** Откуда отдавать собранную панель. Без него — только её API. */
   readonly adminStaticDir?: string | undefined;
@@ -248,6 +250,10 @@ export function createServer(deps: ServerDeps): Express {
    * поверхность там, куда стучится кто угодно.
    */
   if (deps.billingRouter !== undefined) app.use(deps.billingRouter);
+
+  // Публичные документы (`/docs`, `/docs/<slug>`): правятся в панели,
+  // отдаются отсюда — ссылки из бота ведут на них.
+  if (deps.documentsRouter !== undefined) app.use(deps.documentsRouter);
 
   if (deps.webhookPath && deps.webhookHandler) {
     // Тело апдейта разбирается только на пути вебхука: остальным ручкам

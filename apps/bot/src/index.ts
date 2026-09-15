@@ -34,6 +34,7 @@ import {
 import { createBillingRouter } from './http/billing.js';
 import { createRobokassaProvider } from './modules/billing/providers/robokassa.js';
 import { createStarsProvider } from './modules/billing/providers/stars.js';
+import { documentsRouter } from './http/documents.js';
 import { startRenewalNotices } from './modules/billing/notice.service.js';
 import { startRenewals } from './modules/billing/renewal.service.js';
 import { createPaymentNotifier } from './modules/billing/notify.js';
@@ -1158,6 +1159,8 @@ async function main(): Promise<void> {
     // стеречь ровно то, без чего бот не поднялся бы.
     healthChecks,
     ...(billingRouter === undefined ? {} : { billingRouter }),
+    // Публичные документы: правятся в панели, отдаются с этого же сервера.
+    documentsRouter: documentsRouter({ db }),
     webhookPath: WEBHOOK_PATH,
     // Сквозной идентификатор запроса на весь конвейер обработки (§18 ТЗ).
     //

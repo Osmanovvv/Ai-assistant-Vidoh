@@ -1142,7 +1142,6 @@ describe('настройки §12.1: времена, пояс, имя', () => {
     return row;
   }
 
-
   it('экран называет все четыре величины, а не одну', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();

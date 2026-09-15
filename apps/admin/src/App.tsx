@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { signOut, SIGNED_OUT_EVENT, whoAmI } from './api.js';
 import { BroadcastPanel } from './Broadcast.js';
+import { DocumentsPanel } from './Documents.js';
 import { ErrorsPanel } from './Errors.js';
 import { Costs } from './Costs.js';
 import { OverviewPanel, PeoplePanel } from './People.js';
@@ -51,6 +52,7 @@ const TABS = [
   { key: 'broadcast', title: 'Рассылка' },
   { key: 'errors', title: 'Ошибки' },
   { key: 'texts', title: 'Реплики' },
+  { key: 'documents', title: 'Документы' },
   { key: 'settings', title: 'Настройки' },
 ] as const;
 
@@ -137,6 +139,7 @@ export function App(): React.ReactElement {
       {tab === 'broadcast' && <BroadcastPanel />}
       {tab === 'errors' && <ErrorsPanel />}
       {tab === 'texts' && <TextsPanel />}
+      {tab === 'documents' && <DocumentsPanel />}
       {tab === 'settings' && <SettingsPanel />}
     </div>
   );

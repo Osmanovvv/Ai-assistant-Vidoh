@@ -496,6 +496,52 @@ export function saveText(path: string, said: string): Promise<{ ok: boolean; res
   return post<{ ok: boolean; reset: boolean }>('/texts', { path, said });
 }
 
+// ── Документы (оферта, политика, соглашение, согласие) ───────────────
+
+export interface DocumentSummary {
+  readonly slug: string;
+  readonly title: string;
+  readonly editionDate: string | null;
+  readonly updatedAt: string | null;
+  readonly updatedBy: string | null;
+  /** Адрес страницы, которую видят люди: `/docs/<slug>`. */
+  readonly publicPath: string;
+}
+
+export interface DocumentVersion {
+  readonly id: string;
+  readonly savedAt: string;
+  readonly savedBy: string | null;
+  readonly editionDate: string | null;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  readonly html: string;
+  readonly versions: readonly DocumentVersion[];
+}
+
+export function documentsList(): Promise<{ rows: readonly DocumentSummary[] }> {
+  return call<{ rows: readonly DocumentSummary[] }>('/documents');
+}
+
+export function documentGet(slug: string): Promise<DocumentDetail> {
+  return call<DocumentDetail>(`/documents/${encodeURIComponent(slug)}`);
+}
+
+/** Сохранить = опубликовать: страница отдаёт последнюю сохранённую версию. */
+export function documentSave(
+  slug: string,
+  body: { readonly html: string; readonly editionDate: string | null },
+): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>(`/documents/${encodeURIComponent(slug)}`, body);
+}
+
+export function documentVersion(slug: string, id: string): Promise<{ html: string }> {
+  return call<{ html: string }>(
+    `/documents/${encodeURIComponent(slug)}/versions/${encodeURIComponent(id)}`,
+  );
+}
+
 export function putSetting(name: string, value: string): Promise<{ ok: boolean }> {
   return post<{ ok: boolean }>('/settings', { name, value });
 }

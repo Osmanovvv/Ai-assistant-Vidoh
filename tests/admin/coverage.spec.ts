@@ -23,13 +23,14 @@ import { signIn } from './panel.js';
  * красным.
  */
 
-/** Восемь разделов §15 и их состояние. */
+/** Восемь разделов §15 (плюс «Документы», 15.09.2026) и их состояние. */
 const SECTIONS = [
   { title: 'Обзор', spec: 'people.spec.ts' },
   { title: 'Пользователи', spec: 'people.spec.ts' },
   { title: 'Карточка пользователя', spec: 'people.spec.ts' },
   { title: 'Расходы', spec: 'costs.spec.ts' },
   { title: 'Реплики', spec: 'texts.spec.ts' },
+  { title: 'Документы', spec: 'documents.spec.ts' },
   { title: 'Настройки', spec: 'settings.spec.ts' },
   { title: 'Промпты', spec: 'prompts.spec.ts' },
   { title: 'Рассылка', spec: 'broadcast.spec.ts' },
