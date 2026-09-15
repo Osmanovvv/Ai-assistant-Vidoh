@@ -1,0 +1,1 @@
+ALTER TYPE "public"."reminder_kind" ADD VALUE 'period';

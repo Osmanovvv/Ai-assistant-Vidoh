@@ -106,6 +106,25 @@ function remindable(deadline: PlanDeadline): boolean {
 }
 
 /**
+ * Сколько длится неточный период: неделя — семь дней от понедельника,
+ * месяц — тридцать один от первого числа (та же мера, что у выдачи:
+ * точность «месяц» не про число, а про «где-то в этом месяце»).
+ */
+const PERIOD_MS: Readonly<Record<'week' | 'month', number>> = {
+  week: 7 * 24 * 60 * 60_000,
+  month: 31 * 24 * 60 * 60_000,
+};
+
+/**
+ * Ключ мягкого возврата: запись и **день начала периода**. Дата отправки
+ * в ключ не входит нарочно — так возврат один на период, даже если он
+ * ушёл «следующим утром», а не утром первого дня.
+ */
+export function periodKey(itemId: string, deadlineAt: Date, timeZone: string): string {
+  return `period:${itemId}:${localDateKey(deadlineAt, timeZone)}`;
+}
+
+/**
  * Ключ задания по сроку: вид, запись и **день срока**.
  *
  * Тот же ключ считает и отправка (ревизия этапа 3, D1): если срок записи
@@ -172,6 +191,34 @@ export function planFor(input: PlanInput): PlannedReminder[] {
   if (settings.eveningOn) {
     const evening = nextLocalTime(now, settings.eveningTime, timeZone);
     add('evening', evening, `evening:${localDateKey(evening, timeZone)}`);
+  }
+
+  /**
+   * --- Неточные сроки: один мягкий возврат (решение заказчицы 15.09.2026) ---
+   *
+   * 3.16 таким записям напоминаний не давал вовсе; 14.09 заказчица
+   * назвала это противоречием «помнить за меня», 15.09 выбрала форму:
+   * «не ставить искусственный дедлайн на последний день периода; один
+   * раз мягко вернуть дело в начале периода; если не отреагировала —
+   * ежедневно не повторять». Неделя хранится понедельником, месяц —
+   * первым числом (`filter.ts`), значит «начало периода» — утро этого
+   * дня, в её утреннее время. Период уже идёт («на этой неделе» сказано
+   * в среду) — начало для такого дела сейчас: следующим утром. Период
+   * прошёл целиком — ничего: дело остаётся в списке, и это не просрочка.
+   */
+  for (const deadline of input.deadlines) {
+    if (deadline.accuracy !== 'week' && deadline.accuracy !== 'month') continue;
+    if (deadline.deadlineAt.getTime() + PERIOD_MS[deadline.accuracy] <= now.getTime()) continue;
+
+    const start = localTimeToUtc(
+      localDateParts(deadline.deadlineAt, timeZone),
+      settings.morningTime,
+      timeZone,
+    );
+    const at =
+      start.getTime() > now.getTime() ? start : nextLocalTime(now, settings.morningTime, timeZone);
+
+    add('period', at, periodKey(deadline.itemId, deadline.deadlineAt, timeZone), deadline.itemId);
   }
 
   // --- По срокам (3.16): накануне вечером и утром в день срока ---

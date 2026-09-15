@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HORIZON_HOURS,
   localDayNumber,
+  periodKey,
   planFor,
   PROJECT_NUDGE_TIME,
   type PlanInput,
@@ -136,22 +137,68 @@ describe('сроки (3.16)', () => {
     expect(eve!.itemId).toBe('i1');
   });
 
-  it('точность «неделя»: ни одного напоминания', () => {
-    // Условие готовности 3.16 дословно: запись со сроком «на следующей
-    // неделе» не даёт напоминания на случайный день.
+  it('точность «неделя»: не срок, а один мягкий возврат утром первого дня периода (решение заказчицы 15.09.2026)', () => {
+    /**
+     * 3.16 не давал таким записям напоминаний вовсе; заказчица 14.09
+     * назвала это противоречием «помнить за меня», а 15.09 выбрала
+     * форму: не искусственный дедлайн, а «один раз мягко вернуть дело в
+     * начале периода». Неделя хранится понедельником — значит утром
+     * понедельника, в её утреннее время.
+     */
+    const monday = new Date('2026-08-30T21:00:00.000Z'); // понедельник 31.08, 00:00 МСК
     const plan = planFor(
-      input({ deadlines: [{ itemId: 'i1', deadlineAt: tomorrow, accuracy: 'week' }] }),
+      input({ deadlines: [{ itemId: 'i1', deadlineAt: monday, accuracy: 'week' }] }),
+    );
+
+    const soft = plan.filter((one) => one.kind === 'period');
+    expect(soft).toHaveLength(1);
+    expect(shown(soft[0]!.dueAt)).toBe('2026-08-31 08:30');
+    expect(soft[0]!.itemId).toBe('i1');
+    expect(soft[0]!.dedupeKey).toBe(periodKey('i1', monday, MOSCOW));
+    expect(plan.filter((one) => one.kind.startsWith('deadline_'))).toEqual([]);
+  });
+
+  it('период уже идёт («на этой неделе» в среду) — следующим утром, один раз', () => {
+    // Начало периода позади; «в начале периода» для такого дела — сейчас.
+    // Ключ держится за дату периода, а не за дату отправки: повторов нет.
+    const thisMonday = new Date('2026-08-23T21:00:00.000Z'); // 24.08, неделя идёт
+    const plan = planFor(
+      input({
+        now: new Date('2026-08-26T10:00:00.000Z'), // среда 13:00 МСК
+        deadlines: [{ itemId: 'i1', deadlineAt: thisMonday, accuracy: 'week' }],
+      }),
+    );
+
+    const soft = plan.filter((one) => one.kind === 'period');
+    expect(shown(soft[0]!.dueAt)).toBe('2026-08-27 08:30');
+    expect(soft[0]!.dedupeKey).toBe(periodKey('i1', thisMonday, MOSCOW));
+  });
+
+  it('период прошёл целиком — возврата нет: это не просрочка, дело просто остаётся', () => {
+    const lastMonday = new Date('2026-08-16T21:00:00.000Z'); // 17.08, неделя кончилась 23.08
+    const plan = planFor(
+      input({
+        now: new Date('2026-08-26T10:00:00.000Z'),
+        deadlines: [{ itemId: 'i1', deadlineAt: lastMonday, accuracy: 'week' }],
+      }),
     );
 
     expect(kindsOf(plan)).toEqual(['morning', 'evening']);
   });
 
-  it('точность «месяц»: тоже ни одного', () => {
+  it('точность «месяц»: утром первого числа', () => {
+    const first = new Date('2026-08-31T21:00:00.000Z'); // 1 сентября, 00:00 МСК
     const plan = planFor(
-      input({ deadlines: [{ itemId: 'i1', deadlineAt: tomorrow, accuracy: 'month' }] }),
+      input({
+        // Накануне: первое число в горизонте планирования (36 часов).
+        now: new Date('2026-08-31T03:00:00.000Z'),
+        deadlines: [{ itemId: 'i1', deadlineAt: first, accuracy: 'month' }],
+      }),
     );
 
-    expect(kindsOf(plan)).toEqual(['morning', 'evening']);
+    const soft = plan.filter((one) => one.kind === 'period');
+    expect(soft).toHaveLength(1);
+    expect(shown(soft[0]!.dueAt)).toBe('2026-09-01 08:30');
   });
 
   it('срок сегодня, полдень: вчерашний вечер и сегодняшнее утро уже позади', () => {

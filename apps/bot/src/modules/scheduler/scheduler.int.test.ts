@@ -334,11 +334,68 @@ describe('сроки (3.16)', () => {
     ]);
   });
 
-  it('точность «неделя» не даёт ни одного', async () => {
-    await sow(new Date('2026-08-31T09:00:00.000Z'), 'week');
+  it('точность «неделя» — один мягкий возврат утром первого дня, без кнопок и без слова «срок» (решение заказчицы 15.09.2026)', async () => {
+    const monday = new Date('2026-08-30T21:00:00.000Z'); // понедельник 31.08, 00:00 МСК
+    await sow(monday, 'week');
     await planReminders(deps(), { now: NOW });
 
-    expect(await countReminders()).toBe(2);
+    // Утреннее, вечернее и возврат — ни «накануне», ни «в день срока».
+    expect(await countReminders()).toBe(3);
+
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T05:30:00.000Z') }); // 08:30 МСК
+
+    const soft = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
+    expect(soft?.text).toBe(defaultTexts.reminders.periodWeek('Оплатить квитанцию'));
+    expect(soft?.text).not.toMatch(/срок|просроч/iu);
+    expect(soft?.buttons).toEqual([]);
+  });
+
+  it('период уже идёт: возврат приходит следующим утром и больше не повторяется', async () => {
+    // «На этой неделе» сказано в среду 26.08: понедельник позади.
+    const thisMonday = new Date('2026-08-23T21:00:00.000Z');
+    await sow(thisMonday, 'week');
+    const wednesday = new Date('2026-08-26T10:00:00.000Z'); // 13:00 МСК
+    await planReminders(deps(), { now: wednesday });
+    await dispatchReminders(deps(), { now: new Date('2026-08-27T05:30:00.000Z') });
+
+    expect(outbox.filter((one) => one.text.includes('Оплатить квитанцию'))).toHaveLength(1);
+
+    // Назавтра раскладка снова — второго возврата нет: ключ один на период.
+    await planReminders(deps(), { now: new Date('2026-08-27T10:00:00.000Z') });
+    await dispatchReminders(deps(), { now: new Date('2026-08-28T05:30:00.000Z') });
+
+    expect(outbox.filter((one) => one.text.includes('Оплатить квитанцию'))).toHaveLength(1);
+  });
+
+  it('назвала конкретный день — возврат про неделю не приходит', async () => {
+    const monday = new Date('2026-08-30T21:00:00.000Z');
+    const id = await sow(monday, 'week');
+    await planReminders(deps(), { now: NOW });
+
+    // «В четверг» — срок стал точным, период у записи кончился.
+    await testDb()
+      .update(items)
+      .set({ deadlineAt: new Date('2026-09-02T21:00:00.000Z'), deadlineAccuracy: 'day' })
+      .where(eq(items.id, id));
+
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T05:30:00.000Z') });
+
+    expect(outbox.filter((one) => one.text.includes('Оплатить квитанцию'))).toHaveLength(0);
+    const [row] = await testDb()
+      .select({ reason: reminders.skippedReason })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'period')));
+    expect(row?.reason).toBe('stale');
+  });
+
+  it('точность «месяц»: то же, своими словами', async () => {
+    const first = new Date('2026-08-31T21:00:00.000Z'); // 1 сентября
+    await sow(first, 'month');
+    await planReminders(deps(), { now: new Date('2026-08-31T03:00:00.000Z') });
+    await dispatchReminders(deps(), { now: new Date('2026-09-01T05:30:00.000Z') });
+
+    const soft = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
+    expect(soft?.text).toBe(defaultTexts.reminders.periodMonth('Оплатить квитанцию'));
   });
 
   it('закрытое за ночь дело не напоминает о себе утром', async () => {

@@ -572,6 +572,12 @@ export interface TextProfile {
     readonly eveningInvite: string;
 
     /** Накануне вечером о завтрашнем сроке. */
+    /**
+     * Мягкий возврат «на неделе» / «в месяце» (решение заказчицы
+     * 15.09.2026): один раз, без кнопок, без слова «срок».
+     */
+    readonly periodWeek: (text: string) => string;
+    readonly periodMonth: (text: string) => string;
     readonly deadlineTomorrow: (text: string) => string;
     /** Утром в день срока. */
     readonly deadlineToday: (text: string) => string;

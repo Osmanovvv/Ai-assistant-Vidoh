@@ -7,7 +7,7 @@ import {
   unmarkOffered,
   unmarkReviewed,
 } from '../review/review.service.js';
-import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import {
@@ -43,7 +43,8 @@ import {
   projectText,
   reviewRows,
 } from './digest.js';
-import { deadlineKey, HORIZON_HOURS, planFor, type PlanDeadline } from './plan.js';
+import { deadlineKey, HORIZON_HOURS, periodKey, planFor, type PlanDeadline } from './plan.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
   countAttempt,
@@ -269,9 +270,21 @@ async function deadlinesOf(db: Database, userId: string, now: Date): Promise<Pla
       and(
         openItemsWhere(userId),
         isNotNull(items.deadlineAt),
-        // Запас назад: срок сегодня утром ещё нужен вечернему накануне.
-        gt(items.deadlineAt, new Date(now.getTime() - DAY_MS)),
         lte(items.deadlineAt, until),
+        or(
+          // Точные: запас назад — срок сегодня утром ещё нужен вечернему накануне.
+          and(
+            eq(items.deadlineAccuracy, 'day'),
+            gt(items.deadlineAt, new Date(now.getTime() - DAY_MS)),
+          ),
+          // Неточные («на неделе», «в месяце»): период хранится своим первым
+          // днём и может идти уже месяц — мягкий возврат ставится, пока он
+          // не кончился (решение заказчицы 15.09.2026).
+          and(
+            inArray(items.deadlineAccuracy, ['week', 'month']),
+            gt(items.deadlineAt, new Date(now.getTime() - 31 * DAY_MS)),
+          ),
+        ),
       ),
     );
 
@@ -693,6 +706,29 @@ async function composeOne(
       return {
         text: deadlineText(texts, { item, onDay: reminder.kind === 'deadline_day' }),
         buttons: deadlineButtons(item.id, texts),
+      };
+    }
+
+    case 'period': {
+      const item = await openItem(deps.db, reminder);
+      if (!item) return 'gone';
+
+      // Период сверяется на отправке, как срок у точных: назвала день —
+      // ключ не сойдётся, и возврат про прежнюю неделю не уйдёт.
+      const current =
+        item.deadlineAt !== null &&
+        (item.deadlineAccuracy === 'week' || item.deadlineAccuracy === 'month')
+          ? periodKey(item.id, item.deadlineAt, timeZone)
+          : undefined;
+      if (current !== reminder.dedupeKey) return 'stale';
+
+      const title = titleWithoutDate(item.text);
+      return {
+        text:
+          item.deadlineAccuracy === 'week'
+            ? texts.reminders.periodWeek(title)
+            : texts.reminders.periodMonth(title),
+        buttons: [],
       };
     }
 
