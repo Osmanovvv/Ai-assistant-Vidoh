@@ -9,7 +9,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { upsertUser } from '../users/users.repo.js';
 import { FakeTopicGateway } from './fake-gateway.js';
 import { buildSummary, itemsOfTopic, refreshSummary, refreshSummaries } from './summary.service.js';
-import { createTopics } from './topics.repo.js';
+import { ensureTopics } from './topics.repo.js';
 import {
   ensureThread,
   forgetThread,
@@ -38,11 +38,8 @@ function deps(gateway: FakeTopicGateway) {
 }
 
 async function seedTopics(names: readonly string[]): Promise<void> {
-  await createTopics(
-    testDb(),
-    userId,
-    names.map((name) => ({ name, isDefault: name === 'личное' })),
-  );
+  // «личное» становится темой по умолчанию само (`ensureTopics`).
+  await ensureTopics(testDb(), userId, names);
 }
 
 async function topicRow(name: string) {

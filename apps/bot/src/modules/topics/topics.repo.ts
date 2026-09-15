@@ -62,91 +62,25 @@ export async function topicsFor(db: Executor, userId: string): Promise<TopicList
     return { names: [...DEFAULT_TOPIC_NAMES], defaultName: FALLBACK_TOPIC, own: false };
   }
 
-  const names = rows.map((row) => row.name);
+  /**
+   * Свои темы — и следом базовые имена, которых у человека ещё нет
+   * (16.09.2026). Сферы заводятся только под записи, и после первой
+   * выгрузки у человека может быть одна тема; без ориентира модель
+   * клала бы «купить продукты» в «здоровье» или в общую. Названная
+   * базовая сфера заведётся вместе с записью (`ensure.ts`).
+   */
+  const own = rows.map((row) => row.name);
+  const taken = new Set(own.map((name) => normalizeTopicName(name)));
+  const names = [...own, ...DEFAULT_TOPIC_NAMES.filter((name) => !taken.has(name))];
   const marked = rows.find((row) => row.isDefault)?.name;
 
   return {
     names,
-    // Если тему по умолчанию никто не отметил, берём первую: запись без
-    // темы не проходит проверку целостности и потерялась бы совсем.
-    defaultName: marked ?? names[0] ?? FALLBACK_TOPIC,
+    // Тему по умолчанию никто не отметил — «личное»: оно заводится под
+    // запись и сверх предела, а запись без темы потерялась бы совсем.
+    defaultName: marked ?? FALLBACK_TOPIC,
     own: true,
   };
-}
-
-export interface TopicToCreate {
-  readonly name: string;
-  readonly emoji?: string | undefined;
-  readonly isDefault?: boolean | undefined;
-}
-
-/**
- * Обрезка списка до предела — с сохранением темы по умолчанию.
- *
- * Обрежь подряд — и «личное» может не поместиться, а на нём §6.4 держит
- * всё, что не попало ни в одну тему: раскладка сломалась бы молча, и
- * записи ушли бы в первую попавшуюся ветку.
- */
-function withinLimit(wanted: readonly TopicToCreate[], room: number): readonly TopicToCreate[] {
-  const marked = wanted.find((topic) => topic.isDefault === true);
-
-  if (marked === undefined) return wanted.slice(0, room);
-
-  return [...wanted.filter((topic) => topic !== marked).slice(0, room - 1), marked];
-}
-
-/**
- * Создаёт темы человека. Идемпотентно: повторный онбординг не задваивает
- * список, а уникальный индекс по паре пользователь–название страхует от
- * гонки двух обработчиков.
- */
-export async function createTopics(
-  db: Executor,
-  userId: string,
-  wanted: readonly TopicToCreate[],
-  /**
-   * Предел числа тем (§6.4: «количество тем ограничено, значение задаётся
-   * в настройках»; §15 перечисляет «число тем» среди настроек).
-   *
-   * **Прежде здесь предела не было ни параметром, ни константой** — и
-   * настройку «Сколько тем» читало только согласие добавить сферу. Итог:
-   * заказчица ставит 3, человек отмечает все девять сфер и получает
-   * девять ветвей. Панель при этом показывает её число, а бот живёт по
-   * чужому — то есть настройка врёт в ту сторону, которую заказчице
-   * проверить нечем.
-   *
-   * Параметром, а не чтением реестра внутри: это запись в базу, и второй
-   * читатель настроек мимо реестра разошёлся бы с первым на умолчании —
-   * тот же довод, что у `appendTopics`. Здесь предел режет **запрошенный
-   * список**, а там считает остаток от уже созданных: вопросы разные,
-   * и одно число двумя способами не считается.
-   */
-  maxTopics?: number,
-): Promise<number> {
-  if (wanted.length === 0) return 0;
-
-  // Ноль означал бы «ни одной ветки», а §8 обещает человеку разложенное
-  // по сферам: пустая раскладка — не настройка (то же в `SETTINGS.min`).
-  const room = Math.max(1, maxTopics ?? MAX_TOPICS);
-  const allowed = wanted.length <= room ? wanted : withinLimit(wanted, room);
-
-  const rows = await db
-    .insert(topics)
-    .values(
-      allowed.map((topic, index) => ({
-        userId,
-        name: topic.name,
-        emoji: topic.emoji ?? null,
-        sortOrder: index,
-        isDefault: topic.isDefault ?? false,
-      })),
-    )
-    .onConflictDoNothing()
-    .returning({ id: topics.id, name: topics.name });
-
-  await linkOrphanItems(db, userId, rows);
-
-  return rows.length;
 }
 
 /**
@@ -225,28 +159,6 @@ async function linkOrphanItems(
  * хаосом, который продукт должен убирать.
  */
 export const MAX_TOPICS = SETTINGS.maxTopics.fallback;
-
-/**
- * Базовый набор сфер §6.4 — на первой разобранной выгрузке (задача
- * 3.43), под пределом из настроек. Тема по умолчанию («личное») создаётся
- * при любом пределе: туда уходит всё, что не подошло ни к одной.
- *
- * До 14.09.2026 набор потом уточнял опрос («какие сферы важны»);
- * заказчица шаг убрала (её правка, п. 1.1) — дальше сферы заводит бот по
- * содержанию, а человек правит их в настройках.
- */
-export async function createBaseTopics(
-  db: Executor,
-  userId: string,
-  maxTopics?: number,
-): Promise<number> {
-  return await createTopics(
-    db,
-    userId,
-    DEFAULT_TOPIC_NAMES.map((name) => ({ name, isDefault: name === FALLBACK_TOPIC })),
-    maxTopics,
-  );
-}
 
 export interface AppendResult {
   readonly added: readonly string[];
@@ -338,4 +250,82 @@ export async function appendTopics(
   }
 
   return { added, limited: allowed.length < fresh.length };
+}
+
+export interface EnsureResult {
+  /** Названия (нормализованные), у которых теперь есть тема. */
+  readonly present: ReadonlySet<string>;
+  readonly created: readonly string[];
+}
+
+/**
+ * Сферы под записи (заказчица, 16.09.2026): заводит только названные
+ * темы, которых ещё нет, — в порядке названия и под пределом из настроек.
+ *
+ * Тема по умолчанию (`FALLBACK_TOPIC`) заводится и сверх предела: на ней
+ * §6.4 держит всё, что не попало ни в одну сферу, — без неё записи негде
+ * лежать. Выключенная человеком (архивная) сфера не возвращается — как в
+ * `adopt.ts`, запись такой сферы уходит в общую.
+ *
+ * Записи, сохранённые раньше своей темы (боевые данные до 29.08.2026),
+ * подбираются тем же `linkOrphanItems`, что и прежде.
+ */
+export async function ensureTopics(
+  db: Executor,
+  userId: string,
+  names: readonly string[],
+  maxTopics?: number,
+): Promise<EnsureResult> {
+  const all = await db.select().from(topics).where(eq(topics.userId, userId));
+  const present = new Set(
+    all.filter((row) => !row.isArchived).map((row) => normalizeTopicName(row.name)),
+  );
+  const archived = new Set(
+    all.filter((row) => row.isArchived).map((row) => normalizeTopicName(row.name)),
+  );
+
+  const missing = [
+    ...new Map(names.map((name) => [normalizeTopicName(name), name.trim()])).values(),
+  ].filter((name) => {
+    const key = normalizeTopicName(name);
+    return !present.has(key) && !archived.has(key);
+  });
+
+  if (missing.length === 0) return { present, created: [] };
+
+  const fallback = missing.find((name) => normalizeTopicName(name) === FALLBACK_TOPIC);
+  const ordinary = missing.filter((name) => name !== fallback);
+
+  const created: string[] = [];
+  if (ordinary.length > 0) {
+    const { added } = await appendTopics(db, userId, ordinary, maxTopics);
+    created.push(...added);
+  }
+
+  if (fallback !== undefined) {
+    const others = await listTopics(db, userId);
+    const order = others.reduce((max, topic) => Math.max(max, topic.sortOrder), -1) + 1;
+    const rows = await db
+      .insert(topics)
+      .values({
+        userId,
+        name: FALLBACK_TOPIC,
+        sortOrder: order,
+        isDefault: !others.some((topic) => topic.isDefault),
+      })
+      .onConflictDoNothing()
+      .returning({ name: topics.name });
+    created.push(...rows.map((row) => row.name));
+  }
+
+  if (created.length > 0) {
+    const rows = await db
+      .select({ id: topics.id, name: topics.name })
+      .from(topics)
+      .where(and(eq(topics.userId, userId), inArray(topics.name, created)));
+    await linkOrphanItems(db, userId, rows);
+  }
+
+  for (const name of created) present.add(normalizeTopicName(name));
+  return { present, created };
 }

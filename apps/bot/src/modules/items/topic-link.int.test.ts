@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { batches, items, topics } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import type { ClassifiedItem } from '../classifier/classifier.service.js';
-import { createTopics } from '../topics/topics.repo.js';
+import { ensureTopics } from '../topics/topics.repo.js';
 import { moveItemToTopic } from '../topics/topics.service.js';
 import { upsertUser } from '../users/users.repo.js';
 import { saveItems } from './items.repo.js';
@@ -42,11 +42,7 @@ beforeEach(async () => {
   const user = await upsertUser(testDb(), { tgId: 7700 + seq, firstName: 'Аня' });
   userId = user.id;
 
-  await createTopics(testDb(), userId, [
-    { name: 'покупки', isDefault: false },
-    { name: 'Здоровье', isDefault: false },
-    { name: 'личное', isDefault: true },
-  ]);
+  await ensureTopics(testDb(), userId, ['покупки', 'Здоровье', 'личное']);
 
   const [batch] = await testDb()
     .insert(batches)
@@ -181,11 +177,7 @@ describe('первая выгрузка разбирается раньше те
     expect(before).toHaveLength(3);
     expect(before.every((row) => row.topicId === null)).toBe(true);
 
-    await createTopics(testDb(), fresh.userId, [
-      { name: 'семья', isDefault: false },
-      { name: 'здоровье', isDefault: false },
-      { name: 'личное', isDefault: true },
-    ]);
+    await ensureTopics(testDb(), fresh.userId, ['семья', 'здоровье', 'личное']);
 
     const after = await testDb()
       .select({ text: items.text, topic: items.topic, topicId: items.topicId })
@@ -222,7 +214,7 @@ describe('первая выгрузка разбирается раньше те
       isDraft: true,
     });
 
-    await createTopics(testDb(), fresh.userId, [{ name: 'семья', isDefault: true }]);
+    await ensureTopics(testDb(), fresh.userId, ['семья']);
 
     const [draft] = await testDb()
       .select({ topic: items.topic, topicId: items.topicId })

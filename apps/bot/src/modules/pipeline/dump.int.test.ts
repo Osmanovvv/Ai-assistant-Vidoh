@@ -1281,9 +1281,14 @@ describe('онбординг после первой выгрузки', () => {
     expect(settings?.onboardingStep).toBe(0);
   });
 
-  it('темы человека берутся из его списка, а не из базового набора', async () => {
-    // §6.4: список тем создаётся онбордингом, и классификация обязана
-    // работать по нему.
+  it('темы человека идут первыми, базовые имена — подсказкой следом (16.09.2026)', async () => {
+    /**
+     * §6.4 в первой редакции: список тем создаёт онбординг, классификация
+     * работает по нему. Опроса про сферы нет с 14.09.2026, а с 16.09
+     * сферы заводятся только под записи — значит после первой выгрузки у
+     * человека может быть одна тема, и модели нужен ориентир: свои темы
+     * впереди, недостающие базовые имена следом.
+     */
     const prompts = await seedPrompts();
     await testDb()
       .insert(topics)
@@ -1309,7 +1314,8 @@ describe('онбординг после первой выгрузки', () => {
 
     expect(classifierInput).toContain('дети');
     expect(classifierInput).toContain('бизнес');
-    expect(classifierInput).not.toContain('покупки');
+    expect(classifierInput).toContain('покупки');
+    expect(classifierInput.indexOf('дети')).toBeLessThan(classifierInput.indexOf('покупки'));
   });
 });
 
@@ -2403,14 +2409,14 @@ describe('онбординг: края', () => {
   });
 });
 
-describe('базовые сферы появляются на первой выгрузке (задача 3.43)', () => {
+describe('сферы появляются только с содержимым (заказчица 16.09.2026)', () => {
   /**
-   * До этого темы рождались только на последнем шаге опроса. Проджект
-   * заказчицы застрял на предпоследнем и стал наговаривать дальше, как
-   * §12.2 и разрешает: тридцать две записи с метками сфер — и ни одной
-   * ветки в чате. §8.1 обещает «сразу видит ветки по сферам жизни», а
-   * §13.1 запрещает опрос до первой выгрузки. Значит ветки не могут
-   * ждать ответов.
+   * Было (задача 3.43): базовый набор из пяти сфер и все пять веток на
+   * первой разобранной выгрузке — «человек видит структуру целиком».
+   * Заказчица по видео 15.09: «про здоровье ничего не говорила, про
+   * личное тоже, а он сразу насоздавал много тем… кто не в теме — зачем
+   * это?». Теперь сфера появляется вместе с первой записью в неё; базовые
+   * имена остаются подсказкой модели, а не заготовкой веток.
    */
 
   async function topicNames(): Promise<string[]> {
@@ -2418,7 +2424,25 @@ describe('базовые сферы появляются на первой вы�
     return rows.map((row) => row.name).sort();
   }
 
-  it('первая разобранная выгрузка создаёт базовый набор и все ветки', async () => {
+  /** Классификация кладёт всё в названную сферу. */
+  const classifierInto = (topic: string) => (request: { readonly input: string }) =>
+    JSON.stringify({
+      items: unitsFromInput(request.input).map((text) => ({
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic,
+        isProject: false,
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+        deadlineText: '',
+      })),
+    });
+
+  it('первая выгрузка заводит одну сферу — ту, куда легла запись, без пустых веток', async () => {
     const prompts = await seedPrompts();
     const gateway = new FakeTopicGateway();
     expect(await topicNames()).toEqual([]);
@@ -2433,6 +2457,7 @@ describe('базовые сферы появляются на первой вы�
         handleBatch: handler({
           speech: new MockSpeechProvider(),
           prompts,
+          llm: echoingLlm({ classifier: classifierInto('здоровье') }),
           sender,
           topics: gateway,
         }),
@@ -2440,25 +2465,18 @@ describe('базовые сферы появляются на первой вы�
       userId,
     );
 
-    // Базовый набор §6.4 целиком, с темой по умолчанию.
-    expect(await topicNames()).toEqual(['здоровье', 'личное', 'покупки', 'работа', 'семья']);
+    expect(await topicNames()).toEqual(['здоровье']);
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
+    // Ни одной сводки «Пока пусто»: пустых веток нет.
+    expect(gateway.sent.some((message) => message.text.includes(defaultTexts.summary.empty))).toBe(
+      false,
+    );
 
-    // Ветки — все пять, включая пустые: человек видит структуру целиком,
-    // а не только ту сферу, куда попало первое дело.
-    expect(gateway.created.map((thread) => thread.name).sort()).toEqual([
-      'здоровье',
-      'личное',
-      'покупки',
-      'работа',
-      'семья',
-    ]);
-
-    // Запись сразу ссылается на свою тему, а не висит сиротой до опроса.
     const [saved] = await testDb().select().from(items).where(eq(items.userId, userId));
     expect(saved?.topicId).not.toBeNull();
   });
 
-  it('следующая выгрузка сферы не пересоздаёт и трогает только своё', async () => {
+  it('следующая выгрузка добавляет только свою сферу и трогает только своё', async () => {
     const prompts = await seedPrompts();
     const gateway = new FakeTopicGateway();
 
@@ -2467,11 +2485,15 @@ describe('базовые сферы появляются на первой вы�
       {
         db: testDb(),
         lock,
-        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, topics: gateway }),
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({ classifier: classifierInto('здоровье') }),
+          topics: gateway,
+        }),
       },
       userId,
     );
-    const threadsAfterFirst = gateway.created.length;
     const writesAfterFirst = gateway.writes;
 
     await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 120_000 }]);
@@ -2482,6 +2504,7 @@ describe('базовые сферы появляются на первой вы�
         handleBatch: handler({
           speech: new MockSpeechProvider(),
           prompts,
+          llm: echoingLlm({ classifier: classifierInto('покупки') }),
           topics: gateway,
           now: at(180_000),
         }),
@@ -2489,11 +2512,28 @@ describe('базовые сферы появляются на первой вы�
       userId,
     );
 
-    expect(gateway.created).toHaveLength(threadsAfterFirst);
-    expect(await topicNames()).toHaveLength(5);
-    // Сводка обновилась, но не у всех пяти — только у затронутой.
-    expect(gateway.writes - writesAfterFirst).toBeLessThan(5);
-    expect(gateway.writes).toBeGreaterThan(writesAfterFirst);
+    expect(await topicNames()).toEqual(['здоровье', 'покупки']);
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье', 'покупки']);
+    // Сводка — только у новой ветки, «здоровье» не перерисовано.
+    expect(gateway.writes - writesAfterFirst).toBe(1);
+  });
+
+  it('«личное», заведённое под запись, — тема по умолчанию', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await queuedBatchOf([{ kind: 'text', text: 'разобрать балкон', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, topics: gateway }),
+      },
+      userId,
+    );
+
+    const rows = await testDb().select().from(topics).where(eq(topics.userId, userId));
+    expect(rows.map((row) => [row.name, row.isDefault])).toEqual([['личное', true]]);
   });
 
   it('выгрузка без разбора сферы не создаёт', async () => {
