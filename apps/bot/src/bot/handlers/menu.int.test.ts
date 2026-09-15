@@ -301,6 +301,18 @@ describe('меню', () => {
       expect(textOf(lastScreen(calls))).toContain(defaultTexts.settings.remindersOn);
     });
 
+    it('без сфер говорят «сфер пока нет», а не «Сферы: .» (видео заказчицы 15.09.2026)', async () => {
+      // До первой выгрузки сфер нет, и строка печаталась пустым списком с
+      // точкой — заказчица увидела «Сферы: .» и не поняла, что это.
+      await testDb().delete(topics).where(eq(topics.userId, userId));
+
+      const { calls } = await openSettings();
+      const screen = textOf(lastScreen(calls));
+
+      expect(screen).toContain(defaultTexts.menu.noTopics);
+      expect(screen).not.toContain(defaultTexts.settings.topicsAre(''));
+    });
+
     it('выключатель напоминаний действительно выключает', async () => {
       const { bot, calls } = await openSettings();
       await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));

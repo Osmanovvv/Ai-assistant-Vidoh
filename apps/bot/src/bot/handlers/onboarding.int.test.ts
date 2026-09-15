@@ -371,6 +371,37 @@ describe('до первой выгрузки', () => {
   });
 });
 
+describe('имя из Telegram (видео заказчицы 15.09.2026)', () => {
+  it('«Да» на «Называть тебя Аня?» запоминает имя', async () => {
+    /**
+     * Заказчица: «он спросил, звать тебя Ольга? Я сказала да, и он не
+     * запомнил — пришлось через настройки писать имя заново». «Да»
+     * двигало опрос дальше, а имя не записывало: настройки потом
+     * говорили «По имени не зову». Подтверждение — это выбор человека,
+     * и записывается так же, как имя, написанное своими словами.
+     */
+    const { bot } = createTestBot();
+    await bot.init();
+    await startedAt(STEP.name);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.nameYes));
+
+    expect((await settingsOf())?.preferredName).toBe('Аня');
+    expect((await settingsOf())?.onboardingStep).toBe(STEP.timezone);
+  });
+
+  it('«Поправлю потом» имя не трогает', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    await startedAt(STEP.name);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.nameLater));
+
+    expect((await settingsOf())?.preferredName).toBeNull();
+    expect((await settingsOf())?.onboardingStep).toBe(STEP.timezone);
+  });
+});
+
 describe('полный путь', () => {
   it('пять нажатий доводят до конца и создают темы', async () => {
     const { bot, calls } = createTestBot();

@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
-import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import { AWAITING, setAwaiting, setPreferredName } from '../../modules/onboarding/awaiting.js';
 import {
   ACTION,
   finish,
@@ -139,19 +139,30 @@ export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logge
   }
 
   // ── Имя ───────────────────────────────────────────────────────────────
-  for (const action of [ACTION.nameYes, ACTION.nameLater]) {
-    bot.callbackQuery(action, async (ctx) => {
-      await ctx.answerCallbackQuery();
-      const active = await acting(ctx.from.id, STEP.name);
-      if (!active) return;
+  /**
+   * «Да» записывает имя из Telegram как выбранное (видео заказчицы
+   * 15.09.2026). Прежде «да» только двигало опрос: считалось, что имя «уже
+   * пришло от Telegram», но настройки читают только выбранное имя — и
+   * говорили «По имени не зову», а заказчица писала имя заново через
+   * настройки. Подтверждение — такой же выбор, как имя своими словами.
+   * «Поправлю потом» имени не трогает: человек отложил выбор.
+   */
+  bot.callbackQuery(ACTION.nameYes, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id, STEP.name);
+    if (!active) return;
 
-      // Имя не меняется ни в одном из двух случаев: «да» подтверждает то,
-      // что уже пришло от Telegram, «поправлю потом» отправляет в
-      // настройки (задача 4.9). Спрашивать его текстом нельзя — ответ
-      // ушёл бы в буфер выгрузки.
-      await advance(ctx, active, STEP.timezone);
-    });
-  }
+    await setPreferredName(db, active.userId, active.state.name);
+    await advance(ctx, active, STEP.timezone);
+  });
+
+  bot.callbackQuery(ACTION.nameLater, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id, STEP.name);
+    if (!active) return;
+
+    await advance(ctx, active, STEP.timezone);
+  });
 
   /**
    * «Напишу своё» и «Другое время» (задача 3.61).

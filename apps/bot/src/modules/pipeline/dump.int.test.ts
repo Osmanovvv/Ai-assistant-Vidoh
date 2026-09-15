@@ -4239,6 +4239,98 @@ describe('вопрос по бэклогу ничего не создаёт (§1
     expect(drafts).toEqual([]);
   });
 
+  it('вопрос внутри выгрузки, на который «ничего не записано», — мысль, а не вопрос (видео заказчицы 15.09.2026)', async () => {
+    /**
+     * Голосовое заказчицы: «…потом заказать цветы. Вспомнить, когда мы
+     * последний раз договаривались с няней на восьмичасовую работу. И
+     * если что обговорить с ней новые условия». Маршрутизатор отдал
+     * среднее как QUERY — бот ответил «Про это у меня ничего не
+     * записано», мысль про няню пропала, а «с ней» приклеилось к
+     * соседнему делу. Правило: вопрос **внутри выгрузки**, на который
+     * ответить нечем, — это мысль: уходит в разбор на своём месте, ответа
+     * «ничего не записано» нет. Тот же принцип, что у ответа на уточнение:
+     * всё сверх ответа — в разбор, никогда в никуда.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    const FIRST = 'Потом заказать цветы';
+    const ASKED =
+      'Вспомнить, когда мы последний раз договаривались с няней на восьмичасовую работу';
+    const LAST = 'И если что обговорить с ней новые условия';
+
+    await queuedBatchOf([{ kind: 'text', text: `${FIRST}. ${ASKED}? ${LAST}.`, offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: FIRST },
+          { intent: 'QUERY', text: ASKED },
+          { intent: 'DUMP', text: LAST },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+
+    expect(all).not.toContain(defaultTexts.backlog.nothing);
+
+    // Мысль про няню — на своём месте, между соседями: так «с ней» читается
+    // про няню, а не про кого-то из другой фразы.
+    const saved = await testDb()
+      .select({ text: items.text })
+      .from(items)
+      .where(eq(items.userId, userId))
+      .orderBy(items.sourceOrder);
+    expect(saved.map((one) => one.text)).toEqual([FIRST, ASKED, LAST]);
+  });
+
+  it('вопрос сам по себе, без мыслей рядом, отвечается «ничего не записано» как раньше', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'что там с няней', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'что там с няней' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.backlog.nothing);
+    expect(await testDb().select().from(items).where(eq(items.userId, userId))).toEqual([]);
+  });
+
   it('ответ о проекте несёт кнопку «Шаг сделан»', async () => {
     /**
      * §21 п.6 обещает показать, что уже решено, — а закрыть шаг до

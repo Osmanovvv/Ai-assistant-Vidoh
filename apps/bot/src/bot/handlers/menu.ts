@@ -335,7 +335,11 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       current.preferredName === null
         ? texts.settings.nameNone
         : texts.settings.nameIs(current.preferredName),
-      texts.settings.topicsAre(mine.map((one) => one.name).join(', ')),
+      // До первой выгрузки сфер нет — «Сферы: .» заказчица прочла как
+      // сбой (видео 15.09.2026).
+      mine.length === 0
+        ? texts.menu.noTopics
+        : texts.settings.topicsAre(mine.map((one) => one.name).join(', ')),
     ];
 
     const keyboard = fitKeyboard([
