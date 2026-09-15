@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ROBOKASSA_RESULT_PATH } from './billing.js';
+import { DOCUMENTS_PATH } from './documents.js';
 
 /**
  * Каждый путь, на который бот ждёт гостей снаружи, открыт в прокси.
@@ -31,7 +32,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const caddy = resolve(here, '../../../../ops/caddy');
 
 /** Пути, которые бот отдаёт наружу; всё остальное прокси обязан прятать. */
-const OPEN_PATHS = ['/telegram/webhook', '/admin*', '/robots.txt', ROBOKASSA_RESULT_PATH];
+// Документы (15.09.2026) — `/docs` и `/docs/<документ>`: то же самое
+// случилось бы с ними, страж поймал это на бою через час после выкладки.
+const OPEN_PATHS = [
+  '/telegram/webhook',
+  '/admin*',
+  '/robots.txt',
+  ROBOKASSA_RESULT_PATH,
+  `${DOCUMENTS_PATH}*`,
+];
 
 function routesOf(file: string): string {
   return readFileSync(resolve(caddy, file), 'utf8')
