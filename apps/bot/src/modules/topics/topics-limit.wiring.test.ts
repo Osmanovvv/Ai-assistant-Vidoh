@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { TOPIC_CHOICES } from './choices.js';
+import { DEFAULT_TOPIC_NAMES } from './topics.repo.js';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 /**
@@ -130,12 +130,11 @@ describe('предел числа тем доезжает до всех созд
      */
     const calls = creations();
 
-    // Базовый набор на первой выгрузке, сферы по содержанию, настройки
-    // (шаг опроса ушёл 14.09.2026 — правка заказчицы, п. 1.1).
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    // Базовый набор на первой выгрузке и сферы по содержанию (шаг опроса
+    // ушёл 14.09.2026, экран сфер в настройках — 15.09.2026).
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     expect(calls.map((one) => one.file)).toContain('modules/pipeline/dump.handler.ts');
     expect(calls.map((one) => one.file)).toContain('modules/topics/adopt.ts');
-    expect(calls.map((one) => one.file)).toContain('bot/handlers/menu.ts');
   });
 
   it('умолчание предела не ниже числа сфер, которые бот предлагает', () => {
@@ -148,7 +147,7 @@ describe('предел числа тем доезжает до всех созд
      * Страж стоит на паре чисел, потому что расходятся они порознь:
      * сферу добавят в список выбора, не тронув настройку, либо наоборот.
      */
-    expect(SETTINGS.maxTopics.fallback).toBeGreaterThanOrEqual(TOPIC_CHOICES.length);
+    expect(SETTINGS.maxTopics.fallback).toBeGreaterThanOrEqual(DEFAULT_TOPIC_NAMES.length);
   });
 
   it('и правда читает файлы, а не пустоту', () => {

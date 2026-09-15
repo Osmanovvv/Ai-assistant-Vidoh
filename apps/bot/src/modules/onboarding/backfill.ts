@@ -3,7 +3,6 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { items } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
-import { listTopics, type TopicList } from '../topics/topics.repo.js';
 
 /**
  * Домиграция первой выгрузки (задача 2.14).
@@ -97,68 +96,4 @@ export async function recalcDeadlines(
   }
 
   return { recalculated: rows.length, movedToAnotherDay };
-}
-
-export interface RetopicResult {
-  /** Сколько записей переехало в тему по умолчанию. */
-  readonly moved: number;
-  /**
-   * Какие темы были у этих записей. Материал для §6.4: бот при удобном
-   * случае предложит создать тему, которой человеку не хватило.
-   */
-  readonly orphaned: readonly string[];
-}
-
-/**
- * Переносит записи в темы человека.
- *
- * До онбординга классификация шла по базовому набору §6.4. Если человек
- * выбрал другие сферы, часть записей осталась в темах, которых у него
- * нет: «здоровье» у того, кто выбрал «дети», «деньги» и «личное».
- *
- * §6.4 предписывает ровно одно: не попавшее ни в одну тему уходит в тему
- * по умолчанию. Создавать темы за человека запрещено — это плодит хаос,
- * который продукт должен убирать. Поэтому имена, которых у него нет,
- * возвращаются наружу: на задаче 2.15 бот предложит создать такую тему,
- * а решать будет он.
- */
-export async function moveItemsToOwnTopics(
-  db: Executor,
-  userId: string,
-  topics: TopicList,
-): Promise<RetopicResult> {
-  const known = new Set(topics.names.map((name) => name.toLowerCase().replace(/ё/gu, 'е')));
-
-  const rows = await db
-    .select({ id: items.id, topic: items.topic })
-    .from(items)
-    .where(and(eq(items.userId, userId), isNotNull(items.topic)));
-
-  const orphaned = new Set<string>();
-  let moved = 0;
-
-  /**
-   * Ссылка на тему переезжает вместе с названием (задача 3.43).
-   *
-   * Раньше менялось только название: до онбординга тем не было, и
-   * ссылки у записей были пустыми. Теперь базовые сферы появляются на
-   * первой выгрузке, записи сразу получают ссылку — и запись, уехавшая в
-   * тему по умолчанию именем, продолжала бы ссылаться на архивную.
-   */
-  const own = await listTopics(db, userId);
-  const fallback = own.find((topic) => topic.isDefault) ?? own[0];
-
-  for (const row of rows) {
-    if (row.topic === null) continue;
-    if (known.has(row.topic.toLowerCase().replace(/ё/gu, 'е'))) continue;
-
-    orphaned.add(row.topic);
-    await db
-      .update(items)
-      .set({ topic: topics.defaultName, topicId: fallback?.id ?? null, updatedAt: new Date() })
-      .where(eq(items.id, row.id));
-    moved++;
-  }
-
-  return { moved, orphaned: [...orphaned] };
 }

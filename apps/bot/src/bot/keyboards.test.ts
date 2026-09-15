@@ -10,7 +10,6 @@ import {
   questionFor,
   STEP,
 } from '../modules/onboarding/onboarding.service.js';
-import { topicRows } from '../modules/topics/choices.js';
 import { buildActionsReply, buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
 import { CARD_ACTION } from '../modules/items/card-actions.js';
@@ -109,17 +108,6 @@ function everyCallbackData(): { where: string; data: string }[] {
   }
   for (const button of timezoneQuestion(defaultTexts).rows.flat()) {
     found.push({ where: 'onboarding:timezones', data: button.action });
-  }
-  // Сферы в настройках: предложенные и своя самой длинной допустимой
-  // длины — имя, заведённое ботом по содержанию, идёт в callback_data
-  // целиком (правка заказчицы 14.09.2026, п. 1.1; предел имени — в
-  // `topicNameFrom`).
-  for (const button of topicRows(
-    defaultTexts,
-    ['семья', 'а'.repeat(24)],
-    MENU_ACTION.topicSetPrefix,
-  ).flat()) {
-    found.push({ where: 'settings:topics', data: button.action });
   }
   for (const data of Object.values(ONBOARDING)) {
     found.push({ where: 'onboarding:action', data });
@@ -274,7 +262,6 @@ describe('идентификаторы действий не пересекаю�
       ONBOARDING.timezonePrefix,
       ONBOARDING.morningPrefix,
       ONBOARDING.eveningPrefix,
-      MENU_ACTION.topicSetPrefix,
       BILLING_ACTION.buyPrefix,
       BILLING_ACTION.promoBuyPrefix,
       BILLING_ACTION.consentPrefix,
@@ -382,16 +369,12 @@ function everyRow(): { where: string; labels: string[] }[] {
     ]),
   );
 
-  // Онбординг (§12.2): все шаги и города; сферы — в настройках.
+  // Онбординг (§12.2): все шаги и города.
   for (const step of Object.values(STEP)) {
     const question = questionFor(step, { texts, name: 'Аня' });
     if (question) fromKeyboard(`onboarding:${String(step)}`, fitKeyboard(question.rows));
   }
   fromKeyboard('onboarding:timezones', fitKeyboard(timezoneQuestion(texts).rows));
-  fromKeyboard(
-    'settings:topics',
-    fitKeyboard(topicRows(texts, ['семья', 'саморазвитие'], MENU_ACTION.topicSetPrefix)),
-  );
 
   // Ответ на выгрузку (§13.2) — тот самый случай.
   fromKeyboard(

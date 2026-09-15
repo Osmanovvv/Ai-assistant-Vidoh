@@ -12,7 +12,6 @@ import {
   TIMEZONES,
   type Question,
 } from './onboarding.service.js';
-import { isChoice, TOPIC_CHOICES, topicRows } from '../topics/choices.js';
 
 /**
  * Онбординг (задача 2.13).
@@ -190,68 +189,6 @@ describe('часовые пояса', () => {
     const last = rows[rows.length - 1] ?? [];
 
     expect(last.map((button) => button.label)).toEqual([texts.onboarding.buttonCityOwn]);
-  });
-});
-
-describe('сферы в настройках', () => {
-  const prefix = 'menu:set:t:';
-
-  it('без своих сфер — только предложенные, без галочек', () => {
-    const rows = topicRows(texts, [], prefix);
-    const labels = rows.flat().map((button) => button.label);
-
-    expect(labels).toEqual([...TOPIC_CHOICES]);
-  });
-
-  it('включённое помечается галочкой', () => {
-    const labels = topicRows(texts, ['семья', 'работа'], prefix)
-      .flat()
-      .map((button) => button.label);
-
-    expect(labels).toContain(texts.settings.topicChosen('семья'));
-    expect(labels).toContain(texts.settings.topicChosen('работа'));
-    expect(labels).toContain('здоровье');
-  });
-
-  it('перерисованная клавиатура не меняет идентификаторов кнопок', () => {
-    // Отметка меняет подпись, но не действие: иначе повторное нажатие
-    // на уже отмеченную сферу уходило бы в никуда.
-    const plain = topicRows(texts, [], prefix)
-      .flat()
-      .map((button) => button.action);
-    const marked = topicRows(texts, ['семья', 'работа'], prefix)
-      .flat()
-      .map((button) => button.action);
-
-    expect(marked).toEqual(plain);
-  });
-
-  it('своя сфера, заведённая ботом по содержанию, стоит после предложенных — с галочкой', () => {
-    // Правка заказчицы 14.09.2026 (п. 1.1): исправить сферу человек может
-    // только ту, что видит.
-    const buttons = topicRows(texts, ['семья', 'саморазвитие'], prefix).flat();
-
-    expect(buttons.at(-1)).toEqual({
-      label: texts.settings.topicChosen('саморазвитие'),
-      action: `${prefix}саморазвитие`,
-    });
-    expect(buttons.filter((button) => button.action.endsWith('саморазвитие'))).toHaveLength(1);
-  });
-
-  it('предложенная сфера не задваивается своей', () => {
-    const actions = topicRows(texts, ['семья'], prefix)
-      .flat()
-      .map((button) => button.action);
-
-    expect(actions.filter((action) => action === `${prefix}семья`)).toHaveLength(1);
-    expect(isChoice('семья')).toBe(true);
-    expect(isChoice('саморазвитие')).toBe(false);
-  });
-
-  it('базовый набор §6.4 целиком есть среди предложений', () => {
-    for (const name of ['семья', 'здоровье', 'работа', 'покупки', 'личное']) {
-      expect(TOPIC_CHOICES).toContain(name);
-    }
   });
 });
 

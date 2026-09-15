@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -73,7 +73,7 @@ function createTestBot(gateway?: FakeTopicGateway): { bot: Bot; calls: ApiCall[]
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerMenuHandlers(bot, testDb(), logger, undefined, gateway);
+  registerMenuHandlers(bot, testDb(), logger);
   registerCardHandlers(
     bot,
     { db: testDb(), logger, ...(gateway === undefined ? {} : { topics: gateway }) },
@@ -1125,7 +1125,7 @@ describe('кнопки под разбором: «Оставить как ест
   });
 });
 
-describe('настройки §12.1: времена, пояс, сферы, имя', () => {
+describe('настройки §12.1: времена, пояс, имя', () => {
   /**
    * Строка §12.1 обещает четыре величины: «Темы, время напоминаний,
    * часовой пояс, выключатель напоминаний». До ревизии второго этапа
@@ -1142,11 +1142,6 @@ describe('настройки §12.1: времена, пояс, сферы, им�
     return row;
   }
 
-  async function myTopics(): Promise<readonly string[]> {
-    const rows = await testDb().select().from(topics).where(eq(topics.userId, userId));
-
-    return rows.filter((one) => !one.isArchived).map((one) => one.name);
-  }
 
   it('экран называет все четыре величины, а не одну', async () => {
     const { bot, calls } = createTestBot();
@@ -1168,7 +1163,9 @@ describe('настройки §12.1: времена, пояс, сферы, им�
     expect(buttons).toContain(defaultTexts.settings.buttonMorning);
     expect(buttons).toContain(defaultTexts.settings.buttonEvening);
     expect(buttons).toContain(defaultTexts.settings.buttonCity);
-    expect(buttons).toContain(defaultTexts.settings.buttonTopics);
+    // Сфер в настройках нет (правка заказчицы 15.09.2026): человек
+    // перекладывает запись, а самими сферами не управляет.
+    expect(buttons).not.toContain('Сферы');
   });
 
   it('утреннее время меняется кнопкой и видно новое значение', async () => {
@@ -1232,124 +1229,6 @@ describe('настройки §12.1: времена, пояс, сферы, им�
 
     // Срок остался тем, который человек называл.
     expect((await itemRow(itemId))?.deadlineAt?.toISOString()).toBe(when.toISOString());
-  });
-
-  it('сферу можно добавить и убрать', async () => {
-    const { bot } = createTestBot();
-    await bot.init();
-    await addTopic(userId, 'работа');
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
-
-    expect(await myTopics()).toContain('здоровье');
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
-
-    expect(await myTopics()).not.toContain('здоровье');
-  });
-
-  it('снятая сфера не оставляет сирот: дела — в оставшуюся, ветка закрыта (ревизия этапа 3, E1)', async () => {
-    /**
-     * Онбординг на том же шаге переносил записи и закрывал ветку; меню
-     * только архивировало тему. Пять дел из «здоровья» пропадали из
-     * «Все задачи», ветка с закреплённой сводкой висела в чате навсегда,
-     * а при возврате галочки бот заводил вторую такую же.
-     */
-    const gateway = new FakeTopicGateway();
-    const { bot } = createTestBot(gateway);
-    await bot.init();
-
-    const homeId = await addTopic(userId, 'дом', true);
-    const healthId = await addTopic(userId, 'здоровье');
-    await testDb().update(topics).set({ tgThreadId: 777 }).where(eq(topics.id, healthId));
-    const itemId = await addItem({ owner: userId, text: 'к зубному', topic: 'здоровье' });
-    await testDb().update(items).set({ topicId: healthId }).where(eq(items.id, itemId));
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'здоровье'));
-
-    expect(await myTopics()).toEqual(['дом']);
-
-    const row = await itemRow(itemId);
-    expect(row?.topic).toBe('дом');
-    expect(row?.topicId).toBe(homeId);
-
-    expect(gateway.deletedThreads.map((one) => one.threadId)).toEqual([777]);
-
-    // Ни одной открытой записи в архивной теме — страж на будущее.
-    const strays = await testDb()
-      .select({ id: items.id })
-      .from(items)
-      .where(and(eq(items.userId, userId), eq(items.topicId, healthId)));
-    expect(strays).toEqual([]);
-  });
-
-  it('последнюю сферу убрать нельзя, и причина названа', async () => {
-    // Классификация без списка не работает: записи ушли бы в никуда.
-    const { bot, calls } = createTestBot();
-    await bot.init();
-    await addTopic(userId, 'работа');
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'работа'));
-
-    expect(await myTopics()).toEqual(['работа']);
-    expect(textOf(calls.at(-1))).toBe(defaultTexts.settings.lastTopicKept);
-  });
-
-  it('снятие галочки не уносит в архив свои сферы человека', async () => {
-    /**
-     * `archiveTopicsExcept` убирает всё, чего нет в списке «оставить».
-     * Значит темы, заведённые не из девяти предложенных, обязаны в него
-     * попасть — иначе одна снятая галочка увозила бы в архив всё
-     * остальное, что человек вёл.
-     */
-    const { bot } = createTestBot();
-    await bot.init();
-    await addTopic(userId, 'работа');
-    await addTopic(userId, 'мотоцикл');
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'работа'));
-
-    const left = await myTopics();
-
-    expect(left).not.toContain('работа');
-    expect(left).toContain('мотоцикл');
-  });
-
-  it('сфера, заведённая ботом по содержанию, видна в настройках и снимается там же', async () => {
-    /**
-     * Правка заказчицы 14.09.2026 (п. 1.1): сферы заводит бот сам, а
-     * человек при желании исправляет. Исправить можно только то, что
-     * видно: экран настроек показывал девять предложенных сфер, и своя
-     * «мотоцикл» на нём не появлялась — снять её было негде.
-     */
-    const { bot, calls } = createTestBot();
-    await bot.init();
-    await addTopic(userId, 'работа');
-    await addTopic(userId, 'мотоцикл');
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.askTopics));
-
-    const keyboard = calls.at(-1)?.payload['reply_markup'] as {
-      inline_keyboard: { text: string; callback_data: string }[][];
-    };
-    const buttons = keyboard.inline_keyboard.flat();
-    expect(buttons.map((button) => button.callback_data)).toContain(
-      MENU_ACTION.topicSetPrefix + 'мотоцикл',
-    );
-    // Отмечена как своя — галочкой, как и предложенные.
-    expect(buttons.map((button) => button.text)).toContain(
-      defaultTexts.settings.topicChosen('мотоцикл'),
-    );
-    // «Готово» на экране одно — своё, не опросное.
-    expect(
-      buttons.filter((button) => button.text === defaultTexts.settings.buttonTopicsDone),
-    ).toHaveLength(1);
-
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topicSetPrefix + 'мотоцикл'));
-
-    expect(await myTopics()).toEqual(['работа']);
   });
 
   it('«Имя» ждёт ответа словами — и своим видом ожидания', async () => {

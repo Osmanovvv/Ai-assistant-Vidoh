@@ -1,12 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, topics } from '../../db/schema.js';
+import { items } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
-import { topicsFor } from '../topics/topics.repo.js';
 import { upsertUser } from '../users/users.repo.js';
-import { moveItemsToOwnTopics, recalcDeadlines } from './backfill.js';
+import { recalcDeadlines } from './backfill.js';
 
 /**
  * Домиграция первой выгрузки (задача 2.14).
@@ -196,113 +195,5 @@ describe('пересчёт сроков', () => {
     await recalcDeadlines(testDb(), userId, { from: VLADIVOSTOK, to: VLADIVOSTOK });
 
     expect(await deadlineDateIn(id, VLADIVOSTOK)).toBe('2026-08-27');
-  });
-});
-
-describe('перенос записей в темы человека', () => {
-  it('запись в невыбранной теме уходит в тему по умолчанию', async () => {
-    // §6.4: не попавшее ни в одну тему уходит в тему по умолчанию, а
-    // создавать темы за человека запрещено.
-    const id = await addItem({
-      deadlineLocalDate: null,
-      zone: MOSCOW,
-      createdAt: new Date('2026-08-25T09:00:00.000Z'),
-      topic: 'здоровье',
-    });
-
-    await testDb()
-      .insert(topics)
-      .values([
-        { userId, name: 'дети', sortOrder: 0 },
-        { userId, name: 'личное', sortOrder: 1, isDefault: true },
-      ]);
-
-    const result = await moveItemsToOwnTopics(testDb(), userId, await topicsFor(testDb(), userId));
-
-    expect(result.moved).toBe(1);
-    expect(result.orphaned).toEqual(['здоровье']);
-
-    const [row] = await testDb().select({ topic: items.topic }).from(items).where(eq(items.id, id));
-    expect(row?.topic).toBe('личное');
-  });
-
-  it('запись в выбранной теме остаётся на месте', async () => {
-    const id = await addItem({
-      deadlineLocalDate: null,
-      zone: MOSCOW,
-      createdAt: new Date('2026-08-25T09:00:00.000Z'),
-      topic: 'здоровье',
-    });
-
-    await testDb()
-      .insert(topics)
-      .values([
-        { userId, name: 'здоровье', sortOrder: 0 },
-        { userId, name: 'личное', sortOrder: 1, isDefault: true },
-      ]);
-
-    const result = await moveItemsToOwnTopics(testDb(), userId, await topicsFor(testDb(), userId));
-
-    expect(result.moved).toBe(0);
-    const [row] = await testDb().select({ topic: items.topic }).from(items).where(eq(items.id, id));
-    expect(row?.topic).toBe('здоровье');
-  });
-
-  it('«ё» и регистр не считаются другой темой', async () => {
-    const id = await addItem({
-      deadlineLocalDate: null,
-      zone: MOSCOW,
-      createdAt: new Date('2026-08-25T09:00:00.000Z'),
-      topic: 'Учеба',
-    });
-
-    await testDb()
-      .insert(topics)
-      .values([
-        { userId, name: 'учёба', sortOrder: 0 },
-        { userId, name: 'личное', sortOrder: 1, isDefault: true },
-      ]);
-
-    const result = await moveItemsToOwnTopics(testDb(), userId, await topicsFor(testDb(), userId));
-
-    expect(result.moved).toBe(0);
-    const [row] = await testDb().select({ topic: items.topic }).from(items).where(eq(items.id, id));
-    expect(row?.topic).toBe('Учеба');
-  });
-
-  it('каждое потерянное имя возвращается один раз', async () => {
-    // По этому списку §6.4 предлагает создать тему. Дубли в предложении
-    // выглядели бы как ошибка.
-    for (const topic of ['работа', 'работа', 'покупки']) {
-      await addItem({
-        deadlineLocalDate: null,
-        zone: MOSCOW,
-        createdAt: new Date('2026-08-25T09:00:00.000Z'),
-        topic,
-      });
-    }
-
-    await testDb()
-      .insert(topics)
-      .values([{ userId, name: 'личное', isDefault: true }]);
-
-    const result = await moveItemsToOwnTopics(testDb(), userId, await topicsFor(testDb(), userId));
-
-    expect(result.moved).toBe(3);
-    expect([...result.orphaned].sort()).toEqual(['покупки', 'работа']);
-  });
-
-  it('черновики тоже переносятся: у них темы нет, и трогать их незачем', async () => {
-    await testDb()
-      .insert(items)
-      .values({ userId, text: 'непонятное', isDraft: true, draftReason: 'сбой' });
-
-    await testDb()
-      .insert(topics)
-      .values([{ userId, name: 'личное', isDefault: true }]);
-
-    const result = await moveItemsToOwnTopics(testDb(), userId, await topicsFor(testDb(), userId));
-
-    expect(result.moved).toBe(0);
   });
 });
