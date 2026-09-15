@@ -199,6 +199,10 @@ const DECISIONS: readonly {
         'trialLimit',
         'messageCount',
         'attempts',
+        // Какие записи упомянуты в выгрузке (решение заказчицы 15.09.2026):
+        // связка для очереди по кнопке «Выбрать главное». Сами записи в
+        // выгрузке есть целиком; ссылки на них — служебная бухгалтерия.
+        'mentionedItemIds',
         'error',
         'statusMessageId',
         'statusUpdatedAt',

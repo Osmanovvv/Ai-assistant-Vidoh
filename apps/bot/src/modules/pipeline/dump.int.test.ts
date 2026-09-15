@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { asc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -42,11 +42,12 @@ import {
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
 import { setItemEmbedding } from '../embedder/embedder.service.js';
+import { pickMain } from '../presenter/pick.service.js';
 import { FakeTopicGateway } from '../topics/fake-gateway.js';
 import { ensureThread } from '../topics/topics.service.js';
 import { listTopics, MAX_TOPICS } from '../topics/topics.repo.js';
 import { STEP } from '../onboarding/onboarding.service.js';
-import { countQuestions } from '../presenter/presenter.service.js';
+import { ANSWER_ACTION, countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { AudioLimits } from '../speech/audio.service.js';
@@ -80,6 +81,28 @@ const pricing = { mock: { kind: 'audio', currency: 'usd', perMinute: 0.006 } } a
 
 const T0 = new Date('2026-08-24T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
+
+/**
+ * Список по «Выбрать главное» для последней выгрузки человека (решение
+ * заказчицы 15.09.2026): дел под признанием больше нет, и что бот
+ * предложил бы, проверяется здесь.
+ */
+async function pickedNow(): Promise<readonly string[]> {
+  const [last] = await testDb()
+    .select({ id: batches.id })
+    .from(batches)
+    .where(eq(batches.userId, userId))
+    .orderBy(desc(batches.openedAt))
+    .limit(1);
+
+  const picked = await pickMain(testDb(), {
+    userId,
+    batchId: last?.id,
+    now: at(0),
+    timeZone: 'Europe/Moscow',
+  });
+  return picked.actions;
+}
 
 let fixtureDir = '';
 let audioPath = '';
@@ -705,9 +728,11 @@ describe('разбор', () => {
     expect(calls.filter((call) => call.stage === 'extractor')).toHaveLength(2);
     expect(calls.filter((call) => call.stage === 'classifier')).toHaveLength(2);
 
-    // Человеку не говорят «сохранила целиком»: всё разобрано, и дело в ответе.
+    // Человеку не говорят «сохранила целиком»: всё разобрано, и дело —
+    // в списке по «Выбрать главное» (решение заказчицы 15.09.2026).
     expect(all.join('\n')).not.toContain(defaultTexts.answer.savedUnparsed);
-    expect(all.at(-1) ?? '').toContain('Купить молоко');
+    const picked = await pickMain(testDb(), { userId, now: at(0), timeZone: 'Europe/Moscow' });
+    expect(picked.actions).toContain('Купить молоко');
 
     // Сводка ветки «дом» тронута поздней записью, как и любой другой.
     const summaries = [...gateway.sent, ...gateway.edited].map((message) => message.text);
@@ -1012,14 +1037,14 @@ describe('разбор', () => {
       userId,
     );
 
+    // Дел под признанием нет ни у кого (решение заказчицы 15.09.2026) —
+    // они по «Выбрать главное», и там их три, а не одно.
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('Первое дело');
-    expect(reply).toContain('Второе дело');
-    expect(reply).toContain('Третье дело');
+    expect(reply).not.toContain('Первое дело');
+    expect(reply).toContain(defaultTexts.answer.keepOrPick);
 
-    // Форма всё равно короткая: §13.7 требует выхода из разговора.
-    expect(reply).toContain(defaultTexts.answer.closingTired);
-    expect(countQuestions(reply)).toBe(0);
+    const picked = await pickMain(testDb(), { userId, now: at(0), timeZone: 'Europe/Moscow' });
+    expect(picked.actions).toEqual(['Первое дело', 'Второе дело', 'Третье дело']);
   });
 
   it('выгрузка из одних чувств старые дела не вытаскивает (решение заказчицы 13.09.2026, 1.4)', async () => {
@@ -1109,11 +1134,10 @@ describe('разбор', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('Первое дело');
-    expect(reply).toContain('Второе дело');
-    expect(reply).toContain('Третье дело');
-    expect(reply).toContain(defaultTexts.answer.closingTired);
-    expect(countQuestions(reply)).toBe(0);
+    expect(reply).not.toContain(defaultTexts.answer.actionsLead);
+
+    const picked = await pickMain(testDb(), { userId, now: at(0), timeZone: 'Europe/Moscow' });
+    expect(picked.actions).toEqual(['Первое дело', 'Второе дело', 'Третье дело']);
   });
 
   it('в выдачу идут и записи прошлых выгрузок, а не только новые', async () => {
@@ -1134,7 +1158,7 @@ describe('разбор', () => {
       });
 
     await queuedBatchOf([{ kind: 'text', text: 'новое дело', offsetMs: 0 }]);
-    const { sender, all } = recordingSender();
+    const { sender } = recordingSender();
 
     await processUserBatches(
       {
@@ -1145,7 +1169,7 @@ describe('разбор', () => {
       userId,
     );
 
-    expect(all.at(-1)).toContain('просроченное дело');
+    expect(await pickedNow()).toContain('просроченное дело');
   });
 });
 
@@ -1185,8 +1209,7 @@ describe('онбординг после первой выгрузки', () => {
     // Свой вопрос ответ при этом не задал: его место занял первый вопрос
     // онбординга. Иначе у человека было бы два открытых вопроса подряд.
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('Записать сына к врачу');
-    expect(reply).not.toContain(defaultTexts.answer.question);
+    expect(reply).not.toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(0);
   });
 
@@ -1217,7 +1240,7 @@ describe('онбординг после первой выгрузки', () => {
 
     expect(questions.asked).toHaveLength(0);
     // И свой вопрос вернулся на место.
-    expect(all.at(-1)).toContain(defaultTexts.answer.question);
+    expect(all.at(-1)).toContain(defaultTexts.answer.keepOrPick);
   });
 
   it('выгрузка без разбора опрос не запускает', async () => {
@@ -1961,7 +1984,8 @@ describe('ветки тем в разборе', () => {
     );
 
     expect(await testDb().select().from(items)).toHaveLength(1);
-    expect(all.at(-1)).toContain('К врачу');
+    expect(all.at(-1)).toContain(defaultTexts.answer.keepOrPick);
+    expect(await pickedNow()).toContain('К врачу');
   });
 
   it('пропавшая ветка не роняет разбор', async () => {
@@ -2148,14 +2172,12 @@ function recordingSender(): {
 }
 
 describe('ответ пользователю', () => {
-  it('под разбором стоят три кнопки §13.2', async () => {
-    // Кнопки строились представлением с самого начала и терялись:
-    // отправитель клавиатуру не умел, обработчиков не было. Из-за этого
-    // человек не понимал, куда делись остальные его дела — чтобы их
-    // увидеть, надо было знать про команду меню.
+  it('под разбором стоят две кнопки: «Оставить как есть» и «Выбрать главное» с кодом выгрузки', async () => {
+    // Решение заказчицы 15.09.2026: дел под признанием нет, они по
+    // кнопке. Код выгрузки в кнопке — чтобы сказанное в ней шло первым.
     const prompts = await seedPrompts();
     await queuedBatchOf([{ kind: 'text', text: 'надо продукты, врача и химчистку', offsetMs: 0 }]);
-    const { sender, buttons } = recordingSender();
+    const { sender, buttons, said } = recordingSender();
 
     await processUserBatches(
       {
@@ -2166,10 +2188,11 @@ describe('ответ пользователю', () => {
       userId,
     );
 
-    expect(buttons).toEqual([
-      defaultTexts.answer.buttonDoNow,
-      defaultTexts.answer.buttonShowAll,
-      defaultTexts.answer.buttonLater,
+    expect(buttons).toEqual([defaultTexts.answer.buttonKeep, defaultTexts.answer.buttonPick]);
+    const [batch] = await testDb().select({ id: batches.id }).from(batches);
+    expect(said.at(-1)?.actions).toEqual([
+      ANSWER_ACTION.keep,
+      `${ANSWER_ACTION.pick}:${toShortId(batch!.id)}`,
     ]);
   });
   it('правит статусное сообщение, а не шлёт новое', async () => {
@@ -2194,10 +2217,11 @@ describe('ответ пользователю', () => {
     expect(sent).toEqual([]);
     // Промежуточная реплика на время расшифровки и итоговый разбор.
     expect(edited).toHaveLength(2);
-    expect(edited.at(-1)).toContain('Купить продукты');
+    expect(edited.at(-1)).toContain(defaultTexts.answer.keepOrPick);
+    expect(await pickedNow()).toContain('Купить продукты');
   });
 
-  it('отвечает по §13.2: признание, список, сохранённое, один вопрос', async () => {
+  it('отвечает по решению 15.09.2026: признание и один вопрос — оставить или выбрать', async () => {
     const prompts = await seedPrompts();
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
@@ -2216,10 +2240,19 @@ describe('ответ пользователю', () => {
 
     const reply = all.at(-1) ?? '';
     expect(reply.startsWith('Я тебя услышала.')).toBe(true);
-    expect(reply).toContain('Записать сына к врачу');
-    expect(reply).toContain('И ещё забрать вещи');
-    expect(reply).toContain(defaultTexts.answer.question);
+    expect(reply).not.toContain('Записать сына к врачу');
+    expect(reply).toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(1);
+
+    // А дела — по кнопке, сказанное в этой выгрузке первым.
+    const [batch] = await testDb().select({ id: batches.id }).from(batches);
+    const picked = await pickMain(testDb(), {
+      userId,
+      batchId: batch!.id,
+      now: at(0),
+      timeZone: 'Europe/Moscow',
+    });
+    expect(picked.actions).toEqual(['Записать сына к врачу', 'И ещё забрать вещи']);
   });
 
   it('на пустой расшифровке честно говорит, что не разобрала', async () => {
@@ -2353,8 +2386,9 @@ describe('онбординг: края', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain('Ещё одно дело');
+    expect(reply).not.toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(0);
+    expect(await pickedNow()).toContain('Ещё одно дело');
 
     // Вопрос текущего шага задан заново — тот же, про утро, а не
     // следующий: шаг человек не проходил.
@@ -2607,8 +2641,9 @@ describe('мягкий лимит расхода', () => {
     );
 
     expect(all).toHaveLength(1);
-    expect(all[0]).toContain('Купить продукты');
+    expect(all[0]).toContain(defaultTexts.answer.keepOrPick);
     expect(all.join(' ')).not.toMatch(/лимит|модель|дешевл|ограничен/iu);
+    expect(await pickedNow()).toContain('Купить продукты');
 
     const saved = await testDb().select().from(items).where(eq(items.userId, userId));
     expect(saved).toHaveLength(1);
@@ -3162,12 +3197,8 @@ describe('правка доходит до резолвера (§7, задача
       userId,
     );
 
-    // Обычный ответ §13.2 пришёл — и в нём строка про правку.
-    const reply = all.find(
-      (text) =>
-        text.includes(defaultTexts.answer.actionsLeadSingle) ||
-        text.includes(defaultTexts.answer.actionsLead),
-    );
+    // Обычный ответ на выгрузку пришёл — и в нём строка про правку.
+    const reply = all.find((text) => text.includes(defaultTexts.answer.keepOrPick));
     expect(reply).toBeDefined();
     expect(reply).toContain(defaultTexts.resolver.deadlineRefused);
   });
@@ -3398,7 +3429,7 @@ describe('выполнение и отмена голосом (§21 п.8, зад
       .set({ createdAt: longAgo, updatedAt: longAgo })
       .where(eq(items.id, doctor));
 
-    const { sender, all } = recordingSender();
+    const { sender } = recordingSender();
 
     await queuedBatchOf([
       {
@@ -3479,7 +3510,7 @@ describe('выполнение и отмена голосом (§21 п.8, зад
 
     // Все три сегмента дошли до резолвера или разбора, ни один не потерян.
     expect(resolverCall).toBe(2);
-    expect(all.join(NEWLINE)).toMatch(/химчистк/iu);
+    expect((await pickedNow()).join(NEWLINE)).toMatch(/химчистк/iu);
   });
 
   it('после отметки выполнения бот не добавляет «расскажешь, что в голове»', async () => {
@@ -4365,11 +4396,13 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
   it('в ответе стоят названные сейчас дела, а не старые', async () => {
     const prompts = await seedPrompts();
     await seedOld();
-    const { sender, all } = recordingSender();
+    const { sender } = recordingSender();
 
     await dump(sender, prompts);
 
-    const answer = all.at(-1) ?? '';
+    // Дел под признанием нет (решение заказчицы 15.09.2026) — они по
+    // «Выбрать главное», и там первыми стоят названные сейчас.
+    const answer = (await pickedNow()).join('\n');
 
     for (const said of SAID.slice(0, 3)) {
       // Регистр здесь не проверяется — он приводится при сохранении
@@ -4404,14 +4437,16 @@ describe('жалоба с боевого 31.08.2026 (задача 3.22)', () => 
      */
     const prompts = await seedPrompts();
     await seedOld();
-    const { sender, all } = recordingSender();
+    const { sender } = recordingSender();
 
     await dump(sender, prompts);
-    const first = all.at(-1) ?? '';
+    const first = (await pickedNow()).join('\n');
 
     await dump(sender, prompts);
-    const second = all.at(-1) ?? '';
+    const second = (await pickedNow()).join('\n');
 
+    // Повторная выгрузка новых записей не завела — но упомянутое в ней
+    // запомнено (`mentioned_item_ids`), и очередь по кнопке та же.
     for (const said of SAID.slice(0, 3)) {
       expect(second.toLowerCase(), `в повторном ответе нет «${said}»`).toContain(said);
     }
@@ -4664,7 +4699,7 @@ describe('правка к сказанному в этой же выгрузке
       one.buttons.includes(defaultTexts.resolver.buttonUndo),
     );
     const withAnswer = toPerson.filter((one) =>
-      one.buttons.includes(defaultTexts.answer.buttonDoNow),
+      one.buttons.includes(defaultTexts.answer.buttonPick),
     );
 
     expect(withUndo, `реплики: ${JSON.stringify(toPerson)}`).toHaveLength(1);

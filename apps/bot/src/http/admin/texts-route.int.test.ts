@@ -314,33 +314,37 @@ describe('редактор реплик: чего он не пропускает
   it('реплике рядом с вопросом «?» не даёт: человек читает склейку §13.2', async () => {
     /**
      * Дефект ревизии второго этапа. Правило «один „?“ на реплику» смотрело
-     * на реплику, а ответ §13.2 склеивается из нескольких: «Остальное
-     * никуда не убежит, хорошо?» проходило запись и вместе с «С чего
-     * начнём?» давало человеку два вопроса, чего §13.2 запрещает дословно.
+     * на реплику, а ответ склеивается из нескольких: реплика с «хорошо?»
+     * проходила запись и вместе с вопросом бота давала человеку два
+     * вопроса, чего §13.2 запрещает дословно. С решением заказчицы
+     * 15.09.2026 рядом с вопросом «Оставить как есть или выбрать
+     * главное?» стоит признание — его словарная замена и проверяется.
      */
     const { base } = stand();
     const at = await base;
 
     const asked = await save(at, {
-      path: 'answer.restSaved',
-      said: 'Остальное пока никуда не убежит, хорошо?',
+      path: 'answer.acknowledgementFallback',
+      said: 'Я тебя услышала, хорошо?',
     });
 
     expect(asked.status).toBe(400);
     expect(await whyOf(asked)).toMatch(/одном ответе с вопросом/iu);
 
     // И бот говорит прежними словами: отказ не должен ничего записать.
-    expect(textsFor().answer.restSaved).toBe(defaultTexts.answer.restSaved);
+    expect(textsFor().answer.acknowledgementFallback).toBe(
+      defaultTexts.answer.acknowledgementFallback,
+    );
     expect(await testDb().select().from(textOverrides)).toEqual([]);
 
     // Без вопроса та же реплика проходит — и действует сразу.
     const plain = await save(at, {
-      path: 'answer.restSaved',
-      said: 'Остальное пока никуда не убежит, я держу.',
+      path: 'answer.acknowledgementFallback',
+      said: 'Я тебя услышала, всё записала.',
     });
 
     expect(plain.status).toBe(200);
-    expect(textsFor().answer.restSaved).toBe('Остальное пока никуда не убежит, я держу.');
+    expect(textsFor().answer.acknowledgementFallback).toBe('Я тебя услышала, всё записала.');
   });
 
   it('годную кризисную реплику принимает: правило не запрещает всё разом', async () => {

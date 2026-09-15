@@ -47,6 +47,13 @@ export const ANSWER_ACTION = {
   all: 'answer:all',
   /** «Оставить на потом» — закрывает сессию без упреков. */
   later: 'answer:later',
+  /**
+   * Под разбором (решение заказчицы 15.09.2026): «Оставить как есть» —
+   * дел не показывать; «Выбрать главное» (`answer:pick:<код выгрузки>`)
+   * — показать 2–3 самых актуальных.
+   */
+  keep: 'answer:keep',
+  pick: 'answer:pick',
 } as const;
 
 export interface ReplyButton {
@@ -89,13 +96,81 @@ export interface BuildReplyParams {
   readonly texts: TextProfile;
   /** Признание — уже проверенное. Проверку делает `sanitizeAcknowledgement`. */
   readonly acknowledgement: string;
+  /**
+   * Выгрузка, под которой стоит ответ: код едет в кнопке «Выбрать
+   * главное», чтобы обработчик поставил сказанное в ней вперёд (3.24).
+   * Пусто — общее действие без кода.
+   */
+  readonly batchId?: string | undefined;
+  /**
+   * Не задавать свой вопрос.
+   *
+   * Нужно одному случаю: сразу после этого ответа начинается онбординг
+   * (§12.2), и его первый вопрос станет единственным. Иначе у человека
+   * оказалось бы два открытых вопроса подряд, чего §13.9 не допускает.
+   * Кнопки остаются — они не вопрос, а выход к делам.
+   */
+  readonly omitQuestion?: boolean | undefined;
+  /**
+   * В выгрузке одни чувства, новых дел нет (правка заказчицы
+   * 14.09.2026, п. 1.5). Ответ — одно признание: без вопроса и кнопок.
+   */
+  readonly feelingsOnly?: boolean | undefined;
+}
+
+/**
+ * Собирает ответ на выгрузку. Чистая функция: ни модели, ни базы, ни
+ * времени — иначе форму ответа нельзя проверить таблицей случаев.
+ *
+ * **Дел в ответе нет — по решению заказчицы 15.09.2026.** §13.2 её ТЗ
+ * показывал под признанием до трёх дел и спрашивал «с чего начнём»; она
+ * это отменила: «после разбора действия автоматически не показываем;
+ * сначала результат разбора и кнопки „Оставить как есть“ / „Выбрать
+ * главное“; только по „Выбрать главное“ — 2–3 пункта». Результат
+ * разбора — само признание: оно называет состав выгрузки (промпт
+ * презентера). Список по кнопке собирает `buildActionsReply`.
+ */
+export function buildReply(params: BuildReplyParams): Reply {
+  const { texts } = params;
+  const answer = texts.answer;
+
+  /**
+   * Одни чувства — только признание (правка заказчицы 14.09.2026,
+   * п. 1.5; продолжение решения 13.09.2026, ответ 1.4): «не пытаемся
+   * превращать эмоциональную выгрузку в продуктивность… отвечаем коротко
+   * и спокойно». Кнопки к делам — то самое превращение, только вежливое.
+   * Кризис сюда не доходит: остановлен раньше своим сценарием.
+   */
+  if (params.feelingsOnly === true) {
+    return { text: params.acknowledgement, buttons: [] };
+  }
+
+  const lines: string[] = [params.acknowledgement];
+  if (params.omitQuestion !== true) lines.push('', answer.keepOrPick);
+
+  const pick =
+    params.batchId === undefined
+      ? ANSWER_ACTION.pick
+      : `${ANSWER_ACTION.pick}:${toShortId(params.batchId)}`;
+
+  return {
+    text: lines.join('\n'),
+    buttons: [
+      { label: answer.buttonKeep, action: ANSWER_ACTION.keep },
+      { label: answer.buttonPick, action: pick },
+    ],
+  };
+}
+
+export interface ActionsReplyParams {
+  readonly texts: TextProfile;
   /** Заголовки дел из фильтра выдачи, в его порядке. */
   readonly actions: readonly string[];
   /**
    * Первое показанное дело — к нему ведёт «Сделать сейчас» (ревизия
    * этапа 3, E2).
    *
-   * Ответ строится очередью выдачи с упомянутым в выгрузке, а «Сегодня»
+   * Список строится очередью выдачи с упомянутым в выгрузке, а «Сегодня»
    * — другой очередью; без кода кнопка открывала «первое на сегодня»,
    * которого в показанном списке могло не быть, и отвечала «На сегодня
    * ничего срочного» под только что показанными делами. Пусто — у
@@ -104,52 +179,26 @@ export interface BuildReplyParams {
   readonly firstItemId?: string | undefined;
   /** Сколько дел осталось за пределами выдачи. */
   readonly hidden: number;
-  /**
-   * §13.7: в выгрузке есть эмоция или силы на нуле. Тогда объём
-   * сокращается, а разговор закрывается вместо вопроса.
-   */
-  readonly tired: boolean;
-  /**
-   * Не задавать свой вопрос.
-   *
-   * Нужно одному случаю: сразу после этого ответа начинается онбординг
-   * (§12.2), и его первый вопрос станет единственным. Иначе у человека
-   * оказалось бы два открытых вопроса подряд, чего §13.9 не допускает.
-   */
-  readonly omitQuestion?: boolean | undefined;
-  /**
-   * В выгрузке одни чувства, новых дел нет (правка заказчицы
-   * 14.09.2026, п. 1.5). Ответ — одно признание: без старых дел, без
-   * вопроса, без кнопок к делам.
-   */
-  readonly feelingsOnly?: boolean | undefined;
 }
 
 /**
- * Собирает реплику. Чистая функция: ни модели, ни базы, ни времени —
- * иначе форму ответа нельзя проверить таблицей случаев.
+ * Список по кнопке «Выбрать главное» (решение заказчицы 15.09.2026) —
+ * прежняя выдача §13.2: подводка, до трёх дел, фраза о сохранённом, три
+ * кнопки. Вопроса нет: его человек уже получил кнопками и ответил.
  */
-export function buildReply(params: BuildReplyParams): Reply {
-  const { texts, actions, hidden, tired } = params;
+export function buildActionsReply(params: ActionsReplyParams): Reply {
+  const { texts, actions, hidden } = params;
   const answer = texts.answer;
-  const lines: string[] = [params.acknowledgement];
 
-  /**
-   * Одни чувства — только признание (правка заказчицы 14.09.2026,
-   * п. 1.5; продолжение решения 13.09.2026, ответ 1.4).
-   *
-   * 13.09 она отменила три старых дела из §13.2 её ТЗ на монолог без
-   * дел; тогда под признанием остались вопрос «разобрать что-нибудь из
-   * дел?» и кнопки к бэклогу. 14.09 она добавила: «не пытаемся
-   * превращать эмоциональную выгрузку в продуктивность… отвечаем коротко
-   * и спокойно». Вопрос про дела и кнопка «Показать все» — это то самое
-   * превращение, только вежливое; убраны. Бэклог никуда не делся — он в
-   * /menu и в утреннем. Кризис сюда не доходит: остановлен раньше своим
-   * сценарием.
-   */
-  if (params.feelingsOnly === true) {
-    return { text: params.acknowledgement, buttons: [] };
-  }
+  if (actions.length === 0) return { text: answer.nothingToPick, buttons: [] };
+
+  const lines: string[] = [
+    actions.length === 1 ? answer.actionsLeadSingle : answer.actionsLead,
+    ...actions.map((text) => answer.bullet(text)),
+    '',
+    hidden > 0 ? answer.restSaved : answer.nothingHidden,
+  ];
+
   const doNow = {
     label: answer.buttonDoNow,
     action:
@@ -157,85 +206,6 @@ export function buildReply(params: BuildReplyParams): Reply {
         ? ANSWER_ACTION.now
         : `${ANSWER_ACTION.now}:${toShortId(params.firstItemId)}`,
   };
-
-  if (actions.length === 0) {
-    /**
-     * Дел в выдаче нет. Два случая, и различает их `hidden`.
-     *
-     * Ноль скрытых — дел нет вовсе: фильтр показывает всё, что годится,
-     * пока не упрётся в предел. Строка «Срочного на сегодня нет — всё
-     * остальное сохранила» стояла на несуществующий случай и не
-     * печаталась никогда (ревизия этапа 3, E19); убрана вместе с текстом.
-     *
-     * Скрытые есть — сюда это доходит только не из одних чувств (те
-     * отвечены выше одним признанием): например, всё сказанное оказалось
-     * уже записанным, а бэклог полон. «Ничего не висит» тогда было бы
-     * ложью — не говорится; посмотреть бэклог можно кнопкой. Вопроса
-     * нет: «с чего начнём?» без единого названного дела — не вопрос, а
-     * пустое место; прежний «разобрать что-нибудь из дел?» ушёл вместе
-     * с ответом на одни чувства (п. 1.5).
-     */
-    if (hidden === 0) lines.push('', answer.nothingHidden);
-
-    return {
-      text: lines.join('\n'),
-      buttons: [
-        { label: answer.buttonShowAll, action: ANSWER_ACTION.all },
-        { label: answer.buttonLater, action: ANSWER_ACTION.later },
-      ],
-    };
-  }
-
-  lines.push('', actions.length === 1 ? answer.actionsLeadSingle : answer.actionsLead);
-  lines.push(...actions.map((text) => answer.bullet(text)));
-
-  if (tired) {
-    /**
-     * §13.7 сокращает **список**, а не гарантию (исправлено 03.09.2026).
-     *
-     * Прежде эта ветка ничего не говорила о сохранённом и не давала
-     * кнопки к остальным делам. Довод был такой: в эталонном ответе
-     * §13.7 фразы о сохранённом нет. Живая выгрузка проджекта показала,
-     * чем это кончается: он выгрузил двадцать дел словами «давай всё
-     * запишем, у меня в голове бардак, я просто хочу выдохнуть» — и
-     * получил одно действие, ни слова о том, что остальное записано, и
-     * ни одной кнопки, чтобы это увидеть.
-     *
-     * **Два места ТЗ против прежнего довода.**
-     *
-     * §13.9, общее правило реплик: «Завершение короткое: остальное
-     * сохранено, держать в голове не нужно». Оно без оговорок про
-     * усталость, а фраза о сохранённом коротка — значит «сокращение
-     * объёма» её не задевает.
-     *
-     * §13.2, главный эталон ответа на выгрузку: в нём усталость названа
-     * прямо («и просто усталость от того, что все это висит в голове»),
-     * и при этом есть и «Остальное пока никуда не убежит», и кнопка
-     * «Разобрать все». Значит усталость сама по себе ни фразу, ни кнопку
-     * не отменяет.
-     *
-     * Что осталось от §13.7 в точности: признание одной строкой,
-     * сокращённый список, **вопроса нет** — разговор закрывается.
-     *
-     * Обещаем только то, что есть: нечего прятать — нет ни фразы, ни
-     * кнопки.
-     */
-    if (hidden > 0) lines.push('', answer.restSaved);
-    lines.push('', answer.closingTired);
-
-    const exit = { label: answer.buttonLater, action: ANSWER_ACTION.later };
-
-    return {
-      text: lines.join('\n'),
-      buttons:
-        hidden > 0
-          ? [doNow, { label: answer.buttonShowAll, action: ANSWER_ACTION.all }, exit]
-          : [doNow, exit],
-    };
-  }
-
-  lines.push('', hidden > 0 ? answer.restSaved : answer.nothingHidden);
-  if (params.omitQuestion !== true) lines.push('', answer.question);
 
   return {
     text: lines.join('\n'),
@@ -449,10 +419,7 @@ export async function presentDump(
     reply: buildReply({
       texts,
       acknowledgement: checked.text,
-      actions: params.actions,
-      firstItemId: params.firstItemId,
-      hidden: params.hidden,
-      tired,
+      batchId: params.batchId,
       omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
     }),
