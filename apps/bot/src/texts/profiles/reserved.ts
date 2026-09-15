@@ -107,7 +107,11 @@ export const reserved: TextProfile = {
   answer: {
     acknowledgementFallback: 'Я тебя услышала.',
     acknowledgementTiredFallback: 'Поняла. Сегодня тяжело.',
-    acknowledgementTasks: (tasks) => `У тебя ${tasks}.`,
+    acknowledgementTasks: (tasks) => `Записала ${tasks}.`,
+    sphereLine: (name, count) => `${name} — ${count}`,
+    dueToday: (list) => `На сегодня: ${list}.`,
+    dueTomorrow: (list) => `На завтра: ${list}.`,
+    allSaved: 'Всё сохранила.',
 
     actionsLead: 'На сегодня я бы взяла вот это:',
     actionsLeadSingle: 'Предлагаю сделать только одно, самое главное:',
@@ -116,7 +120,6 @@ export const reserved: TextProfile = {
     restSaved: 'Остальное пока никуда не убежит.',
     nothingHidden: 'Больше ничего не висит.',
 
-    keepOrPick: 'Оставить как есть или выбрать главное?',
     buttonKeep: 'Оставить как есть',
     buttonPick: 'Выбрать главное',
     keptAsIs: 'Хорошо, оставляю как есть. Всё записано.',

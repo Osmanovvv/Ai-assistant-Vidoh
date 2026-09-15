@@ -32,7 +32,7 @@ import {
 
 const texts = defaultTexts;
 
-const ack = 'Я тебя услышала. У тебя три дела.';
+const ack = 'Я тебя услышала. Записала 3 дела.';
 
 const NOTHING: DumpComposition = {
   tasks: 0,
@@ -46,24 +46,72 @@ const NOTHING: DumpComposition = {
 describe('buildReply', () => {
   const batchId = '22222222-2222-4222-8222-222222222222';
 
-  it('после разбора — признание, вопрос «оставить или выбрать» и две кнопки (решение заказчицы 15.09.2026)', () => {
+  it('после разбора — одно компактное сообщение по её образцу и две кнопки (заказчица, 16.09.2026, п. 3)', () => {
     /**
-     * §13.2 её ТЗ показывал под признанием до трёх дел и спрашивал «с
-     * чего начнём». 15.09.2026 она решила иначе: «после разбора действия
-     * автоматически не показываем; сначала результат разбора и кнопки
-     * „Оставить как есть“ / „Выбрать главное“; только по „Выбрать
-     * главное“ — 2–3 пункта». Результат разбора — само признание: оно
-     * называет состав выгрузки.
+     * 15.09.2026: «после разбора действия автоматически не показываем;
+     * сначала результат разбора и кнопки». 16.09.2026 она дала образец
+     * результата: признание со счётом, раскладка по сферам с числами, что
+     * на завтра, «Всё сохранила» — и кнопки без вопроса.
      */
-    const reply = buildReply({ texts, acknowledgement: ack, batchId });
+    const reply = buildReply({
+      texts,
+      acknowledgement: 'Я тебя услышала. Записала 6 дел.',
+      batchId,
+      summary: {
+        spheres: [
+          { name: 'работа', icon: '💼', count: 4 },
+          { name: 'покупки', icon: '🛒', count: 2 },
+        ],
+        today: [],
+        tomorrow: ['Съездить в офис и распечатать документы'],
+      },
+    });
 
-    expect(reply.text).toBe(`${ack}\n\n${texts.answer.keepOrPick}`);
-    expect(reply.text).not.toContain(texts.answer.actionsLead);
-    expect(countQuestions(reply.text)).toBe(1);
+    expect(reply.text).toBe(
+      [
+        'Я тебя услышала. Записала 6 дел.',
+        '',
+        '💼 Работа — 4',
+        '🛒 Покупки — 2',
+        '',
+        'На завтра: съездить в офис и распечатать документы.',
+        '',
+        'Всё сохранила.',
+      ].join('\n'),
+    );
+    expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonKeep,
       texts.answer.buttonPick,
     ]);
+  });
+
+  it('сегодня и завтра — своими строками; сфера без иконки — без иконки; без итога — только признание и «Всё сохранила»', () => {
+    const both = buildReply({
+      texts,
+      acknowledgement: ack,
+      summary: {
+        spheres: [{ name: 'дача', icon: undefined, count: 1 }],
+        today: ['Позвонить в банк', 'Забрать справку'],
+        tomorrow: ['Съездить в офис'],
+      },
+    });
+    expect(both.text).toBe(
+      [
+        ack,
+        '',
+        'Дача — 1',
+        '',
+        'На сегодня: позвонить в банк, забрать справку.',
+        'На завтра: съездить в офис.',
+        '',
+        texts.answer.allSaved,
+      ].join('\n'),
+    );
+
+    const bare = buildReply({ texts, acknowledgement: ack, batchId });
+    expect(bare.text).toBe(`${ack}\n\n${texts.answer.allSaved}`);
+    expect(bare.text).not.toContain(texts.answer.actionsLead);
   });
 
   it('«Выбрать главное» несёт код выгрузки: сказанное в ней идёт первым', () => {
@@ -81,12 +129,11 @@ describe('buildReply', () => {
     expect(reply.buttons[1]?.action).toBe(ANSWER_ACTION.pick);
   });
 
-  it('впереди вопрос опроса — своей строки с вопросом нет, кнопки остаются', () => {
-    // §13.9: один открытый вопрос на обмен. Кнопки — не вопрос, а выход
-    // к делам, и без них первая выгрузка осталась бы без «Выбрать главное».
-    const reply = buildReply({ texts, acknowledgement: ack, batchId, omitQuestion: true });
+  it('своего вопроса у ответа нет: впереди вопрос опроса — он и остаётся единственным', () => {
+    // §13.9: один открытый вопрос на обмен. Ответ на выгрузку с 16.09.2026
+    // вопроса не задаёт вовсе — кнопки не вопрос, а выход к делам.
+    const reply = buildReply({ texts, acknowledgement: ack, batchId });
 
-    expect(reply.text).toBe(ack);
     expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons).toHaveLength(2);
   });
@@ -108,19 +155,21 @@ describe('buildReply', () => {
   it('ни при каком сочетании не бывает двух вопросов', () => {
     // Инвариант 10. Проверяется перебором, а не примером: правило легко
     // нарушить, добавив фразу с вопросительным знаком в словарь.
-    for (const omitQuestion of [false, true]) {
-      for (const feelingsOnly of [false, true]) {
-        for (const profile of Object.keys(profiles)) {
-          const reply = buildReply({
-            texts: textsFor(profile),
-            acknowledgement: ack,
-            batchId,
-            omitQuestion,
-            feelingsOnly,
-          });
+    for (const feelingsOnly of [false, true]) {
+      for (const profile of Object.keys(profiles)) {
+        const reply = buildReply({
+          texts: textsFor(profile),
+          acknowledgement: ack,
+          batchId,
+          feelingsOnly,
+          summary: {
+            spheres: [{ name: 'работа', icon: '💼', count: 2 }],
+            today: ['Позвонить'],
+            tomorrow: ['Съездить'],
+          },
+        });
 
-          expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
-        }
+        expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
       }
     }
   });
@@ -271,12 +320,14 @@ describe('правка из панели и склейка §13.2', () => {
     }
 
     // Перебор не пустой: реплика, стоящая рядом с вопросом, в нём есть.
-    // Прежде это была `restSaved` (дефект ревизии второго этапа); с
-    // решением заказчицы 15.09.2026 рядом с вопросом стоит признание.
-    expect(checked).toContain('answer.acknowledgementFallback');
+    // Прежде это была `restSaved` (дефект ревизии второго этапа), потом
+    // признание (15.09.2026); с 16.09.2026 у ответа на выгрузку своего
+    // вопроса нет вовсе, и рядом с чужим вопросом стоит только маркер
+    // пункта списка по кнопке.
+    expect(checked).toContain('answer.bullet');
   });
 
-  it('правка без вопроса проходит запись и в ответе остаётся один вопрос', () => {
+  it('правка без вопроса проходит запись, и вопросов в ответе не прибавляется', () => {
     // Обратная сторона: правило, которое не пропускает ничего, кончается
     // тем, что его снимают целиком.
     const said = 'Я тебя услышала, всё записала.';
@@ -292,7 +343,7 @@ describe('правка из панели и склейка §13.2', () => {
     });
 
     expect(built.text).toContain(said);
-    expect(countQuestions(built.text)).toBe(1);
+    expect(countQuestions(built.text)).toBe(0);
   });
 });
 
@@ -310,19 +361,18 @@ describe('acknowledgementOf — признание из состава (зака
     applyOverrides(new Map());
   });
 
-  it('«Я тебя услышала. У тебя шесть дел.»', () => {
-    expect(withTasks(6)).toBe('Я тебя услышала. У тебя шесть дел.');
+  it('«Я тебя услышала. Записала 6 дел.» — цифрой, как в её образце', () => {
+    expect(withTasks(6)).toBe('Я тебя услышала. Записала 6 дел.');
   });
 
-  it('склоняет: одно дело, два дела, пять дел; после десяти — цифрами', () => {
-    expect(withTasks(1)).toBe('Я тебя услышала. У тебя одно дело.');
-    expect(withTasks(2)).toBe('Я тебя услышала. У тебя два дела.');
-    expect(withTasks(4)).toBe('Я тебя услышала. У тебя четыре дела.');
-    expect(withTasks(5)).toBe('Я тебя услышала. У тебя пять дел.');
-    expect(withTasks(10)).toBe('Я тебя услышала. У тебя десять дел.');
-    expect(withTasks(11)).toBe('Я тебя услышала. У тебя 11 дел.');
-    expect(withTasks(21)).toBe('Я тебя услышала. У тебя 21 дело.');
-    expect(withTasks(22)).toBe('Я тебя услышала. У тебя 22 дела.');
+  it('склоняет: 1 дело, 2 дела, 5 дел, 11 дел, 21 дело, 22 дела', () => {
+    expect(withTasks(1)).toBe('Я тебя услышала. Записала 1 дело.');
+    expect(withTasks(2)).toBe('Я тебя услышала. Записала 2 дела.');
+    expect(withTasks(4)).toBe('Я тебя услышала. Записала 4 дела.');
+    expect(withTasks(5)).toBe('Я тебя услышала. Записала 5 дел.');
+    expect(withTasks(11)).toBe('Я тебя услышала. Записала 11 дел.');
+    expect(withTasks(21)).toBe('Я тебя услышала. Записала 21 дело.');
+    expect(withTasks(22)).toBe('Я тебя услышала. Записала 22 дела.');
   });
 
   it('без дел — только признание', () => {
@@ -330,7 +380,7 @@ describe('acknowledgementOf — признание из состава (зака
   });
 
   it('при высказанном состоянии — тон усталости, счёт остаётся', () => {
-    expect(withTasks(2, 1)).toBe('Поняла. Сегодня тяжело. У тебя два дела.');
+    expect(withTasks(2, 1)).toBe('Поняла. Сегодня тяжело. Записала 2 дела.');
     expect(withTasks(0, 1)).toBe(texts.answer.acknowledgementTiredFallback);
   });
 
@@ -338,7 +388,7 @@ describe('acknowledgementOf — признание из состава (зака
     applyOverrides(new Map([['answer.acknowledgementFallback', 'Услышала тебя.']]));
 
     expect(acknowledgementOf({ ...NOTHING, tasks: 3 }, textsFor())).toBe(
-      'Услышала тебя. У тебя три дела.',
+      'Услышала тебя. Записала 3 дела.',
     );
   });
 });
@@ -350,10 +400,10 @@ describe('presentDump — ответ на выгрузку целиком', () =
   it('признание из состава, вопрос «оставить или выбрать», две кнопки, дел под признанием нет', () => {
     const result = presentDump(params);
 
-    expect(result.reply.text.startsWith('Я тебя услышала. У тебя три дела.')).toBe(true);
+    expect(result.reply.text.startsWith('Я тебя услышала. Записала 3 дела.')).toBe(true);
     expect(result.reply.text).not.toContain('— Записать сына к врачу');
-    expect(result.reply.text).toContain(texts.answer.keepOrPick);
-    expect(countQuestions(result.reply.text)).toBe(1);
+    expect(result.reply.text).toContain(texts.answer.allSaved);
+    expect(countQuestions(result.reply.text)).toBe(0);
     expect(result.reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonKeep,
       texts.answer.buttonPick,
@@ -372,9 +422,9 @@ describe('presentDump — ответ на выгрузку целиком', () =
       hidden: 7,
     });
 
-    expect(result.reply.text.startsWith('Поняла. Сегодня тяжело. У тебя одно дело.')).toBe(true);
+    expect(result.reply.text.startsWith('Поняла. Сегодня тяжело. Записала 1 дело.')).toBe(true);
     expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
-    expect(countQuestions(result.reply.text)).toBe(1);
+    expect(countQuestions(result.reply.text)).toBe(0);
     expect(result.reply.buttons).toHaveLength(2);
   });
 
@@ -387,7 +437,7 @@ describe('presentDump — ответ на выгрузку целиком', () =
 
   it('неизвестный профиль берёт словарь по умолчанию', () => {
     expect(presentDump({ ...params, profile: 'тёплый-которого-нет' }).reply.text).toContain(
-      texts.answer.keepOrPick,
+      texts.answer.allSaved,
     );
   });
 });

@@ -1,6 +1,7 @@
 import { toShortId } from '../shared/short-id.js';
 import type { ItemType } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
+import type { DumpSummary } from './summary.js';
 
 /**
  * Ответ на выгрузку (задача 2.11).
@@ -100,15 +101,8 @@ export interface BuildReplyParams {
    * Пусто — общее действие без кода.
    */
   readonly batchId?: string | undefined;
-  /**
-   * Не задавать свой вопрос.
-   *
-   * Нужно одному случаю: сразу после этого ответа начинается онбординг
-   * (§12.2), и его первый вопрос станет единственным. Иначе у человека
-   * оказалось бы два открытых вопроса подряд, чего §13.9 не допускает.
-   * Кнопки остаются — они не вопрос, а выход к делам.
-   */
-  readonly omitQuestion?: boolean | undefined;
+  /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
+  readonly summary?: DumpSummary | undefined;
   /**
    * В выгрузке одни чувства, новых дел нет (правка заказчицы
    * 14.09.2026, п. 1.5). Ответ — одно признание: без вопроса и кнопок.
@@ -143,8 +137,32 @@ export function buildReply(params: BuildReplyParams): Reply {
     return { text: params.acknowledgement, buttons: [] };
   }
 
+  /**
+   * Одно компактное сообщение по образцу заказчицы (16.09.2026, п. 3):
+   * признание со счётом, сферы с числами, что на сегодня и на завтра,
+   * «Всё сохранила» — и кнопки. Своего вопроса у ответа нет: кнопки —
+   * не вопрос, а выход к делам, и §13.9 «один вопрос на обмен» держится
+   * даже когда впереди стоит вопрос опроса или уточнения.
+   */
   const lines: string[] = [params.acknowledgement];
-  if (params.omitQuestion !== true) lines.push('', answer.keepOrPick);
+
+  const spheres = (params.summary?.spheres ?? []).map((sphere) => {
+    const name = sphere.name.charAt(0).toUpperCase() + sphere.name.slice(1);
+    const line = answer.sphereLine(name, String(sphere.count));
+    return sphere.icon === undefined ? line : `${sphere.icon} ${line}`;
+  });
+  if (spheres.length > 0) lines.push('', ...spheres);
+
+  const inline = (items: readonly string[]): string =>
+    items.map((text) => text.charAt(0).toLowerCase() + text.slice(1)).join(', ');
+  const today = params.summary?.today ?? [];
+  const tomorrow = params.summary?.tomorrow ?? [];
+  const due: string[] = [];
+  if (today.length > 0) due.push(answer.dueToday(inline(today)));
+  if (tomorrow.length > 0) due.push(answer.dueTomorrow(inline(tomorrow)));
+  if (due.length > 0) lines.push('', ...due);
+
+  lines.push('', answer.allSaved);
 
   const pick =
     params.batchId === undefined
@@ -238,25 +256,11 @@ export function buildActionsReply(params: ActionsReplyParams): Reply {
  * все обычные», и она ответила: «достаточно сразу: „Я тебя услышала.
  * У тебя шесть дел"». Ровно это и собирается — без вызова, без расхода и
  * без сюрпризов в формулировке. Тон усталости остаётся словарным
- * (§13.7), счёт дел — склонённым: «одно дело», «два дела», «пять дел»;
- * до десяти словами, дальше цифрами.
+ * (§13.7), счёт дел — цифрой и со склонением, как в её образце от
+ * 16.09.2026 («Записала 6 дел»): 1 дело, 2 дела, 5 дел.
  */
-const TASK_WORDS = [
-  '',
-  'одно',
-  'два',
-  'три',
-  'четыре',
-  'пять',
-  'шесть',
-  'семь',
-  'восемь',
-  'девять',
-  'десять',
-] as const;
-
 function tasksPhrase(count: number): string {
-  const number = count <= 10 ? (TASK_WORDS[count] ?? String(count)) : String(count);
+  const number = String(count);
   const tail = count % 100;
   const last = count % 10;
   const noun =
@@ -293,7 +297,8 @@ export interface PresentParams {
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
   /** См. `BuildReplyParams.omitQuestion`. */
-  readonly omitQuestion?: boolean | undefined;
+  /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
+  readonly summary?: DumpSummary | undefined;
   /** См. `BuildReplyParams.feelingsOnly`. */
   readonly feelingsOnly?: boolean | undefined;
   /**
@@ -338,8 +343,8 @@ export function presentDump(params: PresentParams): PresentResult {
       texts,
       acknowledgement: acknowledgementOf(params.composition, texts),
       batchId: params.batchId,
-      omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
+      summary: params.summary,
     }),
   };
 }

@@ -41,6 +41,7 @@ import {
   STEP,
 } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
+import { summarizeDump } from '../presenter/summary.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
@@ -1795,17 +1796,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       profile: context.textProfile,
       userId: batch.userId,
       batchId: batch.id,
-      /**
-       * Вопрос уже занят — своего ответ не задаёт.
-       *
-       * Так было у онбординга; с §13.6 сюда добавился экран возвращения.
-       * Инвариант «один вопрос» продукт понимает как один на обмен, а не
-       * на реплику: два вопроса подряд разными сообщениями — тот же
-       * допрос.
-       */
-      omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       feelingsOnly,
       quickAdd,
+      // Раскладка по сферам и «на сегодня / на завтра» — по разобранным
+      // единицам этой выгрузки (заказчица, 16.09.2026, п. 3).
+      summary: summarizeDump(units, { now, timeZone: context.timeZone }),
     });
     /**
      * Под признанием кнопки «Оставить как есть» / «Выбрать главное»

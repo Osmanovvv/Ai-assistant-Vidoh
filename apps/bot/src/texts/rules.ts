@@ -267,9 +267,18 @@ export function contentRefusal(said: string): string | undefined {
  *
  */
 export const BESIDE_QUESTION = [
+  /**
+   * Строки ответа на выгрузку. Своего вопроса у него с 16.09.2026 нет —
+   * образец заказчицы кончается «Всё сохранила» и кнопками, — и вопрос,
+   * внесённый правкой в панели, вернул бы то, от чего она отказалась.
+   */
   'answer.acknowledgementFallback',
   'answer.acknowledgementTiredFallback',
   'answer.acknowledgementTasks',
+  'answer.sphereLine',
+  'answer.dueToday',
+  'answer.dueTomorrow',
+  'answer.allSaved',
   /**
    * Маркер пункта повторяется на каждое дело: один «?» в нём — это два
    * или три вопроса в списке по кнопке, хотя своего вопроса у списка нет.
