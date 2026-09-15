@@ -736,6 +736,78 @@ describe('регулярность (задача 2.18а)', () => {
  * держит так желания и эмоции вне выдачи. Человек назвал день и не увидел
  * дела в этот день.
  */
+describe('заголовок дела — чистое повеление (видео заказчицы 15.09.2026)', () => {
+  /**
+   * Извлечение обязано переписывать мысль в повеление, но на бою
+   * 15.09.2026 из шести дел два пришли с мусором: «Хочу завтра съездить
+   * в офис распечатать документы», «Надо отправить заявление на
+   * продление декретного». Вечернее так и сказало: «Завтра срок: Хочу
+   * завтра съездить…». Код срезает ведущее «надо/нужно/хочу» и слово о
+   * дне, которое уже стало сроком, — только у дел: у желания «хочу» —
+   * смысл, а не мусор.
+   */
+  it('срезает «хочу» и «завтра», когда завтра уже стало сроком', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Хочу завтра съездить в офис распечатать документы',
+            deadline: '2026-09-05',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('Хочу завтра съездить в офис распечатать документы'),
+    );
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.text).toBe('Съездить в офис распечатать документы');
+    expect(result.items[0]?.deadline?.accuracy).toBe('day');
+  });
+
+  it('срезает «надо» без срока, слово о дне без срока оставляет', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          { text: 'Надо отправить заявление на продление декретного' },
+          { text: 'Завтра позвонить в банк' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('Надо отправить заявление на продление декретного', 'Завтра позвонить в банк'),
+    );
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.text).toBe('Отправить заявление на продление декретного');
+    // Срока модель не дала — «завтра» остаётся единственным следом дня.
+    expect(result.items[1]?.text).toBe('Завтра позвонить в банк');
+  });
+
+  it('у желания «хочу» не трогает', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([{ text: 'Хочу научиться играть на гитаре', type: 'DESIRE', priority: 'NONE' }]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('давно хочу гитару'));
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.text).toBe('Хочу научиться играть на гитаре');
+  });
+});
+
 describe('у дела со сроком важности «никакая» не бывает', () => {
   it('дело со сроком и важностью NONE поднимается до SOON', async () => {
     const prompts = await prepare();

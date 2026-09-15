@@ -12,7 +12,7 @@ import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.ser
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
-import { answerBacklogQuery } from '../backlog/query.service.js';
+import { answerBacklogQuery, type BacklogAnswer } from '../backlog/query.service.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
@@ -645,7 +645,77 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
     const answers: string[] = [];
-    const questions: string[] = [];
+
+    /**
+     * Сфера ветки, в которой человек говорит (§8.1, ревизия этапа 3, F4).
+     *
+     * Считается до разбора правок: подбор кандидатов сужается той же
+     * темой, и по той же причине — правка внутри ветки почти наверняка
+     * про запись из неё. И до вопросов: вопрос внутри ветки — про её сферу.
+     */
+    const threadTopic =
+      target?.threadId === undefined
+        ? undefined
+        : await topicByThread(db, batch.userId, target.threadId);
+
+    /**
+     * Вопросы отвечаются **до** раскладки отрезков, и вот почему (видео
+     * заказчицы 15.09.2026). Голосовое: «…потом заказать цветы.
+     * Вспомнить, когда мы последний раз договаривались с няней на
+     * восьмичасовую работу. И если что обговорить с ней новые условия».
+     * Маршрутизатор отдал среднее как QUERY: бот ответил «Про это у меня
+     * ничего не записано», мысль про няню пропала, а «с ней» приклеилось
+     * к соседнему делу.
+     *
+     * Правило, а не догадка: вопрос **внутри выгрузки** (рядом есть
+     * мысли), на который в записях ничего нет, — это мысль. Она уходит в
+     * разбор **на своём месте** среди соседей, чтобы «с ней» читалось про
+     * няню, и ответа «ничего не записано» нет. Вопрос сам по себе,
+     * «на сегодня пусто», «закрыто», «не смогла посмотреть» — как раньше:
+     * там есть что ответить. Тот же принцип, что у ответа на уточнение:
+     * всё сверх ответа — в разбор или в черновик, никогда в никуда.
+     */
+    const hasThought = routed.segments.some((segment) => PARSED_INTENTS.has(segment.intent));
+    const questions: { readonly text: string; readonly answer: BacklogAnswer }[] = [];
+    const segments: Segment[] = [];
+
+    for (const segment of routed.segments) {
+      if (segment.intent !== QUERY_INTENT) {
+        segments.push(segment);
+        continue;
+      }
+
+      const answer = await answerBacklogQuery(
+        {
+          db,
+          ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
+          ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
+          ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+          // Вектор вопроса — платный вызов: под потолок его тоже (3.82).
+          ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+        },
+        {
+          userId: batch.userId,
+          text: segment.text,
+          batchId: batch.id,
+          now,
+          // §8.1: вопрос внутри ветки — про её сферу (F4).
+          ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
+        },
+      );
+
+      if (hasThought && answer.kind === 'nothing') {
+        deps.logger?.info(
+          { batchId: batch.id },
+          'Вопрос внутри выгрузки, на который ответить нечем, уходит в разбор как мысль',
+        );
+        segments.push({ intent: 'DUMP', text: segment.text });
+        continue;
+      }
+
+      questions.push({ text: segment.text, answer });
+      segments.push(segment);
+    }
 
     /**
      * Правки, сказанные **до** первой мысли этой выгрузки.
@@ -736,9 +806,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     /** Прозвучала ли в этой выгрузке мысль до текущего сегмента. */
     let thoughtSaid = false;
 
-    for (const segment of routed.segments) {
+    for (const segment of segments) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
-      else if (segment.intent === QUERY_INTENT) questions.push(segment.text);
+      // QUERY уже отвечен выше — здесь ему делать нечего.
+      else if (segment.intent === QUERY_INTENT) continue;
       else if (PARSED_INTENTS.has(segment.intent)) {
         parsed.push(segment);
         thoughtSaid = true;
@@ -811,23 +882,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.said = true;
       await tell(texts.resolver.answerUnclear);
     }
-
-    /**
-     * §8.1: сообщение внутри ветки обрабатывается в контексте её темы.
-     *
-     * Тема ветки становится темой по умолчанию — то есть тем, куда уйдёт
-     * запись, не попавшая ни в одну тему явно. Женщина, написавшая в
-     * ветку «здоровье», не должна получать своё дело в «личном» только
-     * потому, что не назвала сферу словами.
-     *
-     * Считается до разбора правок: подбор кандидатов сужается той же
-     * темой, и по той же причине — правка внутри ветки почти наверняка
-     * про запись из неё.
-     */
-    const threadTopic =
-      target?.threadId === undefined
-        ? undefined
-        : await topicByThread(db, batch.userId, target.threadId);
 
     /**
      * Правки разбираются по одной и до разбора новых мыслей.
@@ -1071,26 +1125,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
     }
 
-    for (const question of questions) {
+    for (const { answer } of questions) {
       happened.said = true;
-      const answer = await answerBacklogQuery(
-        {
-          db,
-          ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
-          ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
-          ...(deps.logger === undefined ? {} : { logger: deps.logger }),
-          // Вектор вопроса — платный вызов: под потолок его тоже (3.82).
-          ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
-        },
-        {
-          userId: batch.userId,
-          text: question,
-          batchId: batch.id,
-          now,
-          // §8.1: вопрос внутри ветки — про её сферу (F4).
-          ...(threadTopic?.name === undefined ? {} : { topic: threadTopic.name }),
-        },
-      );
 
       /**
        * Про большую цель отвечаем контекстом, а не строкой списка (3.13).
@@ -1269,7 +1305,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * «человек сказал так» и в презентацию, и менять его — другая задача с
      * другим замером. Условия вплетения — в `patch-in-place.ts`.
      */
-    const forExtraction = weaveForExtraction(parsed, routed.segments);
+    const forExtraction = weaveForExtraction(parsed, segments);
 
     // ── Единицы ─────────────────────────────────────────────────────────
     const extracted = await extractUnits(heavy, {

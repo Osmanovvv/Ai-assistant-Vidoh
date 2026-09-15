@@ -13,6 +13,7 @@ import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurr
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
+import { cleanTitle } from './title.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -579,7 +580,9 @@ export function correctItems(
     }
 
     items.push({
-      text: item.text,
+      // Заголовок — повеление без «надо/хочу» и без дня, ставшего сроком
+      // (видео заказчицы 15.09.2026): см. `title.ts`.
+      text: cleanTitle(item.text, { type, hasDeadline: withRule !== undefined }),
       type,
       priority: withUrgency,
       topic: topic ?? ctx.defaultTopic,
