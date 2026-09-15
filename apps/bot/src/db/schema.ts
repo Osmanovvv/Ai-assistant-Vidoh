@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -1385,6 +1386,58 @@ export const appSettings = pgTable('app_settings', {
    */
   updatedBy: text('updated_by'),
 });
+
+/**
+ * Публичные документы продукта (задача 15.09.2026 по просьбе Никиты):
+ * оферта, политика, соглашение, согласие — правятся в панели, отдаются
+ * ботом по адресу `/docs/<slug>`.
+ *
+ * **Содержимое — HTML, уже прошедший отсев** (`documents.service.ts`):
+ * редактор панели отдаёт разметку, и в базу ложится только то, что
+ * страница умеет показать, — заголовки, абзацы, списки, ссылки, таблицы.
+ * Скрипты и прочее выкидываются на записи, а не на показе: показ
+ * доверяет базе.
+ *
+ * Список документов закрыт кодом (`DOCUMENTS`): панель правит текст, а
+ * не заводит новые документы — у каждого своё место в боте и в оферте.
+ * Дата редакции — та, что печатается в шапке документа; редакцию, на
+ * которую человек нажимает «Согласна», задают настройки сервера
+ * (`PRIVACY_POLICY_EDITION`, `OFFER_EDITION`), и они обязаны совпадать
+ * с этой датой — за этим следит runbook, а не код.
+ */
+export const documents = pgTable('documents', {
+  slug: text('slug').primaryKey(),
+  title: text('title').notNull(),
+  html: text('html').notNull(),
+  /** Дата редакции из шапки документа; пусто — редакция ещё не назначена. */
+  editionDate: date('edition_date', { mode: 'string' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Логин администратора, сохранившего эту версию (§16). */
+  updatedBy: text('updated_by'),
+});
+
+/**
+ * История версий документа: каждое сохранение — строка. Нужна, чтобы
+ * откатить неудачную правку и чтобы показать, что именно действовало в
+ * день, когда человек соглашался (спор по оферте — это спор о тексте).
+ */
+export const documentVersions = pgTable(
+  'document_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slug: text('slug')
+      .notNull()
+      .references(() => documents.slug, { onDelete: 'cascade' }),
+    html: text('html').notNull(),
+    editionDate: date('edition_date', { mode: 'string' }),
+    savedAt: timestamp('saved_at', { withTimezone: true }).notNull().defaultNow(),
+    savedBy: text('saved_by'),
+  },
+  (table) => [index('document_versions_slug_idx').on(table.slug, table.savedAt)],
+);
+
+export type DocumentRow = typeof documents.$inferSelect;
+export type DocumentVersion = typeof documentVersions.$inferSelect;
 
 /**
  * Реплики, изменённые из панели (§13.9, задача 4.13).

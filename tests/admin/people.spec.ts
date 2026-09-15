@@ -420,7 +420,15 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
       await route.continue();
     });
 
+    // Строка «Аня» есть и в списке без поиска, так что ждать надо сам
+    // запрос: иначе проверка успевала пройти до отложенного поиска и
+    // краснела на пустом `sent` (15.09.2026, второй прогон подряд).
+    const searched = page.waitForRequest(
+      (request) =>
+        request.url().includes('/admin/api/people') && searchedFor(request) !== undefined,
+    );
     await page.locator('input[name="q"]').fill('Аня');
+    await searched;
     await expect(page.getByRole('row', { name: /Аня/u })).toBeVisible();
 
     const search = sent.filter((one) => one.q !== undefined);

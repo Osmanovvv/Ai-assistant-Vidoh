@@ -495,3 +495,264 @@ textarea.реплика__поле {
   border: 1px solid var(--граница, #e6e0da);
   border-radius: 8px;
 }
+
+/* ── Документы: список, страница, редактор «как Word» ────────────────── */
+
+.документы {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.документы__строка {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: baseline;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--фон-второй);
+}
+
+.документы__имя {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--акцент-основной);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.документы__имя:hover {
+  text-decoration: underline;
+}
+
+.документы__когда {
+  color: var(--текст-тихий);
+  font-size: 13px;
+}
+
+.документы__ссылка {
+  color: var(--акцент-основной);
+  font-size: 13px;
+}
+
+.документ__шапка {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.документ__назад {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.документ__свойства {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+
+.документ__дата .поле__ввод {
+  width: 180px;
+}
+
+.документ__действия {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.документ__сохранить {
+  width: auto;
+  padding: 10px 22px;
+}
+
+/* Панель инструментов — липкая: документ длинный, кнопки нужны везде. */
+.инструменты {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--фон-второй);
+  border-bottom: none;
+  border-radius: var(--радиус) var(--радиус) 0 0;
+  background: #fbf9f7;
+}
+
+.инструменты__группа {
+  display: inline-flex;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--фон-второй);
+}
+
+.инструмент {
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--текст);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.инструмент:hover:not(:disabled) {
+  background: var(--фон-второй);
+}
+
+.инструмент:disabled {
+  color: var(--текст-тихий);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.инструмент--включён {
+  border-color: var(--акцент);
+  background: var(--фон-второй);
+  font-weight: 600;
+}
+
+.инструмент--выбор {
+  padding: 5px 6px;
+  border: 1px solid var(--фон-второй);
+  background: #fff;
+}
+
+/* Лист — как страница документа: белый, с полями, шрифт как у страницы. */
+.документ__лист {
+  border: 1px solid var(--фон-второй);
+  border-radius: 0 0 var(--радиус) var(--радиус);
+  background: #fff;
+  box-shadow: var(--тень);
+}
+
+.документ__лист .ProseMirror {
+  min-height: 60vh;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 36px 40px 64px;
+  outline: none;
+  color: #1c1b19;
+  font:
+    16px/1.6 Georgia,
+    'Times New Roman',
+    serif;
+}
+
+.документ__лист .ProseMirror h1 {
+  margin: 20px 0 10px;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.документ__лист .ProseMirror h2 {
+  margin: 20px 0 8px;
+  font-size: 20px;
+}
+
+.документ__лист .ProseMirror h3 {
+  margin: 16px 0 6px;
+  font-size: 18px;
+}
+
+.документ__лист .ProseMirror h4 {
+  margin: 14px 0 6px;
+  font-size: 16px;
+}
+
+.документ__лист .ProseMirror p,
+.документ__лист .ProseMirror li {
+  margin: 0 0 10px;
+}
+
+.документ__лист .ProseMirror blockquote {
+  margin: 12px 0;
+  padding: 4px 16px;
+  border-left: 3px solid #d9d6cf;
+  color: #4a4843;
+}
+
+.документ__лист .ProseMirror a {
+  color: #1f4e79;
+}
+
+.документ__лист .ProseMirror hr {
+  margin: 20px 0;
+  border: 0;
+  border-top: 1px solid #d9d6cf;
+}
+
+.документ__лист .ProseMirror table {
+  width: 100%;
+  margin: 12px 0;
+  border-collapse: collapse;
+  font-size: 15px;
+  table-layout: fixed;
+}
+
+.документ__лист .ProseMirror th,
+.документ__лист .ProseMirror td {
+  position: relative;
+  padding: 6px 8px;
+  border: 1px solid #d9d6cf;
+  vertical-align: top;
+}
+
+.документ__лист .ProseMirror th {
+  background: #f1efea;
+  font-weight: 600;
+  text-align: left;
+}
+
+.документ__лист .ProseMirror .selectedCell::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  content: '';
+  background: rgb(203 170 159 / 25%);
+  pointer-events: none;
+}
+
+.документ__история-имя {
+  margin-top: 24px;
+}
+
+.документ__история {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--текст-тихий);
+}
+
+.документ__версия {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--фон-второй);
+}
+
+.документ__вернуть {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+@media (max-width: 600px) {
+  .документ__лист .ProseMirror {
+    padding: 20px 16px 48px;
+  }
+}

@@ -46,6 +46,18 @@ import {
   type SettingsRegistry,
 } from '../../modules/settings/settings.repo.js';
 import { saveText, textsView } from '../../modules/admin/texts.js';
+import {
+  documentKind,
+  documentOf,
+  listDocuments,
+  saveDocument,
+  versionHtml,
+  versionsOf,
+} from '../../modules/documents/documents.service.js';
+import { DOCUMENTS_PATH } from '../documents.js';
+
+/** Номер версии документа — uuid; всё прочее в базу не ходит. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 import { TextsRegistry } from '../../texts/registry.js';
 import { costBreakdown } from '../../modules/metering/cost-breakdown.js';
 import { hasAnyRun, MEASURED_STAGES, RESOLVER_STAGE } from '../../eval/freshness.js';
@@ -496,6 +508,9 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
    * 128 КБ — с запасом на несколько лет и всё ещё немного: путь за
    * стражем, и слать сюда мегабайты некому.
    */
+  // Документы — целиком в теле запроса, и оферта длиннее общего предела
+  // панели; свой разборщик стоит первым, общий его уже не перечитывает.
+  router.use('/api/documents', express.json({ limit: '2mb' }));
   router.use('/api', express.json({ limit: '128kb' }));
 
   /**
@@ -825,6 +840,136 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
               res.status(500).json({ error: 'не удалось сохранить реплику' });
             },
           );
+      },
+    );
+  }
+
+  /**
+   * Публичные документы (15.09.2026, просьба Никиты): оферта, политика,
+   * соглашение, согласие правятся в панели редактором и отдаются ботом
+   * по `/docs/<slug>`. Не персональные данные: текст один на всех.
+   */
+  if (deps.db !== undefined) {
+    const db = deps.db;
+
+    closed(
+      'get',
+      '/api/documents',
+      { personal: false, why: 'публичные документы продукта, одни для всех' },
+      (_req: Request, res: Response) => {
+        void listDocuments(db).then(
+          (list) => {
+            res.json({
+              rows: list.map((one) => ({ ...one, publicPath: `${DOCUMENTS_PATH}/${one.slug}` })),
+            });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать документы' });
+          },
+        );
+      },
+    );
+
+    closed(
+      'get',
+      '/api/documents/:slug',
+      { personal: false, why: 'текст публичного документа и история его версий' },
+      (req: Request, res: Response) => {
+        const slug = String(req.params['slug'] ?? '');
+        const kind = documentKind(slug);
+        if (kind === undefined) {
+          res.status(404).json({ error: 'нет такого документа' });
+          return;
+        }
+
+        void Promise.all([documentOf(db, slug), versionsOf(db, slug)]).then(
+          ([row, versions]) => {
+            res.json({
+              slug,
+              title: kind.title,
+              html: row?.html ?? '',
+              editionDate: row?.editionDate ?? null,
+              updatedAt: row?.updatedAt ?? null,
+              updatedBy: row?.updatedBy ?? null,
+              publicPath: `${DOCUMENTS_PATH}/${slug}`,
+              versions,
+            });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать документ' });
+          },
+        );
+      },
+    );
+
+    closed(
+      'get',
+      '/api/documents/:slug/versions/:id',
+      { personal: false, why: 'прежняя версия публичного документа' },
+      (req: Request, res: Response) => {
+        const slug = String(req.params['slug'] ?? '');
+        const id = String(req.params['id'] ?? '');
+        if (documentKind(slug) === undefined || !UUID_RE.test(id)) {
+          res.status(404).json({ error: 'нет такой версии' });
+          return;
+        }
+
+        void versionHtml(db, slug, id).then(
+          (html) => {
+            if (html === undefined) {
+              res.status(404).json({ error: 'нет такой версии' });
+              return;
+            }
+            res.json({ html });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать версию' });
+          },
+        );
+      },
+    );
+
+    /**
+     * Сохранение = публикация: страница отдаёт последнюю сохранённую
+     * версию. Отсев разметки и проверки — в службе; отказ называет
+     * причину словами (пусто, слишком велико, дата не датой).
+     */
+    closed(
+      'post',
+      '/api/documents/:slug',
+      { personal: false, why: 'правка публичного документа, данных человека нет' },
+      (req: Request, res: Response) => {
+        const slug = String(req.params['slug'] ?? '');
+        const body = (req.body ?? {}) as { html?: unknown; editionDate?: unknown };
+        const html = typeof body.html === 'string' ? body.html : '';
+        const editionDate =
+          typeof body.editionDate === 'string' && body.editionDate.trim() !== ''
+            ? body.editionDate.trim()
+            : null;
+
+        void saveDocument(db, {
+          slug,
+          html,
+          editionDate,
+          by: req.admin?.login ?? 'неизвестно',
+        }).then(
+          (outcome) => {
+            if (outcome.ok) {
+              res.json({ ok: true });
+              return;
+            }
+            res
+              .status(outcome.why.startsWith('нет такого') ? 404 : 400)
+              .json({ error: outcome.why });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось сохранить документ' });
+          },
+        );
       },
     );
   }
