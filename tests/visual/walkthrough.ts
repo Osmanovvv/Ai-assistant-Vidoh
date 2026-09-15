@@ -211,8 +211,8 @@ try {
 
     const bulletsInReply = (weary.text.match(/^—/gmu) ?? []).length;
     check(
-      'под признанием дел нет, есть вопрос «оставить или выбрать»',
-      bulletsInReply === 0 && has(weary, defaultTexts.answer.keepOrPick),
+      'под признанием дел нет, есть «Всё сохранила»',
+      bulletsInReply === 0 && has(weary, defaultTexts.answer.allSaved),
       weary.text,
     );
     check(
@@ -258,8 +258,8 @@ try {
       tired.text,
     );
     check(
-      'под признанием — вопрос «оставить или выбрать», а не список',
-      has(tired, defaultTexts.answer.keepOrPick) && (tired.text.match(/^—/gmu) ?? []).length === 0,
+      'под признанием — «Всё сохранила», а не список',
+      has(tired, defaultTexts.answer.allSaved) && (tired.text.match(/^—/gmu) ?? []).length === 0,
       tired.text,
     );
   }

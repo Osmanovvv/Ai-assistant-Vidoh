@@ -95,11 +95,20 @@ export interface TextProfile {
     /** То же, когда в выгрузке есть эмоция: §13.7 требует одной строки. */
     readonly acknowledgementTiredFallback: string;
     /**
-     * Счёт дел следом за признанием (заказчица, 16.09.2026): «У тебя шесть
-     * дел.» Подстановка — уже склонённая: «одно дело», «два дела», «пять
-     * дел»; считает код, не модель.
+     * Счёт дел следом за признанием (заказчица, 16.09.2026): «Записала 6
+     * дел.» Подстановка — уже склонённая: «1 дело», «2 дела», «5 дел»;
+     * считает код, не модель.
      */
     readonly acknowledgementTasks: (tasks: string) => string;
+    /**
+     * Компактный итог разбора по её образцу (16.09.2026, п. 3): строка
+     * сферы «Работа — 4» (иконку подставляет код), «На сегодня: …»,
+     * «На завтра: …» и закрывающее «Всё сохранила.» — вместо вопроса.
+     */
+    readonly sphereLine: (name: string, count: string) => string;
+    readonly dueToday: (list: string) => string;
+    readonly dueTomorrow: (list: string) => string;
+    readonly allSaved: string;
 
     readonly actionsLead: string;
     /** §13.7: при «я на нуле» предлагается ровно одно дело. */
@@ -111,12 +120,7 @@ export interface TextProfile {
     /** Когда за пределами выдачи ничего не осталось. */
     readonly nothingHidden: string;
 
-    /**
-     * Единственный вопрос ответа на выгрузку (решение заказчицы
-     * 15.09.2026): оставить как есть или выбрать главное. Дел в ответе
-     * нет — они по кнопке.
-     */
-    readonly keepOrPick: string;
+    /** Кнопки под итогом разбора (решение заказчицы 15.09.2026). */
     readonly buttonKeep: string;
     readonly buttonPick: string;
     /** Нажали «Оставить как есть». */

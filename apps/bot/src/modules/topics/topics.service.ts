@@ -42,7 +42,7 @@ import { listTopics, normalizeTopicName } from './topics.repo.js';
  *
  * §12.4 ТЗ: эмодзи как маркер, не как украшение.
  */
-const TOPIC_ICONS: Readonly<Record<string, string>> = {
+export const TOPIC_ICONS: Readonly<Record<string, string>> = {
   семья: '👨‍👩‍👧',
   здоровье: '💊',
   работа: '💼',
@@ -63,8 +63,22 @@ export interface TopicServiceDeps {
 /** «ё» и регистр не делают тему другой темой. */
 const normalize = normalizeTopicName;
 
+/**
+ * Иконка сферы по имени — регистр и «ё» не важны (`normalizeTopicName`).
+ * Единственное место сопоставления: та же иконка идёт в ветку и в итог
+ * разбора (16.09.2026); прежде «учёба» в карте с «ё» не находилась
+ * после нормализации имени.
+ */
+const ICONS_BY_KEY = new Map(
+  Object.entries(TOPIC_ICONS).map(([name, emoji]) => [normalizeTopicName(name), emoji]),
+);
+
+export function topicIcon(name: string): string | undefined {
+  return ICONS_BY_KEY.get(normalizeTopicName(name));
+}
+
 async function iconFor(deps: TopicServiceDeps, name: string): Promise<string | undefined> {
-  const emoji = TOPIC_ICONS[normalize(name)];
+  const emoji = topicIcon(name);
   if (emoji === undefined) return undefined;
 
   try {
