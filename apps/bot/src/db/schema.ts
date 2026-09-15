@@ -1910,6 +1910,14 @@ export const billingSubscriptions = pgTable(
 
     canceledAt: timestamp('canceled_at', { withTimezone: true }),
     lastRenewalAt: timestamp('last_renewal_at', { withTimezone: true }),
+    /**
+     * Конец периода, о списании за которым человек уже предупреждён
+     * (оферта п. 7.4.1: не позднее чем за 3 календарных дня до списания;
+     * письмо Робокассы от 11.09.2026: «автопродление без уведомления —
+     * избегайте»). Одно предупреждение на период: ушло — новый период
+     * даст новую дату, и предупреждение уйдёт снова.
+     */
+    renewalNoticedFor: timestamp('renewal_noticed_for', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2035,6 +2043,42 @@ export type NewBillingInvoice = typeof billingInvoices.$inferInsert;
  * документах (правка заказчицы 14.09.2026, п. 2.3): дата и время,
  * тариф, сумма, валюта и способ (рельс), периодичность, редакция.
  */
+/**
+ * Изменения цены для действующих подписок (оферта п. 7.8).
+ *
+ * Цена живёт в панели и меняется в одну секунду; оферта же обещает
+ * подписчику с автопродлением 30 дней по прежней цене после уведомления.
+ * Значит у цены **для продлений** есть история: каждая перемена в панели
+ * становится строкой с датой вступления в силу — сразу (первая запись,
+ * с которой бот начал следить) или через 30 дней после уведомления.
+ * Продление берёт не цену панели, а последнюю вступившую в силу
+ * (`effectivePriceAt`); новые подписки и разовые платежи — цену панели
+ * (п. 7.8.4), их это не касается.
+ *
+ * Перемена, отменённая до вступления в силу (цену вернули или сменили
+ * ещё раз), помечается `canceled_at`, а не удаляется: уведомление о ней
+ * уже ушло людям, и историю обещаний надо мочь показать.
+ *
+ * Данных человека здесь нет: рельс, тариф, суммы, даты, сколько человек
+ * предупреждено.
+ */
+export const billingPriceChanges = pgTable('billing_price_changes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  rail: text('rail').notNull(),
+  plan: billingPlan('plan').notNull(),
+  amountMinor: integer('amount_minor').notNull(),
+  currency: text('currency').notNull(),
+  /** Когда бот заметил новую цену в панели. */
+  announcedAt: timestamp('announced_at', { withTimezone: true }).notNull().defaultNow(),
+  /** С какого момента продления списывают эту сумму. */
+  effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull(),
+  /** Сколько подписчиков предупреждено (0 у первой записи и у отменённых). */
+  notified: integer('notified').notNull().default(0),
+  canceledAt: timestamp('canceled_at', { withTimezone: true }),
+});
+
+export type BillingPriceChange = typeof billingPriceChanges.$inferSelect;
+
 export const billingConsents = pgTable(
   'billing_consents',
   {

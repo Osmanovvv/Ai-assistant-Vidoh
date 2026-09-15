@@ -780,6 +780,13 @@ export interface TextProfile {
     readonly terms: string;
     /** Продление не прошло: денег не хватило, доступ ещё есть. */
     readonly renewalFailed: (until: string) => string;
+    /**
+     * За несколько дней до автосписания (оферта п. 7.4.1): сумма и дата.
+     * Под сообщением — кнопка «Отключить продление».
+     */
+    readonly renewalAhead: (price: string, chargeDay: string) => string;
+    /** Новая цена для действующих подписок (п. 7.8.2): прежняя, новая, с какого дня. */
+    readonly priceChange: (oldPrice: string, newPrice: string, fromDay: string) => string;
 
     // ── Промокоды (§14, задача 4.4) ───────────────────────────────────
     /** Кнопка «у меня есть промокод». */

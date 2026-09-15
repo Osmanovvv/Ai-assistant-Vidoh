@@ -15,7 +15,12 @@ import { chargeRecurring, type RobokassaDeps } from './providers/robokassa.js';
 import type { PaymentProvider } from './provider.js';
 import { applyPaymentEvent } from './subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
-import { RENEWAL_LEAD_MS, priceOf, type Rail } from './tariffs.js';
+import {
+  effectivePriceAt,
+  syncPriceChanges,
+  type PriceChangeNotice,
+} from './price-change.service.js';
+import { RENEWAL_LEAD_MS, type Rail } from './tariffs.js';
 
 /**
  * Продление рублёвой подписки (§14 ТЗ, задача 4.2).
@@ -72,6 +77,8 @@ export interface RenewalDeps {
   /** Кому сказать, что продление не прошло. */
   readonly onFailed?:
     ((params: { readonly userId: string; readonly paidUntil: Date }) => Promise<void>) | undefined;
+  /** Предупредить подписчика о новой цене (оферта п. 7.8.2). */
+  readonly onPriceChange?: ((notice: PriceChangeNotice) => Promise<void>) | undefined;
   readonly now?: (() => Date) | undefined;
 }
 
@@ -95,6 +102,26 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
   const now = deps.now?.() ?? new Date();
   const before = new Date(now.getTime() + RENEWAL_LEAD_MS);
 
+  /**
+   * Сверка цены — до списаний, тем же проходом (оферта п. 7.8). Сменили
+   * цену в панели — в этот же час перемена записана в историю с датой
+   * вступления, подписчики предупреждены, и списание ниже возьмёт
+   * прежнюю. `notify` не задан — сверка идёт, а предупреждения не уходят
+   * (стенд); в бою уведомитель обязателен.
+   */
+  const sync = await syncPriceChanges(
+    {
+      db: deps.db,
+      settings: deps.settings,
+      logger: deps.logger,
+      notify: deps.onPriceChange ?? (() => Promise.resolve()),
+    },
+    { now },
+  );
+  if (sync.announced > 0 || sync.canceled > 0) {
+    deps.logger.info(sync, 'Сверка цены продлений');
+  }
+
   const due = await dueForRenewal(deps.db, {
     provider: ROBOKASSA_RAIL,
     before,
@@ -107,14 +134,16 @@ export async function runRenewals(deps: RenewalDeps): Promise<RenewalRound> {
 
   for (const subscription of due) {
     /**
-     * Цена берётся **сейчас**, а не с материнского платежа.
-     *
-     * Иначе изменение цены в панели не доходило бы до тех, кто уже
-     * платит, — а именно они и есть те, чья цена меняется.
+     * Цена берётся **сейчас**, а не с материнского платежа, — иначе
+     * изменение цены в панели не доходило бы до тех, кто уже платит.
+     * Но не из панели напрямую, а по истории цены для продлений
+     * (`effectivePriceAt`): новая цена вступает через 30 дней после
+     * предупреждения (оферта п. 7.8), до того списывается прежняя.
      */
-    const price = await priceOf(deps.settings, {
+    const price = await effectivePriceAt(deps.db, deps.settings, {
       plan: subscription.plan,
       rail: ROBOKASSA_RAIL,
+      at: now,
     });
 
     if (price === undefined) {
