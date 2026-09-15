@@ -4,6 +4,7 @@ import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  batches,
   itemRevisions,
   items,
   projectSteps,
@@ -1024,6 +1025,103 @@ describe('«Оставить на потом» оставляет сводку �
 
     const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
     expect(textOf(edited)).toBe(defaultTexts.answer.laterAccepted);
+  });
+});
+
+describe('кнопки под разбором: «Оставить как есть» и «Выбрать главное» (решение заказчицы 15.09.2026)', () => {
+  const acknowledgement = 'Я тебя услышала. Три дела, все обычные.';
+
+  it('«Выбрать главное» присылает до трёх дел новым сообщением и снимает кнопки с разбора', async () => {
+    /**
+     * Дела под признанием больше не показываются — только по кнопке, и
+     * собираются в момент нажатия. Сказанное в этой выгрузке идёт первым:
+     * код выгрузки едет в кнопке.
+     */
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done' })
+      .returning({ id: batches.id });
+    await addItem({ owner: userId, text: 'Старое срочное', topic: 'дом', priority: 'NOW' });
+    await addItem({ owner: userId, text: 'Старое обычное', topic: 'дом' });
+    await addItem({ owner: userId, text: 'Ещё старое', topic: 'дом' });
+    for (const text of ['Из выгрузки — первое', 'Из выгрузки — второе']) {
+      await testDb().insert(items).values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        sourceBatchId: batch!.id,
+      });
+    }
+
+    await bot.handleUpdate(
+      callbackUpdate(`${ANSWER_ACTION.pick}:${toShortId(batch!.id)}`, TG_ID, acknowledgement),
+    );
+
+    // Кнопки с разбора сняты, признание не тронуто.
+    expect(calls.some((call) => call.method === 'editMessageReplyMarkup')).toBe(true);
+    expect(calls.some((call) => call.method === 'editMessageText')).toBe(false);
+
+    const sent = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    const text = textOf(sent);
+    expect(text).toContain(defaultTexts.answer.actionsLead);
+    expect(text.indexOf('Из выгрузки — первое')).toBeLessThan(text.indexOf('Старое срочное'));
+    expect(text).toContain('Из выгрузки — второе');
+    expect(text).not.toContain('Старое обычное');
+    expect(text).toContain(defaultTexts.answer.restSaved);
+    expect(keyboardOf(sent).map((button) => button.text)).toEqual([
+      defaultTexts.answer.buttonDoNow,
+      defaultTexts.answer.buttonShowAll,
+      defaultTexts.answer.buttonLater,
+    ]);
+  });
+
+  it('чужой код выгрузки не даёт заглянуть в чужое: общая очередь своих дел', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    const other = (await upsertUser(testDb(), { tgId: 4343, firstName: 'Чужая' })).id;
+    const [foreign] = await testDb()
+      .insert(batches)
+      .values({ userId: other, status: 'done' })
+      .returning({ id: batches.id });
+    await addItem({ owner: other, text: 'Чужое дело', topic: 'дом' });
+    await addItem({ owner: userId, text: 'Своё дело', topic: 'дом' });
+
+    await bot.handleUpdate(
+      callbackUpdate(`${ANSWER_ACTION.pick}:${toShortId(foreign!.id)}`, TG_ID, acknowledgement),
+    );
+
+    const text = textOf(calls.filter((call) => call.method === 'sendMessage').at(-1));
+    expect(text).toContain('Своё дело');
+    expect(text).not.toContain('Чужое дело');
+  });
+
+  it('выбирать не из чего — короткий ответ без кнопок', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.pick, TG_ID, acknowledgement));
+
+    const sent = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(sent)).toBe(defaultTexts.answer.nothingToPick);
+    expect(keyboardOf(sent)).toEqual([]);
+  });
+
+  it('«Оставить как есть» дописывает подтверждение под признание и снимает кнопки', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.keep, TG_ID, acknowledgement));
+
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    const text = textOf(edited);
+    expect(text.startsWith(acknowledgement)).toBe(true);
+    expect(text.endsWith(defaultTexts.answer.keptAsIs)).toBe(true);
+    expect(keyboardOf(edited)).toEqual([]);
   });
 });
 

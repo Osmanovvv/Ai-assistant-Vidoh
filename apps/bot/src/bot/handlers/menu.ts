@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 
 import { and, eq, not } from 'drizzle-orm';
 
-import { items, userSettings, type Item } from '../../db/schema.js';
+import { batches, items, userSettings, type Item } from '../../db/schema.js';
 import { RETURNING_ACTION } from '../../modules/returning/returning-actions.js';
 import { dropPending } from '../../modules/scheduler/reminders.repo.js';
 import type { Database } from '../../infra/db.js';
@@ -35,7 +35,8 @@ import { textsFor, type TextProfile } from '../../texts/index.js';
 import { BILLING_ACTION } from './billing.js';
 import { DELETE_STEP_ONE } from './privacy.js';
 import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
-import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
+import { ANSWER_ACTION, buildActionsReply } from '../../modules/presenter/presenter.service.js';
+import { pickMain } from '../../modules/presenter/pick.service.js';
 import { pageOf } from '../../modules/backlog/backlog.service.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
@@ -1022,6 +1023,77 @@ export function registerMenuHandlers(
    * Стирать то, что человек только что увидел, §13.2 не просит: строка
    * прощания дописывается под сводку, а не вместо неё.
    */
+  /**
+   * «Оставить как есть» под разбором (решение заказчицы 15.09.2026).
+   *
+   * Человек сказал «не надо ничего предлагать» — кнопки снимаются, под
+   * признанием остаётся короткое подтверждение. Как у «Оставить на
+   * потом»: сводку не стирать, дописывать.
+   */
+  bot.callbackQuery(ANSWER_ACTION.keep, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    const texts = active?.texts ?? textsFor(null);
+
+    const shown = ctx.msg?.text?.trim() ?? '';
+    const kept = texts.answer.keptAsIs;
+
+    await ctx.editMessageText(shown === '' ? kept : `${shown}\n\n${kept}`);
+  });
+
+  /**
+   * «Выбрать главное» под разбором (решение заказчицы 15.09.2026): 2–3
+   * самых актуальных дела — прежняя выдача §13.2, но по кнопке и
+   * собранная **сейчас**, по тому, что открыто в момент нажатия
+   * (`pickMain`). Код выгрузки в кнопке ставит сказанное в ней вперёд;
+   * чужой или устаревший код — просто общая очередь.
+   *
+   * Список уходит **новым сообщением**, а не правкой признания: признание
+   * с кнопками остаётся в чате как след разбора, а кнопки с него
+   * снимаются, чтобы «Выбрать главное» не нажималось дважды. Снять их не
+   * удалось (старое сообщение) — не беда, список важнее.
+   */
+  bot.callbackQuery(
+    new RegExp(`^${ANSWER_ACTION.pick}(?::([A-Za-z0-9_-]{22}))?$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const active = await acting(ctx.from.id);
+      if (!active) return;
+
+      const code = ctx.match[1];
+      const batchId = code === undefined ? undefined : fromShortId(code);
+      const [own] =
+        batchId === undefined
+          ? []
+          : await db
+              .select({ id: batches.id })
+              .from(batches)
+              .where(and(eq(batches.id, batchId), eq(batches.userId, active.userId)))
+              .limit(1);
+
+      const picked = await pickMain(db, {
+        userId: active.userId,
+        batchId: own?.id,
+        now: new Date(),
+        timeZone: active.timeZone,
+      });
+      const reply = buildActionsReply({ texts: active.texts, ...picked });
+
+      try {
+        await ctx.editMessageReplyMarkup();
+      } catch (error) {
+        logger.debug({ err: error, userId: active.userId }, 'Кнопки под разбором не сняты');
+      }
+
+      if (reply.buttons.length === 0) {
+        await ctx.reply(reply.text);
+        return;
+      }
+
+      await ctx.reply(reply.text, { reply_markup: fitKeyboard([reply.buttons]) });
+    },
+  );
+
   bot.callbackQuery(ANSWER_ACTION.later, async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id);

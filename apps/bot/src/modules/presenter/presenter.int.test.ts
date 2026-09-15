@@ -77,10 +77,12 @@ describe('presentDump', () => {
     expect(result.replaced).toBe(false);
     expect(result.promptVersion).toBe('presenter@1');
     expect(result.reply.text).toContain('Я тебя услышала');
-    expect(result.reply.text).toContain('— Записать сына к врачу');
-    expect(result.reply.text).toContain(defaultTexts.answer.restSaved);
+    // Дел под признанием нет (решение заказчицы 15.09.2026): вопрос
+    // «оставить или выбрать» и две кнопки.
+    expect(result.reply.text).not.toContain('— Записать сына к врачу');
+    expect(result.reply.text).toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(result.reply.text)).toBe(1);
-    expect(result.reply.buttons).toHaveLength(3);
+    expect(result.reply.buttons).toHaveLength(2);
   });
 
   it('полных текстов модели не показывает — только состав и заголовки', async () => {
@@ -109,7 +111,7 @@ describe('presentDump', () => {
 
     expect(result.replaced).toBe(true);
     expect(result.reply.text.startsWith(defaultTexts.answer.acknowledgementFallback)).toBe(true);
-    expect(result.reply.text).toContain('— Записать сына к врачу');
+    expect(result.reply.text).toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(result.reply.text)).toBe(1);
   });
 
@@ -136,8 +138,13 @@ describe('presentDump', () => {
     expect(call?.ok).toBe(true);
   });
 
-  it('высказанное состояние сокращает ответ и закрывает разговор', async () => {
-    // §13.7: признание одной строкой, одно действие, выход из разговора.
+  it('высказанное состояние при делах — тот же ответ: признание и две кнопки', async () => {
+    /**
+     * §13.7 её ТЗ при усталости сокращал список и закрывал разговор.
+     * С решением 15.09.2026 списка под признанием нет ни у кого — есть
+     * кнопки «Оставить как есть» / «Выбрать главное»; закрывать нечего,
+     * а усталость живёт в самом признании («Поняла. Сегодня тяжело.»).
+     */
     const prompts = await prepare();
     const provider = new MockLlmProvider({ responses: [answer('Поняла. Сегодня тяжело.')] });
 
@@ -147,23 +154,13 @@ describe('presentDump', () => {
       hidden: 7,
     });
 
-    expect(result.reply.text).toContain(defaultTexts.answer.actionsLeadSingle);
-    expect(result.reply.text).toContain(defaultTexts.answer.closingTired);
-    expect(countQuestions(result.reply.text)).toBe(0);
-
-    /**
-     * Сокращается список, а не гарантия (исправлено 03.09.2026 по
-     * живой выгрузке проджекта). §13.9 требует безусловно: «остальное
-     * сохранено, держать в голове не нужно», а в главном эталоне §13.2
-     * усталость названа прямо и кнопка «Разобрать все» на месте.
-     *
-     * Спрятано семь дел — значит и фраза, и путь к ним обязаны быть.
-     */
-    expect(result.reply.text).toContain(defaultTexts.answer.restSaved);
+    expect(result.reply.text.startsWith('Поняла. Сегодня тяжело.')).toBe(true);
+    expect(result.reply.text).not.toContain(defaultTexts.answer.actionsLeadSingle);
+    expect(result.reply.text).toContain(defaultTexts.answer.keepOrPick);
+    expect(countQuestions(result.reply.text)).toBe(1);
     expect(result.reply.buttons.map((button) => button.label)).toEqual([
-      defaultTexts.answer.buttonDoNow,
-      defaultTexts.answer.buttonShowAll,
-      defaultTexts.answer.buttonLater,
+      defaultTexts.answer.buttonKeep,
+      defaultTexts.answer.buttonPick,
     ]);
   });
 
@@ -176,6 +173,6 @@ describe('presentDump', () => {
       profile: 'тёплый-которого-нет',
     });
 
-    expect(result.reply.text).toContain(defaultTexts.answer.question);
+    expect(result.reply.text).toContain(defaultTexts.answer.keepOrPick);
   });
 });

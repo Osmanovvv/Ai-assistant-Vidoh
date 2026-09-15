@@ -1,0 +1,1 @@
+ALTER TABLE "batches" ADD COLUMN "mentioned_item_ids" uuid[];

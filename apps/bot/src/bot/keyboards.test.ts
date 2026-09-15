@@ -11,7 +11,7 @@ import {
   STEP,
 } from '../modules/onboarding/onboarding.service.js';
 import { topicRows } from '../modules/topics/choices.js';
-import { buildReply } from '../modules/presenter/presenter.service.js';
+import { buildActionsReply, buildReply } from '../modules/presenter/presenter.service.js';
 import { defaultTexts } from '../texts/index.js';
 import { CARD_ACTION } from '../modules/items/card-actions.js';
 import { cardKeyboard } from './handlers/card.js';
@@ -125,16 +125,22 @@ function everyCallbackData(): { where: string; data: string }[] {
     found.push({ where: 'onboarding:action', data });
   }
 
-  // Ответ на выгрузку (§13.2).
+  // Ответ на выгрузку: кнопки под признанием и список по «Выбрать
+  // главное» (решение заказчицы 15.09.2026).
   for (const button of buildReply({
     texts: defaultTexts,
     acknowledgement: 'Я тебя услышала.',
+    batchId: randomUUID(),
+  }).buttons) {
+    found.push({ where: 'answer', data: button.action });
+  }
+  for (const button of buildActionsReply({
+    texts: defaultTexts,
     actions: [LONG_TEXT],
     firstItemId: randomUUID(),
     hidden: 3,
-    tired: false,
   }).buttons) {
-    found.push({ where: 'answer', data: button.action });
+    found.push({ where: 'answer:pick', data: button.action });
   }
 
   // Меню (§12.1) и карточка (§12.2).
@@ -390,15 +396,12 @@ function everyRow(): { where: string; labels: string[] }[] {
   // Ответ на выгрузку (§13.2) — тот самый случай.
   fromKeyboard(
     'answer',
+    fitKeyboard([buildReply({ texts, acknowledgement: 'Я тебя услышала.', batchId: id }).buttons]),
+  );
+  fromKeyboard(
+    'answer:pick',
     fitKeyboard([
-      buildReply({
-        texts,
-        acknowledgement: 'Я тебя услышала.',
-        actions: [LONG_TEXT],
-        firstItemId: id,
-        hidden: 3,
-        tired: false,
-      }).buttons,
+      buildActionsReply({ texts, actions: [LONG_TEXT], firstItemId: id, hidden: 3 }).buttons,
     ]),
   );
 
@@ -522,11 +525,20 @@ describe('ширина кнопок на телефоне', () => {
      * Дословно случай со скриншота. Проверяется не «влезает», а именно
      * состав строк: «влезает» станет правдой и если кнопка потеряется.
      */
-    const rows = everyRow().filter((one) => one.where === 'answer');
+    // С решением заказчицы 15.09.2026 три кнопки живут под списком по
+    // «Выбрать главное»; под признанием — две, в один ряд.
+    const rows = everyRow().filter((one) => one.where === 'answer:pick');
 
     expect(rows.map((one) => one.labels)).toEqual([
       [defaultTexts.answer.buttonDoNow, defaultTexts.answer.buttonShowAll],
       [defaultTexts.answer.buttonLater],
+    ]);
+
+    // Две длинные подписи в один ряд на телефоне не влезают — по одной.
+    const under = everyRow().filter((one) => one.where === 'answer');
+    expect(under.map((one) => one.labels)).toEqual([
+      [defaultTexts.answer.buttonKeep],
+      [defaultTexts.answer.buttonPick],
     ]);
   });
 

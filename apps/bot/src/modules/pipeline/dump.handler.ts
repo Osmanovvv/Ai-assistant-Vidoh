@@ -63,6 +63,7 @@ import {
   type CrisisContour,
   type CrisisOutcome,
 } from '../safety/crisis.js';
+import { rememberMentioned } from '../presenter/pick.service.js';
 import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
@@ -1768,6 +1769,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       feelingsOnly,
       quickAdd,
     });
+    /**
+     * Под признанием кнопки «Оставить как есть» / «Выбрать главное»
+     * (решение заказчицы 15.09.2026); список дел — по кнопке, из
+     * `pickMain`, в момент нажатия. Чтобы сказанное сейчас шло там первым
+     * (3.24), упомянутое запоминается в выгрузке: по `sourceBatchId` его
+     * не восстановить — повтор дела остаётся в своей первой выгрузке.
+     * Выдача выше по-прежнему считается: она идёт модели как состав
+     * того, что предложится, — вход презентера не менялся.
+     */
+    await rememberMentioned(db, batch.id, [...mentioned]);
 
     deps.logger?.info(
       {

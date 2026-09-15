@@ -105,13 +105,18 @@ export interface TextProfile {
     /** Когда за пределами выдачи ничего не осталось. */
     readonly nothingHidden: string;
 
-    readonly question: string;
     /**
-     * §13.7: при усталости разговор закрывается, а не продолжается
-     * вопросом. Это не вопрос — двух вопросов в реплике не бывает,
-     * а здесь их ноль.
+     * Единственный вопрос ответа на выгрузку (решение заказчицы
+     * 15.09.2026): оставить как есть или выбрать главное. Дел в ответе
+     * нет — они по кнопке.
      */
-    readonly closingTired: string;
+    readonly keepOrPick: string;
+    readonly buttonKeep: string;
+    readonly buttonPick: string;
+    /** Нажали «Оставить как есть». */
+    readonly keptAsIs: string;
+    /** Нажали «Выбрать главное», а выбирать не из чего. */
+    readonly nothingToPick: string;
 
     /**
      * Быстрое добавление (§13.3, задача 3.9).

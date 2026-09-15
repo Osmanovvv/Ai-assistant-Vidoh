@@ -379,6 +379,13 @@
       "when": 1789406554634,
       "tag": "0053_onboarding_steps_without_topics",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1789433200059,
+      "tag": "0054_batches_mentioned_items",
+      "breakpoints": true
     }
   ]
 }

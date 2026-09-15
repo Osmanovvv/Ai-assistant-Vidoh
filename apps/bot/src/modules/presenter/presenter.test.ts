@@ -10,6 +10,7 @@ import {
 import { toShortId } from '../shared/short-id.js';
 import {
   ANSWER_ACTION,
+  buildActionsReply,
   buildReply,
   composeOf,
   countQuestions,
@@ -32,38 +33,110 @@ const texts = defaultTexts;
 const ack = 'Я тебя услышала. Три дела и одна большая цель.';
 
 describe('buildReply', () => {
-  it('собирает ответ по §13.2: признание, список, сохранённое, один вопрос', () => {
-    const reply = buildReply({
+  const batchId = '22222222-2222-4222-8222-222222222222';
+
+  it('после разбора — признание, вопрос «оставить или выбрать» и две кнопки (решение заказчицы 15.09.2026)', () => {
+    /**
+     * §13.2 её ТЗ показывал под признанием до трёх дел и спрашивал «с
+     * чего начнём». 15.09.2026 она решила иначе: «после разбора действия
+     * автоматически не показываем; сначала результат разбора и кнопки
+     * „Оставить как есть“ / „Выбрать главное“; только по „Выбрать
+     * главное“ — 2–3 пункта». Результат разбора — само признание: оно
+     * называет состав выгрузки.
+     */
+    const reply = buildReply({ texts, acknowledgement: ack, batchId });
+
+    expect(reply.text).toBe(`${ack}\n\n${texts.answer.keepOrPick}`);
+    expect(reply.text).not.toContain(texts.answer.actionsLead);
+    expect(countQuestions(reply.text)).toBe(1);
+    expect(reply.buttons.map((button) => button.label)).toEqual([
+      texts.answer.buttonKeep,
+      texts.answer.buttonPick,
+    ]);
+  });
+
+  it('«Выбрать главное» несёт код выгрузки: сказанное в ней идёт первым', () => {
+    // По коду обработчик восстанавливает «упомянутое в выгрузке» — очередь
+    // выдачи ставит его вперёд (задача 3.24).
+    const reply = buildReply({ texts, acknowledgement: ack, batchId });
+
+    expect(reply.buttons[1]?.action).toBe(`${ANSWER_ACTION.pick}:${toShortId(batchId)}`);
+    expect(reply.buttons[0]?.action).toBe(ANSWER_ACTION.keep);
+  });
+
+  it('без кода выгрузки — общее действие, а не пустой код', () => {
+    const reply = buildReply({ texts, acknowledgement: ack });
+
+    expect(reply.buttons[1]?.action).toBe(ANSWER_ACTION.pick);
+  });
+
+  it('впереди вопрос опроса — своей строки с вопросом нет, кнопки остаются', () => {
+    // §13.9: один открытый вопрос на обмен. Кнопки — не вопрос, а выход
+    // к делам, и без них первая выгрузка осталась бы без «Выбрать главное».
+    const reply = buildReply({ texts, acknowledgement: ack, batchId, omitQuestion: true });
+
+    expect(reply.text).toBe(ack);
+    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.buttons).toHaveLength(2);
+  });
+
+  it('одни чувства при непустом бэклоге: только признание — без дел, вопроса и кнопок', () => {
+    /**
+     * Решение заказчицы 13.09.2026 (ответ 1.4) и правка 14.09.2026
+     * (п. 1.5): поделилась состоянием — в ответ не выдают задачи и не
+     * превращают сказанное в продуктивность; «отвечаем коротко и
+     * спокойно» — ни вопроса, ни кнопок к делам.
+     */
+    const reply = buildReply({ texts, acknowledgement: ack, batchId, feelingsOnly: true });
+
+    expect(reply.text).toBe(ack);
+    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.buttons).toEqual([]);
+  });
+
+  it('ни при каком сочетании не бывает двух вопросов', () => {
+    // Инвариант 10. Проверяется перебором, а не примером: правило легко
+    // нарушить, добавив фразу с вопросительным знаком в словарь.
+    for (const omitQuestion of [false, true]) {
+      for (const feelingsOnly of [false, true]) {
+        for (const profile of Object.keys(profiles)) {
+          const reply = buildReply({
+            texts: textsFor(profile),
+            acknowledgement: ack,
+            batchId,
+            omitQuestion,
+            feelingsOnly,
+          });
+
+          expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+});
+
+describe('buildActionsReply — по кнопке «Выбрать главное»', () => {
+  it('собирает список по §13.2: подводка, пункты, сохранённое — без вопроса', () => {
+    const reply = buildActionsReply({
       texts,
-      acknowledgement: ack,
       actions: ['Записать сына к врачу', 'Позвонить маме'],
       hidden: 5,
-      tired: false,
     });
 
-    expect(reply.text.startsWith(ack)).toBe(true);
     expect(reply.text).toContain(texts.answer.actionsLead);
     expect(reply.text).toContain('— Записать сына к врачу');
     expect(reply.text).toContain('— Позвонить маме');
     expect(reply.text).toContain(texts.answer.restSaved);
-    expect(reply.text.endsWith(texts.answer.question)).toBe(true);
-    expect(countQuestions(reply.text)).toBe(1);
+    // Вопрос уже был задан кнопками; здесь человек получил ответ.
+    expect(countQuestions(reply.text)).toBe(0);
   });
 
   it('«Сделать сейчас» ведёт к первому показанному делу, а не к «первому на сегодня» (ревизия этапа 3, E2)', () => {
-    /**
-     * Ответ строится очередью выдачи с упомянутым в выгрузке; «Сегодня»
-     * — другой очередью. Три бессрочных дела из выгрузки в ответе есть,
-     * а в «Сегодня» нет — и кнопка отвечала «На сегодня ничего срочного»
-     * под только что показанным списком.
-     */
-    const reply = buildReply({
+    const reply = buildActionsReply({
       texts,
-      acknowledgement: ack,
       actions: ['Позвонить маме', 'Купить хлеб'],
       firstItemId: '11111111-1111-4111-8111-111111111111',
       hidden: 0,
-      tired: false,
     });
 
     expect(reply.buttons[0]?.action).toBe(
@@ -72,13 +145,7 @@ describe('buildReply', () => {
   });
 
   it('три кнопки из §13.2 в заданном порядке', () => {
-    const reply = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: ['Дело'],
-      hidden: 1,
-      tired: false,
-    });
+    const reply = buildActionsReply({ texts, actions: ['Одно'], hidden: 2 });
 
     expect(reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonDoNow,
@@ -87,194 +154,25 @@ describe('buildReply', () => {
     ]);
   });
 
-  it('одно дело — другая подводка: §13.7 предлагает только самое главное', () => {
-    const single = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: ['Дело'],
-      hidden: 0,
-      tired: false,
-    });
-    const many = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: ['Дело', 'Другое'],
-      hidden: 0,
-      tired: false,
-    });
+  it('одно дело — другая подводка', () => {
+    const reply = buildActionsReply({ texts, actions: ['Одно'], hidden: 0 });
 
-    expect(single.text).toContain(texts.answer.actionsLeadSingle);
-    expect(many.text).toContain(texts.answer.actionsLead);
+    expect(reply.text).toContain(texts.answer.actionsLeadSingle);
+    expect(reply.text).not.toContain(texts.answer.actionsLead);
   });
 
   it('нечего скрывать — фраза о сохранённом не врёт', () => {
-    // «Остальное никуда не убежит» при пустом остатке — обещание про то,
-    // чего нет. Мелочь, но именно на таких мелочах доверие и теряется.
-    const nothing = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: ['Дело'],
-      hidden: 0,
-      tired: false,
-    });
-    const something = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: ['Дело'],
-      hidden: 3,
-      tired: false,
-    });
+    const reply = buildActionsReply({ texts, actions: ['Одно', 'Два'], hidden: 0 });
 
-    expect(nothing.text).toContain(texts.answer.nothingHidden);
-    expect(nothing.text).not.toContain(texts.answer.restSaved);
-    expect(something.text).toContain(texts.answer.restSaved);
-  });
-
-  it('при усталости объём сокращается, а разговор закрывается без вопроса', () => {
-    // §13.7: короткое признание, одно действие, выход из разговора.
-    const reply = buildReply({
-      texts,
-      acknowledgement: texts.answer.acknowledgementTiredFallback,
-      actions: ['Записать сына к врачу'],
-      hidden: 9,
-      tired: true,
-    });
-
-    expect(reply.text).toContain(texts.answer.closingTired);
-    expect(reply.text).not.toContain(texts.answer.question);
-    expect(countQuestions(reply.text)).toBe(0);
-  });
-
-  it('при усталости остальное всё равно обещано и достижимо', () => {
-    /**
-     * Прежде эта ветка молчала о сохранённом и не давала кнопки к
-     * остальным делам — по эталону §13.7, где фразы о сохранённом нет.
-     * Живая выгрузка проджекта 03.09.2026 показала цену: двадцать дел
-     * словами «давай всё запишем, я просто хочу выдохнуть» — и в ответ
-     * одно действие без единого слова о том, что остальное записано.
-     *
-     * §13.9 требует безусловно: «Завершение короткое: остальное
-     * сохранено, держать в голове не нужно». А в главном эталоне §13.2
-     * усталость названа прямо, и фраза с кнопкой «Разобрать все» там
-     * есть.
-     */
-    const reply = buildReply({
-      texts,
-      acknowledgement: texts.answer.acknowledgementTiredFallback,
-      actions: ['Записать сына к врачу'],
-      hidden: 16,
-      tired: true,
-    });
-
-    expect(reply.text).toContain(texts.answer.restSaved);
-    expect(reply.buttons.map((button) => button.label)).toEqual([
-      texts.answer.buttonDoNow,
-      texts.answer.buttonShowAll,
-      texts.answer.buttonLater,
-    ]);
-    // Сокращение объёма §13.7 при этом на месте: вопроса нет.
-    expect(countQuestions(reply.text)).toBe(0);
-  });
-
-  it('при усталости и пустом остатке ничего не обещает', () => {
-    // Обещать нечего — значит и фразы нет, и кнопки нет.
-    const reply = buildReply({
-      texts,
-      acknowledgement: texts.answer.acknowledgementTiredFallback,
-      actions: ['Записать сына к врачу'],
-      hidden: 0,
-      tired: true,
-    });
-
+    expect(reply.text).toContain(texts.answer.nothingHidden);
     expect(reply.text).not.toContain(texts.answer.restSaved);
-    expect(reply.buttons.map((button) => button.label)).toEqual([
-      texts.answer.buttonDoNow,
-      texts.answer.buttonLater,
-    ]);
   });
 
-  it('действий нет — вопроса нет: начинать не с чего', () => {
-    // Ноль показано при скрытых не бывает: фильтр показывает всё
-    // годное до предела (ревизия этапа 3, E19). Прежний вопрос
-    // «разобрать что-нибудь из дел?» ушёл вместе с ответом на одни
-    // чувства (правка 14.09.2026, п. 1.5); «с чего начнём?» без единого
-    // названного дела — пустое место.
-    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
+  it('выбирать не из чего — короткий ответ без кнопок', () => {
+    const reply = buildActionsReply({ texts, actions: [], hidden: 0 });
 
-    expect(reply.text).toContain(texts.answer.nothingHidden);
-    expect(countQuestions(reply.text)).toBe(0);
-    expect(reply.buttons.map((button) => button.label)).toEqual([
-      texts.answer.buttonShowAll,
-      texts.answer.buttonLater,
-    ]);
-  });
-
-  it('одни чувства при непустом бэклоге: только признание — без дел, вопроса и кнопок', () => {
-    /**
-     * Решение заказчицы 13.09.2026 (ответ 1.4) и правка 14.09.2026
-     * (п. 1.5): поделилась состоянием — в ответ не выдают задачи и не
-     * превращают сказанное в продуктивность. §13.2 её ТЗ предлагал три
-     * старых дела; 13.09 она это отменила, 14.09 добавила: «отвечаем
-     * коротко и спокойно» — значит ни вопроса «разобрать что-нибудь?»,
-     * ни кнопок к делам. «Больше ничего не висит» при пяти скрытых было
-     * бы ложью — и её тоже нет.
-     */
-    const reply = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: [],
-      hidden: 5,
-      tired: true,
-      feelingsOnly: true,
-    });
-
-    expect(reply.text).toBe(ack);
-    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.text).toBe(texts.answer.nothingToPick);
     expect(reply.buttons).toEqual([]);
-  });
-
-  it('одни чувства при пустом бэклоге — то же: одно признание', () => {
-    // Правило про сообщение, а не про бэклог: «ничего не висит» и вопрос
-    // здесь так же неуместны, как и дела.
-    const reply = buildReply({
-      texts,
-      acknowledgement: ack,
-      actions: [],
-      hidden: 0,
-      tired: true,
-      feelingsOnly: true,
-    });
-
-    expect(reply.text).toBe(ack);
-    expect(reply.buttons).toEqual([]);
-  });
-
-  it('ни дел, ни остатка — не обещает того, чего нет', () => {
-    const reply = buildReply({ texts, acknowledgement: ack, actions: [], hidden: 0, tired: false });
-
-    expect(reply.text).toContain(texts.answer.nothingHidden);
-  });
-
-  it('ни при каком сочетании не бывает двух вопросов', () => {
-    // Инвариант 10. Проверяется перебором, а не примером: правило легко
-    // нарушить, добавив фразу с вопросительным знаком в словарь.
-    for (const actions of [[], ['Одно'], ['Одно', 'Два'], ['Одно', 'Два', 'Три']]) {
-      for (const hidden of [0, 1, 7]) {
-        for (const tired of [false, true]) {
-          for (const profile of Object.keys(profiles)) {
-            const reply = buildReply({
-              texts: textsFor(profile),
-              acknowledgement: ack,
-              actions,
-              hidden,
-              tired,
-            });
-
-            expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
-          }
-        }
-      }
-    }
   });
 });
 
@@ -298,15 +196,21 @@ describe('правка из панели и склейка §13.2', () => {
     const texts = textsFor();
     let most = 0;
 
+    // Ответ на выгрузку: признание (словарная замена при молчании модели)
+    // и вопрос «оставить или выбрать».
+    for (const tired of [false, true]) {
+      const acknowledgement = sanitizeAcknowledgement('', texts, { tired }).text;
+      const built = buildReply({ texts, acknowledgement, batchId: undefined });
+
+      most = Math.max(most, countQuestions(built.text));
+    }
+
+    // Список по кнопке «Выбрать главное» — своего вопроса не несёт.
     for (const actions of [[], ['Одно'], ['Одно', 'Два'], ['Одно', 'Два', 'Три']]) {
       for (const hidden of [0, 1, 7]) {
-        for (const tired of [false, true]) {
-          // Признание — то, что уйдёт при молчании модели: словарная замена.
-          const acknowledgement = sanitizeAcknowledgement('', texts, { tired }).text;
-          const built = buildReply({ texts, acknowledgement, actions, hidden, tired });
+        const built = buildActionsReply({ texts, actions, hidden });
 
-          most = Math.max(most, countQuestions(built.text));
-        }
+        most = Math.max(most, countQuestions(built.text));
       }
     }
 
@@ -350,25 +254,25 @@ describe('правка из панели и склейка §13.2', () => {
       }
     }
 
-    // Перебор не пустой: та самая реплика из дефекта в нём есть.
-    expect(checked).toContain('answer.restSaved');
+    // Перебор не пустой: реплика, стоящая рядом с вопросом, в нём есть.
+    // Прежде это была `restSaved` (дефект ревизии второго этапа); с
+    // решением заказчицы 15.09.2026 рядом с вопросом стоит признание.
+    expect(checked).toContain('answer.acknowledgementFallback');
   });
 
   it('правка без вопроса проходит запись и в ответе остаётся один вопрос', () => {
     // Обратная сторона: правило, которое не пропускает ничего, кончается
     // тем, что его снимают целиком.
-    const said = 'Остальное пока никуда не убежит, я держу.';
+    const said = 'Я тебя услышала, всё записала.';
 
-    expect(refusalFor(said, 0, 'answer.restSaved')).toBeUndefined();
+    expect(refusalFor(said, 0, 'answer.acknowledgementFallback')).toBeUndefined();
 
-    applyOverrides(new Map([['answer.restSaved', said]]));
+    applyOverrides(new Map([['answer.acknowledgementFallback', said]]));
 
+    const texts = textsFor();
     const built = buildReply({
-      texts: textsFor(),
-      acknowledgement: ack,
-      actions: ['Одно', 'Два'],
-      hidden: 3,
-      tired: false,
+      texts,
+      acknowledgement: sanitizeAcknowledgement('', texts, { tired: false }).text,
     });
 
     expect(built.text).toContain(said);
