@@ -107,6 +107,7 @@ export const reserved: TextProfile = {
   answer: {
     acknowledgementFallback: 'Я тебя услышала.',
     acknowledgementTiredFallback: 'Поняла. Сегодня тяжело.',
+    acknowledgementTasks: (tasks) => `У тебя ${tasks}.`,
 
     actionsLead: 'На сегодня я бы взяла вот это:',
     actionsLeadSingle: 'Предлагаю сделать только одно, самое главное:',

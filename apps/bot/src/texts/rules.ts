@@ -269,6 +269,7 @@ export function contentRefusal(said: string): string | undefined {
 export const BESIDE_QUESTION = [
   'answer.acknowledgementFallback',
   'answer.acknowledgementTiredFallback',
+  'answer.acknowledgementTasks',
   /**
    * Маркер пункта повторяется на каждое дело: один «?» в нём — это два
    * или три вопроса в списке по кнопке, хотя своего вопроса у списка нет.
