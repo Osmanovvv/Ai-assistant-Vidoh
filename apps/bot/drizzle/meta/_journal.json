@@ -393,6 +393,13 @@
       "when": 1789434892898,
       "tag": "0055_reminder_kind_period",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1789474662905,
+      "tag": "0056_renewal_notice_and_price_changes",
+      "breakpoints": true
     }
   ]
 }

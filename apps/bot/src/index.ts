@@ -34,6 +34,7 @@ import {
 import { createBillingRouter } from './http/billing.js';
 import { createRobokassaProvider } from './modules/billing/providers/robokassa.js';
 import { createStarsProvider } from './modules/billing/providers/stars.js';
+import { startRenewalNotices } from './modules/billing/notice.service.js';
 import { startRenewals } from './modules/billing/renewal.service.js';
 import { createPaymentNotifier } from './modules/billing/notify.js';
 import type { PaymentProvider } from './modules/billing/provider.js';
@@ -1236,8 +1237,25 @@ async function main(): Promise<void> {
            */
           ...(robokassa === undefined ? {} : { provider: robokassa }),
           onFailed: (params) => payNotifier.renewalFailed(params),
+          // Новая цена — подписчикам за 30 дней (оферта п. 7.8.2).
+          onPriceChange: (notice) => payNotifier.priceChange(notice),
         })
       : () => undefined;
+
+  /**
+   * Предупреждение о предстоящем автосписании (оферта п. 7.4.1; письмо
+   * Робокассы от 11.09.2026). На обоих рельсах — звёзды продлевает
+   * Telegram и без Робокассы — поэтому не в проходе продлений, а своим,
+   * и только вместе с напоминаниями: без них бот сам людям не пишет.
+   */
+  const stopRenewalNotices = env.REMINDERS
+    ? startRenewalNotices({
+        db,
+        settings,
+        logger,
+        notify: (notice) => payNotifier.renewalAhead(notice),
+      })
+    : () => undefined;
 
   /**
    * Удаление после 24 месяцев тишины (§16; решение заказчицы 12.09.2026,
@@ -1258,6 +1276,7 @@ async function main(): Promise<void> {
   installShutdownHandlers(server, worker, broadcastWorker, async () => {
     stopSweep();
     stopRenewals();
+    stopRenewalNotices();
     stopInactivity();
     // Рассылка дорабатывает идущий проход: отправленное должно быть
     // помечено до закрытия базы (ревизия этапа 3, D7).

@@ -155,6 +155,31 @@ describe('продление уходит вовремя и один раз', ()
     expect(rk.asked[0]?.get('OutSum')).toBe('399.00');
   });
 
+  it('цену подняли в панели — продление 30 дней списывает прежнюю (оферта п. 7.8)', async () => {
+    /**
+     * Письмо Робокассы от 11.09.2026: «изменения цены без предупреждения —
+     * избегайте». Проход сверяет цену с историей перед списанием: новая
+     * объявлена, вступит через 30 дней, а сегодня — прежние 399 ₽.
+     */
+    await payingPerson({ periodEnd: new Date('2026-10-01T10:00:00.000Z') });
+    const rk = robokassa('OK1234');
+    const deps = {
+      db: testDb(),
+      logger,
+      robokassa: rk.deps,
+      settings,
+      now: () => new Date('2026-09-30T12:00:00.000Z'),
+    };
+    // Проход день назад видел 399 и запомнил; сегодня в панели 499.
+    await runRenewals({ ...deps, now: () => new Date('2026-09-29T12:00:00.000Z') });
+    await putSetting(testDb(), { name: 'priceMonthlyRub', value: '49900' });
+
+    const round = await runRenewals(deps);
+
+    expect(round.charged).toBe(1);
+    expect(rk.asked[0]?.get('OutSum')).toBe('399.00');
+  });
+
   it('за неделю до конца — ещё нет', async () => {
     await payingPerson({ periodEnd: new Date('2026-10-01T10:00:00.000Z') });
 

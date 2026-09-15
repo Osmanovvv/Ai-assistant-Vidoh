@@ -9,7 +9,9 @@ import { outputContextOf } from '../users/state.repo.js';
 import { markBlocked } from '../users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
 import type { TextProfile } from '../../texts/types.js';
-import { untilText } from './checkout.service.js';
+import { priceText, untilText } from './checkout.service.js';
+import type { RenewalNotice } from './notice.service.js';
+import type { PriceChangeNotice } from './price-change.service.js';
 
 /**
  * Сказать человеку про его деньги (§14 ТЗ, задача 4.2).
@@ -40,6 +42,10 @@ export interface PaymentNotifier {
   paid(params: { readonly userId: string; readonly paidUntil: Date }): Promise<void>;
   /** Продление не прошло: доступ пока есть, но кончится. */
   renewalFailed(params: { readonly userId: string; readonly paidUntil: Date }): Promise<void>;
+  /** За несколько дней до автосписания: сумма, дата, кнопка отключить (п. 7.4.1). */
+  renewalAhead(notice: RenewalNotice): Promise<void>;
+  /** Новая цена для действующих подписок: прежняя, новая, дата (п. 7.8.2). */
+  priceChange(notice: PriceChangeNotice): Promise<void>;
 }
 
 async function chatOf(db: Executor, userId: string): Promise<number | undefined> {
@@ -63,6 +69,8 @@ async function chatOf(db: Executor, userId: string): Promise<number | undefined>
  * сверяется проверкой, чтобы строка не разошлась с обработчиком.
  */
 const BILLING_ACTION_OPEN = 'pay:open';
+/** «Отключить продление» — то же действие, что на экране подписки. */
+const BILLING_ACTION_STOP = 'pay:stop';
 
 export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
   /** Отправка одной репликой: чат, профиль текста, отказ. */
@@ -78,7 +86,7 @@ export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
      * был сам вспомнить про `/menu`. Обещание либо исполняется, либо
      * снимается — здесь исполняется.
      */
-    withPayButton = false,
+    button: 'pay' | 'stop' | 'none' = 'none',
   ) => {
     const chatId = await chatOf(deps.db, userId);
     if (chatId === undefined) return;
@@ -86,15 +94,22 @@ export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
     const context = await outputContextOf(deps.db, userId);
     const texts = textsFor(context.textProfile);
 
-    const markup = withPayButton
-      ? {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: texts.billing.buttonPay, callback_data: BILLING_ACTION_OPEN }],
-            ],
-          },
-        }
-      : {};
+    // «Отключить продление» — под предупреждениями о списании и о новой
+    // цене (оферта 7.4.1, 7.8.2): отказ должен быть в одно нажатие.
+    const markup =
+      button === 'none'
+        ? {}
+        : {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  button === 'pay'
+                    ? { text: texts.billing.buttonPay, callback_data: BILLING_ACTION_OPEN }
+                    : { text: texts.billing.buttonCancel, callback_data: BILLING_ACTION_STOP },
+                ],
+              ],
+            },
+          };
 
     try {
       await deps.api.sendMessage(chatId, pick(texts, untilText(until)), markup);
@@ -121,7 +136,31 @@ export function createPaymentNotifier(deps: NotifierDeps): PaymentNotifier {
         params.paidUntil,
         // С кнопкой оплаты — как обещает план: человеку надо заплатить,
         // а не искать, где это сделать.
-        true,
+        'pay',
+      );
+    },
+
+    async renewalAhead(notice) {
+      // Дата — день списания, не конец периода: обещание про списание.
+      await say(
+        notice.userId,
+        (texts, chargeDay) => texts.billing.renewalAhead(priceText(notice.price), chargeDay),
+        notice.chargeAt,
+        'stop',
+      );
+    },
+
+    async priceChange(notice) {
+      await say(
+        notice.userId,
+        (texts, fromDay) =>
+          texts.billing.priceChange(
+            priceText(notice.oldPrice),
+            priceText(notice.newPrice),
+            fromDay,
+          ),
+        notice.effectiveAt,
+        'stop',
       );
     },
   };
