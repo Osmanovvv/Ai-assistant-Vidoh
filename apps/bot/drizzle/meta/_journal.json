@@ -386,6 +386,13 @@
       "when": 1789433200059,
       "tag": "0054_batches_mentioned_items",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1789434892898,
+      "tag": "0055_reminder_kind_period",
+      "breakpoints": true
     }
   ]
 }

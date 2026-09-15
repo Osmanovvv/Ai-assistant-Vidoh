@@ -357,6 +357,10 @@ export const reserved: TextProfile = {
     eveningQuiet: 'День закончился.',
     eveningInvite: 'Если что-то накопилось — скажи.',
 
+    periodWeek: (text) =>
+      `Ты хотела на этой неделе: ${text}. Если нужен конкретный день — просто скажи.`,
+    periodMonth: (text) =>
+      `Ты хотела в этом месяце: ${text}. Если нужен конкретный день — просто скажи.`,
     deadlineTomorrow: (text) => `Завтра срок: ${text}`,
     deadlineToday: (text) => `Сегодня срок: ${text}`,
     buttonDone: 'Сделано',
