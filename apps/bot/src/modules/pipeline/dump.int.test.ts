@@ -1040,7 +1040,7 @@ describe('разбор', () => {
     // они по «Выбрать главное», и там их три, а не одно.
     const reply = all.at(-1) ?? '';
     expect(reply).not.toContain('Первое дело');
-    expect(reply).toContain(defaultTexts.answer.allSaved);
+    expect(reply).toContain(defaultTexts.answer.keepOrPick);
 
     const picked = await pickMain(testDb(), { userId, now: at(0), timeZone: 'Europe/Moscow' });
     expect(picked.actions).toEqual(['Первое дело', 'Второе дело', 'Третье дело']);
@@ -1094,9 +1094,9 @@ describe('разбор', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    // Одни чувства: тон усталости из словаря, счёта дел нет (16.09.2026).
-    expect(reply).toContain(defaultTexts.answer.acknowledgementTiredFallback);
-    expect(reply).not.toContain('У тебя');
+    // Одни чувства — одна фраза её словами (16.09.2026), без счёта дел.
+    expect(reply).toContain(defaultTexts.answer.feelingsOnly);
+    expect(reply).not.toContain('Записала');
     for (const text of ['Записать сына к врачу', 'Оплатить садик', 'Разобрать балкон']) {
       expect(reply).not.toContain(text);
     }
@@ -1210,9 +1210,9 @@ describe('онбординг после первой выгрузки', () => {
     // Свой вопрос ответ при этом не задал: его место занял первый вопрос
     // онбординга. Иначе у человека было бы два открытых вопроса подряд.
     const reply = all.at(-1) ?? '';
-    // Ответ на выгрузку своего вопроса не задаёт (16.09.2026): единственный
-    // вопрос обмена — у опроса.
-    expect(reply).toContain(defaultTexts.answer.allSaved);
+    // Впереди вопрос опроса — своего вопроса ответ не задаёт (§13.9: один
+    // вопрос на обмен).
+    expect(reply).not.toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(0);
   });
 
@@ -1243,7 +1243,7 @@ describe('онбординг после первой выгрузки', () => {
 
     expect(questions.asked).toHaveLength(0);
     // И свой вопрос вернулся на место.
-    expect(all.at(-1)).toContain(defaultTexts.answer.allSaved);
+    expect(all.at(-1)).toContain(defaultTexts.answer.keepOrPick);
   });
 
   it('выгрузка без разбора опрос не запускает', async () => {
@@ -1993,7 +1993,7 @@ describe('ветки тем в разборе', () => {
     );
 
     expect(await testDb().select().from(items)).toHaveLength(1);
-    expect(all.at(-1)).toContain(defaultTexts.answer.allSaved);
+    expect(all.at(-1)).toContain(defaultTexts.answer.keepOrPick);
     expect(await pickedNow()).toContain('К врачу');
   });
 
@@ -2226,11 +2226,11 @@ describe('ответ пользователю', () => {
     expect(sent).toEqual([]);
     // Промежуточная реплика на время расшифровки и итоговый разбор.
     expect(edited).toHaveLength(2);
-    expect(edited.at(-1)).toContain(defaultTexts.answer.allSaved);
+    expect(edited.at(-1)).toContain(defaultTexts.answer.keepOrPick);
     expect(await pickedNow()).toContain('Купить продукты');
   });
 
-  it('отвечает по образцу 16.09.2026: признание со счётом, «Всё сохранила» и кнопки без вопроса', async () => {
+  it('отвечает по образцу 16.09.2026: «Всё, забрала…», раскладка и один вопрос — оставить или выбрать', async () => {
     const prompts = await seedPrompts();
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
@@ -2248,10 +2248,10 @@ describe('ответ пользователю', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply.startsWith('Я тебя услышала.')).toBe(true);
+    expect(reply.startsWith('Всё, забрала.')).toBe(true);
     expect(reply).not.toContain('Записать сына к врачу');
-    expect(reply).toContain(defaultTexts.answer.allSaved);
-    expect(countQuestions(reply)).toBe(0);
+    expect(reply).toContain(defaultTexts.answer.keepOrPick);
+    expect(countQuestions(reply)).toBe(1);
 
     // А дела — по кнопке, сказанное в этой выгрузке первым.
     const [batch] = await testDb().select({ id: batches.id }).from(batches);
@@ -2395,7 +2395,7 @@ describe('онбординг: края', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply).toContain(defaultTexts.answer.allSaved);
+    expect(reply).not.toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(0);
     expect(await pickedNow()).toContain('Ещё одно дело');
 
@@ -2472,7 +2472,7 @@ describe('сферы появляются только с содержимым (
     expect(await topicNames()).toEqual(['здоровье']);
     expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
     // Итог — одним сообщением: раскладка по сферам и «Всё сохранила» (п. 3).
-    const summary = all.find((text) => text.includes(defaultTexts.answer.allSaved)) ?? '';
+    const summary = all.find((text) => text.includes(defaultTexts.answer.keepOrPick)) ?? '';
     expect(summary).toContain('💊 Здоровье — 1');
     // Ни одной сводки «Пока пусто»: пустых веток нет.
     expect(gateway.sent.some((message) => message.text.includes(defaultTexts.summary.empty))).toBe(
@@ -2689,7 +2689,7 @@ describe('мягкий лимит расхода', () => {
     );
 
     expect(all).toHaveLength(1);
-    expect(all[0]).toContain(defaultTexts.answer.allSaved);
+    expect(all[0]).toContain(defaultTexts.answer.keepOrPick);
     expect(all.join(' ')).not.toMatch(/лимит|модель|дешевл|ограничен/iu);
     expect(await pickedNow()).toContain('Купить продукты');
 
@@ -3246,7 +3246,7 @@ describe('правка доходит до резолвера (§7, задача
     );
 
     // Обычный ответ на выгрузку пришёл — и в нём строка про правку.
-    const reply = all.find((text) => text.includes(defaultTexts.answer.allSaved));
+    const reply = all.find((text) => text.includes(defaultTexts.answer.keepOrPick));
     expect(reply).toBeDefined();
     expect(reply).toContain(defaultTexts.resolver.deadlineRefused);
   });
