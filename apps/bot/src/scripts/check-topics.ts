@@ -70,9 +70,6 @@ try {
     text: 'Проба сводки — что здесь есть:\n\n— первая строка',
   });
 
-  logger.info('Закрепляю сводку');
-  await gateway.pin({ chatId, messageId });
-
   logger.info('Правлю сводку тем же способом, что и продукт');
   await gateway.edit({
     chatId,

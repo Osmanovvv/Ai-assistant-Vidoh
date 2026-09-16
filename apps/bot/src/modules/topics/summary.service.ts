@@ -208,14 +208,10 @@ export async function refreshSummary(
       .set({ summaryMessageId: messageId })
       .where(eq(topics.id, topic.id));
 
-    // Закрепление отдельным шагом: если оно не удалось, сводка всё равно
-    // на месте, просто не закреплена. Терять её из-за булавки незачем.
-    try {
-      await deps.gateway.pin({ chatId: params.chatId, messageId });
-    } catch (error) {
-      deps.logger?.warn({ err: error, topic: topic.name }, 'Сводка отправлена, но не закреплена');
-    }
-
+    // Без закрепа (заказчица, 16.09.2026): сводка — первое сообщение
+    // ветки и правится на месте; булавка давала полоску «Закреплённое
+    // сообщение» и строки «закрепил(а)» — ту самую механику, которую
+    // человек видеть не должен. Отклонение от §8.2 ТЗ по её решению.
     return { sent: true, edited: false, skipped: false };
   };
 
