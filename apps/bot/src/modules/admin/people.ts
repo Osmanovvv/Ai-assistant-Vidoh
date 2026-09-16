@@ -56,6 +56,16 @@ export interface Overview {
   /** Разобранные выгрузки за период. */
   readonly dumps: number;
   /**
+   * Вернувшиеся за период (заказчица, 16.09.2026, п. 1): у кого
+   * разобранные выгрузки пришлись на два и больше разных дня.
+   *
+   * «Не просто активные, а сколько вернулись и сделали 2+ выгрузки —
+   * ключевая метрика для теста». Считаются дни, а не выгрузки: две
+   * подряд в первую встречу — одна встреча, а не возвращение. День — по
+   * часовому поясу человека, как и его напоминания.
+   */
+  readonly returnedUsers: number;
+  /**
    * Сорвавшиеся выгрузки за период (ревизия панели).
    *
    * Про сбои на обзоре не было ни одного числа, а разбор жалобы «бот
@@ -177,6 +187,26 @@ export async function overview(
     .where(gte(batches.openedAt, since));
 
   /**
+   * Вернувшиеся: дни с разобранными выгрузками — по поясу человека,
+   * человек считается, когда таких дней два и больше. Из того же
+   * множества, что «разобрано»: `done` за период по `openedAt`.
+   */
+  const [returned] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+    })
+    .from(
+      sql`(
+        select ${batches.userId} as user_id
+        from ${batches}
+        join ${users} on ${users.id} = ${batches.userId}
+        where ${batches.status} = 'done' and ${batches.openedAt} >= ${since}
+        group by ${batches.userId}
+        having count(distinct (${batches.openedAt} at time zone ${users.timezone})::date) >= 2
+      ) as returned`,
+    );
+
+  /**
    * Порядок валют задан **нами**, а не Postgres (ревизия этапа 4).
    *
    * У `group by` без `order by` порядок групп решает план запроса, и он
@@ -269,6 +299,7 @@ export async function overview(
     totalUsers: people?.total ?? 0,
     newUsers: fresh?.total ?? 0,
     dumps: parsed?.total ?? 0,
+    returnedUsers: returned?.total ?? 0,
     /** Сорвавшиеся: без них обзор молчал о поломке вовсе. */
     failedDumps: parsed?.failed ?? 0,
     spend: spendRows
