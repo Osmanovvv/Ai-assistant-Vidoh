@@ -139,6 +139,21 @@ function conversionText(value: Funnel): string {
   return `${String(value.total.paidAfterTrial)} из ${String(value.total.trialOver)}`;
 }
 
+/**
+ * Первая ценность — заказчица, 16.09.2026, п. 2: «сколько зарегистрировались
+ * и сколько реально сделали первую выгрузку, числом и процентом». Числа —
+ * из воронки, а не второй расчёт. Без регистраций процента нет: «0%» при
+ * нуле читался бы как факт «никто не дошёл».
+ */
+function firstDumpText(value: Funnel): string {
+  const { registered, firstDump } = value.total;
+  const pair = `${String(firstDump)} из ${String(registered)}`;
+
+  if (registered === 0) return pair;
+
+  return `${pair} · ${String(Math.round((firstDump / registered) * 100))}%`;
+}
+
 /** Подписка человека в одну строку — для списка. */
 function subscriptionText(row: PersonRow): string {
   const subscription = row.subscription;
@@ -264,6 +279,20 @@ export function OverviewPanel(): React.ReactElement {
         <div className="итог">
           <span className="итог__имя">Всего людей за всё время</span>
           <span className="итог__число">{report.totalUsers}</span>
+        </div>
+        {/*
+          Первая ценность отдельной плиткой — заказчица, 16.09.2026, п. 2.
+          Из зарегистрировавшихся — сколько дошли до первой разобранной
+          выгрузки; те же числа, что в первых двух столбцах воронки.
+        */}
+        <div className="итог">
+          <span className="итог__имя">Дошли до первой выгрузки за всё время</span>
+          <span className="итог__число" data-testid="first-dump">
+            {firstDumpText(report.funnel)}
+          </span>
+          <span className="панель__кто" style={{ display: 'block', marginTop: 2 }}>
+            регистрация → первая выгрузка
+          </span>
         </div>
         <div className="итог">
           <span className="итог__имя">Новых за 30 дней</span>

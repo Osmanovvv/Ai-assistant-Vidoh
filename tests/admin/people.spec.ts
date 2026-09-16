@@ -315,6 +315,49 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     ).toHaveText('3');
   });
 
+  test('первая ценность вынесена: «дошли до первой выгрузки» числом и процентом', async ({
+    page,
+  }) => {
+    /**
+     * Заказчица, 16.09.2026, п. 2: «на главном экране отдельно показать,
+     * сколько зарегистрировались и сколько реально сделали первую
+     * выгрузку — числом и процентом». Числа те же, что в воронке
+     * (регистрация → первая выгрузка, за всё время), а не второй расчёт.
+     * Живьём: на стенде одиннадцать человек и одна выгрузка. Подменой:
+     * процент считается и округляется, а при нуле регистраций не
+     * выдумывается.
+     */
+    await signIn(page);
+
+    const totals = page.locator('.итоги');
+    const first = totals.locator('.итог', { hasText: 'первой выгрузки' });
+    await expect(first.locator('.итог__число')).toHaveText(/^\d+ из \d+ · \d+%$/u);
+
+    const override = async (registered: number, firstDump: number): Promise<void> => {
+      await page.unrouteAll();
+      await page.route('**/admin/api/overview?*', async (route) => {
+        const answer = await route.fetch();
+        const body = (await answer.json()) as { funnel: { total: Record<string, unknown> } };
+
+        await route.fulfill({
+          json: {
+            ...body,
+            funnel: { ...body.funnel, total: { ...body.funnel.total, registered, firstDump } },
+          },
+        });
+      });
+      await page.getByRole('button', { name: 'Настройки' }).click();
+      await page.getByRole('button', { name: 'Обзор' }).click();
+      await expect(page.getByTestId('overview')).toBeVisible();
+    };
+
+    await override(40, 12);
+    await expect(page.getByTestId('first-dump')).toHaveText('12 из 40 · 30%');
+
+    await override(0, 0);
+    await expect(page.getByTestId('first-dump')).toHaveText('0 из 0');
+  });
+
   test('обзор показывает вернувшихся — своим числом, не активными', async ({ page }) => {
     /**
      * Заказчица, 16.09.2026, п. 1: «не просто активные за 30 дней, а
