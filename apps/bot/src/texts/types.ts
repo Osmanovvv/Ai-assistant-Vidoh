@@ -238,6 +238,8 @@ export interface TextProfile {
     readonly noTopics: string;
     readonly todayTitle: string;
     readonly todayEmpty: string;
+    /** …и сколько дел открыто вообще — с кнопками к ним (находка 21). */
+    readonly todayEmptyOpen: (count: string) => string;
     readonly help: string;
   };
 
@@ -653,7 +655,8 @@ export interface TextProfile {
     readonly buttonDone: string;
     readonly buttonPostpone: string;
     readonly done: string;
-    readonly postponed: (when: string) => string;
+    /** «Перенесла «Оплатить квитанцию» на завтра.» — с названием дела (находка 22). */
+    readonly postponed: (title: string, when: string) => string;
 
     /** Один вопрос про застрявший проект (§11, задача 3.13). */
     readonly projectStuck: (title: string, step: string) => string;

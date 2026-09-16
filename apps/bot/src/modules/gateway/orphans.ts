@@ -137,9 +137,12 @@ export async function countOrphanedMessages(
 export async function heldMessagesOf(
   db: Executor,
   userId: string,
-): Promise<readonly { readonly id: string; readonly threadId: number | null }[]> {
+): Promise<
+  readonly { readonly id: string; readonly threadId: number | null; readonly text: string | null }[]
+> {
   return await db
-    .select({ id: messagesRaw.id, threadId: messagesRaw.tgThreadId })
+    // Текст — чтобы вопрос, написанный до «Согласна», разобрался сразу.
+    .select({ id: messagesRaw.id, threadId: messagesRaw.tgThreadId, text: messagesRaw.text })
     .from(messagesRaw)
     .where(orphanedOnly(userId))
     .orderBy(asc(messagesRaw.receivedAt));

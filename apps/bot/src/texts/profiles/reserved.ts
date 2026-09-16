@@ -171,6 +171,7 @@ export const reserved: TextProfile = {
     noTopics: 'Сфер пока нет — они появятся, когда разберём первую выгрузку.',
     todayTitle: 'На сегодня:',
     todayEmpty: 'На сегодня ничего срочного.',
+    todayEmptyOpen: (count) => `Открытых дел — ${count}.`,
     help: [
       'Просто расскажи, что в голове — голосом или текстом. ' +
         'Я разберу и покажу, с чего начать.',
@@ -381,7 +382,7 @@ export const reserved: TextProfile = {
     buttonDone: 'Сделано',
     buttonPostpone: 'Перенести',
     done: 'Отметила.',
-    postponed: (when) => `Перенесла на ${when}.`,
+    postponed: (title, when) => `Перенесла «${title}» на ${when}.`,
 
     projectStuck: (title, step) => `«${title}» стоит. Ближайший шаг — ${step}. Возьмёшься?`,
     projectStuckNoStep: (title) =>
