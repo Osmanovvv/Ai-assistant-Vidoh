@@ -201,6 +201,54 @@ describe('resolveDeadline', () => {
     expect(month.deadline.accuracy).toBe('month');
   });
 
+  it('назван месяц — срок обязан быть в нём: «в октябре» при сентябрьской неделе от модели → 1 октября, месяц (прогон 17.09.2026)', () => {
+    /**
+     * Бой 17.09.2026, голосовое Никиты: расшифровка склеила «…записаться
+     * к стоматологу давно уже откладываю в октябре пройти
+     * диспансеризацию», и на диспансеризацию модель вернула 2026-09-21 с
+     * точностью `week` — срок соседнего дела. Месяц назван прямо, и дата
+     * из него следует однозначно — работа кода, как с днём недели.
+     */
+    const thursday = { now: new Date('2026-09-17T05:00:00.000Z'), timeZone: 'Europe/Moscow' };
+
+    const fixed = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      { ...thursday, said: 'В октябре пройти диспансеризацию' },
+    );
+    if (!fixed.ok || !fixed.deadline) throw new Error('ожидался срок');
+    // 1 октября, начало суток по Москве.
+    expect(fixed.deadline.at.toISOString()).toBe('2026-09-30T21:00:00.000Z');
+    expect(fixed.deadline.accuracy).toBe('month');
+    expect(fixed.corrected).toBe('month');
+
+    // Дата уже в названном месяце — не трогается, точность модели остаётся.
+    const kept = resolveDeadline(
+      { deadline: '2026-10-15', accuracy: 'day' },
+      { ...thursday, said: '15 октября пройти диспансеризацию' },
+    );
+    if (!kept.ok || !kept.deadline) throw new Error('ожидался срок');
+    expect(kept.deadline.at.toISOString()).toBe('2026-10-14T21:00:00.000Z');
+    expect(kept.deadline.accuracy).toBe('day');
+    expect(kept.corrected).toBeUndefined();
+
+    // Месяц уже прошёл в этом году — ближайший такой месяц, то есть следующий год.
+    const next = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      { ...thursday, said: 'в марте поменять резину' },
+    );
+    if (!next.ok || !next.deadline) throw new Error('ожидался срок');
+    expect(next.deadline.at.toISOString()).toBe('2027-02-28T21:00:00.000Z');
+    expect(next.deadline.accuracy).toBe('month');
+
+    // Названы и месяц, и день недели — решает день недели, как раньше.
+    const weekday = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'day' },
+      { ...thursday, said: 'в пятницу в октябре забрать справку' },
+    );
+    if (!weekday.ok || !weekday.deadline) throw new Error('ожидался срок');
+    expect(weekday.deadline.at.toISOString()).toBe('2026-09-17T21:00:00.000Z');
+  });
+
   it('«на выходных» началом периода не трогается: суббота остаётся субботой', () => {
     const tuesday = { now: new Date('2026-09-15T05:00:00.000Z'), timeZone: 'Asia/Omsk' };
 

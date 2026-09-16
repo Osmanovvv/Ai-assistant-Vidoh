@@ -582,7 +582,12 @@ export function correctItems(
     items.push({
       // Заголовок — повеление без «надо/хочу» и без дня, ставшего сроком
       // (видео заказчицы 15.09.2026): см. `title.ts`.
-      text: cleanTitle(item.text, { type, hasDeadline: withRule !== undefined }),
+      text: cleanTitle(item.text, {
+        type,
+        hasDeadline: withRule !== undefined,
+        // «Каждый вторник…» в заголовке — дубль правила повторения.
+        hasRule: recurrence?.rule !== undefined,
+      }),
       type,
       priority: withUrgency,
       topic: topic ?? ctx.defaultTopic,

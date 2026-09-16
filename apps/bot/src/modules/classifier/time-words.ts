@@ -399,3 +399,36 @@ export function weekdayIn(text: string): number | undefined {
   const found = weekdaysIn(text);
   return found.length === 1 ? found[0] : undefined;
 }
+
+/**
+ * Названные месяцы — номерами 1–12 (прогон 17.09.2026).
+ *
+ * По основам, целыми словами: «в октябре», «октября», «до октября» —
+ * всё октябрь. «Мая» отдельно: основа «ма» задела бы «мама» и «маму».
+ * Порядок как в году, чтобы номер был индексом.
+ */
+const MONTH_STEMS = [
+  'январ',
+  'феврал',
+  'март',
+  'апрел',
+  'ма[йя]',
+  'июн',
+  'июл',
+  'август',
+  'сентябр',
+  'октябр',
+  'ноябр',
+  'декабр',
+] as const;
+
+export function monthsIn(text: string): readonly number[] {
+  const found: number[] = [];
+  const said = normalize(text);
+
+  MONTH_STEMS.forEach((stem, index) => {
+    if (new RegExp(String.raw`(?<!\p{L})${stem}\p{L}*`, 'u').test(said)) found.push(index + 1);
+  });
+
+  return found;
+}

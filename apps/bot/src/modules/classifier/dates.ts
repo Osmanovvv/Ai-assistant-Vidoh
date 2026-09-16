@@ -1,5 +1,11 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
-import { hasTimeWord, relativeDaysIn, timeQuoteInSpeech, weekdaysIn } from './time-words.js';
+import {
+  hasTimeWord,
+  monthsIn,
+  relativeDaysIn,
+  timeQuoteInSpeech,
+  weekdaysIn,
+} from './time-words.js';
 
 /**
  * Разрешение сроков (задача 2.7).
@@ -32,7 +38,7 @@ export type DeadlineOutcome =
        * Что пришлось поправить за моделью. Пока одно: день недели не
        * совпал с названным человеком, и дата пересчитана кодом.
        */
-      readonly corrected?: 'weekday' | 'relative' | 'weekend' | undefined;
+      readonly corrected?: 'weekday' | 'relative' | 'weekend' | 'month' | undefined;
     }
   | { readonly ok: false; readonly reason: string }
   /** Срока просто нет — это не ошибка. */
@@ -537,6 +543,44 @@ export function resolveDeadline(
         deadline: { at: settled(nearest), accuracy: raw.accuracy },
         corrected: 'weekday',
       };
+    }
+
+    /**
+     * Назван месяц — срок обязан быть в нём (прогон 17.09.2026).
+     *
+     * Бой: расшифровка склеила «…к стоматологу давно уже откладываю в
+     * октябре пройти диспансеризацию», и на диспансеризацию модель
+     * вернула сентябрьскую неделю — срок соседнего дела. Месяц назван
+     * прямо, и дата из него следует однозначно: это работа кода, как и
+     * день недели выше. Ближайший такой месяц — прошедший в этом году
+     * значит следующий год. Точность — месяц: дня человек не называл.
+     *
+     * Только когда назван **один** месяц и ни дня недели, ни «завтра»:
+     * «в пятницу в октябре» и «с сентября по ноябрь» толковать за
+     * человека нельзя. Дата уже в названном месяце — не трогается, с
+     * точностью модели: «15 октября» остаётся днём.
+     */
+    const months = monthsIn(words);
+
+    if (months.length === 1 && named.length === 0 && shifts.length === 0) {
+      const month = months[0] ?? 0;
+      const local = localDateParts(at, context.timeZone);
+
+      if (local.month !== month) {
+        // Ближайший такой месяц: текущий и будущие — в этом году, прошедший
+        // — в следующем. «В сентябре», сказанное в сентябре, — этот сентябрь.
+        const todayParts = localDateParts(context.now, context.timeZone);
+        const year = month >= todayParts.month ? todayParts.year : todayParts.year + 1;
+
+        return {
+          ok: true,
+          deadline: {
+            at: startOfDayInZone({ year, month, day: 1 }, context.timeZone),
+            accuracy: 'month',
+          },
+          corrected: 'month',
+        };
+      }
     }
   }
 
