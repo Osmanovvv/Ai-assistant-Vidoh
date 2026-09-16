@@ -32,7 +32,7 @@ import {
 
 const texts = defaultTexts;
 
-const ack = 'Я тебя услышала. Записала 3 дела.';
+const ack = 'Всё, забрала. Записала 3 дела и разложила по местам.';
 
 const NOTHING: DumpComposition = {
   tasks: 0,
@@ -46,16 +46,20 @@ const NOTHING: DumpComposition = {
 describe('buildReply', () => {
   const batchId = '22222222-2222-4222-8222-222222222222';
 
-  it('после разбора — одно компактное сообщение по её образцу и две кнопки (заказчица, 16.09.2026, п. 3)', () => {
+  it('после разбора — одно компактное сообщение по её образцам и две кнопки (заказчица, 16.09.2026)', () => {
     /**
      * 15.09.2026: «после разбора действия автоматически не показываем;
-     * сначала результат разбора и кнопки». 16.09.2026 она дала образец
-     * результата: признание со счётом, раскладка по сферам с числами, что
-     * на завтра, «Всё сохранила» — и кнопки без вопроса.
+     * сначала результат разбора и кнопки». 16.09.2026, п. 3 — образец
+     * результата: счёт, раскладка по сферам с числами, что на завтра.
+     * 16.09.2026, характер — образец тона: «Всё, забрала. Записала 6 дел
+     * и разложила по местам. Оставить как есть или выбрать главное?» —
+     * вопрос вернулся, «Всё сохранила» ушло (то же «забрала» уже в
+     * начале). Шесть дел — выгрузка длинная: 🤍 по её правилу — в первой
+     * строке, контакт закрывается мягко.
      */
     const reply = buildReply({
       texts,
-      acknowledgement: 'Я тебя услышала. Записала 6 дел.',
+      acknowledgement: acknowledgementOf({ ...NOTHING, tasks: 6 }, texts),
       batchId,
       summary: {
         spheres: [
@@ -69,26 +73,24 @@ describe('buildReply', () => {
 
     expect(reply.text).toBe(
       [
-        'Я тебя услышала. Записала 6 дел.',
+        'Всё, забрала — на сегодня можно больше это не держать в голове 🤍 Записала 6 дел и разложила по местам.',
         '',
         '💼 Работа — 4',
         '🛒 Покупки — 2',
         '',
         'На завтра: съездить в офис и распечатать документы.',
         '',
-        // Шесть дел — выгрузка длинная, контакт закрывается мягко (её
-        // правило про 🤍 пришло следом за образцом).
-        texts.answer.allSavedLong,
+        'Оставить как есть или выбрать главное?',
       ].join('\n'),
     );
-    expect(countQuestions(reply.text)).toBe(0);
+    expect(countQuestions(reply.text)).toBe(1);
     expect(reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonKeep,
       texts.answer.buttonPick,
     ]);
   });
 
-  it('сегодня и завтра — своими строками; сфера без иконки — без иконки; без итога — только признание и «Всё сохранила»', () => {
+  it('сегодня и завтра — своими строками; сфера без иконки — без иконки; без итога — только признание и вопрос', () => {
     const both = buildReply({
       texts,
       acknowledgement: ack,
@@ -107,45 +109,31 @@ describe('buildReply', () => {
         'На сегодня: позвонить в банк, забрать справку.',
         'На завтра: съездить в офис.',
         '',
-        texts.answer.allSaved,
+        texts.answer.keepOrPick,
       ].join('\n'),
     );
 
     const bare = buildReply({ texts, acknowledgement: ack, batchId });
-    expect(bare.text).toBe(`${ack}\n\n${texts.answer.allSaved}`);
+    expect(bare.text).toBe(`${ack}\n\n${texts.answer.keepOrPick}`);
     expect(bare.text).not.toContain(texts.answer.actionsLead);
   });
 
-  it('после длинной выгрузки контакт закрывается мягко — с 🤍 (заказчица, 16.09.2026)', () => {
+  it('после длинной выгрузки контакт закрывается мягко — 🤍 в первой строке; короткая — без знака', () => {
     /**
      * Её правило: сердечко редко и там, где оно усиливает тепло —
      * «после длинной выгрузки, когда хочется мягко завершить контакт».
-     * Длинная — от пяти дел; короткая кончается обычным «Всё сохранила.»
-     * без знака: «не использовать как стандартный эмоджи после каждого
-     * действия».
+     * Длинная — от пяти дел. «Не использовать как стандартный эмоджи
+     * после каждого действия» — короткая выгрузка без него.
      */
-    const long = buildReply({
-      texts,
-      acknowledgement: 'Я тебя услышала. Записала 6 дел.',
-      summary: {
-        spheres: [
-          { name: 'работа', icon: '💼', count: 4 },
-          { name: 'покупки', icon: '🛒', count: 2 },
-        ],
-        today: [],
-        tomorrow: [],
-      },
-    });
-    expect(long.text.endsWith(texts.answer.allSavedLong)).toBe(true);
-    expect(long.text).toContain('🤍');
-
-    const short = buildReply({
-      texts,
-      acknowledgement: 'Я тебя услышала. Записала 2 дела.',
-      summary: { spheres: [{ name: 'работа', icon: '💼', count: 2 }], today: [], tomorrow: [] },
-    });
-    expect(short.text.endsWith(texts.answer.allSaved)).toBe(true);
-    expect(short.text).not.toContain('🤍');
+    expect(acknowledgementOf({ ...NOTHING, tasks: 5 }, texts)).toBe(
+      'Всё, забрала — на сегодня можно больше это не держать в голове 🤍 Записала 5 дел и разложила по местам.',
+    );
+    expect(acknowledgementOf({ ...NOTHING, tasks: 2 }, texts)).toBe(
+      'Всё, забрала. Записала 2 дела и разложила по местам.',
+    );
+    // При высказанном состоянии — без сердечка и без шуток: «серьёзная
+    // усталость — никаких шуточек, которые могут обесценить».
+    expect(acknowledgementOf({ ...NOTHING, tasks: 6, emotions: 1 }, texts)).not.toContain('🤍');
   });
 
   it('«Выбрать главное» несёт код выгрузки: сказанное в ней идёт первым', () => {
@@ -163,11 +151,12 @@ describe('buildReply', () => {
     expect(reply.buttons[1]?.action).toBe(ANSWER_ACTION.pick);
   });
 
-  it('своего вопроса у ответа нет: впереди вопрос опроса — он и остаётся единственным', () => {
-    // §13.9: один открытый вопрос на обмен. Ответ на выгрузку с 16.09.2026
-    // вопроса не задаёт вовсе — кнопки не вопрос, а выход к делам.
-    const reply = buildReply({ texts, acknowledgement: ack, batchId });
+  it('впереди вопрос опроса — своей строки с вопросом нет, кнопки остаются', () => {
+    // §13.9: один открытый вопрос на обмен. Кнопки — не вопрос, а выход
+    // к делам, и без них первая выгрузка осталась бы без «Выбрать главное».
+    const reply = buildReply({ texts, acknowledgement: ack, batchId, omitQuestion: true });
 
+    expect(reply.text).toBe(ack);
     expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons).toHaveLength(2);
   });
@@ -181,9 +170,10 @@ describe('buildReply', () => {
      */
     const reply = buildReply({ texts, acknowledgement: ack, batchId, feelingsOnly: true });
 
-    // Поделилась личным — единственный ответ с теплом: «Давай пока просто
-    // оставим это здесь 🤍» (заказчица, 16.09.2026). Кризис сюда не доходит.
-    expect(reply.text).toBe(`${ack} ${texts.answer.feelingsOnlyClose}`);
+    // Поделилась личным — одна фраза её словами: «Поняла тебя. Давай пока
+    // просто оставим это здесь 🤍» (16.09.2026). Ни «тяжело», ни «понимаю»
+    // как оценки состояния — она их запретила. Кризис сюда не доходит.
+    expect(reply.text).toBe(texts.answer.feelingsOnly);
     expect(reply.text).toContain('🤍');
     expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons).toEqual([]);
@@ -192,21 +182,24 @@ describe('buildReply', () => {
   it('ни при каком сочетании не бывает двух вопросов', () => {
     // Инвариант 10. Проверяется перебором, а не примером: правило легко
     // нарушить, добавив фразу с вопросительным знаком в словарь.
-    for (const feelingsOnly of [false, true]) {
-      for (const profile of Object.keys(profiles)) {
-        const reply = buildReply({
-          texts: textsFor(profile),
-          acknowledgement: ack,
-          batchId,
-          feelingsOnly,
-          summary: {
-            spheres: [{ name: 'работа', icon: '💼', count: 2 }],
-            today: ['Позвонить'],
-            tomorrow: ['Съездить'],
-          },
-        });
+    for (const omitQuestion of [false, true]) {
+      for (const feelingsOnly of [false, true]) {
+        for (const profile of Object.keys(profiles)) {
+          const reply = buildReply({
+            texts: textsFor(profile),
+            acknowledgement: ack,
+            batchId,
+            omitQuestion,
+            feelingsOnly,
+            summary: {
+              spheres: [{ name: 'работа', icon: '💼', count: 2 }],
+              today: ['Позвонить'],
+              tomorrow: ['Съездить'],
+            },
+          });
 
-        expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
+          expect(countQuestions(reply.text)).toBeLessThanOrEqual(1);
+        }
       }
     }
   });
@@ -357,14 +350,12 @@ describe('правка из панели и склейка §13.2', () => {
     }
 
     // Перебор не пустой: реплика, стоящая рядом с вопросом, в нём есть.
-    // Прежде это была `restSaved` (дефект ревизии второго этапа), потом
-    // признание (15.09.2026); с 16.09.2026 у ответа на выгрузку своего
-    // вопроса нет вовсе, и рядом с чужим вопросом стоит только маркер
-    // пункта списка по кнопке.
-    expect(checked).toContain('answer.bullet');
+    // Прежде это была `restSaved` (дефект ревизии второго этапа); с
+    // решением заказчицы 15.09.2026 рядом с вопросом стоит признание.
+    expect(checked).toContain('answer.acknowledgementFallback');
   });
 
-  it('правка без вопроса проходит запись, и вопросов в ответе не прибавляется', () => {
+  it('правка без вопроса проходит запись и в ответе остаётся один вопрос', () => {
     // Обратная сторона: правило, которое не пропускает ничего, кончается
     // тем, что его снимают целиком.
     const said = 'Я тебя услышала, всё записала.';
@@ -380,7 +371,7 @@ describe('правка из панели и склейка §13.2', () => {
     });
 
     expect(built.text).toContain(said);
-    expect(countQuestions(built.text)).toBe(0);
+    expect(countQuestions(built.text)).toBe(1);
   });
 });
 
@@ -398,26 +389,27 @@ describe('acknowledgementOf — признание из состава (зака
     applyOverrides(new Map());
   });
 
-  it('«Я тебя услышала. Записала 6 дел.» — цифрой, как в её образце', () => {
-    expect(withTasks(6)).toBe('Я тебя услышала. Записала 6 дел.');
+  it('«Всё, забрала. Записала 3 дела и разложила по местам.» — её образец тона', () => {
+    expect(withTasks(3)).toBe('Всё, забрала. Записала 3 дела и разложила по местам.');
   });
 
-  it('склоняет: 1 дело, 2 дела, 5 дел, 11 дел, 21 дело, 22 дела', () => {
-    expect(withTasks(1)).toBe('Я тебя услышала. Записала 1 дело.');
-    expect(withTasks(2)).toBe('Я тебя услышала. Записала 2 дела.');
-    expect(withTasks(4)).toBe('Я тебя услышала. Записала 4 дела.');
-    expect(withTasks(5)).toBe('Я тебя услышала. Записала 5 дел.');
-    expect(withTasks(11)).toBe('Я тебя услышала. Записала 11 дел.');
-    expect(withTasks(21)).toBe('Я тебя услышала. Записала 21 дело.');
-    expect(withTasks(22)).toBe('Я тебя услышала. Записала 22 дела.');
+  it('склоняет: 1 дело, 2 дела, 4 дела, 11 дел, 21 дело, 22 дела (от пяти — с 🤍 впереди)', () => {
+    expect(withTasks(1)).toBe('Всё, забрала. Записала 1 дело и разложила по местам.');
+    expect(withTasks(2)).toBe('Всё, забрала. Записала 2 дела и разложила по местам.');
+    expect(withTasks(4)).toBe('Всё, забрала. Записала 4 дела и разложила по местам.');
+    expect(withTasks(11)).toContain('Записала 11 дел и разложила по местам.');
+    expect(withTasks(21)).toContain('Записала 21 дело и разложила по местам.');
+    expect(withTasks(22)).toContain('Записала 22 дела и разложила по местам.');
   });
 
   it('без дел — только признание', () => {
     expect(withTasks(0)).toBe(texts.answer.acknowledgementFallback);
   });
 
-  it('при высказанном состоянии — тон усталости, счёт остаётся', () => {
-    expect(withTasks(2, 1)).toBe('Поняла. Сегодня тяжело. Записала 2 дела.');
+  it('при высказанном состоянии — спокойнее, без оценки состояния, счёт остаётся', () => {
+    // «Не говорит постоянно: тебе сейчас тяжело» — её слова. Тон
+    // усталости — в самом «Поняла», а не в диагнозе.
+    expect(withTasks(2, 1)).toBe('Поняла, забрала. Записала 2 дела и разложила по местам.');
     expect(withTasks(0, 1)).toBe(texts.answer.acknowledgementTiredFallback);
   });
 
@@ -425,7 +417,7 @@ describe('acknowledgementOf — признание из состава (зака
     applyOverrides(new Map([['answer.acknowledgementFallback', 'Услышала тебя.']]));
 
     expect(acknowledgementOf({ ...NOTHING, tasks: 3 }, textsFor())).toBe(
-      'Услышала тебя. Записала 3 дела.',
+      'Услышала тебя. Записала 3 дела и разложила по местам.',
     );
   });
 });
@@ -437,10 +429,12 @@ describe('presentDump — ответ на выгрузку целиком', () =
   it('признание из состава, вопрос «оставить или выбрать», две кнопки, дел под признанием нет', () => {
     const result = presentDump(params);
 
-    expect(result.reply.text.startsWith('Я тебя услышала. Записала 3 дела.')).toBe(true);
+    expect(
+      result.reply.text.startsWith('Всё, забрала. Записала 3 дела и разложила по местам.'),
+    ).toBe(true);
     expect(result.reply.text).not.toContain('— Записать сына к врачу');
-    expect(result.reply.text).toContain(texts.answer.allSaved);
-    expect(countQuestions(result.reply.text)).toBe(0);
+    expect(result.reply.text).toContain(texts.answer.keepOrPick);
+    expect(countQuestions(result.reply.text)).toBe(1);
     expect(result.reply.buttons.map((button) => button.label)).toEqual([
       texts.answer.buttonKeep,
       texts.answer.buttonPick,
@@ -459,9 +453,11 @@ describe('presentDump — ответ на выгрузку целиком', () =
       hidden: 7,
     });
 
-    expect(result.reply.text.startsWith('Поняла. Сегодня тяжело. Записала 1 дело.')).toBe(true);
+    expect(
+      result.reply.text.startsWith('Поняла, забрала. Записала 1 дело и разложила по местам.'),
+    ).toBe(true);
     expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
-    expect(countQuestions(result.reply.text)).toBe(0);
+    expect(countQuestions(result.reply.text)).toBe(1);
     expect(result.reply.buttons).toHaveLength(2);
   });
 
@@ -474,7 +470,7 @@ describe('presentDump — ответ на выгрузку целиком', () =
 
   it('неизвестный профиль берёт словарь по умолчанию', () => {
     expect(presentDump({ ...params, profile: 'тёплый-которого-нет' }).reply.text).toContain(
-      texts.answer.allSaved,
+      texts.answer.keepOrPick,
     );
   });
 });

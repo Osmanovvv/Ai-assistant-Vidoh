@@ -101,6 +101,11 @@ export interface BuildReplyParams {
    * Пусто — общее действие без кода.
    */
   readonly batchId?: string | undefined;
+  /**
+   * Впереди уже стоит вопрос — опроса или уточнения: своего ответ не
+   * задаёт (§13.9: один вопрос на обмен), кнопки остаются.
+   */
+  readonly omitQuestion?: boolean | undefined;
   /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
   readonly summary?: DumpSummary | undefined;
   /**
@@ -137,16 +142,16 @@ export function buildReply(params: BuildReplyParams): Reply {
    * Кризис сюда не доходит: остановлен раньше своим сценарием.
    */
   if (params.feelingsOnly === true) {
-    // Поделилась личным — одно из мест для 🤍 (заказчица, 16.09.2026).
-    return { text: `${params.acknowledgement} ${answer.feelingsOnlyClose}`, buttons: [] };
+    // Поделилась личным — одна фраза её словами, с 🤍 (16.09.2026).
+    return { text: answer.feelingsOnly, buttons: [] };
   }
 
   /**
-   * Одно компактное сообщение по образцу заказчицы (16.09.2026, п. 3):
-   * признание со счётом, сферы с числами, что на сегодня и на завтра,
-   * «Всё сохранила» — и кнопки. Своего вопроса у ответа нет: кнопки —
-   * не вопрос, а выход к делам, и §13.9 «один вопрос на обмен» держится
-   * даже когда впереди стоит вопрос опроса или уточнения.
+   * Одно компактное сообщение по образцам заказчицы (16.09.2026): открытие
+   * со счётом, сферы с числами, что на сегодня и на завтра — и вопрос
+   * «Оставить как есть или выбрать главное?», которым кончается её образец
+   * тона. Впереди уже есть вопрос (опрос, уточнение) — своего нет: §13.9,
+   * один вопрос на обмен.
    */
   const lines: string[] = [params.acknowledgement];
 
@@ -166,14 +171,7 @@ export function buildReply(params: BuildReplyParams): Reply {
   if (tomorrow.length > 0) due.push(answer.dueTomorrow(inline(tomorrow)));
   if (due.length > 0) lines.push('', ...due);
 
-  /**
-   * Длинную выгрузку контакт закрывает мягко — с 🤍; короткая кончается
-   * обычным «Всё сохранила.» (заказчица, 16.09.2026: «после длинной
-   * выгрузки, когда хочется мягко завершить контакт», «не после каждого
-   * действия»). Длинная — от пяти дел.
-   */
-  const total = (params.summary?.spheres ?? []).reduce((sum, sphere) => sum + sphere.count, 0);
-  lines.push('', total >= LONG_DUMP_TASKS ? answer.allSavedLong : answer.allSaved);
+  if (params.omitQuestion !== true) lines.push('', answer.keepOrPick);
 
   const pick =
     params.batchId === undefined
@@ -287,10 +285,18 @@ function tasksPhrase(count: number): string {
 }
 
 export function acknowledgementOf(composition: DumpComposition, texts: TextProfile): string {
+  /**
+   * Открытие — по её тексту о характере (16.09.2026): «Всё, забрала».
+   * Длинная выгрузка (от пяти дел) — с фирменным 🤍 в этой же строке;
+   * при высказанном состоянии — спокойнее и без сердечка: «серьёзная
+   * усталость — никаких шуточек, которые могут обесценить».
+   */
   const opening =
     composition.emotions > 0
       ? texts.answer.acknowledgementTiredFallback
-      : texts.answer.acknowledgementFallback;
+      : composition.tasks >= LONG_DUMP_TASKS
+        ? texts.answer.acknowledgementLong
+        : texts.answer.acknowledgementFallback;
 
   if (composition.tasks <= 0) return opening;
 
@@ -307,6 +313,11 @@ export interface PresentParams {
   readonly profile?: string | null | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
+  /**
+   * Впереди уже стоит вопрос — опроса или уточнения: своего ответ не
+   * задаёт (§13.9: один вопрос на обмен), кнопки остаются.
+   */
+  readonly omitQuestion?: boolean | undefined;
   /** См. `BuildReplyParams.omitQuestion`. */
   /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
   readonly summary?: DumpSummary | undefined;
@@ -354,6 +365,7 @@ export function presentDump(params: PresentParams): PresentResult {
       texts,
       acknowledgement: acknowledgementOf(params.composition, texts),
       batchId: params.batchId,
+      omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
       summary: params.summary,
     }),

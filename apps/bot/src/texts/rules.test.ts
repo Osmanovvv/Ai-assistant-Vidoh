@@ -283,3 +283,34 @@ describe('фирменное сердечко 🤍 (заказчица, 16.09.20
     expect(contentRefusal('Готово 😊')).toMatch(/украшение/u);
   });
 });
+
+describe('характер бота — текст заказчицы 16.09.2026', () => {
+  it('оценок и психологизма бот не говорит: её список — в запретах', () => {
+    for (const said of [
+      'Я тебя понимаю, тебе сейчас тяжело.',
+      'Это нормально чувствовать усталость.',
+      'Это простая задача, ты справишься.',
+      'У тебя шесть дел, все дела обычные.',
+      'Задача создана.',
+      'Категория успешно добавлена.',
+    ]) {
+      expect(contentRefusal(said), said).toMatch(/13\.7/u);
+    }
+  });
+
+  it('спокойные бытовые эмодзи из её списка проходят — по одному на реплику', () => {
+    expect(contentRefusal('Всё, забрала 😌')).toBeUndefined();
+    expect(contentRefusal('Поймала. До завтра это теперь моя забота 🙂')).toBeUndefined();
+    expect(contentRefusal('Покупок набралось прилично 🛒 Всё сохранила.')).toBeUndefined();
+    expect(contentRefusal('Напомню ⏰')).toBeUndefined();
+    expect(contentRefusal('Готово 🙌')).toBeUndefined();
+    expect(contentRefusal('Держу 📌')).toBeUndefined();
+  });
+
+  it('два эмодзи в одной реплике — уже украшение, блёстки и мимими — тоже', () => {
+    expect(contentRefusal('Всё, забрала 😌🙌')).toMatch(/одного/u);
+    expect(contentRefusal('Всё, забрала 😌 Записала 🙂')).toMatch(/одного/u);
+    expect(contentRefusal('Ура ✨')).toMatch(/украшение/u);
+    expect(contentRefusal('Готово 🥰')).toMatch(/украшение/u);
+  });
+});

@@ -1803,6 +1803,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       profile: context.textProfile,
       userId: batch.userId,
       batchId: batch.id,
+      /**
+       * Вопрос уже занят — своего ответ не задаёт.
+       *
+       * Так было у онбординга; с §13.6 сюда добавился экран возвращения.
+       * Инвариант «один вопрос» продукт понимает как один на обмен, а не
+       * на реплику: два вопроса подряд разными сообщениями — тот же
+       * допрос.
+       */
+      omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       feelingsOnly,
       quickAdd,
       // Раскладка по сферам и «на сегодня / на завтра» — по разобранным

@@ -105,15 +105,14 @@ export const reserved: TextProfile = {
   },
 
   answer: {
-    acknowledgementFallback: 'Я тебя услышала.',
-    acknowledgementTiredFallback: 'Поняла. Сегодня тяжело.',
-    acknowledgementTasks: (tasks) => `Записала ${tasks}.`,
+    acknowledgementFallback: 'Всё, забрала.',
+    acknowledgementTiredFallback: 'Поняла, забрала.',
+    acknowledgementLong: 'Всё, забрала — на сегодня можно больше это не держать в голове 🤍',
+    acknowledgementTasks: (tasks) => `Записала ${tasks} и разложила по местам.`,
     sphereLine: (name, count) => `${name} — ${count}`,
     dueToday: (list) => `На сегодня: ${list}.`,
     dueTomorrow: (list) => `На завтра: ${list}.`,
-    allSaved: 'Всё сохранила.',
-    allSavedLong: 'Всё сохранила. На сегодня можно больше это не держать в голове 🤍',
-    feelingsOnlyClose: 'Давай пока просто оставим это здесь 🤍',
+    feelingsOnly: 'Поняла тебя. Давай пока просто оставим это здесь 🤍',
     thanks: 'Пожалуйста 🤍 Я всё помню.',
 
     actionsLead: 'На сегодня я бы взяла вот это:',
@@ -123,12 +122,13 @@ export const reserved: TextProfile = {
     restSaved: 'Остальное пока никуда не убежит.',
     nothingHidden: 'Больше ничего не висит.',
 
+    keepOrPick: 'Оставить как есть или выбрать главное?',
     buttonKeep: 'Оставить как есть',
     buttonPick: 'Выбрать главное',
-    keptAsIs: 'Хорошо, оставляю как есть. Всё записано.',
+    keptAsIs: 'Оставляю как есть. Всё у меня.',
     nothingToPick: 'Выбирать пока не из чего — всё записано, вернёмся, когда появится.',
 
-    added: 'Записала. Разберём потом, когда дойдём.',
+    added: 'Поймала. Разберём, когда дойдём.',
     buttonDoNow: 'Сделать сейчас',
     buttonShowAll: 'Разобрать всё',
     buttonLater: 'Оставить на потом',
