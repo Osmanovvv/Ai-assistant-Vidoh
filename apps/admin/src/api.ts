@@ -913,6 +913,20 @@ export interface FailedPayment {
 }
 
 /** Сорвавшееся напоминание (§18): человек не получил письма. */
+/**
+ * Тихий сбой (заказчица, 16.09.2026, п. 4): наш сбой, на который бот
+ * ответил запасной репликой, — не сорвавшаяся выгрузка. Слов человека
+ * нет, только длина.
+ */
+export interface SilentFault {
+  readonly at: string;
+  readonly userId: string;
+  readonly who: string;
+  readonly reason: string;
+  readonly replied: string;
+  readonly length: number;
+}
+
 export interface FailedReminder {
   readonly id: string;
   readonly userId: string;
@@ -929,6 +943,8 @@ export interface ErrorsPage {
   readonly sends: readonly FailedSend[];
   readonly payments: readonly FailedPayment[];
   readonly reminders: readonly FailedReminder[];
+  readonly fallbacks: readonly SilentFault[];
+  readonly fallbacksTotal: number;
   readonly batchesTotal: number;
   readonly callsTotal: number;
   readonly paymentsTotal: number;

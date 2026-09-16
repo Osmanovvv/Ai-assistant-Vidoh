@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { items, userSettings, type Batch, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
-import { fallbackPathOf } from '../../texts/rules.js';
+import { fallbackOf } from '../../texts/rules.js';
 import { recordMisunderstood } from '../misunderstood/misunderstood.repo.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { markTrialSpent, mayParseDump } from '../billing/subscription.service.js';
@@ -457,6 +457,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * отвечать на выгрузку, часть которой не разобралась.
        */
       parked: false,
+      /**
+       * Наш сбой, из-за которого бот сейчас ответит репликой сдачи
+       * (заказчица, 16.09.2026, п. 4: «ошибка системы» и «не понял
+       * формулировку» — разные вещи). Ставится перед технической
+       * репликой — извлечение или классификация не ответили, модель
+       * резолвера молчала — и снимается записью в журнал: строка уходит
+       * во «Ошибки», а не в «Не поняла». Реплика человеку та же.
+       */
+      fault: undefined as string | undefined,
     };
 
     /**
@@ -493,15 +502,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * как ушёл. Журнал не обязан мешать ответу: не записалось — ответ
        * всё равно уходит.
        */
-      const fallback = fallbackPathOf(text, texts);
+      const fallback = fallbackOf(text, texts);
       if (fallback !== undefined) {
+        const fault = happened.fault;
+        happened.fault = undefined;
         try {
           await recordMisunderstood(db, {
             userId: batch.userId,
             batchId: batch.id,
             said: combined,
             replied: text,
-            reason: fallback,
+            reason: fault === undefined ? fallback.path : `${fallback.path}: ${fault}`,
+            kind: fault === undefined ? fallback.kind : 'system',
           });
         } catch (error: unknown) {
           deps.logger?.warn({ err: error, batchId: batch.id }, 'Журнал непонятого не записался');
@@ -1078,6 +1090,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       happened.parked = true;
+      // Модель резолвера молчала — это сбой, а не непонятая правка (п. 4).
+      if (outcome.fault !== undefined) happened.fault = outcome.fault;
       sayParked(parkedLine(outcome.said));
       await saveDraft(db, {
         userId: batch.userId,
@@ -1399,6 +1413,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         text: dumpText,
         reason: `извлечение не удалось: ${extracted.problem}`,
       });
+      happened.fault = `извлечение не удалось: ${extracted.problem}`;
       await answer(texts.answer.savedUnparsed);
       return;
     }
@@ -1459,6 +1474,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         text: dumpText,
         reason: `классификация не удалась: ${classified.problem}`,
       });
+      happened.fault = `классификация не удалась: ${classified.problem}`;
       await answer(texts.answer.savedUnparsed);
       return;
     }
@@ -1613,7 +1629,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       const spokenLate = lateThoughts.map((segment) => segment.text).join('\n');
 
-      const park = async (reason: string): Promise<typeof nothing> => {
+      const park = async (reason: string, fault = false): Promise<typeof nothing> => {
+        // Сбой модели — во «Ошибки», а не в «Не поняла» (п. 4).
+        if (fault) happened.fault = reason;
         for (const segment of lateThoughts) {
           happened.parked = true;
           sayParked(texts.answer.savedUnparsed);
@@ -1635,7 +1653,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
 
       if (!lateExtracted.ok) {
-        return await park(`поздняя мысль: извлечение не удалось: ${lateExtracted.problem}`);
+        return await park(`поздняя мысль: извлечение не удалось: ${lateExtracted.problem}`, true);
       }
 
       if (lateExtracted.units.length === 0) {
@@ -1656,7 +1674,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
 
       if (!lateClassified.ok) {
-        return await park(`поздняя мысль: классификация не удалась: ${lateClassified.problem}`);
+        return await park(
+          `поздняя мысль: классификация не удалась: ${lateClassified.problem}`,
+          true,
+        );
       }
 
       // Сферы по содержанию — и у поздней записи (п. 1.1), тем же путём

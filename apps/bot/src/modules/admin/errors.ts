@@ -10,15 +10,22 @@ import {
   users,
 } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { misunderstoodCount, misunderstoodList } from '../misunderstood/misunderstood.repo.js';
 
 /**
  * Журнал сбоев в панели (§15 ТЗ, задача 4.10).
  *
  * §15 просит «журнал неуспешных вызовов и сбоев с возможностью
- * повторного запуска». Пять источников, и они разные по смыслу:
+ * повторного запуска». Шесть источников, и они разные по смыслу:
  *
  *  - **сорвавшиеся выгрузки** — единственное, что видит человек: он
  *    сказал мысль и не получил разбора. Это и есть главное здесь;
+ *  - **тихие сбои** (заказчица, 16.09.2026, п. 4) — выгрузка не
+ *    сорвалась, но бот ответил запасной репликой из-за нашей поломки:
+ *    извлечение или классификация не ответили, вектор вопроса не
+ *    посчитался, резолвер молчал. Человек прочёл «сохранила целиком» и
+ *    не узнал, что сломалось у нас. Из журнала непонятого, вид «сбой»;
+ *    «бот не понял формулировку» — не сюда, а в «Не поняла» на обзоре;
  *  - **неуспешные вызовы модели** — причина, по которой выгрузка
  *    сорвалась, и заодно счёт: 403 не тарифится, а таймаут после
  *    отправки — да (задача 3.82);
@@ -49,6 +56,25 @@ import type { Executor } from '../../infra/db.js';
  * 4.6), где доступ к нему пишется в журнал §16. Журнал ошибок читают
  * часто и мимоходом, и содержимому чужих мыслей в нём делать нечего.
  */
+
+/**
+ * Тихий сбой (заказчица, 16.09.2026, п. 4): наш сбой, на который бот
+ * ответил запасной репликой, а выгрузка при этом не сорвалась —
+ * извлечение или классификация не ответили, вектор вопроса не
+ * посчитался, резолвер молчал. Человек прочёл «сохранила целиком» или
+ * «не смогла заглянуть» и не узнал, что сломалось у нас; здесь это
+ * видно. Слов человека нет — только длина, как у сорвавшихся выгрузок.
+ */
+export interface SilentFault {
+  readonly at: string;
+  readonly userId: string;
+  readonly who: string;
+  /** Что сломалось: путь реплики и причина через двоеточие. */
+  readonly reason: string;
+  /** Что при этом прочёл человек. */
+  readonly replied: string;
+  readonly length: number;
+}
 
 export interface FailedBatch {
   readonly id: string;
@@ -189,6 +215,9 @@ export interface ErrorsView {
   readonly sends: readonly FailedSend[];
   readonly payments: readonly FailedPayment[];
   readonly reminders: readonly FailedReminder[];
+  /** Тихие сбои с запасной репликой (п. 4) — не сорвавшиеся, но наши. */
+  readonly fallbacks: readonly SilentFault[];
+  readonly fallbacksTotal: number;
   /** Всего сорвавшихся выгрузок за период — список ограничен. */
   readonly batchesTotal: number;
   readonly callsTotal: number;
@@ -359,6 +388,10 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
     .from(reminders)
     .where(and(eq(reminders.skippedReason, 'failed'), gte(reminders.dueAt, from)));
 
+  // Тихие сбои — из журнала непонятого, только вид «сбой» (п. 4).
+  const silent = await misunderstoodList(db, { days, kind: 'system', limit: LIMIT });
+  const silentTotal = await misunderstoodCount(db, from, 'system');
+
   /**
    * Время отказа, а не дата счёта (ревизия панели).
    *
@@ -481,6 +514,15 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
       kind: row.kind,
       at: row.at.toISOString(),
     })),
+    fallbacks: silent.map((row) => ({
+      at: row.at.toISOString(),
+      userId: row.userId,
+      who: row.who,
+      reason: row.reason,
+      replied: row.replied,
+      length: row.said.length,
+    })),
+    fallbacksTotal: silentTotal,
     batchesTotal: batchesCount?.total ?? 0,
     callsTotal: callsCount?.total ?? 0,
     paymentsTotal: paymentsCount?.total ?? 0,
@@ -488,6 +530,7 @@ export async function errorsView(db: Executor, days: number): Promise<ErrorsView
     remindersTotal: remindersCount?.total ?? 0,
     missing: [
       'Текстов расшифровок здесь нет нарочно: сказанное человеком — в его карточке, где доступ к нему журналируется (§16).',
+      'Тихие сбои — то, на что бот ответил запасной репликой из-за нашей поломки; «бот не понял формулировку» — это не сюда, а в «Не поняла» на обзоре.',
       'Повторный запуск есть у выгрузок и у рассылки. Отдельный вызов модели повторить нельзя: он часть разбора, а не сам по себе.',
       'У неудачных платежей повтора нет и не будет: повторить списание — значит взять деньги второй раз. Недоплата и возврат разбираются руками, через обращение человека.',
       'У сорвавшихся напоминаний повтора нет: время прошло, и вечернее письмо, присланное на следующий день, — не то напоминание, о котором просили. Планировщик поставит следующее в свой срок.',

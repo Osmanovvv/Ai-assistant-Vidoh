@@ -34,6 +34,7 @@ describe('журнал непонятого', () => {
       said: 'Покажи все мои задачи',
       replied: 'Про это у меня ничего не записано.',
       reason: 'backlog.nothing',
+      kind: 'meaning',
     });
 
     const rows = await misunderstoodList(testDb(), { days: 30 });
@@ -44,8 +45,36 @@ describe('журнал непонятого', () => {
       said: 'Покажи все мои задачи',
       replied: 'Про это у меня ничего не записано.',
       reason: 'backlog.nothing',
+      kind: 'meaning',
     });
     expect(rows[0]?.at).toBeInstanceOf(Date);
+  });
+
+  it('смысл и сбой считаются и отдаются порознь (заказчица: не смешивать)', async () => {
+    await recordMisunderstood(testDb(), {
+      userId: anya,
+      said: 'что там с котом',
+      replied: 'Про это у меня ничего не записано.',
+      reason: 'backlog.nothing',
+      kind: 'meaning',
+    });
+    await recordMisunderstood(testDb(), {
+      userId: anya,
+      said: 'что там с котом',
+      replied: 'Сейчас не смогла заглянуть в записи — они на месте.',
+      reason: 'backlog.unavailable',
+      kind: 'system',
+    });
+
+    const since = new Date(Date.now() - 30 * 24 * 3_600_000);
+    expect(await misunderstoodCount(testDb(), since, 'meaning')).toBe(1);
+    expect(await misunderstoodCount(testDb(), since, 'system')).toBe(1);
+    expect(
+      (await misunderstoodList(testDb(), { days: 30, kind: 'system' })).map((row) => row.reason),
+    ).toEqual(['backlog.unavailable']);
+    expect(
+      (await misunderstoodList(testDb(), { days: 30, kind: 'meaning' })).map((row) => row.reason),
+    ).toEqual(['backlog.nothing']);
   });
 
   it('считает за период и не считает старое', async () => {
@@ -55,12 +84,14 @@ describe('журнал непонятого', () => {
       said: 'а',
       replied: 'б',
       reason: 'answer.nothingToParse',
+      kind: 'meaning',
     });
     await recordMisunderstood(testDb(), {
       userId: boris,
       said: 'в',
       replied: 'г',
       reason: 'backlog.nothing',
+      kind: 'meaning',
     });
     await testDb()
       .insert(misunderstood)
@@ -72,8 +103,8 @@ describe('журнал непонятого', () => {
         createdAt: new Date(Date.now() - 40 * DAY),
       });
 
-    expect(await misunderstoodCount(testDb(), new Date(Date.now() - 30 * DAY))).toBe(2);
-    expect(await misunderstoodCount(testDb(), new Date(Date.now() - 60 * DAY))).toBe(3);
+    expect(await misunderstoodCount(testDb(), new Date(Date.now() - 30 * DAY), 'meaning')).toBe(2);
+    expect(await misunderstoodCount(testDb(), new Date(Date.now() - 60 * DAY), 'meaning')).toBe(3);
     expect((await misunderstoodList(testDb(), { days: 30 })).map((row) => row.said)).toEqual([
       'в',
       'а',
@@ -92,6 +123,7 @@ describe('журнал непонятого', () => {
       said: 'что там с котом',
       replied: 'Про это у меня ничего не записано.',
       reason: 'backlog.nothing',
+      kind: 'meaning',
     });
 
     await testDb().delete(batches);

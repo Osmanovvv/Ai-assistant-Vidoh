@@ -68,8 +68,9 @@ export interface Overview {
   readonly returnedUsers: number;
   /**
    * Сколько раз бот не понял за период (заказчица, 16.09.2026, п. 3) —
-   * строки журнала непонятого: реплики сдачи по словарю. По клику панель
-   * показывает сам список.
+   * строки журнала непонятого вида «смысл»: реплики сдачи по словарю. По
+   * клику панель показывает сам список. Сбои системы (п. 4) сюда не
+   * входят — они во вкладке «Ошибки».
    */
   readonly misunderstood: number;
   /**
@@ -307,7 +308,8 @@ export async function overview(
     newUsers: fresh?.total ?? 0,
     dumps: parsed?.total ?? 0,
     returnedUsers: returned?.total ?? 0,
-    misunderstood: await misunderstoodCount(db, since),
+    // Только смысл (п. 4): сбои — во вкладке «Ошибки», а не здесь.
+    misunderstood: await misunderstoodCount(db, since, 'meaning'),
     /** Сорвавшиеся: без них обзор молчал о поломке вовсе. */
     failedDumps: parsed?.failed ?? 0,
     spend: spendRows

@@ -7,6 +7,7 @@ import {
   contentRefusal,
   editableReplies,
   FALLBACK_REPLIES,
+  fallbackOf,
   fallbackPathOf,
   NOT_EDITABLE,
   refusalFor,
@@ -322,13 +323,37 @@ describe('реплики сдачи — журнал непонятого (за�
     for (const [name, profile] of Object.entries(profiles)) {
       const known = new Map(repliesOf(profile).map((one) => [one.path, one]));
 
-      for (const path of FALLBACK_REPLIES) {
+      for (const path of Object.keys(FALLBACK_REPLIES)) {
         const reply = known.get(path);
 
         expect(reply, `${name}: реплики «${path}» в словаре нет`).toBeDefined();
         expect(reply?.places, `${name}: «${path}» с подстановками — сравнивать не с чем`).toBe(0);
       }
     }
+  });
+
+  it('у каждой реплики сдачи назван вид: смысл или сбой (заказчица: не смешивать)', () => {
+    // «Ошибка системы» и «бот не понял формулировку» — разные вещи.
+    expect(FALLBACK_REPLIES['backlog.nothing']).toBe('meaning');
+    expect(FALLBACK_REPLIES['answer.nothingToParse']).toBe('meaning');
+    expect(FALLBACK_REPLIES['resolver.nothingToClose']).toBe('meaning');
+    expect(FALLBACK_REPLIES['backlog.unavailable']).toBe('system');
+    expect(FALLBACK_REPLIES['listening.nothingHeard']).toBe('system');
+    for (const kind of Object.values(FALLBACK_REPLIES)) {
+      expect(['meaning', 'system']).toContain(kind);
+    }
+  });
+
+  it('fallbackOf отдаёт путь и вид', () => {
+    expect(fallbackOf(defaultTexts.backlog.unavailable, defaultTexts)).toEqual({
+      path: 'backlog.unavailable',
+      kind: 'system',
+    });
+    expect(fallbackOf(defaultTexts.backlog.nothing, defaultTexts)).toEqual({
+      path: 'backlog.nothing',
+      kind: 'meaning',
+    });
+    expect(fallbackOf(defaultTexts.answer.thanks, defaultTexts)).toBeUndefined();
   });
 
   it('узнаёт сдачу по тексту: «ничего не записано», «расскажешь, что в голове», «такого дела не было»', () => {

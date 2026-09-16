@@ -10,6 +10,7 @@ import {
   billingSubscriptions,
   broadcastDeliveries,
   broadcasts,
+  misunderstood,
   reminders,
   users,
 } from '../../db/schema.js';
@@ -38,6 +39,7 @@ let olya = '';
 
 beforeEach(async () => {
   await testDb().delete(aiCalls);
+  await testDb().delete(misunderstood);
   await testDb().delete(broadcastDeliveries);
   await testDb().delete(broadcasts);
   await testDb().delete(billingEvents);
@@ -311,6 +313,45 @@ describe('прочие источники журнала (задача 4.10)', (
     // Длина сказанного есть, самих слов нет.
     expect(view.batches[0]?.length).toBe('надо купить корм коту'.length);
     expect(JSON.stringify(view.batches)).not.toContain('корм');
+  });
+
+  it('тихие сбои — бот ответил запасной репликой из-за нашего сбоя — видны, а слова человека нет', async () => {
+    /**
+     * Заказчица, 16.09.2026, п. 4: «ошибка системы» и «бот не понял
+     * формулировку» — разные вещи. Строки журнала непонятого вида «сбой»
+     * живут здесь, а не в «Не поняла». Слов человека, как и у сорвавшихся
+     * выгрузок, в журнале ошибок нет — только длина.
+     */
+    await testDb()
+      .insert(misunderstood)
+      .values([
+        {
+          userId: anya,
+          said: 'что там с котом',
+          replied: 'Сейчас не смогла заглянуть в записи — они на месте.',
+          reason: 'backlog.unavailable',
+          kind: 'system',
+        },
+        {
+          userId: anya,
+          said: 'Покажи все мои задачи',
+          replied: 'Про это у меня ничего не записано.',
+          reason: 'backlog.nothing',
+          kind: 'meaning',
+        },
+      ]);
+
+    const view = await errorsView(testDb(), 30);
+
+    expect(view.fallbacks).toHaveLength(1);
+    expect(view.fallbacks[0]).toMatchObject({
+      who: 'Аня',
+      reason: 'backlog.unavailable',
+      replied: 'Сейчас не смогла заглянуть в записи — они на месте.',
+      length: 'что там с котом'.length,
+    });
+    expect(view.fallbacksTotal).toBe(1);
+    expect(JSON.stringify(view.fallbacks)).not.toContain('котом');
   });
 
   it('неудачный вызов модели помечен, платили за него или нет', async () => {

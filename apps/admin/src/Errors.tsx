@@ -252,6 +252,54 @@ export function ErrorsPanel(): React.ReactElement {
         <Trimmed shown={page.batches.length} total={page.batchesTotal} />
       </div>
 
+      {/*
+        Тихие сбои — заказчица, 16.09.2026, п. 4: «ошибка системы» и «бот
+        не понял формулировку» — разные вещи. Выгрузка не сорвалась, но
+        бот ответил запасной репликой из-за нашей поломки: извлечение или
+        классификация не ответили, вектор вопроса не посчитался, резолвер
+        молчал. Человек прочёл «сохранила целиком» и не узнал, что
+        сломалось у нас. Слов человека здесь нет — как и у сорвавшихся.
+      */}
+      <div className="разрез" data-testid="silent-faults">
+        <h3 className="разрез__имя">
+          Тихие сбои: бот ответил запасной репликой{' '}
+          {page.fallbacksTotal > 0 && `— всего ${String(page.fallbacksTotal)}`}
+        </h3>
+
+        {page.fallbacks.length === 0 ? (
+          <p className="разрез__пусто" data-testid="no-silent-faults">
+            Тихих сбоев за этот срок нет.
+          </p>
+        ) : (
+          <div className="таблица-обёртка">
+            <table className="таблица">
+              <thead>
+                <tr>
+                  <th>Когда</th>
+                  <th>У кого</th>
+                  <th className="таблица__число">Знаков</th>
+                  <th>Что сломалось</th>
+                  <th>Что прочёл человек</th>
+                </tr>
+              </thead>
+              <tbody>
+                {page.fallbacks.map((row) => (
+                  <tr key={`${row.at}-${row.userId}-${row.reason}`}>
+                    <td>{when(row.at)}</td>
+                    <td>{row.who}</td>
+                    <td className="таблица__число">{row.length}</td>
+                    <td className="панель__кто">{row.reason}</td>
+                    <td>{row.replied}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <Trimmed shown={page.fallbacks.length} total={page.fallbacksTotal} />
+      </div>
+
       <div className="разрез">
         <h3 className="разрез__имя">
           Неуспешные отправки к моделям{' '}

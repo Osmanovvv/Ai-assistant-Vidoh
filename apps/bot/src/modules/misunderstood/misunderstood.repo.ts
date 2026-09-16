@@ -1,14 +1,18 @@
-import { count, desc, eq, gte } from 'drizzle-orm';
+import { and, count, desc, eq, gte } from 'drizzle-orm';
 
 import { misunderstood, users } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import type { FallbackKind } from '../../texts/rules.js';
 
 /**
- * Журнал непонятого (заказчица, 16.09.2026, панель п. 3).
+ * Журнал непонятого (заказчица, 16.09.2026, панель п. 3 и п. 4).
  *
  * Пишется конвейером в момент отправки реплики сдачи — см.
- * `FALLBACK_REPLIES` в словаре и `tell` в обработчике выгрузки. Читается
- * обзором панели (число за период) и списком по клику.
+ * `FALLBACK_REPLIES` в словаре и `tell` в обработчике выгрузки. Два вида
+ * строк: `meaning` (не понял формулировку, не нашёл) читает обзор —
+ * плитка «Не поняла» и список по клику; `system` (сбой: распознавание,
+ * вектор, модель) читает вкладка «Ошибки». Смешивать их нельзя — её
+ * слово.
  */
 
 export interface MisunderstoodToRecord {
@@ -18,8 +22,9 @@ export interface MisunderstoodToRecord {
   readonly said: string;
   /** Что ответил бот — дословно. */
   readonly replied: string;
-  /** Путь реплики сдачи в словаре. */
+  /** Путь реплики сдачи в словаре; при сбое — с причиной через двоеточие. */
   readonly reason: string;
+  readonly kind: FallbackKind;
 }
 
 export async function recordMisunderstood(
@@ -32,15 +37,20 @@ export async function recordMisunderstood(
     said: params.said,
     replied: params.replied,
     reason: params.reason,
+    kind: params.kind,
   });
 }
 
-/** Сколько раз бот сдался с момента `since`. */
-export async function misunderstoodCount(db: Executor, since: Date): Promise<number> {
+/** Сколько раз бот сдался с момента `since` — строк выбранного вида. */
+export async function misunderstoodCount(
+  db: Executor,
+  since: Date,
+  kind: FallbackKind,
+): Promise<number> {
   const [row] = await db
     .select({ total: count() })
     .from(misunderstood)
-    .where(gte(misunderstood.createdAt, since));
+    .where(and(gte(misunderstood.createdAt, since), eq(misunderstood.kind, kind)));
 
   return row?.total ?? 0;
 }
@@ -53,12 +63,13 @@ export interface MisunderstoodRow {
   readonly said: string;
   readonly replied: string;
   readonly reason: string;
+  readonly kind: FallbackKind;
 }
 
 /** Список за период, свежее сверху. Предел — чтобы страница не росла без края. */
 export async function misunderstoodList(
   db: Executor,
-  params: { readonly days: number; readonly limit?: number },
+  params: { readonly days: number; readonly kind?: FallbackKind; readonly limit?: number },
 ): Promise<MisunderstoodRow[]> {
   const since = new Date(Date.now() - params.days * 24 * 3_600_000);
 
@@ -71,10 +82,16 @@ export async function misunderstoodList(
       said: misunderstood.said,
       replied: misunderstood.replied,
       reason: misunderstood.reason,
+      kind: misunderstood.kind,
     })
     .from(misunderstood)
     .innerJoin(users, eq(users.id, misunderstood.userId))
-    .where(gte(misunderstood.createdAt, since))
+    .where(
+      and(
+        gte(misunderstood.createdAt, since),
+        params.kind === undefined ? undefined : eq(misunderstood.kind, params.kind),
+      ),
+    )
     .orderBy(desc(misunderstood.createdAt))
     .limit(params.limit ?? 200);
 
@@ -85,5 +102,6 @@ export async function misunderstoodList(
     said: row.said,
     replied: row.replied,
     reason: row.reason,
+    kind: row.kind === 'system' ? 'system' : 'meaning',
   }));
 }

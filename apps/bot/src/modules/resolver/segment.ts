@@ -115,6 +115,11 @@ export type SegmentResult =
       /** `absent` — сказано как о сделанном или отменённом, а записи нет. */
       readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined;
       /**
+       * Цель не нашлась потому, что модель не ответила (панель, п. 4):
+       * человеку — та же реплика, а в журнале это сбой, не непонимание.
+       */
+      readonly fault?: string | undefined;
+      /**
        * Стоит ли попробовать ещё раз после сохранения новых записей
        * (задача 3.24).
        *
@@ -281,6 +286,7 @@ export async function resolvePatchSegment(
       : {
           kind: 'parked',
           reason: `резолвер не нашёл цели: ${decision.why}`,
+          ...(resolved.ok ? {} : { fault: `резолвер не ответил: ${resolved.problem ?? '?'}` }),
           // Цель могла быть названа в этой же выгрузке и ещё не
           // сохранена — конвейер попробует снова после сохранения.
           retryAfterSave: true,
