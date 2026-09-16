@@ -109,6 +109,15 @@ export interface TextProfile {
     readonly dueToday: (list: string) => string;
     readonly dueTomorrow: (list: string) => string;
     readonly allSaved: string;
+    /**
+     * Фирменное 🤍 (заказчица, 16.09.2026): редкий знак тепла — после
+     * длинной выгрузки, когда контакт мягко закрывается; когда поделилась
+     * одними чувствами; когда поблагодарила. После обычных действий —
+     * никогда.
+     */
+    readonly allSavedLong: string;
+    readonly feelingsOnlyClose: string;
+    readonly thanks: string;
 
     readonly actionsLead: string;
     /** §13.7: при «я на нуле» предлагается ровно одно дело. */

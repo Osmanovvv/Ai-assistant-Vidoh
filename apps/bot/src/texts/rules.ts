@@ -73,7 +73,13 @@ export function forbiddenPhraseIn(text: string): string | undefined {
  * пиктограммой не считается. Маркеры тем живут в коде, а не в словаре, и
  * сюда не попадают. Всё украшательское отказывается.
  */
-export const ALLOWED_EMOJI = new Set(['⭐', '☑']);
+/**
+ * Маркеры приоритета и статуса (§13.9) — и одно фирменное сердечко 🤍
+ * (заказчица, 16.09.2026): «редкий знак тепла, не стандартный эмоджи
+ * после каждого действия». Другие сердечки и смайлики — по-прежнему
+ * украшение.
+ */
+export const ALLOWED_EMOJI = new Set(['⭐', '☑', '🤍']);
 
 /** Предел Telegram на одно сообщение. Длиннее просто не уедет. */
 const MESSAGE_LIMIT = 4_096;
@@ -279,6 +285,8 @@ export const BESIDE_QUESTION = [
   'answer.dueToday',
   'answer.dueTomorrow',
   'answer.allSaved',
+  'answer.allSavedLong',
+  'answer.feelingsOnlyClose',
   /**
    * Маркер пункта повторяется на каждое дело: один «?» в нём — это два
    * или три вопроса в списке по кнопке, хотя своего вопроса у списка нет.

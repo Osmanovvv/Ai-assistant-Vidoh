@@ -76,7 +76,9 @@ describe('buildReply', () => {
         '',
         'На завтра: съездить в офис и распечатать документы.',
         '',
-        'Всё сохранила.',
+        // Шесть дел — выгрузка длинная, контакт закрывается мягко (её
+        // правило про 🤍 пришло следом за образцом).
+        texts.answer.allSavedLong,
       ].join('\n'),
     );
     expect(countQuestions(reply.text)).toBe(0);
@@ -114,6 +116,38 @@ describe('buildReply', () => {
     expect(bare.text).not.toContain(texts.answer.actionsLead);
   });
 
+  it('после длинной выгрузки контакт закрывается мягко — с 🤍 (заказчица, 16.09.2026)', () => {
+    /**
+     * Её правило: сердечко редко и там, где оно усиливает тепло —
+     * «после длинной выгрузки, когда хочется мягко завершить контакт».
+     * Длинная — от пяти дел; короткая кончается обычным «Всё сохранила.»
+     * без знака: «не использовать как стандартный эмоджи после каждого
+     * действия».
+     */
+    const long = buildReply({
+      texts,
+      acknowledgement: 'Я тебя услышала. Записала 6 дел.',
+      summary: {
+        spheres: [
+          { name: 'работа', icon: '💼', count: 4 },
+          { name: 'покупки', icon: '🛒', count: 2 },
+        ],
+        today: [],
+        tomorrow: [],
+      },
+    });
+    expect(long.text.endsWith(texts.answer.allSavedLong)).toBe(true);
+    expect(long.text).toContain('🤍');
+
+    const short = buildReply({
+      texts,
+      acknowledgement: 'Я тебя услышала. Записала 2 дела.',
+      summary: { spheres: [{ name: 'работа', icon: '💼', count: 2 }], today: [], tomorrow: [] },
+    });
+    expect(short.text.endsWith(texts.answer.allSaved)).toBe(true);
+    expect(short.text).not.toContain('🤍');
+  });
+
   it('«Выбрать главное» несёт код выгрузки: сказанное в ней идёт первым', () => {
     // По коду обработчик восстанавливает «упомянутое в выгрузке» — очередь
     // выдачи ставит его вперёд (задача 3.24).
@@ -147,7 +181,10 @@ describe('buildReply', () => {
      */
     const reply = buildReply({ texts, acknowledgement: ack, batchId, feelingsOnly: true });
 
-    expect(reply.text).toBe(ack);
+    // Поделилась личным — единственный ответ с теплом: «Давай пока просто
+    // оставим это здесь 🤍» (заказчица, 16.09.2026). Кризис сюда не доходит.
+    expect(reply.text).toBe(`${ack} ${texts.answer.feelingsOnlyClose}`);
+    expect(reply.text).toContain('🤍');
     expect(countQuestions(reply.text)).toBe(0);
     expect(reply.buttons).toEqual([]);
   });

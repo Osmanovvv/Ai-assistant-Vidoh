@@ -42,6 +42,7 @@ import {
 } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
 import { summarizeDump } from '../presenter/summary.js';
+import { saysThanks } from '../presenter/thanks.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
@@ -647,6 +648,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
     const answers: string[] = [];
+    /** Отрезки без содержания — но «спасибо» среди них заслуживает ответа. */
+    const smalltalk: Segment[] = [];
 
     /**
      * Сфера ветки, в которой человек говорит (§8.1, ревизия этапа 3, F4).
@@ -817,7 +820,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         thoughtSaid = true;
       } else if (RESOLVED_INTENTS.has(segment.intent)) {
         (thoughtSaid ? patchesAfterThought : patches).push(segment);
-      } else if (!IGNORED_INTENTS.has(segment.intent)) deferred.push(segment);
+      } else if (IGNORED_INTENTS.has(segment.intent)) smalltalk.push(segment);
+      else deferred.push(segment);
     }
 
     /**
@@ -1292,7 +1296,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * больше нечего. После ответа на вопрос или после правки эта
          * реплика читается как «я тебя не поняла».
          */
-        await answer(texts.answer.nothingToParse);
+        // «Спасибо» — «Пожалуйста 🤍 Я всё помню.», а не «расскажешь, что
+        // в голове?» (заказчица, 16.09.2026). Слово — по закрытому списку.
+        const thanked = smalltalk.some((segment) => saysThanks(segment.text));
+        await answer(thanked ? texts.answer.thanks : texts.answer.nothingToParse);
       }
 
       return;
