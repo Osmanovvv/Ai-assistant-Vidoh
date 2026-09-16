@@ -667,7 +667,7 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       (req: Request, res: Response) => {
         const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
 
-        void misunderstoodList(db, { days }).then(
+        void misunderstoodList(db, { days, kind: 'meaning' }).then(
           (rows) => {
             res.json({ days, rows });
           },

@@ -299,11 +299,29 @@ export function OverviewPanel(): React.ReactElement {
 
   return (
     <div data-testid="overview">
-      <section className="итоги">
+      {/*
+        Блоки — в порядке заказчицы (16.09.2026, п. 5): «пользователи →
+        первая выгрузка → повторное использование → непонятые
+        запросы/ошибки → пробный период/оплата → расходы». Порядок —
+        приоритет: что важнее для теста, то выше. Каждый блок подписан,
+        чтобы порядок читался, а не угадывался.
+      */}
+      <Block name="Люди">
         <div className="итог">
           <span className="итог__имя">Всего людей за всё время</span>
           <span className="итог__число">{report.totalUsers}</span>
         </div>
+        <div className="итог">
+          <span className="итог__имя">Новых за 30 дней</span>
+          <span className="итог__число">{report.newUsers}</span>
+        </div>
+        <div className="итог">
+          <span className="итог__имя">Активных за 30 дней</span>
+          <span className="итог__число">{report.activeUsers}</span>
+        </div>
+      </Block>
+
+      <Block name="Первая выгрузка">
         {/*
           Первая ценность отдельной плиткой — заказчица, 16.09.2026, п. 2.
           Из зарегистрировавшихся — сколько дошли до первой разобранной
@@ -319,13 +337,12 @@ export function OverviewPanel(): React.ReactElement {
           </span>
         </div>
         <div className="итог">
-          <span className="итог__имя">Новых за 30 дней</span>
-          <span className="итог__число">{report.newUsers}</span>
+          <span className="итог__имя">Выгрузок разобрано за 30 дней</span>
+          <span className="итог__число">{report.dumps}</span>
         </div>
-        <div className="итог">
-          <span className="итог__имя">Активных за 30 дней</span>
-          <span className="итог__число">{report.activeUsers}</span>
-        </div>
+      </Block>
+
+      <Block name="Возвращаемость">
         {/*
           Возвращаемость — заказчица, 16.09.2026, п. 1: «не просто
           активные, а сколько вернулись и сделали 2+ выгрузки». Возврат —
@@ -340,29 +357,17 @@ export function OverviewPanel(): React.ReactElement {
             выгрузки в 2+ разных дня
           </span>
         </div>
-        <div className="итог">
-          <span className="итог__имя">Выгрузок разобрано за 30 дней</span>
-          <span className="итог__число">{report.dumps}</span>
-        </div>
-        {/*
-          Число про сбои — правка ревизии панели.
+      </Block>
 
-          На обзоре не было ни одного, а разбор жалобы «бот молчит»
-          начинают именно с него: панель открывается на обзоре. Пока
-          оговорка про вызовы без цены загоралась и от отказов модели,
-          страница говорила о поломке чужими словами и в неверном смысле;
-          после её починки не говорила о поломке вовсе.
-
-          Ноль здесь — факт, а не пустота, поэтому плитка стоит всегда.
-          Из того же множества, что «разобрано»: `done` против `failed`.
-        */}
+      <Block name="Непонятое и сбои">
         {/*
-          «Не поняла» — заказчица, 16.09.2026, п. 3: сколько раз бот
-          сдался (реплики сдачи по словарю: «ничего не записано»,
-          «расскажешь, что в голове?», «такого дела не было»…). Плитка —
-          кнопка: по клику под плитками разворачивается список «что
-          написала — что ответил». Сорвавшиеся выгрузки сюда не входят —
-          они в соседней плитке.
+          «Не поняла» — заказчица, 16.09.2026, п. 3: сколько раз бот не
+          понял формулировку или не нашёл (реплики сдачи по словарю:
+          «ничего не записано», «расскажешь, что в голове?», «такого дела
+          не было»…). Плитка — кнопка: по клику ниже разворачивается
+          список «что написала — что ответил». Сбои системы (п. 4) сюда
+          не входят: сорвавшиеся выгрузки — в соседней плитке, тихие
+          сбои с запасной репликой — во вкладке «Ошибки».
         */}
         <button
           type="button"
@@ -377,6 +382,18 @@ export function OverviewPanel(): React.ReactElement {
             {notUnderstood === undefined ? 'нажми — покажу, что и как' : 'свернуть'}
           </span>
         </button>
+        {/*
+          Число про сбои — правка ревизии панели.
+
+          На обзоре не было ни одного, а разбор жалобы «бот молчит»
+          начинают именно с него: панель открывается на обзоре. Пока
+          оговорка про вызовы без цены загоралась и от отказов модели,
+          страница говорила о поломке чужими словами и в неверном смысле;
+          после её починки не говорила о поломке вовсе.
+
+          Ноль здесь — факт, а не пустота, поэтому плитка стоит всегда.
+          Из того же множества, что «разобрано»: `done` против `failed`.
+        */}
         <div className="итог">
           <span className="итог__имя">Сорвалось выгрузок за 30 дней</span>
           <span className="итог__число" data-testid="failed-dumps">
@@ -388,30 +405,27 @@ export function OverviewPanel(): React.ReactElement {
             </span>
           )}
         </div>
+      </Block>
+
+      {listProblem && (
+        <p className="отказ" role="alert">
+          Не удалось прочитать журнал непонятого
+        </p>
+      )}
+      {notUnderstood !== undefined && <MisunderstoodBlock value={notUnderstood} />}
+
+      <Block name="Пробный период и оплата">
         <div className="итог">
-          <span className="итог__имя">Расход на модели за 30 дней</span>
-          <span className="итог__число">{money(report.spend)}</span>
-          {/*
-            Оговорка про вызовы без цены — правка ревизии этапа.
-
-            Модели нет в прайс-листе, цена не записана, и вызов молча
-            выпадал из суммы: расход показывался как факт, хотя был
-            нижней границей. Раздел расходов такую оговорку печатает,
-            обзор молчал — и два числа про одно и то же расходились.
-
-            Сорвавшиеся вызовы сюда не попадают: у отказа цены нет и быть
-            не может, и оговорка, горящая после любого таймаута, не значит
-            ничего. Про сбои говорит своя плитка выше.
-          */}
-          {report.unpricedCalls > 0 && (
-            <span
-              className="панель__кто"
-              data-testid="unpriced"
-              style={{ display: 'block', marginTop: 2 }}
-            >
-              {unpricedNote(report.unpricedCalls)}
-            </span>
-          )}
+          <span className="итог__имя">Из пробного в оплату за всё время</span>
+          <span className="итог__число" data-testid="conversion">
+            {conversionText(report.funnel)}
+          </span>
+        </div>
+        <div className="итог">
+          <span className="итог__имя">Платят сейчас (на эту минуту)</span>
+          <span className="итог__число" data-testid="payers">
+            {report.payers}
+          </span>
         </div>
         <div className="итог">
           <span className="итог__имя">Выручка за 30 дней</span>
@@ -440,26 +454,35 @@ export function OverviewPanel(): React.ReactElement {
             </span>
           </div>
         )}
-        <div className="итог">
-          <span className="итог__имя">Платят сейчас (на эту минуту)</span>
-          <span className="итог__число" data-testid="payers">
-            {report.payers}
-          </span>
-        </div>
-        <div className="итог">
-          <span className="итог__имя">Из пробного в оплату за всё время</span>
-          <span className="итог__число" data-testid="conversion">
-            {conversionText(report.funnel)}
-          </span>
-        </div>
-      </section>
+      </Block>
 
-      {listProblem && (
-        <p className="отказ" role="alert">
-          Не удалось прочитать журнал непонятого
-        </p>
-      )}
-      {notUnderstood !== undefined && <MisunderstoodBlock value={notUnderstood} />}
+      <Block name="Расходы">
+        <div className="итог">
+          <span className="итог__имя">Расход на модели за 30 дней</span>
+          <span className="итог__число">{money(report.spend)}</span>
+          {/*
+            Оговорка про вызовы без цены — правка ревизии этапа.
+
+            Модели нет в прайс-листе, цена не записана, и вызов молча
+            выпадал из суммы: расход показывался как факт, хотя был
+            нижней границей. Раздел расходов такую оговорку печатает,
+            обзор молчал — и два числа про одно и то же расходились.
+
+            Сорвавшиеся вызовы сюда не попадают: у отказа цены нет и быть
+            не может, и оговорка, горящая после любого таймаута, не значит
+            ничего. Про сбои говорит свой блок выше.
+          */}
+          {report.unpricedCalls > 0 && (
+            <span
+              className="панель__кто"
+              data-testid="unpriced"
+              style={{ display: 'block', marginTop: 2 }}
+            >
+              {unpricedNote(report.unpricedCalls)}
+            </span>
+          )}
+        </div>
+      </Block>
 
       {/*
         Оговорки печатает **только** воронка — правка ревизии этапа.
@@ -470,6 +493,26 @@ export function OverviewPanel(): React.ReactElement {
       */}
       <FunnelBlock value={report.funnel} />
     </div>
+  );
+}
+
+/**
+ * Блок обзора: подпись и плитки (заказчица, 16.09.2026, п. 5). Подпись —
+ * чтобы порядок блоков читался как приоритет, а не как случайность
+ * раскладки.
+ */
+function Block({
+  name,
+  children,
+}: {
+  readonly name: string;
+  readonly children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <section className="блок">
+      <h3 className="блок__имя">{name}</h3>
+      <div className="итоги">{children}</div>
+    </section>
   );
 }
 

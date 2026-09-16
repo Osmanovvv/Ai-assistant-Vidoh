@@ -1778,12 +1778,19 @@ describe('журнал непонятого (заказчица, 16.09.2026, п�
     reason: 'подходящей записи нет',
   });
 
-  async function logged(): Promise<{ said: string; replied: string; reason: string }[]> {
+  async function logged(): Promise<
+    { said: string; replied: string; reason: string; kind: string }[]
+  > {
     const rows = await testDb()
       .select()
       .from(misunderstood)
       .where(eq(misunderstood.userId, userId));
-    return rows.map((row) => ({ said: row.said, replied: row.replied, reason: row.reason }));
+    return rows.map((row) => ({
+      said: row.said,
+      replied: row.replied,
+      reason: row.reason,
+      kind: row.kind,
+    }));
   }
 
   async function run(
@@ -1818,7 +1825,12 @@ describe('журнал непонятого (заказчица, 16.09.2026, п�
     );
 
     expect(await logged()).toEqual([
-      { said: 'что там с котом', replied: defaultTexts.backlog.nothing, reason: 'backlog.nothing' },
+      {
+        said: 'что там с котом',
+        replied: defaultTexts.backlog.nothing,
+        reason: 'backlog.nothing',
+        kind: 'meaning',
+      },
     ]);
   });
 
@@ -1836,7 +1848,10 @@ describe('журнал непонятого (заказчица, 16.09.2026, п�
       sender,
     );
 
-    expect((await logged()).map((row) => row.reason)).toEqual(['backlog.unavailable']);
+    // Вектор не посчитался — это сбой системы, не «не поняла формулировку».
+    expect((await logged()).map((row) => [row.reason, row.kind])).toEqual([
+      ['backlog.unavailable', 'system'],
+    ]);
   });
 
   it('«расскажешь, что в голове?» на пустую болтовню — тоже', async () => {
@@ -1858,6 +1873,7 @@ describe('журнал непонятого (заказчица, 16.09.2026, п�
         said: 'ну вот',
         replied: defaultTexts.answer.nothingToParse,
         reason: 'answer.nothingToParse',
+        kind: 'meaning',
       },
     ]);
   });
@@ -1885,7 +1901,23 @@ describe('журнал непонятого (заказчица, 16.09.2026, п�
     expect(rows).toHaveLength(1);
     expect(rows[0]?.said).toBe(SAID);
     expect(rows[0]?.reason).toBe('resolver.nothingToClose');
+    expect(rows[0]?.kind).toBe('meaning');
     expect(rows[0]?.replied).toContain(defaultTexts.resolver.nothingToClose);
+  });
+
+  it('извлечение не ответило — «сохранила целиком» помечено сбоем, а не непониманием', async () => {
+    // Та же реплика, что при нуле единиц, но причина — наш сбой: модель
+    // извлечения не ответила. В «Не поняла» такому не место — во «Ошибки».
+    const { sender } = recordingSender();
+    await queuedBatchOf([{ kind: 'text', text: 'купить хлеб', offsetMs: 0 }]);
+
+    await run(echoingLlm({ extractor: 'это не JSON' }), sender);
+
+    const rows = await logged();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe('system');
+    expect(rows[0]?.reason).toMatch(/^answer\.savedUnparsed: извлечение/u);
+    expect(rows[0]?.replied).toBe(defaultTexts.answer.savedUnparsed);
   });
 
   it('обычный разбор, «спасибо» и список дел строк не пишут', async () => {

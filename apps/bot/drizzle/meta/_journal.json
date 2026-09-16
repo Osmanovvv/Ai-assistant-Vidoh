@@ -414,6 +414,13 @@
       "when": 1789569361843,
       "tag": "0058_misunderstood",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1789571053073,
+      "tag": "0059_misunderstood_kind",
+      "breakpoints": true
     }
   ]
 }

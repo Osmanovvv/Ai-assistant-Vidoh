@@ -187,13 +187,26 @@ if (seedUrl !== undefined) {
 
   // Журнал непонятого (заказчица, 16.09.2026, панель п. 3): одна строка —
   // Аня спросила про кота, бот не нашёл. Плитка «Не поняла» и список по ней.
-  await seeded.insert(misunderstood).values({
-    userId: person.id,
-    batchId: batch.id,
-    said: 'что там с котом',
-    replied: 'Про это у меня ничего не записано.',
-    reason: 'backlog.nothing',
-  });
+  await seeded.insert(misunderstood).values([
+    {
+      userId: person.id,
+      batchId: batch.id,
+      said: 'что там с котом',
+      replied: 'Про это у меня ничего не записано.',
+      reason: 'backlog.nothing',
+      kind: 'meaning',
+    },
+    // И один тихий сбой (п. 4): вектор вопроса не посчитался — это во
+    // «Ошибки», а не в «Не поняла».
+    {
+      userId: person.id,
+      batchId: batch.id,
+      said: 'что там с котом',
+      replied: 'Сейчас не смогла заглянуть в записи — они на месте.',
+      reason: 'backlog.unavailable',
+      kind: 'system',
+    },
+  ]);
 
   const [seededItem] = await seeded
     .select({ id: items.id })

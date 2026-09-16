@@ -37,6 +37,28 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
     await expect(failed.locator('td').nth(2)).toHaveText('3');
   });
 
+  test('тихие сбои — отдельным разделом: что сломалось и что прочёл человек, без его слов', async ({
+    page,
+  }) => {
+    /**
+     * Заказчица, 16.09.2026, п. 4: «ошибка системы» и «бот не понял
+     * формулировку» — разные вещи. Стенд сеет одну строку вида «сбой»
+     * (вектор вопроса не посчитался) и одну вида «смысл» («ничего не
+     * записано»): первая здесь, вторая — на обзоре в «Не поняла».
+     */
+    await signIn(page, 'Ошибки');
+
+    const silent = page.getByTestId('silent-faults');
+    await expect(silent).toBeVisible();
+    await expect(silent).toContainText('Аня');
+    await expect(silent).toContainText('backlog.unavailable');
+    await expect(silent).toContainText('не смогла заглянуть');
+    // Слов человека в журнале ошибок нет (§16), как и у сорвавшихся выгрузок.
+    await expect(silent).not.toContainText('котом');
+    // Непонятая формулировка — не сюда.
+    await expect(silent).not.toContainText('ничего не записано');
+  });
+
   test('текстов расшифровок в журнале нет', async ({ page }) => {
     /**
      * Видно, что разбор сорвался, у кого и на чём. Сказанное человеком —
@@ -287,11 +309,13 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
           sends: [],
           payments: [],
           reminders: [],
+          fallbacks: [],
           batchesTotal: 0,
           callsTotal: 0,
           paymentsTotal: 0,
           sendsTotal: 0,
           remindersTotal: 0,
+          fallbacksTotal: 0,
           missing: [],
         },
       });
@@ -303,6 +327,7 @@ test.describe('журнал сбоев (§15; задача 4.10)', () => {
     await expect(page.getByTestId('no-failed-payments')).toBeVisible();
     await expect(page.getByTestId('no-failed-sends')).toBeVisible();
     await expect(page.getByTestId('no-failed-reminders')).toBeVisible();
+    await expect(page.getByTestId('no-silent-faults')).toBeVisible();
     await expect(page.getByText('Неуспешных отправок за этот срок нет.')).toBeVisible();
 
     // Заголовки на месте: пустой журнал — это ответ, а не отсутствие

@@ -363,26 +363,43 @@ export const BESIDE_QUESTION = [
  * Сорвавшиеся выгрузки сюда не входят: они считаются отдельно
  * («Сорвалось выгрузок»), и в двух числах один случай стоял бы дважды.
  */
-export const FALLBACK_REPLIES = [
-  /** Голосовое без единого слова. */
-  'listening.nothingHeard',
+/**
+ * Вид сдачи (заказчица, 16.09.2026, п. 4): «ошибка системы» и «бот не
+ * понял формулировку» — разные вещи, смешивать нельзя. `meaning` — бот
+ * прочёл, но не нашёл или не разобрал смысла; `system` — не смог
+ * прочесть или посмотреть: распознавание, вектор, модель.
+ */
+export type FallbackKind = 'meaning' | 'system';
+
+export const FALLBACK_REPLIES: Readonly<Record<string, FallbackKind>> = {
+  /** Голосовое без единого слова — распознавание ничего не дало. */
+  'listening.nothingHeard': 'system',
   /** Разбирать нечего: «расскажешь, что в голове?». */
-  'answer.nothingToParse',
-  /** Извлечение не удалось или единиц ноль — сохранено целиком. */
-  'answer.savedUnparsed',
-  /** Правку применить не вышло. */
-  'answer.patchParked',
+  'answer.nothingToParse': 'meaning',
+  /**
+   * Единиц ноль — сохранено целиком. Та же реплика уходит и когда
+   * извлечение или классификация не ответили: тогда конвейер помечает
+   * сдачу сбоем сам (`happened.fault`), и вид здесь — только по умолчанию.
+   */
+  'answer.savedUnparsed': 'meaning',
+  /** Правку применить не вышло; при молчании модели — сбой, см. выше. */
+  'answer.patchParked': 'meaning',
   /** Распоряжение о записи, цель не нашлась. */
-  'resolver.targetNotFound',
+  'resolver.targetNotFound': 'meaning',
   /** «Уже сделала» без такого дела. */
-  'resolver.nothingToClose',
+  'resolver.nothingToClose': 'meaning',
   /** Ответ на уточняющий вопрос не прочитался. */
-  'resolver.answerUnclear',
+  'resolver.answerUnclear': 'meaning',
   /** Вопрос по бэклогу — «ничего не записано» (её случай 16.09.2026). */
-  'backlog.nothing',
-  /** Вопрос по бэклогу — посмотреть не удалось. */
-  'backlog.unavailable',
-] as const;
+  'backlog.nothing': 'meaning',
+  /** Вопрос по бэклогу — посмотреть не удалось: вектор не посчитался. */
+  'backlog.unavailable': 'system',
+};
+
+export interface Fallback {
+  readonly path: string;
+  readonly kind: FallbackKind;
+}
 
 /**
  * Какой репликой сдачи является ответ — или никакой.
@@ -392,20 +409,25 @@ export const FALLBACK_REPLIES = [
  * хвостом про длинную запись. Совпадение — целой строкой: «ничего не
  * записано» внутри чужого текста сдачей не считается.
  */
-export function fallbackPathOf(text: string, profile: TextProfile): string | undefined {
-  const paths = new Set<string>(FALLBACK_REPLIES);
-  const said = new Map<string, string>();
+export function fallbackOf(text: string, profile: TextProfile): Fallback | undefined {
+  const said = new Map<string, Fallback>();
 
   for (const reply of repliesOf(profile)) {
-    if (paths.has(reply.path) && reply.places === 0) said.set(reply.said, reply.path);
+    const kind = FALLBACK_REPLIES[reply.path];
+    if (kind !== undefined && reply.places === 0) said.set(reply.said, { path: reply.path, kind });
   }
 
   for (const line of text.split('\n')) {
-    const path = said.get(line.trim());
-    if (path !== undefined) return path;
+    const found = said.get(line.trim());
+    if (found !== undefined) return found;
   }
 
   return undefined;
+}
+
+/** Только путь — там, где вид не нужен. */
+export function fallbackPathOf(text: string, profile: TextProfile): string | undefined {
+  return fallbackOf(text, profile)?.path;
 }
 
 /** Чего §13.2 требует от реплики, стоящей рядом с вопросом. Отказ — словами. */

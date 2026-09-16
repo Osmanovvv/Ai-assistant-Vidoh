@@ -1,0 +1,1 @@
+ALTER TABLE "misunderstood" ADD COLUMN "kind" text DEFAULT 'meaning' NOT NULL;

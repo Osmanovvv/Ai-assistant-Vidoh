@@ -213,6 +213,27 @@ input {
   margin-bottom: 28px;
 }
 
+/* Блок обзора: подпись и плитки под ней (порядок блоков — приоритет). */
+.блок {
+  margin-bottom: 20px;
+}
+
+.блок__имя {
+  margin: 0 0 8px;
+  color: var(--текст-тихий);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.блок .итоги {
+  /* Плитки одной ширины, ряд не растягивается: блок из одной плитки —
+     не полоса во весь экран. */
+  grid-template-columns: repeat(auto-fill, minmax(180px, 260px));
+  margin-bottom: 0;
+}
+
 .итог {
   padding: 14px 16px;
   border-radius: var(--радиус);

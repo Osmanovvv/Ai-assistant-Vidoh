@@ -1507,6 +1507,13 @@ export const misunderstood = pgTable(
     replied: text('replied').notNull(),
     /** Какая реплика сдачи: путь в словаре, например `backlog.nothing`. */
     reason: text('reason').notNull(),
+    /**
+     * Вид (заказчица, 16.09.2026, п. 4): `meaning` — бот не понял
+     * формулировку или не нашёл; `system` — не смог прочесть или
+     * посмотреть (распознавание, вектор, модель). «Ошибка системы» и «не
+     * понял» — разные вещи: первое — во «Ошибки», второе — в «Не поняла».
+     */
+    kind: text('kind').notNull().default('meaning'),
 
     createdAt: createdAt(),
   },
