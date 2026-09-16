@@ -3,6 +3,7 @@ import { effectiveThresholds, type SettingsRegistry } from '../settings/settings
 
 import type { Database } from '../../infra/db.js';
 import type { AiClientDeps } from '../ai/client.js';
+import type { Intent } from '../ai/schemas/router.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
@@ -83,6 +84,16 @@ export interface ResolveSegmentParams {
    * Теперь при занятом вопросе правка паркуется, не касаясь базы.
    */
   readonly questionTaken?: boolean | undefined;
+  /**
+   * Что маршрутизатор услышал в отрезке (прогон 15.09.2026, находка 5).
+   *
+   * Закрытие и отмена говорят о **существующей** записи. Если модель не
+   * нашла подходящей, «это новая мысль» для них невозможно: «мусор я уже
+   * вынес» не имеет права стать открытым делом «Вынести мусор», что бы
+   * ни ответила модель. Для правки развилка прежняя: «нет, в пятницу»
+   * без цели — действительно мысль.
+   */
+  readonly intent?: Intent | undefined;
 }
 
 export type SegmentResult =
@@ -101,7 +112,8 @@ export type SegmentResult =
        * A3): по этому конвейер подбирает слово человеку. Пусто — цели
        * не было, и говорить не о чем сверх «сохранила».
        */
-      readonly said?: 'unchanged' | 'refused' | 'gone' | undefined;
+      /** `absent` — сказано как о сделанном или отменённом, а записи нет. */
+      readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined;
       /**
        * Стоит ли попробовать ещё раз после сохранения новых записей
        * (задача 3.24).
@@ -246,6 +258,24 @@ export async function resolvePatchSegment(
      * записью «нет, в пятницу» становиться не должно — получится задача
      * «в пятницу», а это хуже, чем не разобрать вовсе.
      */
+    /**
+     * Закрытие и отмена без записи — не мысль (прогон 15.09.2026,
+     * находка 5): «мусор я уже вынес, можно убрать» становилось открытым
+     * делом «Вынести мусор». Модель честно сказала «записи нет» — и это
+     * верный ответ, когда её нет; неверной была развилка. Слова — в
+     * черновик, человеку — «такого дела не было». Цель могла быть
+     * сказана в этой же выгрузке (на бою — «выкинуть мусор» внутри дела
+     * про балкон): конвейер попробует ещё раз после сохранения.
+     */
+    if (decision.newThought && (params.intent === 'COMPLETE' || params.intent === 'CANCEL')) {
+      return {
+        kind: 'parked',
+        reason: 'сказано как о сделанном или отменённом, а такой записи нет',
+        said: 'absent',
+        retryAfterSave: true,
+      };
+    }
+
     return decision.newThought
       ? { kind: 'newThought' }
       : {
