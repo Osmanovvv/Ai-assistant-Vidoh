@@ -54,6 +54,8 @@ export const ANSWER_ACTION = {
    */
   keep: 'answer:keep',
   pick: 'answer:pick',
+  /** «Добавить ещё» под списком всех дел (макет 16.09.2026, вариант 2). */
+  add: 'answer:add',
 } as const;
 
 export interface ReplyButton {
@@ -185,13 +187,14 @@ export function buildReply(params: BuildReplyParams): Reply {
   });
   if (spheres.length > 0) lines.push('', ...spheres);
 
-  const inline = (items: readonly string[]): string =>
-    items.map((text) => text.charAt(0).toLowerCase() + text.slice(1)).join(', ');
+  // Списком под шапкой, не в строку (макет заказчицы 16.09.2026, вариант 1).
   const today = params.summary?.today ?? [];
   const tomorrow = params.summary?.tomorrow ?? [];
   const due: string[] = [];
-  if (today.length > 0) due.push(answer.dueToday(inline(today)));
-  if (tomorrow.length > 0) due.push(answer.dueTomorrow(inline(tomorrow)));
+  if (today.length > 0) due.push(answer.dueToday, ...today.map((text) => answer.bullet(text)));
+  if (tomorrow.length > 0) {
+    due.push(answer.dueTomorrow, ...tomorrow.map((text) => answer.bullet(text)));
+  }
   if (due.length > 0) lines.push('', ...due);
 
   /**

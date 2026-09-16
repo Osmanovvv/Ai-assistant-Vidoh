@@ -209,10 +209,16 @@ try {
     );
     show(weary);
 
-    const bulletsInReply = (weary.text.match(/^—/gmu) ?? []).length;
+    /**
+     * «Дел нет» — нет подводки списка (§13.2 прежней формы). Строки с «—»
+     * под признанием законны: так с 16.09.2026 (макет заказчицы)
+     * перечисляются дела «На сегодня» / «На завтра».
+     */
     check(
       'под признанием дел нет, есть вопрос «оставить или выбрать»',
-      bulletsInReply === 0 && has(weary, defaultTexts.answer.keepOrPick),
+      !has(weary, defaultTexts.answer.actionsLead) &&
+        !has(weary, defaultTexts.answer.actionsLeadSingle) &&
+        has(weary, defaultTexts.answer.keepOrPick),
       weary.text,
     );
     check(
@@ -259,7 +265,9 @@ try {
     );
     check(
       'под признанием — вопрос «оставить или выбрать», а не список',
-      has(tired, defaultTexts.answer.keepOrPick) && (tired.text.match(/^—/gmu) ?? []).length === 0,
+      has(tired, defaultTexts.answer.keepOrPick) &&
+        !has(tired, defaultTexts.answer.actionsLead) &&
+        !has(tired, defaultTexts.answer.actionsLeadSingle),
       tired.text,
     );
   }

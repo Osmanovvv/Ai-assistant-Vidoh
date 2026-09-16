@@ -930,6 +930,26 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
    * признанием остаётся короткое подтверждение. Как у «Оставить на
    * потом»: сводку не стирать, дописывать.
    */
+  /**
+   * «Добавить ещё» под списком всех дел (макет заказчицы 16.09.2026,
+   * вариант 2). Новой механики нет — любое сообщение и так добавляет;
+   * кнопка отвечает той же подсказкой, что «Написать» в меню, новым
+   * сообщением, и снимает кнопки со списка, чтобы не нажималась дважды.
+   */
+  bot.callbackQuery(ANSWER_ACTION.add, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    const texts = active?.texts ?? textsFor(null);
+
+    try {
+      await ctx.editMessageReplyMarkup();
+    } catch (error) {
+      logger.debug({ err: error }, 'Кнопки под списком дел не сняты');
+    }
+
+    await ctx.reply(texts.start.hintText);
+  });
+
   bot.callbackQuery(ANSWER_ACTION.keep, async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id);

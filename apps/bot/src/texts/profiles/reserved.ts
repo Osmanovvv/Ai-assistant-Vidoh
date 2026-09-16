@@ -114,8 +114,8 @@ export const reserved: TextProfile = {
     acknowledgementHeavy: 'Вижу, сейчас тяжело.',
     acknowledgementTasks: (tasks) => `Записала ${tasks} и разложила по местам.`,
     sphereLine: (name, count) => `${name} — ${count}`,
-    dueToday: (list) => `На сегодня: ${list}.`,
-    dueTomorrow: (list) => `На завтра: ${list}.`,
+    dueToday: 'На сегодня:',
+    dueTomorrow: 'На завтра:',
     feelingsOnly: 'Поняла тебя. Давай пока просто оставим это здесь 🤍',
     feelingsOnlyTired:
       'Похоже, батарейка на сегодня почти всё 😮‍💨 Если хочешь — просто выгружай сюда всё, что ещё крутится в голове.',
@@ -259,8 +259,10 @@ export const reserved: TextProfile = {
   backlog: {
     today: 'На сегодня у тебя вот это:',
     about: 'Вот что у меня про это записано:',
-    all: 'Вот всё, что у меня записано:',
+    all: 'Вот что сейчас есть:',
     allEmpty: 'Пока пусто — расскажешь, что в голове?',
+    allOffer: 'Если хочешь, помогу выбрать главное.',
+    buttonAddMore: 'Добавить ещё',
     line: (text) => `— ${text}`,
     period: (label) => `На ${label} у тебя вот это:`,
     periodEmpty: (label) => `На ${label} ничего не назначено.`,

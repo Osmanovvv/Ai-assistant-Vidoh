@@ -4072,6 +4072,60 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 
+  it('«Покажи мои дела» — по сферам с иконками, только непустые, предложение и две кнопки (макет, вариант 2)', async () => {
+    /**
+     * Макет заказчицы 16.09.2026, вариант 2: «Вот что сейчас есть:» →
+     * группы «💼 Работа» / «🛒 Покупки» с делами, пустых сфер нет, внизу
+     * «Если хочешь, помогу выбрать главное» и кнопки «Выбрать главное» /
+     * «Добавить ещё».
+     */
+    const prompts = await seedPrompts();
+    const { sender, all, buttons } = recordingSender();
+    for (const [text, topic] of [
+      ['Съездить в офис и распечатать документы', 'работа'],
+      ['Отправить Антоновой документы', 'работа'],
+      ['Заказать цветы', 'покупки'],
+    ] as const) {
+      await testDb().insert(items).values({ userId, text, type: 'TASK', priority: 'SOON', topic });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'Покажи мои дела', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Покажи мои дела' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply).toBe(
+      [
+        defaultTexts.backlog.all,
+        '',
+        '💼 Работа',
+        '— Съездить в офис и распечатать документы',
+        '— Отправить Антоновой документы',
+        '',
+        '🛒 Покупки',
+        '— Заказать цветы',
+        '',
+        defaultTexts.backlog.allOffer,
+      ].join('\n'),
+    );
+    expect(reply).not.toContain('Личное');
+    expect(buttons).toEqual([defaultTexts.answer.buttonPick, defaultTexts.backlog.buttonAddMore]);
+  });
+
   it('«что на сегодня» при длинном списке — восемь строк и «ещё N», а не тишина (ревизия этапа 3, E12)', async () => {
     /**
      * Список «на сегодня» уходил без предела; при сотне дел текст
