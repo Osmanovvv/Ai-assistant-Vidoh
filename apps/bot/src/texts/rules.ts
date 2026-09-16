@@ -376,6 +376,8 @@ export const FALLBACK_REPLIES: Readonly<Record<string, FallbackKind>> = {
   'listening.nothingHeard': 'system',
   /** Разбирать нечего: «расскажешь, что в голове?». */
   'answer.nothingToParse': 'meaning',
+  /** То же при открытом вопросе — без «?», но сдача та же. */
+  'answer.nothingToParseQuiet': 'meaning',
   /**
    * Единиц ноль — сохранено целиком. Та же реплика уходит и когда
    * извлечение или классификация не ответили: тогда конвейер помечает

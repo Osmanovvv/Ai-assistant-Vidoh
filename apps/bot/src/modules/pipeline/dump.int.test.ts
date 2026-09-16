@@ -2773,6 +2773,85 @@ describe('онбординг: края', () => {
   });
 });
 
+describe('пустая выгрузка при открытом вопросе (прогон Никиты 17.09.2026, находка 19)', () => {
+  /**
+   * «Привет», написанное до кнопки «Согласна», разбирается сразу после
+   * неё — поверх открытого первого вопроса опроса «Как мне тебя
+   * называть?». Разбирать там нечего, и бот отвечал «Я здесь.
+   * Расскажешь, что в голове?» — второй вопрос над первым, два вопроса
+   * подряд разными сообщениями (§13.9: один вопрос на обмен).
+   * При открытом вопросе ответ на пустую выгрузку — утверждение без «?».
+   */
+  it('«привет» поверх вопроса опроса — «Я здесь.» без второго вопроса', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.name })
+      .where(eq(userSettings.userId, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const questions = recordingQuestions();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+            }),
+          }),
+          sender,
+          onboarding: questions.sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParseQuiet);
+    expect(all).not.toContain(defaultTexts.answer.nothingToParse);
+    for (const said of all) expect(countQuestions(said), said).toBe(0);
+    expect(await testDb().select().from(items).where(eq(items.userId, userId))).toEqual([]);
+  });
+
+  it('опрос пройден — «привет» по-прежнему получает «Расскажешь, что в голове?»', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.done })
+      .where(eq(userSettings.userId, userId));
+
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'SMALLTALK', text: 'привет' }],
+            }),
+          }),
+          sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+});
+
 describe('сферы появляются только с содержимым (заказчица 16.09.2026)', () => {
   /**
    * Было (задача 3.43): базовый набор из пяти сфер и все пять веток на

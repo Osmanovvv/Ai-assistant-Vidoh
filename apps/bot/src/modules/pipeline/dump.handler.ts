@@ -699,6 +699,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const mood = moodOf(combined);
 
+    /**
+     * Состояние опроса — до разбора, а не после (прогон 17.09.2026,
+     * находка 19). Оно нужно уже ветке «разбирать нечего»: «привет»,
+     * написанное до «Согласна», разбирается сразу после кнопки — поверх
+     * открытого первого вопроса опроса, и отвечать на него вторым
+     * вопросом нельзя (§13.9). Ниже это же состояние решает, дозадавать
+     * ли опрос.
+     */
+    const onboarding = await onboardingStateOf(db, batch.userId);
+    const onboardingOpen = onboarding.step > 0 && onboarding.step < STEP.done;
+
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
     const answers: string[] = [];
@@ -1410,12 +1421,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         // Состояние без дел — её реплика по силе («вымоталась» → про
         // батарейку 😮‍💨; «в панике» → спокойно), а не «расскажешь, что в
         // голове?»: «не нужно насильно превращать это в дело».
+        // Вопрос уже открыт (опрос или уточнение) — второго не задаём:
+        // «Я здесь.» без «?» (находка 19).
+        const questionOpen = onboardingOpen || happened.asked;
         await answer(
           thanked
             ? texts.answer.thanks
-            : mood === undefined
-              ? texts.answer.nothingToParse
-              : feelingsOnlyReply(texts, mood),
+            : mood !== undefined
+              ? feelingsOnlyReply(texts, mood)
+              : questionOpen
+                ? texts.answer.nothingToParseQuiet
+                : texts.answer.nothingToParse,
         );
       }
 
@@ -1463,9 +1479,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       await answer(
         parkedHere > 0
           ? texts.answer.savedUnparsed
-          : mood === undefined
-            ? texts.answer.nothingToParse
-            : feelingsOnlyReply(texts, mood),
+          : mood !== undefined
+            ? feelingsOnlyReply(texts, mood)
+            : onboardingOpen || happened.asked
+              ? texts.answer.nothingToParseQuiet
+              : texts.answer.nothingToParse,
       );
       return;
     }
@@ -1790,17 +1808,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * Свой вопрос ответ при этом не задаёт: его место занимает первый
      * вопрос онбординга, иначе у человека окажется два открытых вопроса
      * подряд, чего §13.9 не допускает.
-     */
-    const onboarding = await onboardingStateOf(db, batch.userId);
-
-    /**
-     * Пока опрос идёт, разбор своего вопроса не задаёт.
      *
-     * Человек мог наговорить ещё раз, не ответив на предыдущий вопрос
-     * онбординга. Тот вопрос никуда не делся, и добавить к нему второй
-     * значит нарушить §13.9 — пусть и двумя репликами, а не одной.
+     * Пока опрос идёт, разбор своего вопроса не задаёт. Человек мог
+     * наговорить ещё раз, не ответив на предыдущий вопрос онбординга. Тот
+     * вопрос никуда не делся, и добавить к нему второй значит нарушить
+     * §13.9 — пусть и двумя репликами, а не одной. Состояние
+     * (`onboarding`, `onboardingOpen`) прочитано в начале разбора.
      */
-    const onboardingOpen = onboarding.step > 0 && onboarding.step < STEP.done;
 
     /**
      * Застрявший опрос дозадаётся, а не только начинается (задача 3.43).

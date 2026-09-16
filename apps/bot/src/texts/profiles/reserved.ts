@@ -145,6 +145,7 @@ export const reserved: TextProfile = {
     savedUnparsed: 'Сохранила целиком. Разберу позже — ничего не потерялось.',
     patchParked: 'Одну правку применить не вышло — слова сохранила. Скажи ещё раз, если важно.',
     nothingToParse: 'Я здесь. Расскажешь, что в голове?',
+    nothingToParseQuiet: 'Я здесь.',
   },
 
   menu: {
