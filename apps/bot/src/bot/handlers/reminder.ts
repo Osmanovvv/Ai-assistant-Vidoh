@@ -176,8 +176,11 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
 
     const { applied } = outcome;
 
+    // С названием дела (скрины заказчицы 16.09.2026, находка 22): кнопка
+    // правит напоминание на месте, и «Сегодня срок: …» исчезает — без
+    // названия человек не видит, что именно перенёс.
     await ctx.editMessageText(
-      active.texts.reminders.postponed(dayInWords(moved, active.timeZone)),
+      active.texts.reminders.postponed(applied.after.text, dayInWords(moved, active.timeZone)),
       {
         reply_markup: undoKeyboard(applied.revisionId, active.texts),
       },

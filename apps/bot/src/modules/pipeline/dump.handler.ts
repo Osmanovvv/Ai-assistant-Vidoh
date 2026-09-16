@@ -1354,6 +1354,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             : [];
       if (rest > 0) body.push(texts.backlog.more(rest));
 
+      /**
+       * На сегодня пусто, а дела есть — сказать сколько и дать выход к
+       * ним (находка 21): «Все задачи» / «Выбрать главное». Без дел
+       * вовсе — как было.
+       */
+      if (answer.kind === 'todayEmpty' && answer.open > 0) {
+        await tell([header, texts.menu.todayEmptyOpen(String(answer.open))].join('\n'), [
+          { label: texts.menu.buttonAll, action: ANSWER_ACTION.all },
+          { label: texts.answer.buttonPick, action: ANSWER_ACTION.pick },
+        ]);
+        continue;
+      }
+
       await tell([header, ...body].join('\n'));
     }
 

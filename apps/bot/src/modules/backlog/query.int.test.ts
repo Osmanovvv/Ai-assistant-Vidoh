@@ -251,6 +251,19 @@ describe('вопрос про дело, которое нашлось поиск
     expect(answer.kind).toBe('today');
   });
 
+  it('«что на сегодня?» при пустом дне называет, сколько открытых дел (находка 21)', async () => {
+    await addItem('записать сына в садик', 'active');
+    await addItem('купить корм коту', 'active');
+    await addItem('старое', 'done');
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на сегодня' },
+    );
+
+    expect(answer).toEqual({ kind: 'todayEmpty', open: 2 });
+  });
+
   it('«что на сегодня?» при пустом дне — «на сегодня пусто», а не «ничего не записано» (ревизия этапа 3, E16)', async () => {
     // У неё тридцать записей на следующую неделю; «ничего не записано»
     // читалось как «записей нет». Пустой день — свой ответ.

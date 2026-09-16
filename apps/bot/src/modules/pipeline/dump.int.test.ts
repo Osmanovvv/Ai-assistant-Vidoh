@@ -4205,6 +4205,45 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(buttons).toEqual([defaultTexts.answer.buttonPick, defaultTexts.backlog.buttonAddMore]);
   });
 
+  it('«что на сегодня» при пустом дне, но с открытыми делами — число дел и две кнопки (находка 21)', async () => {
+    /**
+     * Скрины заказчицы 16.09: «На сегодня ничего срочного.» при шести
+     * открытых делах читалось как «у тебя ничего нет». Ответ верный, но
+     * человеку с делами нужен выход к ним: «Открытых дел — 2.» и кнопки
+     * «Все задачи» / «Выбрать главное».
+     */
+    const prompts = await seedPrompts();
+    const { sender, all, buttons } = recordingSender();
+    for (const text of ['Заказать цветы', 'Написать список продуктов мужу']) {
+      await testDb()
+        .insert(items)
+        .values({ userId, text, type: 'TASK', priority: 'SOON', topic: 'личное' });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'Что у меня на сегодня?', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Что у меня на сегодня?' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(
+      `${defaultTexts.menu.todayEmpty}\n${defaultTexts.menu.todayEmptyOpen('2')}`,
+    );
+    expect(buttons).toEqual([defaultTexts.menu.buttonAll, defaultTexts.answer.buttonPick]);
+  });
+
   it('«что на сегодня» при длинном списке — восемь строк и «ещё N», а не тишина (ревизия этапа 3, E12)', async () => {
     /**
      * Список «на сегодня» уходил без предела; при сотне дел текст

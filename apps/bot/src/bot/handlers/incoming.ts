@@ -7,9 +7,11 @@ import { cancelBatchClose, enqueueUserProcessing, scheduleBatchClose } from '../
 import {
   DEFAULT_LIMITS,
   attachMessageToBatch,
+  closeBatchOnSilence,
   isOverDumpLimit,
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
+import { looksLikeQuestion } from '../../modules/buffer/question.js';
 import { sellable } from '../../modules/billing/checkout.service.js';
 import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
@@ -364,6 +366,7 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       messageId: outcome.messageId,
       chatId: ctx.chat?.id,
       threadId: ctx.message?.message_thread_id,
+      text: ctx.message?.text,
       limits,
     });
 
@@ -386,6 +389,8 @@ async function bufferMessage(
     readonly messageId: string;
     readonly chatId: number | undefined;
     readonly threadId: number | undefined;
+    /** Текст сообщения — чтобы узнать вопрос; у голосового его нет. */
+    readonly text?: string | undefined;
     readonly limits: BufferLimits;
   },
 ): Promise<void> {
@@ -397,9 +402,21 @@ async function bufferMessage(
     limits,
   });
 
-  if (attached.closed) {
-    // Потолок по числу сообщений или по возрасту: обрабатываем сразу,
-    // не дожидаясь тишины.
+  /**
+   * Одиночный вопрос — разбирать сразу (находка 20): ждать окно тишины
+   * ради «Что у меня на сегодня?» значит полминуты «Слушаю.» и повтор
+   * вопроса от человека. Только первое сообщение выгрузки: вопрос,
+   * пришедший внутрь серии, остаётся в ней и ждёт вместе с ней.
+   */
+  const questionAlone = attached.messageCount === 1 && looksLikeQuestion(params.text);
+  const closedNow =
+    !attached.closed && questionAlone
+      ? (await closeBatchOnSilence(deps.db, attached.batchId, { silenceWindowMs: 0 })).closed
+      : false;
+
+  if (attached.closed || closedNow) {
+    // Потолок по числу сообщений или по возрасту — либо одиночный
+    // вопрос: обрабатываем сразу, не дожидаясь тишины.
     await enqueueUserProcessing(deps.queue, userId);
 
     /**
@@ -463,6 +480,7 @@ export async function releaseHeldMessages(
       messageId: message.id,
       chatId: params.chatId,
       threadId: message.threadId ?? undefined,
+      text: message.text ?? undefined,
       limits,
     });
   }

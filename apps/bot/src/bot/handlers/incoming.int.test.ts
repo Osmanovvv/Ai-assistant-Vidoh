@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import type { Queue } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -1202,5 +1202,101 @@ describe('осиротевшее закрытие снимается вмест�
 
     expect(removed, 'задание закрытия осталось висеть над закрытой выгрузкой').toHaveLength(1);
     expect(jobs.size).toBe(0);
+  });
+});
+
+describe('вопрос разбирается сразу, не дожидаясь тишины (прогон 17.09.2026, находка 20)', () => {
+  /**
+   * Окно тишины склеивает серию мыслей в одну выгрузку — и на вопрос оно
+   * действовало так же: «Что у меня на сегодня?» → «Слушаю.» → полминуты
+   * → ответ. На скринах заказчицы 16.09 видно, что она дважды повторяла
+   * один и тот же вопрос, не дождавшись. Одиночное сообщение, кончающееся
+   * на «?», — вопрос: выгрузка закрывается сразу, разбор ставится в
+   * очередь без задержки.
+   */
+  function watchingQueue(): { queue: Queue<PipelineJob>; adds: { delay: number | undefined }[] } {
+    const adds: { delay: number | undefined }[] = [];
+
+    return {
+      adds,
+      queue: {
+        getJob: () => Promise.resolve(undefined),
+        add: (_name: string, _data: unknown, options?: { delay?: number }) => {
+          adds.push({ delay: options?.delay });
+          return Promise.resolve({});
+        },
+      } as unknown as Queue<PipelineJob>,
+    };
+  }
+
+  function botWith(queue: Queue<PipelineJob>): Bot {
+    const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', {
+      botInfo: {
+        id: 1,
+        is_bot: true,
+        first_name: 'ВЫДОХ',
+        username: 'vydoh_test_bot',
+      } as unknown as UserFromGetMe,
+    });
+
+    bot.api.config.use(() =>
+      Promise.resolve({
+        ok: true,
+        result: { message_id: 1, date: 0, chat: { id: TG_ID, type: 'private' } },
+      } as never),
+    );
+
+    bot.use(
+      incomingMiddleware({
+        db: testDb(),
+        queue,
+        privacyPolicyUrl: POLICY_URL,
+        consentUrl: CONSENT_URL,
+      }),
+    );
+
+    return bot;
+  }
+
+  async function lastBatchStatus(): Promise<string | undefined> {
+    const [row] = await testDb()
+      .select({ status: batches.status })
+      .from(batches)
+      .where(eq(batches.userId, userId))
+      .orderBy(desc(batches.openedAt))
+      .limit(1);
+
+    return row?.status;
+  }
+
+  it('«Что у меня на сегодня?» — выгрузка закрыта сразу, разбор без задержки', async () => {
+    const { queue, adds } = watchingQueue();
+    const bot = botWith(queue);
+
+    await bot.handleUpdate(textUpdate('Что у меня на сегодня?'));
+
+    expect(await lastBatchStatus()).toBe('queued');
+    // Задание на разбор — без задержки; закрытия по тишине нет.
+    expect(adds.some((add) => add.delay === undefined || add.delay === 0)).toBe(true);
+    expect(adds.some((add) => (add.delay ?? 0) >= 1_000)).toBe(false);
+  });
+
+  it('обычная мысль по-прежнему ждёт тишины', async () => {
+    const { queue, adds } = watchingQueue();
+    const bot = botWith(queue);
+
+    await bot.handleUpdate(textUpdate('купить продукты'));
+
+    expect(await lastBatchStatus()).toBe('open');
+    expect(adds.some((add) => (add.delay ?? 0) >= 1_000)).toBe(true);
+  });
+
+  it('вопросительный знак внутри, а не в конце — не вопрос: «надо ли? купить хлеб» ждёт тишины', async () => {
+    const { queue } = watchingQueue();
+    const bot = botWith(queue);
+
+    await bot.handleUpdate(textUpdate('надо ли? купить хлеб и молоко'));
+
+    expect(await lastBatchStatus()).toBe('open');
   });
 });

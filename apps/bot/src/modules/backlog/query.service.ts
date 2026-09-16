@@ -97,7 +97,8 @@ export type BacklogAnswer =
    * о всех делах человека, а у него тридцать записей на следующую
    * неделю. Ответ тот же, что у кнопки «Сегодня».
    */
-  | { readonly kind: 'todayEmpty' }
+  /** На сегодня пусто; `open` — сколько дел открыто вообще (находка 21). */
+  | { readonly kind: 'todayEmpty'; readonly open: number }
   /** Спрашивали про конкретное дело: что о нём известно. */
   | { readonly kind: 'about'; readonly items: readonly Item[] }
   /** Спрашивали обо всём сразу («покажи все мои задачи»): открытые дела. */
@@ -372,14 +373,18 @@ export async function answerBacklogQuery(
 
   if (day === 'today') {
     const context = await outputContextOf(deps.db, params.userId);
-    const today = selectForToday(await openItemsFor(deps.db, params.userId), {
-      now,
-      timeZone: context.timeZone,
-    }).filter((item) => params.topic === undefined || item.topic === params.topic);
+    const open = (await openItemsFor(deps.db, params.userId)).filter(
+      (item) => params.topic === undefined || item.topic === params.topic,
+    );
+    const today = selectForToday(open, { now, timeZone: context.timeZone });
 
     // Пустой день — не «ничего не записано» (ревизия этапа 3, E16):
-    // записи есть, просто не на сегодня.
-    return today.length === 0 ? { kind: 'todayEmpty' } : { kind: 'today', items: today };
+    // записи есть, просто не на сегодня. Сколько их — с ответом: без
+    // этого «ничего срочного» человек с шестью делами читал как «у тебя
+    // ничего нет» (скрины заказчицы 16.09.2026, находка 21).
+    return today.length === 0
+      ? { kind: 'todayEmpty', open: open.length }
+      : { kind: 'today', items: today };
   }
 
   if (day !== undefined) {
