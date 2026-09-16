@@ -1147,6 +1147,21 @@ describe('кнопки под разбором: «Оставить как ест
     expect(keyboardOf(sent)).toEqual([]);
   });
 
+  it('«Добавить ещё» под списком дел — приглашение написать новым сообщением, кнопки сняты', async () => {
+    // Макет заказчицы 16.09.2026, вариант 2. Та же подсказка, что у
+    // «Написать» в меню: новой механики нет, любое сообщение и так
+    // добавляет.
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.add, TG_ID, 'Вот что сейчас есть:'));
+
+    const sent = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(sent)).toBe(defaultTexts.start.hintText);
+    expect(keyboardOf(sent)).toEqual([]);
+    expect(calls.some((call) => call.method === 'editMessageReplyMarkup')).toBe(true);
+  });
+
   it('«Оставить как есть» дописывает подтверждение под признание и снимает кнопки', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();

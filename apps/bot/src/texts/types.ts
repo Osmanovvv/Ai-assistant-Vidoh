@@ -122,8 +122,13 @@ export interface TextProfile {
      * «На завтра: …».
      */
     readonly sphereLine: (name: string, count: string) => string;
-    readonly dueToday: (list: string) => string;
-    readonly dueTomorrow: (list: string) => string;
+    /**
+     * Шапки списков «на сегодня» и «на завтра»; сами дела идут ниже
+     * строками `bullet` (макет заказчицы 16.09.2026, вариант 1: списком,
+     * а не в строку).
+     */
+    readonly dueToday: string;
+    readonly dueTomorrow: string;
     /** Одни чувства — одна фраза её словами, с 🤍; ни счёта, ни кнопок. */
     readonly feelingsOnly: string;
     /**
@@ -428,6 +433,13 @@ export interface TextProfile {
      */
     readonly all: string;
     readonly allEmpty: string;
+    /**
+     * Под списком всех дел (макет заказчицы 16.09.2026, вариант 2):
+     * предложение и кнопка «Добавить ещё» — та же подсказка, что у
+     * «Написать» в меню.
+     */
+    readonly allOffer: string;
+    readonly buttonAddMore: string;
     readonly line: (text: string) => string;
     /** «Что на завтра / выходных / неделе» (ревизия этапа 3, F2). */
     readonly period: (label: string) => string;

@@ -78,8 +78,8 @@ import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
 import { settleTopics } from '../topics/ensure.js';
-import { topicsFor } from '../topics/topics.repo.js';
-import { topicByThread } from '../topics/topics.service.js';
+import { FALLBACK_TOPIC, topicsFor } from '../topics/topics.repo.js';
+import { topicByThread, topicIcon } from '../topics/topics.service.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
 import { applyThreadTopic } from './thread-topic.js';
@@ -1273,10 +1273,48 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * этапа 3, E12). Без предела при сотне просроченных текст пробивал
        * 4096 знаков, Telegram отказывал, и человек получал тишину.
        */
+      /**
+       * Обо всём — по сферам с иконками, только непустые, с предложением и
+       * двумя кнопками (макет заказчицы 16.09.2026, вариант 2). Предел
+       * строк тот же, что у остальных списков голосом.
+       */
+      if (answer.kind === 'all') {
+        const shown = answer.items.slice(0, SPOKEN_LIST_LIMIT);
+        const rest = answer.items.length - shown.length;
+        const groups = new Map<string, Item[]>();
+        for (const item of shown) {
+          // Без сферы (старые записи) — под именем общей: сферы человек
+          // видит, а «без темы» ему ни о чём не говорит.
+          const name = item.topic ?? FALLBACK_TOPIC;
+          const inTopic = groups.get(name) ?? [];
+          inTopic.push(item);
+          groups.set(name, inTopic);
+        }
+        // Сферы — где дел больше, выше (как в итоге разбора); дела внутри —
+        // в порядке, как были сказаны: база отдаёт свежие первыми.
+        const ordered = [...groups.entries()].sort(
+          ([a, one], [b, two]) => two.length - one.length || a.localeCompare(b, 'ru'),
+        );
+        const body: string[] = [];
+        for (const [name, inTopic] of ordered) {
+          inTopic.sort((one, two) => one.createdAt.getTime() - two.createdAt.getTime());
+          const title = name.charAt(0).toUpperCase() + name.slice(1);
+          const icon = topicIcon(name);
+          body.push('', icon === undefined ? title : `${icon} ${title}`);
+          body.push(...inTopic.map((item) => texts.backlog.line(item.text)));
+        }
+        if (rest > 0) body.push('', texts.backlog.more(rest));
+
+        await tell([texts.backlog.all, ...body, '', texts.backlog.allOffer].join('\n'), [
+          { label: texts.answer.buttonPick, action: ANSWER_ACTION.pick },
+          { label: texts.backlog.buttonAddMore, action: ANSWER_ACTION.add },
+        ]);
+        continue;
+      }
+
       const listed =
         answer.kind === 'today' ||
         answer.kind === 'about' ||
-        answer.kind === 'all' ||
         answer.kind === 'period' ||
         answer.kind === 'aboutClosed'
           ? answer.items
@@ -1285,10 +1323,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const rest = listed.length - shownItems.length;
 
       const body =
-        answer.kind === 'today' ||
-        answer.kind === 'about' ||
-        answer.kind === 'all' ||
-        answer.kind === 'period'
+        answer.kind === 'today' || answer.kind === 'about' || answer.kind === 'period'
           ? (await withNextSteps(db, shownItems)).map((item) =>
               texts.backlog.line(
                 answer.kind === 'today'
