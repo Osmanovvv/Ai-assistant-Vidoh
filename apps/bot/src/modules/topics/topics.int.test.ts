@@ -1,5 +1,4 @@
 import { and, eq } from 'drizzle-orm';
-import type { Logger } from 'pino';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, topics } from '../../db/schema.js';
@@ -356,8 +355,16 @@ describe('текст сводки', () => {
   });
 });
 
-describe('закреплённая сводка', () => {
-  it('первый раз отправляется и закрепляется', async () => {
+describe('сводка без закрепа (заказчица, 16.09.2026)', () => {
+  /**
+   * §8.2 её ТЗ держал в ветке одно закреплённое сообщение-сводку. По видео
+   * она отказалась от закрепов: «отдельные закрепления — не показывать;
+   * человек должен видеть результат, а не внутреннюю механику». Сводка
+   * остаётся первым сообщением ветки и правится на месте — закреплять её
+   * незачем, а полоска «Закреплённое сообщение #4» и строки «закрепил(а)»
+   * уходят вместе с закрепом.
+   */
+  it('первый раз отправляется — и не закрепляется', async () => {
     await seedTopics(['здоровье']);
     const gateway = new FakeTopicGateway();
     await addItem({ topic: 'здоровье', text: 'к врачу' });
@@ -372,7 +379,6 @@ describe('закреплённая сводка', () => {
     expect(result).toEqual({ sent: true, edited: false, skipped: false });
     expect(gateway.sent).toHaveLength(1);
     expect(gateway.sent[0]?.threadId).toBe((await topicRow('здоровье'))?.tgThreadId);
-    expect(gateway.pinned).toHaveLength(1);
     expect((await topicRow('здоровье'))?.summaryMessageId).not.toBeNull();
   });
 
@@ -394,7 +400,6 @@ describe('закреплённая сводка', () => {
 
     expect(gateway.sent).toHaveLength(1);
     expect(gateway.edited).toHaveLength(9);
-    expect(gateway.pinned).toHaveLength(1);
   });
 
   it('«менять нечего» не считается сбоем', async () => {
@@ -580,115 +585,35 @@ describe('темп обращений к Telegram', () => {
     expect(gateway.sent).toHaveLength(1);
   });
 
-  /**
-   * Отказ закрепления не уносит сводку (ревизия этапов).
-   *
-   * **Чего не видел прежний набор.** Подделка шлюза на `pin` всегда
-   * отвечала успехом, поэтому отказа закрепления не знала ни одна
-   * проверка: перехват вокруг `pin` в `summary.service.ts` можно было
-   * снять целиком, и весь набор оставался зелёным. Свойство «сводка
-   * выживает без булавки» существовало только в комментарии.
-   *
-   * А отказ в бою настоящий и двух видов: у бота может не быть права
-   * закреплять (400), и на залпе из девяти веток в конце опроса Telegram
-   * просит сбавить темп (429). Без перехвата такой отказ уносит **всю**
-   * тему: сводка уже отправлена, номер её уже записан, и исключение
-   * поднимается наружу — `refreshSummaries` считает тему неудавшейся, а
-   * при одиночном вызове ошибка уходит выше.
-   */
-  describe('закрепление отказало', () => {
-    /** Журнал, в который видно: предупреждение обязано остаться. */
-    function noisy() {
-      const warned: { topic?: unknown; err?: unknown }[] = [];
-      return {
-        warned,
-        logger: {
-          warn: (payload: { topic?: unknown; err?: unknown }) => warned.push(payload),
-          info: () => undefined,
-          error: () => undefined,
-          debug: () => undefined,
-        } as unknown as Logger,
-      };
-    }
+  it('залп из девяти сфер идёт с паузами между темами и без повторов', async () => {
+    const chosen = [
+      'семья',
+      'здоровье',
+      'работа',
+      'покупки',
+      'дом',
+      'дети',
+      'деньги',
+      'учёба',
+      'личное',
+    ];
+    await seedTopics(chosen);
+    const gateway = new FakeTopicGateway();
+    const { waited, deps: paced } = pacing(gateway);
 
-    it.each(['noRights', 'throttled'] as const)('%s: сводка остаётся на месте', async (how) => {
-      await seedTopics(['здоровье']);
-      const gateway = new FakeTopicGateway({ pinFails: how });
-      const { warned, logger: noteTaking } = noisy();
-      await addItem({ topic: 'здоровье', text: 'к врачу' });
-
-      const result = await refreshSummary(
-        { db: testDb(), gateway, logger: noteTaking },
-        { userId, chatId: CHAT, topicName: 'здоровье', timeZone: MOSCOW },
-      );
-
-      // Тема не пропущена: отказ булавки — не отказ сводки.
-      expect(result).toEqual({ sent: true, edited: false, skipped: false });
-
-      // Сводка отправлена, и в ней то, что и должно быть.
-      expect(gateway.sent).toHaveLength(1);
-      expect(gateway.sent[0]?.text).toContain('к врачу');
-
-      // Номер записан — иначе следующая выгрузка отправит вторую сводку
-      // вместо правки первой, и лента темы станет свалкой (§8.2).
-      expect((await topicRow('здоровье'))?.summaryMessageId).not.toBeNull();
-
-      // Попытка была, но удачных закреплений нет: подделка не подыгрывает.
-      expect(gateway.pinAttempts).toHaveLength(1);
-      expect(gateway.pinned).toHaveLength(0);
-
-      // И об этом осталась строка в журнале: незакреплённая сводка — не
-      // норма, а состояние, которое надо будет заметить.
-      expect(warned).toHaveLength(1);
-      expect(warned[0]?.topic).toBe('здоровье');
-      expect(warned[0]?.err).toBeDefined();
+    const touched = await refreshSummaries(paced, {
+      userId,
+      chatId: CHAT,
+      topicNames: chosen,
+      timeZone: MOSCOW,
     });
 
-    it('залп из девяти сфер не удваивается из-за незакреплённых сводок', async () => {
-      /**
-       * Тот самый случай из §12.2, ради которого перехват и стоит: конец
-       * опроса создаёт ветку, сводку и закрепление на каждую выбранную
-       * сферу, а Telegram на таком залпе как раз и просит сбавить темп.
-       *
-       * **Здесь проверяется не «дошло», а «сколько это стоило».** Без
-       * перехвата сводки всё равно доходят — но кружным путём: отказ
-       * булавки поднимается как отказ темы, `refreshSummaries` видит
-       * просьбу подождать, ждёт три секунды и **повторяет** тему. На
-       * девяти сферах это двадцать семь секунд ожидания и вторая волна
-       * обращений — ровно тот залп, от которого пауза между темами и
-       * спасает. Проверка «сводка дошла» такое пропускает: она дошла.
-       */
-      const chosen = [
-        'семья',
-        'здоровье',
-        'работа',
-        'покупки',
-        'дом',
-        'дети',
-        'деньги',
-        'учёба',
-        'личное',
-      ];
-      await seedTopics(chosen);
-      const gateway = new FakeTopicGateway({ pinFails: 'throttled' });
-      const { waited, deps: paced } = pacing(gateway);
-
-      const touched = await refreshSummaries(paced, {
-        userId,
-        chatId: CHAT,
-        topicNames: chosen,
-        timeZone: MOSCOW,
-      });
-
-      expect(touched).toBe(chosen.length);
-      expect(gateway.sent).toHaveLength(chosen.length);
-      // Ни одной правки: повтора темы не было, сводка отправлена один раз.
-      expect(gateway.edited).toHaveLength(0);
-      // Ожидания — только паузы между темами, ни одной просьбы Telegram.
-      expect(waited).toEqual(Array.from({ length: chosen.length - 1 }, () => 400));
-      expect(gateway.pinAttempts).toHaveLength(chosen.length);
-      expect(gateway.pinned).toHaveLength(0);
-    });
+    expect(touched).toBe(chosen.length);
+    expect(gateway.sent).toHaveLength(chosen.length);
+    // Ни одной правки: повтора темы не было, сводка отправлена один раз.
+    expect(gateway.edited).toHaveLength(0);
+    // Ожидания — только паузы между темами, ни одной просьбы Telegram.
+    expect(waited).toEqual(Array.from({ length: chosen.length - 1 }, () => 400));
   });
 
   it('если и после паузы отказ — тема пропускается, остальные идут', async () => {

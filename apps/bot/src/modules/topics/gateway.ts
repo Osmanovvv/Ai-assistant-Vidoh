@@ -41,8 +41,6 @@ export interface TopicGateway {
     readonly text: string;
   }): Promise<void>;
 
-  pin(params: { readonly chatId: number; readonly messageId: number }): Promise<void>;
-
   /**
    * Удалить ветку вместе со всем, что в ней (§16 ТЗ).
    *
@@ -173,12 +171,6 @@ export function createTopicGateway(api: Api): TopicGateway {
 
     async deleteThread({ chatId, threadId }) {
       await api.deleteForumTopic(chatId, threadId);
-    },
-
-    async pin({ chatId, messageId }) {
-      // Без оповещения: закреплённая сводка обновляется часто, и звать
-      // человека к каждому обновлению — раздражать его.
-      await api.pinChatMessage(chatId, messageId, { disable_notification: true });
     },
   };
 }
