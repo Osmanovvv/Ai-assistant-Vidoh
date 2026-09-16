@@ -40,7 +40,13 @@ import {
   setStep,
   STEP,
 } from '../onboarding/onboarding.service.js';
-import { ANSWER_ACTION, composeOf, presentDump } from '../presenter/presenter.service.js';
+import {
+  ANSWER_ACTION,
+  composeOf,
+  feelingsOnlyReply,
+  presentDump,
+} from '../presenter/presenter.service.js';
+import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
@@ -644,6 +650,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
     // здесь решает только он.
     if (await stopOnCrisis(detectCrisis(combined, routed.crisis), 'model')) return;
+
+    /**
+     * Сила эмоции — по всей речи, а не по отрезкам маршрутизатора
+     * (заказчица, 16.09.2026, «про эмоции»): «устала» человек сказал
+     * буквально, в какой бы отрезок модель его ни положила. Меняет тон
+     * признания и ответ, когда разбирать оказалось нечего.
+     */
+    const mood = moodOf(combined);
 
     const parsed: Segment[] = [];
     const deferred: Segment[] = [];
@@ -1299,7 +1313,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         // «Спасибо» — «Пожалуйста 🤍 Я всё помню.», а не «расскажешь, что
         // в голове?» (заказчица, 16.09.2026). Слово — по закрытому списку.
         const thanked = smalltalk.some((segment) => saysThanks(segment.text));
-        await answer(thanked ? texts.answer.thanks : texts.answer.nothingToParse);
+        // Состояние без дел — её реплика по силе («вымоталась» → про
+        // батарейку 😮‍💨; «в панике» → спокойно), а не «расскажешь, что в
+        // голове?»: «не нужно насильно превращать это в дело».
+        await answer(
+          thanked
+            ? texts.answer.thanks
+            : mood === undefined
+              ? texts.answer.nothingToParse
+              : feelingsOnlyReply(texts, mood),
+        );
       }
 
       return;
@@ -1340,8 +1363,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         'правка ждала разбора выгрузки, а единиц в ней не нашлось',
       );
 
-      // Сказанное сохранено — обещание правдиво; иначе прежняя реплика.
-      await answer(parkedHere > 0 ? texts.answer.savedUnparsed : texts.answer.nothingToParse);
+      // Сказанное сохранено — обещание правдиво; иначе — по состоянию,
+      // если человек его назвал, или прежняя реплика.
+      await answer(
+        parkedHere > 0
+          ? texts.answer.savedUnparsed
+          : mood === undefined
+            ? texts.answer.nothingToParse
+            : feelingsOnlyReply(texts, mood),
+      );
       return;
     }
 
@@ -1813,6 +1843,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        */
       omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       feelingsOnly,
+      mood,
       quickAdd,
       // Раскладка по сферам и «на сегодня / на завтра» — по разобранным
       // единицам этой выгрузки (заказчица, 16.09.2026, п. 3).

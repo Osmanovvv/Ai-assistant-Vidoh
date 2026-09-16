@@ -1095,7 +1095,10 @@ describe('разбор', () => {
 
     const reply = all.at(-1) ?? '';
     // Одни чувства — одна фраза её словами (16.09.2026), без счёта дел.
-    expect(reply).toContain(defaultTexts.answer.feelingsOnly);
+    // «Устала» — лёгкая усталость по её тексту про эмоции: «Похоже,
+    // батарейка на сегодня почти всё 😮‍💨 …», приглашение выгрузить.
+    expect(reply).toContain(defaultTexts.answer.feelingsOnlyTired);
+    expect(reply).not.toContain(defaultTexts.answer.feelingsOnly);
     expect(reply).not.toContain('Записала');
     for (const text of ['Записать сына к врачу', 'Оплатить садик', 'Разобрать балкон']) {
       expect(reply).not.toContain(text);
@@ -4378,6 +4381,68 @@ describe('вопрос по бэклогу ничего не создаёт (§1
 
     expect(all).toEqual([defaultTexts.answer.thanks]);
     expect(await testDb().select().from(items).where(eq(items.userId, userId))).toEqual([]);
+  });
+
+  it('«вымоталась» без дел, даже если маршрутизатор счёл это болтовнёй, — её реплика про батарейку', async () => {
+    /**
+     * Заказчица, 16.09.2026, про эмоции: «Я сегодня вообще вымоталась» →
+     * «Похоже, батарейка на сегодня почти всё 😮‍💨 Если хочешь — просто
+     * выгружай сюда всё, что ещё крутится в голове.» Слово о состоянии
+     * узнаётся кодом по сказанному, а не по решению модели: SMALLTALK от
+     * маршрутизатора прежде получал «Я здесь. Расскажешь, что в голове?»
+     * — будто не услышал.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all, buttons } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Я сегодня вообще вымоталась', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'Я сегодня вообще вымоталась' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all).toEqual([defaultTexts.answer.feelingsOnlyTired]);
+    expect(buttons).toEqual([]);
+  });
+
+  it('«я в панике» без дел — спокойно и без эмодзи: «Вижу, сейчас тяжело…»', async () => {
+    // Сильная эмоция — юмор выключается, тон бережный; кризис (§13.7)
+    // сюда не относится: маршрутизатор его не поднял, маркеров нет.
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Я в панике, всё разваливается', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'Я в панике, всё разваливается' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all).toEqual([defaultTexts.answer.feelingsOnlyHeavy]);
+    expect(all[0]).not.toMatch(/\p{Extended_Pictographic}/u);
   });
 
   it('вопрос сам по себе, без мыслей рядом, отвечается «ничего не записано» как раньше', async () => {

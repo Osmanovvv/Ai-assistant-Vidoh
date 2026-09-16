@@ -108,11 +108,19 @@ export const reserved: TextProfile = {
     acknowledgementFallback: 'Всё, забрала.',
     acknowledgementTiredFallback: 'Поняла, забрала.',
     acknowledgementLong: 'Всё, забрала — на сегодня можно больше это не держать в голове 🤍',
+    acknowledgementTired:
+      'Да, на сегодня уже многовато 😮‍💨 Давай хотя бы это больше не держать в голове.',
+    acknowledgementAnnoyed: 'Понимаю 🙃 Давай хотя бы это больше не держать в голове.',
+    acknowledgementHeavy: 'Вижу, сейчас тяжело.',
     acknowledgementTasks: (tasks) => `Записала ${tasks} и разложила по местам.`,
     sphereLine: (name, count) => `${name} — ${count}`,
     dueToday: (list) => `На сегодня: ${list}.`,
     dueTomorrow: (list) => `На завтра: ${list}.`,
     feelingsOnly: 'Поняла тебя. Давай пока просто оставим это здесь 🤍',
+    feelingsOnlyTired:
+      'Похоже, батарейка на сегодня почти всё 😮‍💨 Если хочешь — просто выгружай сюда всё, что ещё крутится в голове.',
+    feelingsOnlyHeavy:
+      'Вижу, сейчас тяжело. Давай без лишнего — можешь просто написать сюда всё подряд, я помогу разобрать.',
     thanks: 'Пожалуйста 🤍 Я всё помню.',
 
     actionsLead: 'На сегодня я бы взяла вот это:',

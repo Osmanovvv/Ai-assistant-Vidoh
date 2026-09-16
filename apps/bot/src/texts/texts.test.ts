@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { defaultTexts } from './index.js';
-import { forbiddenPhraseIn, repliesOf, saidBy, type Reply, ALLOWED_EMOJI } from './rules.js';
+import {
+  forbiddenPhraseIn,
+  picturesIn,
+  repliesOf,
+  saidBy,
+  type Reply,
+  ALLOWED_EMOJI,
+} from './rules.js';
 
 /**
  * Обход словаря и добыча слов живут в `rules.ts` — вместе с правилами.
@@ -141,8 +148,10 @@ describe('запрещённые шаблоны словаря (§13, задач
      */
     const decorated: string[] = [];
 
+    // И разбор на знаки — тот же, что у правила: 😮‍💨 — один знак из трёх
+    // кодовых точек, посимвольно он «😮» и «💨», и оба — украшение.
     for (const one of replies()) {
-      for (const symbol of one.said.match(/\p{Extended_Pictographic}/gu) ?? []) {
+      for (const symbol of picturesIn(one.said)) {
         if (!ALLOWED_EMOJI.has(symbol)) decorated.push(`${one.path}: ${symbol}`);
       }
     }
