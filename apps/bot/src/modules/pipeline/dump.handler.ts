@@ -470,14 +470,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const sayParked = (line: string): void => {
       if (!parkedWords.includes(line)) parkedWords.push(line);
     };
-    const parkedLine = (said: 'unchanged' | 'refused' | 'gone' | undefined): string =>
+    const parkedLine = (said: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined): string =>
       said === 'refused'
         ? texts.resolver.deadlineRefused
         : said === 'unchanged'
           ? texts.resolver.unchanged
           : said === 'gone'
             ? texts.card.gone
-            : texts.answer.patchParked;
+            : said === 'absent'
+              ? texts.resolver.nothingToClose
+              : texts.answer.patchParked;
 
     const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       if (happened.statusTaken) {
@@ -1037,7 +1039,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         return;
       }
 
-      if (outcome.retryAfterSave === true && stage !== 'wide') {
+      /**
+       * «Такого дела не было» есть смысл проверять ещё раз, только если в
+       * этой выгрузке появятся новые записи — цель могла быть сказана
+       * здесь же. Без них повтор ничего не найдёт, а слив отложенных
+       * ответил бы общим «правку применить не вышло» вместо честного слова.
+       */
+      const worthRetrying = outcome.said !== 'absent' || parsed.length > 0;
+      if (outcome.retryAfterSave === true && stage !== 'wide' && worthRetrying) {
         (stage === 'before' ? searchOwnBatch : searchEverywhere).push(segment);
         return;
       }
@@ -1121,6 +1130,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           // Приветствие §13.6 и первая правка ставят `happened.asked`;
           // резолвер читает его в момент вызова — правки идут по одной.
           questionTaken: happened.asked,
+          // Закрытие и отмена без записи не становятся мыслью (находка 5).
+          intent: segment.intent,
           now,
         },
       );

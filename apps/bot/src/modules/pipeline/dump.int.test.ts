@@ -1753,6 +1753,163 @@ describe('сводки веток после правок (§8)', () => {
   });
 });
 
+describe('«уже сделала» без такой записи (прогон Никиты 15.09.2026, находка 5)', () => {
+  /**
+   * «Мусор я уже вынес, так что это можно убрать» → бот завёл открытое дело
+   * «Вынести мусор». Маршрутизатор отдал отрезок как закрытие, резолвер
+   * честно ответил «подходящей записи нет» — и развилка конвейера сделала
+   * из «нет записи» новую мысль. Для правки это верно («нет, в пятницу» без
+   * цели — мысль), для закрытия и отмены — нет: сказанное как о сделанном
+   * не имеет права стать новой задачей, что бы ни ответила модель.
+   */
+  const SAID = 'мусор я уже вынес, так что это можно убрать';
+  const NOTHING_FOUND = JSON.stringify({
+    action: 'new',
+    mode: 'append',
+    itemId: '',
+    confidence: 0.9,
+    changes: {
+      note: '',
+      text: '',
+      deadline: '',
+      deadlineAccuracy: 'none',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
+    reason: 'подходящей записи нет',
+  });
+
+  async function rowsOfUser(): Promise<{ text: string; isDraft: boolean; status: string }[]> {
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    return rows.map((row) => ({ text: row.text, isDraft: row.isDraft, status: row.status }));
+  }
+
+  it('закрытие без цели — не задача, а «такого дела не было»; слова — в черновик', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'личное' });
+
+    await queuedBatchOf([{ kind: 'text', text: SAID, offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'COMPLETE', text: SAID }] }),
+      resolver: NOTHING_FOUND,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await rowsOfUser();
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual(['Оплатить садик']);
+    expect(rows.filter((row) => row.isDraft).map((row) => row.text)).toEqual([SAID]);
+    expect(all.at(-1) ?? '').toContain(defaultTexts.resolver.nothingToClose);
+  });
+
+  it('отмена без цели — то же: «убери стоматолога» не заводит стоматолога', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'личное' });
+
+    await queuedBatchOf([{ kind: 'text', text: 'убери стоматолога', offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'CANCEL', text: 'убери стоматолога' }],
+      }),
+      resolver: NOTHING_FOUND,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await rowsOfUser();
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual(['Оплатить садик']);
+    expect(all.at(-1) ?? '').toContain(defaultTexts.resolver.nothingToClose);
+  });
+
+  it('в одной выгрузке с делами: дела заводятся, «уже вынес» — нет, ответ честный', async () => {
+    // Тот самый случай с боя: «Разобрать балкон, …, выкинуть мусор» и
+    // «мусор я уже вынес» в одном сообщении. Цель могла быть среди только
+    // что сказанного — конвейер пробует ещё раз после сохранения; модель
+    // и тут отвечает «нет записи» — значит, черновик и честное слово.
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const BALCONY = 'Разобрать балкон, убрать коробки, выкинуть мусор';
+
+    await queuedBatchOf([{ kind: 'text', text: `${BALCONY}. ${SAID}`, offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: BALCONY },
+          { intent: 'COMPLETE', text: SAID },
+        ],
+      }),
+      resolver: NOTHING_FOUND,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await rowsOfUser();
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual([BALCONY]);
+    expect(rows.filter((row) => row.isDraft).map((row) => row.text)).toEqual([SAID]);
+    expect(all.join('\n')).toContain(defaultTexts.resolver.nothingToClose);
+  });
+
+  it('правка без цели по-прежнему становится мыслью: «нет записи» для неё — новое дело', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'личное' });
+    const THOUGHT = 'ещё батарейки купить для весов';
+
+    await queuedBatchOf([{ kind: 'text', text: THOUGHT, offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'PATCH', text: THOUGHT }] }),
+      resolver: NOTHING_FOUND,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await rowsOfUser();
+    // Заголовок чистится и пишется с большой буквы — сравниваем без регистра.
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text.toLowerCase())).toContain(
+      THOUGHT,
+    );
+  });
+});
+
 describe('ветки тем в разборе', () => {
   it('сообщение внутри ветки разбирается в контексте её темы (§8.1)', async () => {
     // Женщина, написавшая в ветку «здоровье», не должна получать дело в
