@@ -64,6 +64,14 @@ export const FORBIDDEN = [
   'категория успешно',
   'успешно добавлен',
   'успешно создан',
+  /**
+   * Её текст «про эмоции» (16.09.2026): не «шаблонное „это нормально",
+   * „ты справишься", „я понимаю, как тебе тяжело" в каждом таком
+   * сообщении». «Вижу, сейчас тяжело» — её образец — проходит: оценки
+   * «тебе» в нём нет.
+   */
+  'это нормально',
+  'как тебе тяжело',
 ] as const;
 
 /** «Ё» приравнивается к «е»: живая расшифровка даёт и то и другое. */
@@ -96,8 +104,28 @@ export function forbiddenPhraseIn(text: string): string | undefined {
  * — украшение, как и было.
  */
 export const MARKER_EMOJI = new Set(['⭐', '☑']);
-export const TONE_EMOJI = new Set(['😌', '🙂', '🙌', '🛒', '📌', '⏰', '🤍']);
+/**
+ * 😮‍💨 и 🙃 — из её примеров «про эмоции» (16.09.2026): выдох при лёгкой
+ * усталости, улыбка при лёгкой досаде. 😮‍💨 — составной знак (лицо,
+ * соединитель, облачко): считается одним, см. `picturesIn`.
+ */
+export const TONE_EMOJI = new Set(['😌', '🙂', '🙌', '🛒', '📌', '⏰', '🤍', '😮‍💨', '🙃']);
 export const ALLOWED_EMOJI = new Set([...MARKER_EMOJI, ...TONE_EMOJI]);
+
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * Пиктограммы реплики — по видимым знакам, а не по кодовым точкам.
+ *
+ * Посимвольная проверка разбирала 😮‍💨 на «😮» и «💨» и отвергала оба как
+ * украшение, а два знака считала за два эмодзи. Селектор начертания
+ * (U+FE0F) снимается: «☑️» и «☑» — один и тот же маркер.
+ */
+export function picturesIn(text: string): string[] {
+  return [...GRAPHEMES.segment(text)]
+    .map((piece) => piece.segment.replace(/️/gu, ''))
+    .filter((piece) => /\p{Extended_Pictographic}/u.test(piece));
+}
 
 /** Предел Telegram на одно сообщение. Длиннее просто не уедет. */
 const MESSAGE_LIMIT = 4_096;
@@ -257,7 +285,7 @@ export function contentRefusal(said: string): string | undefined {
     return `§13.7 не разрешает боту такое: «${forbidden}». Бот признаёт состояние одной строкой и возвращает к делу, а не советует и не подбадривает.`;
   }
 
-  const pictures = said.match(/\p{Extended_Pictographic}/gu) ?? [];
+  const pictures = picturesIn(said);
   const decoration = pictures.find((symbol) => !ALLOWED_EMOJI.has(symbol));
 
   if (decoration !== undefined) {
@@ -303,6 +331,9 @@ export const BESIDE_QUESTION = [
   'answer.acknowledgementFallback',
   'answer.acknowledgementTiredFallback',
   'answer.acknowledgementLong',
+  'answer.acknowledgementTired',
+  'answer.acknowledgementAnnoyed',
+  'answer.acknowledgementHeavy',
   'answer.acknowledgementTasks',
   'answer.sphereLine',
   'answer.dueToday',

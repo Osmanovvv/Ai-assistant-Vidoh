@@ -179,6 +179,95 @@ describe('buildReply', () => {
     expect(reply.buttons).toEqual([]);
   });
 
+  it('одни чувства при усталости — «батарейка почти всё 😮‍💨» и приглашение выгрузить', () => {
+    // Её пример: «Я сегодня вообще вымоталась» → «Похоже, батарейка на
+    // сегодня почти всё 😮‍💨 Если хочешь — просто выгружай сюда всё, что
+    // ещё крутится в голове.» Не превращать в дело — и не оставлять без
+    // ответа.
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      batchId,
+      feelingsOnly: true,
+      mood: 'tired',
+    });
+
+    expect(reply.text).toBe(texts.answer.feelingsOnlyTired);
+    expect(reply.text).toContain('😮‍💨');
+    expect(reply.text).not.toContain('🤍');
+    expect(reply.buttons).toEqual([]);
+  });
+
+  it('одни чувства при сильной эмоции — спокойно, без эмодзи: «Вижу, сейчас тяжело. Давай без лишнего…»', () => {
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      batchId,
+      feelingsOnly: true,
+      mood: 'heavy',
+    });
+
+    expect(reply.text).toBe(texts.answer.feelingsOnlyHeavy);
+    expect(reply.text).toMatch(/^Вижу, сейчас тяжело\./u);
+    expect(reply.text).not.toMatch(/\p{Extended_Pictographic}/u);
+    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.buttons).toEqual([]);
+  });
+
+  it('одни чувства при досаде — прежнее «Поняла тебя… 🤍»: поделилась личным', () => {
+    const reply = buildReply({
+      texts,
+      acknowledgement: ack,
+      batchId,
+      feelingsOnly: true,
+      mood: 'annoyed',
+    });
+
+    expect(reply.text).toBe(texts.answer.feelingsOnly);
+  });
+
+  it('сильная эмоция при делах — ответ проще: без вопроса, кнопки остаются', () => {
+    // «Чем сильнее эмоция — тем спокойнее и проще ответ»; «не уводим в
+    // дополнительный разговор». Кнопки — выход к делам, не вопрос.
+    const reply = buildReply({
+      texts,
+      acknowledgement: 'Вижу, сейчас тяжело. Записала 2 дела и разложила по местам.',
+      batchId,
+      mood: 'heavy',
+      summary: { spheres: [{ name: 'дом', icon: '🏠', count: 2 }], today: [], tomorrow: [] },
+    });
+
+    expect(reply.text).not.toContain(texts.answer.keepOrPick);
+    expect(countQuestions(reply.text)).toBe(0);
+    expect(reply.text).toContain('🏠 Дом — 2');
+    expect(reply.buttons).toHaveLength(2);
+  });
+
+  it('лёгкая эмоция при делах — вопрос на месте', () => {
+    const reply = buildReply({ texts, acknowledgement: ack, batchId, mood: 'tired' });
+
+    expect(reply.text).toContain(texts.answer.keepOrPick);
+  });
+
+  it('и с настроением двух вопросов не бывает', () => {
+    for (const mood of ['tired', 'annoyed', 'heavy', undefined] as const) {
+      for (const feelingsOnly of [false, true]) {
+        for (const profile of Object.keys(profiles)) {
+          const reply = buildReply({
+            texts: textsFor(profile),
+            acknowledgement: ack,
+            batchId,
+            feelingsOnly,
+            mood,
+            summary: { spheres: [], today: ['Позвонить'], tomorrow: [] },
+          });
+
+          expect(countQuestions(reply.text), `${profile}: ${String(mood)}`).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
   it('ни при каком сочетании не бывает двух вопросов', () => {
     // Инвариант 10. Проверяется перебором, а не примером: правило легко
     // нарушить, добавив фразу с вопросительным знаком в словарь.
@@ -413,6 +502,42 @@ describe('acknowledgementOf — признание из состава (зака
     expect(withTasks(0, 1)).toBe(texts.answer.acknowledgementTiredFallback);
   });
 
+  it('лёгкая усталость — тепло и с 😮‍💨, счёт следом (её пример: «Я ужасно устала, ещё надо…»)', () => {
+    // «Да, на сегодня уже многовато 😮‍💨 Давай хотя бы это больше не
+    // держать в голове. Записала: …» — заказчица, 16.09.2026, про эмоции.
+    expect(acknowledgementOf({ ...NOTHING, tasks: 2 }, texts, 'tired')).toBe(
+      `${texts.answer.acknowledgementTired} Записала 2 дела и разложила по местам.`,
+    );
+    expect(texts.answer.acknowledgementTired).toContain('😮‍💨');
+  });
+
+  it('лёгкая досада — «Понимаю 🙃», счёт следом (её пример про стоматолога)', () => {
+    expect(acknowledgementOf({ ...NOTHING, tasks: 1 }, texts, 'annoyed')).toBe(
+      `${texts.answer.acknowledgementAnnoyed} Записала 1 дело и разложила по местам.`,
+    );
+    expect(texts.answer.acknowledgementAnnoyed).toContain('🙃');
+  });
+
+  it('сильная эмоция — спокойно, без юмора и без эмодзи: «Вижу, сейчас тяжело.»', () => {
+    expect(acknowledgementOf({ ...NOTHING, tasks: 2, emotions: 1 }, texts, 'heavy')).toBe(
+      'Вижу, сейчас тяжело. Записала 2 дела и разложила по местам.',
+    );
+    expect(texts.answer.acknowledgementHeavy).not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+
+  it('длинная выгрузка при усталости — эмодзи один: 😮‍💨 вместо 🤍', () => {
+    const said = acknowledgementOf({ ...NOTHING, tasks: 7 }, texts, 'tired');
+
+    expect(said).toContain('😮‍💨');
+    expect(said).not.toContain('🤍');
+  });
+
+  it('эмоция есть, а слов из списка нет — прежнее спокойное «Поняла, забрала.»', () => {
+    expect(acknowledgementOf({ ...NOTHING, tasks: 2, emotions: 1 }, texts, undefined)).toBe(
+      'Поняла, забрала. Записала 2 дела и разложила по местам.',
+    );
+  });
+
   it('правка признания из панели доезжает и в счёт', () => {
     applyOverrides(new Map([['answer.acknowledgementFallback', 'Услышала тебя.']]));
 
@@ -459,6 +584,27 @@ describe('presentDump — ответ на выгрузку целиком', () =
     expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
     expect(countQuestions(result.reply.text)).toBe(1);
     expect(result.reply.buttons).toHaveLength(2);
+  });
+
+  it('настроение доезжает до признания и формы: усталость — 😮‍💨 и вопрос; сильная — без вопроса', () => {
+    const tired = presentDump({
+      ...params,
+      composition: { ...composition, tasks: 2 },
+      mood: 'tired',
+    });
+
+    expect(tired.reply.text.startsWith(texts.answer.acknowledgementTired)).toBe(true);
+    expect(tired.reply.text).toContain(texts.answer.keepOrPick);
+
+    const heavy = presentDump({
+      ...params,
+      composition: { ...composition, tasks: 2 },
+      mood: 'heavy',
+    });
+
+    expect(heavy.reply.text.startsWith(texts.answer.acknowledgementHeavy)).toBe(true);
+    expect(countQuestions(heavy.reply.text)).toBe(0);
+    expect(heavy.reply.buttons).toHaveLength(2);
   });
 
   it('быстрое добавление — «Записала», без кнопок', () => {

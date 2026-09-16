@@ -1,6 +1,7 @@
 import { toShortId } from '../shared/short-id.js';
 import type { ItemType } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
+import type { Mood } from './mood.js';
 import type { DumpSummary } from './summary.js';
 
 /**
@@ -113,6 +114,28 @@ export interface BuildReplyParams {
    * 14.09.2026, п. 1.5). Ответ — одно признание: без вопроса и кнопок.
    */
   readonly feelingsOnly?: boolean | undefined;
+  /**
+   * Сила эмоции по сказанному (её текст «про эмоции», 16.09.2026;
+   * `mood.ts`). Меняет фразу на одни чувства и убирает вопрос при
+   * сильной: «чем сильнее эмоция — тем спокойнее и проще ответ».
+   */
+  readonly mood?: Mood | undefined;
+}
+
+/**
+ * Одни чувства — по силе: усталость — «батарейка почти всё 😮‍💨» и
+ * приглашение выгрузить; сильная — «Вижу, сейчас тяжело…» без эмодзи;
+ * иначе — «Поняла тебя… 🤍». Зовётся и из конвейера, когда разбирать
+ * оказалось нечего, а состояние человек назвал.
+ */
+export function feelingsOnlyReply(texts: TextProfile, mood: Mood | undefined): string {
+  const answer = texts.answer;
+
+  return mood === 'heavy'
+    ? answer.feelingsOnlyHeavy
+    : mood === 'tired'
+      ? answer.feelingsOnlyTired
+      : answer.feelingsOnly;
 }
 
 /**
@@ -142,8 +165,8 @@ export function buildReply(params: BuildReplyParams): Reply {
    * Кризис сюда не доходит: остановлен раньше своим сценарием.
    */
   if (params.feelingsOnly === true) {
-    // Поделилась личным — одна фраза её словами, с 🤍 (16.09.2026).
-    return { text: answer.feelingsOnly, buttons: [] };
+    // Поделилась личным — одна фраза её словами, по силе (16.09.2026).
+    return { text: feelingsOnlyReply(texts, params.mood), buttons: [] };
   }
 
   /**
@@ -171,7 +194,13 @@ export function buildReply(params: BuildReplyParams): Reply {
   if (tomorrow.length > 0) due.push(answer.dueTomorrow(inline(tomorrow)));
   if (due.length > 0) lines.push('', ...due);
 
-  if (params.omitQuestion !== true) lines.push('', answer.keepOrPick);
+  /**
+   * При сильной эмоции вопроса нет — кнопки остаются (её текст «про
+   * эмоции»: «чем сильнее эмоция — тем спокойнее и проще ответ», «не
+   * уводим женщину в дополнительный разговор»). Кнопки — выход к делам,
+   * а не вопрос: так же стоят они и под её образцом п. 3.
+   */
+  if (params.omitQuestion !== true && params.mood !== 'heavy') lines.push('', answer.keepOrPick);
 
   const pick =
     params.batchId === undefined
@@ -284,19 +313,36 @@ function tasksPhrase(count: number): string {
   return `${number} ${noun}`;
 }
 
-export function acknowledgementOf(composition: DumpComposition, texts: TextProfile): string {
+export function acknowledgementOf(
+  composition: DumpComposition,
+  texts: TextProfile,
+  mood?: Mood,
+): string {
   /**
    * Открытие — по её тексту о характере (16.09.2026): «Всё, забрала».
-   * Длинная выгрузка (от пяти дел) — с фирменным 🤍 в этой же строке;
-   * при высказанном состоянии — спокойнее и без сердечка: «серьёзная
-   * усталость — никаких шуточек, которые могут обесценить».
+   * Длинная выгрузка (от пяти дел) — с фирменным 🤍 в этой же строке.
+   *
+   * Эмоция — по её тексту «про эмоции» (16.09.2026): «сначала коротко
+   * отреагировать по-человечески, потом помочь разгрузить голову».
+   * Лёгкая усталость — тепло, с 😮‍💨; лёгкая досада — «Понимаю 🙃»;
+   * сильная — спокойно, без юмора и без эмодзи. Состояние есть, а слова
+   * вне списка — прежнее спокойное «Поняла, забрала.»: «серьёзная
+   * усталость — никаких шуточек, которые могут обесценить». Эмодзи в
+   * реплике один: при усталости 😮‍💨 стоит вместо 🤍 длинной выгрузки.
    */
+  const answer = texts.answer;
   const opening =
-    composition.emotions > 0
-      ? texts.answer.acknowledgementTiredFallback
-      : composition.tasks >= LONG_DUMP_TASKS
-        ? texts.answer.acknowledgementLong
-        : texts.answer.acknowledgementFallback;
+    mood === 'heavy'
+      ? answer.acknowledgementHeavy
+      : mood === 'tired'
+        ? answer.acknowledgementTired
+        : mood === 'annoyed'
+          ? answer.acknowledgementAnnoyed
+          : composition.emotions > 0
+            ? answer.acknowledgementTiredFallback
+            : composition.tasks >= LONG_DUMP_TASKS
+              ? answer.acknowledgementLong
+              : answer.acknowledgementFallback;
 
   if (composition.tasks <= 0) return opening;
 
@@ -323,6 +369,8 @@ export interface PresentParams {
   readonly summary?: DumpSummary | undefined;
   /** См. `BuildReplyParams.feelingsOnly`. */
   readonly feelingsOnly?: boolean | undefined;
+  /** См. `BuildReplyParams.mood`. */
+  readonly mood?: Mood | undefined;
   /**
    * Быстрое добавление (§13.3, задача 3.9).
    *
@@ -363,10 +411,11 @@ export function presentDump(params: PresentParams): PresentResult {
   return {
     reply: buildReply({
       texts,
-      acknowledgement: acknowledgementOf(params.composition, texts),
+      acknowledgement: acknowledgementOf(params.composition, texts, params.mood),
       batchId: params.batchId,
       omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
+      mood: params.mood,
       summary: params.summary,
     }),
   };
