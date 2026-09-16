@@ -8,6 +8,7 @@ import {
   userSettings,
   users,
   itemRevisions,
+  misunderstood,
   pendingQuestions,
   projectSteps,
 } from '../../db/schema.js';
@@ -152,6 +153,16 @@ export interface ExportedData {
     readonly segment: string;
     readonly outcome: string | null;
   }[];
+  /**
+   * Журнал непонятого (панель, 16.09.2026): что человек сказал и что бот
+   * ответил, когда не понял. Слова — копия сказанного в выгрузке, но §16
+   * отдаёт всё, где они лежат.
+   */
+  readonly misunderstood: readonly {
+    readonly at: string;
+    readonly said: string;
+    readonly replied: string;
+  }[];
 }
 
 const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
@@ -235,6 +246,16 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
     .from(items)
     .where(eq(items.userId, userId))
     .orderBy(asc(items.createdAt), asc(items.sourceOrder), asc(items.id));
+
+  const notUnderstood = await db
+    .select({
+      createdAt: misunderstood.createdAt,
+      said: misunderstood.said,
+      replied: misunderstood.replied,
+    })
+    .from(misunderstood)
+    .where(eq(misunderstood.userId, userId))
+    .orderBy(asc(misunderstood.createdAt));
 
   return {
     exportedAt: new Date().toISOString(),
@@ -327,6 +348,11 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       askedAt: question.createdAt.toISOString(),
       segment: question.segment,
       outcome: question.outcome,
+    })),
+    misunderstood: notUnderstood.map((row) => ({
+      at: row.createdAt.toISOString(),
+      said: row.said,
+      replied: row.replied,
     })),
   };
 }

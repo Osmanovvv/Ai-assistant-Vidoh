@@ -10,6 +10,7 @@ import type { Executor } from '../../infra/db.js';
 import { aiStage, type AiStage } from '../../db/schema.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { errorsView, restartBatch } from '../../modules/admin/errors.js';
+import { misunderstoodList } from '../../modules/misunderstood/misunderstood.repo.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
 import {
   CODE_MAX,
@@ -650,6 +651,31 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
               res.status(500).json({ error: 'не удалось собрать обзор' });
             },
           );
+      },
+    );
+
+    /**
+     * Журнал непонятого — список по клику с обзора (заказчица,
+     * 16.09.2026, панель п. 3): что написала пользовательница, что
+     * ответил бот. Персональные: слова человека и его имя; строк в
+     * ответе — столько же, сколько обращений к чужим словам.
+     */
+    closed(
+      'get',
+      '/api/misunderstood',
+      { personal: true, subjects: 'many', rows: 'rows' },
+      (req: Request, res: Response) => {
+        const days = boundedNumber(req.query['days'], { fallback: 30, min: 1, max: 366 });
+
+        void misunderstoodList(db, { days }).then(
+          (rows) => {
+            res.json({ days, rows });
+          },
+          (error: unknown) => {
+            deps.onError?.(error);
+            res.status(500).json({ error: 'не удалось прочитать журнал непонятого' });
+          },
+        );
       },
     );
 

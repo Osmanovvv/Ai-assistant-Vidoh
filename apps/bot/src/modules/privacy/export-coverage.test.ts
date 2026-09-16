@@ -293,6 +293,26 @@ const DECISIONS: readonly {
     },
   },
   {
+    name: 'misunderstood',
+    columns: Object.keys(getTableColumns(schema.misunderstood)),
+    decision: {
+      exported: [
+        // Слова человека — копия сказанного в выгрузке — и ответ бота на
+        // них. §16 отдаёт всё, где лежат его слова, а не только оригинал.
+        'said',
+        'replied',
+        'createdAt',
+      ],
+      internal: [
+        'id',
+        'userId',
+        'batchId',
+        // Путь реплики в словаре — наша метка, не его данные.
+        'reason',
+      ],
+    },
+  },
+  {
     name: 'pending_questions',
     columns: Object.keys(getTableColumns(schema.pendingQuestions)),
     decision: {

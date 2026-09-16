@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 
 import {
+  misunderstoodList,
   overview,
   peoplePage,
   personCard,
   type Funnel,
+  type MisunderstoodView,
   type Money,
   type Overview,
   type PeoplePage,
@@ -254,6 +256,14 @@ function when(value: string | null): string {
 export function OverviewPanel(): React.ReactElement {
   const [report, setReport] = useState<Overview | undefined>(undefined);
   const [problem, setProblem] = useState(false);
+  /**
+   * Список непонятого открывается по клику, а не сразу (заказчица,
+   * 16.09.2026, п. 3): на обзоре — число, список — по клику. И запрос
+   * идёт только по клику: в нём слова людей, и каждое открытие обзора
+   * иначе писалось бы в журнал §16 как чтение их слов.
+   */
+  const [notUnderstood, setNotUnderstood] = useState<MisunderstoodView | undefined>(undefined);
+  const [listProblem, setListProblem] = useState(false);
 
   useEffect(() => {
     void overview(30)
@@ -262,6 +272,20 @@ export function OverviewPanel(): React.ReactElement {
         setProblem(true);
       });
   }, []);
+
+  const toggleNotUnderstood = (): void => {
+    if (notUnderstood !== undefined) {
+      setNotUnderstood(undefined);
+      return;
+    }
+
+    setListProblem(false);
+    void misunderstoodList(30)
+      .then(setNotUnderstood)
+      .catch(() => {
+        setListProblem(true);
+      });
+  };
 
   if (problem) {
     return (
@@ -332,6 +356,27 @@ export function OverviewPanel(): React.ReactElement {
           Ноль здесь — факт, а не пустота, поэтому плитка стоит всегда.
           Из того же множества, что «разобрано»: `done` против `failed`.
         */}
+        {/*
+          «Не поняла» — заказчица, 16.09.2026, п. 3: сколько раз бот
+          сдался (реплики сдачи по словарю: «ничего не записано»,
+          «расскажешь, что в голове?», «такого дела не было»…). Плитка —
+          кнопка: по клику под плитками разворачивается список «что
+          написала — что ответил». Сорвавшиеся выгрузки сюда не входят —
+          они в соседней плитке.
+        */}
+        <button
+          type="button"
+          className="итог итог--кнопка"
+          data-testid="misunderstood"
+          onClick={toggleNotUnderstood}
+          aria-expanded={notUnderstood !== undefined}
+        >
+          <span className="итог__имя">Не поняла за 30 дней</span>
+          <span className="итог__число">{report.misunderstood}</span>
+          <span className="панель__кто" style={{ display: 'block', marginTop: 2 }}>
+            {notUnderstood === undefined ? 'нажми — покажу, что и как' : 'свернуть'}
+          </span>
+        </button>
         <div className="итог">
           <span className="итог__имя">Сорвалось выгрузок за 30 дней</span>
           <span className="итог__число" data-testid="failed-dumps">
@@ -409,6 +454,13 @@ export function OverviewPanel(): React.ReactElement {
         </div>
       </section>
 
+      {listProblem && (
+        <p className="отказ" role="alert">
+          Не удалось прочитать журнал непонятого
+        </p>
+      )}
+      {notUnderstood !== undefined && <MisunderstoodBlock value={notUnderstood} />}
+
       {/*
         Оговорки печатает **только** воронка — правка ревизии этапа.
 
@@ -417,6 +469,47 @@ export function OverviewPanel(): React.ReactElement {
         читал каждую оговорку дважды и решал, что это про разные числа.
       */}
       <FunnelBlock value={report.funnel} />
+    </div>
+  );
+}
+
+/**
+ * Список непонятого (заказчица, 16.09.2026, п. 3): когда, кто, что
+ * написала, что ответил бот. Свежее сверху; пустой список — словами, не
+ * пустой таблицей. Причина (путь реплики) человеку не показывается — это
+ * наша метка, а не её данные.
+ */
+function MisunderstoodBlock({ value }: { readonly value: MisunderstoodView }): React.ReactElement {
+  return (
+    <div className="разрез" data-testid="misunderstood-list">
+      <h3 className="разрез__имя">Что бот не понял за {value.days} дней</h3>
+
+      {value.rows.length === 0 ? (
+        <p className="разрез__пусто">За этот период бот ни разу не сдавался.</p>
+      ) : (
+        <div className="таблица-обёртка">
+          <table className="таблица">
+            <thead>
+              <tr>
+                <th>Когда</th>
+                <th>Кто</th>
+                <th>Что написала</th>
+                <th>Что ответил бот</th>
+              </tr>
+            </thead>
+            <tbody>
+              {value.rows.map((row) => (
+                <tr key={`${row.at}-${row.userId}-${row.said}`}>
+                  <td>{when(row.at)}</td>
+                  <td>{row.who}</td>
+                  <td>{row.said}</td>
+                  <td>{row.replied}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

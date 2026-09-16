@@ -100,6 +100,10 @@ export type BacklogAnswer =
   | { readonly kind: 'todayEmpty' }
   /** Спрашивали про конкретное дело: что о нём известно. */
   | { readonly kind: 'about'; readonly items: readonly Item[] }
+  /** Спрашивали обо всём сразу («покажи все мои задачи»): открытые дела. */
+  | { readonly kind: 'all'; readonly items: readonly Item[] }
+  /** Обо всём — а записей нет: «пусто», а не «ничего не записано» про предмет. */
+  | { readonly kind: 'allEmpty' }
   /** Ничего похожего не нашлось. */
   | { readonly kind: 'nothing' }
   /**
@@ -200,6 +204,28 @@ const FRAME_WORDS = [
   'эту',
   'ближайшую',
   'ближайшей',
+  /**
+   * Вопрос обо всём сразу (заказчица, 16.09.2026, панель п. 3): «покажи
+   * все мои задачи», «какие у меня есть задачи», «что у меня записано».
+   * Слова о «всём» и о самом списке — рамка, не предмет.
+   */
+  'все',
+  'всё',
+  'всех',
+  'мои',
+  'мой',
+  'моя',
+  'моё',
+  'моих',
+  'задачи',
+  'задача',
+  'задач',
+  'записано',
+  'записала',
+  'записи',
+  'списке',
+  'осталось',
+  'висит',
 ];
 
 function wordsOf(text: string): readonly string[] {
@@ -244,6 +270,26 @@ export function askedDay(text: string): 'today' | AskedPeriod | undefined {
   if (words.some((word) => !isTime(word) && !frame.has(word))) return undefined;
 
   return period ?? 'today';
+}
+
+/**
+ * Вопрос обо всём сразу: ни дня, ни предмета — одна рамка (заказчица,
+ * 16.09.2026, панель п. 3).
+ *
+ * На бою 16.09.2026 «Покажи все мои задачи» уходило в поиск по смыслу, где
+ * на «все задачи» ничего похожего не находилось, — и при шести делах
+ * человек читал «Про это у меня ничего не записано». То же правило, что у
+ * дня (F2), с обратным знаком: там слово о времени без предмета, здесь —
+ * ни того, ни другого.
+ */
+export function asksAboutEverything(text: string): boolean {
+  const words = wordsOf(text);
+  if (words.length === 0) return false;
+  if (askedDay(text) !== undefined) return false;
+
+  const frame = new Set(FRAME_WORDS.map((word) => word.replace(/ё/gu, 'е')));
+
+  return words.every((word) => frame.has(word));
 }
 
 /**
@@ -310,6 +356,19 @@ export async function answerBacklogQuery(
   const now = params.now ?? new Date();
 
   const day = askedDay(params.text);
+
+  /**
+   * Обо всём сразу — список открытых дел без поиска и без вектора: платить
+   * за вопрос, в котором нет предмета, не за что. Внутри ветки — её сфера
+   * (§8.1), как и у остальных видов.
+   */
+  if (asksAboutEverything(params.text)) {
+    const everything = (await openItemsFor(deps.db, params.userId)).filter(
+      (item) => params.topic === undefined || item.topic === params.topic,
+    );
+
+    return everything.length === 0 ? { kind: 'allEmpty' } : { kind: 'all', items: everything };
+  }
 
   if (day === 'today') {
     const context = await outputContextOf(deps.db, params.userId);

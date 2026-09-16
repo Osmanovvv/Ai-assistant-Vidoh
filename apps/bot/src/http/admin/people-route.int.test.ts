@@ -10,6 +10,7 @@ import {
   items,
   itemRevisions,
   messagesRaw,
+  misunderstood,
   users,
 } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
@@ -49,6 +50,7 @@ beforeEach(async () => {
   await testDb().delete(itemRevisions);
   await testDb().delete(items);
   await testDb().delete(messagesRaw);
+  await testDb().delete(misunderstood);
   await testDb().delete(batches);
   await testDb().delete(users);
 
@@ -220,5 +222,66 @@ describe('поиск людей несёт имя в теле, а не в стр
     expect(response.status).toBe(404);
     expect(await response.text()).not.toContain('rows');
     expect(await recentAccess(testDb())).toEqual([]);
+  });
+});
+
+describe('журнал непонятого по клику (заказчица, 16.09.2026, панель п. 3)', () => {
+  it('отдаёт за период: кто, что написала, что ответил бот — и считает людей в журнале §16', async () => {
+    await testDb()
+      .insert(misunderstood)
+      .values([
+        {
+          userId: person,
+          said: 'Покажи все мои задачи',
+          replied: 'Про это у меня ничего не записано.',
+          reason: 'backlog.nothing',
+        },
+        {
+          userId: person,
+          said: 'старое',
+          replied: 'старое',
+          reason: 'backlog.nothing',
+          createdAt: new Date(Date.now() - 40 * 24 * 3_600_000),
+        },
+      ]);
+    const at = await stand();
+
+    const response = await fetch(`${at}/admin/api/misunderstood?days=30`, {
+      headers: { cookie: `${SESSION_COOKIE}=${pass()}` },
+    });
+
+    expect(response.status).toBe(200);
+
+    const view = (await response.json()) as {
+      readonly days: number;
+      readonly rows: readonly {
+        readonly at: string;
+        readonly who: string;
+        readonly said: string;
+        readonly replied: string;
+        readonly reason: string;
+      }[];
+    };
+
+    expect(view.days).toBe(30);
+    expect(view.rows).toHaveLength(1);
+    expect(view.rows[0]).toMatchObject({
+      who: 'Ната',
+      said: 'Покажи все мои задачи',
+      replied: 'Про это у меня ничего не записано.',
+      reason: 'backlog.nothing',
+    });
+
+    // Слова человека — персональные данные: открытие списка в журнале §16.
+    const [row] = await recentAccess(testDb());
+    expect(row?.route).toBe('/api/misunderstood');
+    expect(row?.subjects).toBe(1);
+  });
+
+  it('без пропуска — отказ', async () => {
+    const at = await stand();
+    const response = await fetch(`${at}/admin/api/misunderstood?days=30`);
+
+    expect(response.status).toBe(401);
   });
 });

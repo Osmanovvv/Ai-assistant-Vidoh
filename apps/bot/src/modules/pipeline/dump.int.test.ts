@@ -12,6 +12,7 @@ import {
   itemRevisions,
   items,
   messagesRaw,
+  misunderstood,
   pendingQuestions,
   projectSteps,
   promptVersions,
@@ -1750,6 +1751,174 @@ describe('сводки веток после правок (§8)', () => {
     // Сводка ветки тронута, и в ней больше нет закрытого дела.
     expect(gateway.sent.length + gateway.edited.length).toBeGreaterThan(before);
     expect(gateway.edited.at(-1)?.text ?? '').not.toContain('Сверить кассу');
+  });
+});
+
+describe('журнал непонятого (заказчица, 16.09.2026, панель п. 3)', () => {
+  /**
+   * «Сколько раз бот не понял пользователя за период; по клику — что
+   * написала и что ответил.» Строка пишется у самой отправки, по реплике
+   * сдачи из словаря: место в коде записывать не нужно, и новое место
+   * сдачи журнал не пропустит.
+   */
+  const NOTHING_FOUND = JSON.stringify({
+    action: 'new',
+    mode: 'append',
+    itemId: '',
+    confidence: 0.9,
+    changes: {
+      note: '',
+      text: '',
+      deadline: '',
+      deadlineAccuracy: 'none',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
+    reason: 'подходящей записи нет',
+  });
+
+  async function logged(): Promise<{ said: string; replied: string; reason: string }[]> {
+    const rows = await testDb()
+      .select()
+      .from(misunderstood)
+      .where(eq(misunderstood.userId, userId));
+    return rows.map((row) => ({ said: row.said, replied: row.replied, reason: row.reason }));
+  }
+
+  async function run(
+    llm: MockLlmProvider,
+    sender: StatusSender,
+    embedder?: MockEmbeddingProvider,
+  ): Promise<void> {
+    const prompts = await seedPrompts();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender, embedder }),
+      },
+      userId,
+    );
+  }
+
+  it('«ничего не записано» на вопрос по бэклогу — строка с её словами и ответом', async () => {
+    const { sender } = recordingSender();
+    await queuedBatchOf([{ kind: 'text', text: 'что там с котом', offsetMs: 0 }]);
+
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [{ intent: 'QUERY', text: 'что там с котом' }],
+        }),
+      }),
+      sender,
+      new MockEmbeddingProvider(),
+    );
+
+    expect(await logged()).toEqual([
+      { said: 'что там с котом', replied: defaultTexts.backlog.nothing, reason: 'backlog.nothing' },
+    ]);
+  });
+
+  it('«не смогла заглянуть в записи» (вектор не посчитался) — тоже сдача, со своей причиной', async () => {
+    const { sender } = recordingSender();
+    await queuedBatchOf([{ kind: 'text', text: 'что там с котом', offsetMs: 0 }]);
+
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [{ intent: 'QUERY', text: 'что там с котом' }],
+        }),
+      }),
+      sender,
+    );
+
+    expect((await logged()).map((row) => row.reason)).toEqual(['backlog.unavailable']);
+  });
+
+  it('«расскажешь, что в голове?» на пустую болтовню — тоже', async () => {
+    const { sender } = recordingSender();
+    await queuedBatchOf([{ kind: 'text', text: 'ну вот', offsetMs: 0 }]);
+
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [{ intent: 'SMALLTALK', text: 'ну вот' }],
+        }),
+      }),
+      sender,
+    );
+
+    expect(await logged()).toEqual([
+      {
+        said: 'ну вот',
+        replied: defaultTexts.answer.nothingToParse,
+        reason: 'answer.nothingToParse',
+      },
+    ]);
+  });
+
+  it('«такого дела не было» — строка с выгрузкой целиком, даже когда рядом заведено дело', async () => {
+    const { sender } = recordingSender();
+    const SAID = 'Разобрать балкон. Мусор я уже вынес, можно убрать';
+    await queuedBatchOf([{ kind: 'text', text: SAID, offsetMs: 0 }]);
+
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [
+            { intent: 'DUMP', text: 'Разобрать балкон' },
+            { intent: 'COMPLETE', text: 'Мусор я уже вынес, можно убрать' },
+          ],
+        }),
+        resolver: NOTHING_FOUND,
+      }),
+      sender,
+    );
+
+    const rows = await logged();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.said).toBe(SAID);
+    expect(rows[0]?.reason).toBe('resolver.nothingToClose');
+    expect(rows[0]?.replied).toContain(defaultTexts.resolver.nothingToClose);
+  });
+
+  it('обычный разбор, «спасибо» и список дел строк не пишут', async () => {
+    const { sender } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Заказать цветы', type: 'TASK', priority: 'SOON', topic: 'личное' });
+    await queuedBatchOf([{ kind: 'text', text: 'Покажи все мои задачи', offsetMs: 0 }]);
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [{ intent: 'QUERY', text: 'Покажи все мои задачи' }],
+        }),
+      }),
+      sender,
+    );
+
+    await queuedBatchOf([{ kind: 'text', text: 'Спасибо!', offsetMs: 0 }]);
+    await run(
+      echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [{ intent: 'SMALLTALK', text: 'Спасибо!' }],
+        }),
+      }),
+      sender,
+    );
+
+    await queuedBatchOf([{ kind: 'text', text: 'купить хлеб и молоко', offsetMs: 0 }]);
+    await run(echoingLlm(), sender);
+
+    expect(await logged()).toEqual([]);
   });
 });
 
@@ -3828,6 +3997,46 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     );
 
     expect(all.at(-1)).toBe(defaultTexts.menu.todayEmpty);
+    expect(all).not.toContain(defaultTexts.backlog.nothing);
+  });
+
+  it('«Покажи все мои задачи» при делах в базе — список, а не «ничего не записано» (её случай 16.09.2026)', async () => {
+    /**
+     * На бою 16.09.2026 заказчица спросила «Покажи все мои задачи» и
+     * «Какие у меня есть задачи?» — и при шести делах получила «Про это у
+     * меня ничего не записано»: вопрос без предмета шёл в поиск по
+     * смыслу. Теперь это вопрос обо всём — список открытых дел.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    for (const text of ['Заказать цветы', 'Написать список продуктов мужу']) {
+      await testDb()
+        .insert(items)
+        .values({ userId, text, type: 'TASK', priority: 'SOON', topic: 'личное' });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'Покажи все мои задачи', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Покажи все мои задачи' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply.startsWith(defaultTexts.backlog.all)).toBe(true);
+    expect(reply).toContain('— Заказать цветы');
+    expect(reply).toContain('— Написать список продуктов мужу');
     expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 

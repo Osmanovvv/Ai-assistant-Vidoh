@@ -14,6 +14,7 @@ import {
 import type { Executor } from '../../infra/db.js';
 import { activePayersCount } from '../billing/billing.repo.js';
 import { funnelOf, type Funnel } from './funnel.js';
+import { misunderstoodCount } from '../misunderstood/misunderstood.repo.js';
 import { RESTORABLE_FIELDS } from '../resolver/revisions.repo.js';
 import { orphanedOnly } from '../gateway/orphans.js';
 import { unpricedCountSql, unpricedSql } from '../metering/unpriced.js';
@@ -65,6 +66,12 @@ export interface Overview {
    * часовому поясу человека, как и его напоминания.
    */
   readonly returnedUsers: number;
+  /**
+   * Сколько раз бот не понял за период (заказчица, 16.09.2026, п. 3) —
+   * строки журнала непонятого: реплики сдачи по словарю. По клику панель
+   * показывает сам список.
+   */
+  readonly misunderstood: number;
   /**
    * Сорвавшиеся выгрузки за период (ревизия панели).
    *
@@ -300,6 +307,7 @@ export async function overview(
     newUsers: fresh?.total ?? 0,
     dumps: parsed?.total ?? 0,
     returnedUsers: returned?.total ?? 0,
+    misunderstood: await misunderstoodCount(db, since),
     /** Сорвавшиеся: без них обзор молчал о поломке вовсе. */
     failedDumps: parsed?.failed ?? 0,
     spend: spendRows

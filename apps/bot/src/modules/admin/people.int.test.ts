@@ -11,6 +11,7 @@ import {
   itemRevisions,
   items,
   messagesRaw,
+  misunderstood,
   pendingQuestions,
   users,
 } from '../../db/schema.js';
@@ -48,6 +49,7 @@ beforeEach(async () => {
   await testDb().delete(pendingQuestions);
   await testDb().delete(aiCalls);
   await testDb().delete(items);
+  await testDb().delete(misunderstood);
   await testDb().delete(messagesRaw);
   await testDb().delete(billingEvents);
   await testDb().delete(billingSubscriptions);
@@ -178,6 +180,26 @@ describe('обзор (§15)', () => {
     expect((await overview(testDb(), 30)).returnedUsers).toBe(0);
     // А за 60 дней Борис уже вернувшийся.
     expect((await overview(testDb(), 60)).returnedUsers).toBe(1);
+  });
+
+  it('непонятое за период — числом в обзоре (заказчица, 16.09.2026, п. 3)', async () => {
+    const DAY = 24 * 3_600_000;
+    await testDb()
+      .insert(misunderstood)
+      .values([
+        { userId: anya, said: 'что там с котом', replied: 'нет', reason: 'backlog.nothing' },
+        { userId: boris, said: 'ну вот', replied: 'нет', reason: 'answer.nothingToParse' },
+        {
+          userId: boris,
+          said: 'старое',
+          replied: 'нет',
+          reason: 'backlog.nothing',
+          createdAt: new Date(Date.now() - 40 * DAY),
+        },
+      ]);
+
+    expect((await overview(testDb(), 30)).misunderstood).toBe(2);
+    expect((await overview(testDb(), 60)).misunderstood).toBe(3);
   });
 
   it('без записанных моментов третий шаг не выдумывается, а объясняется', async () => {

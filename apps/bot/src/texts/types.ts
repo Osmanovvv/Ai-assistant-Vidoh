@@ -421,6 +421,13 @@ export interface TextProfile {
   readonly backlog: {
     readonly today: string;
     readonly about: string;
+    /**
+     * Вопрос обо всём сразу — «покажи все мои задачи» (заказчица,
+     * 16.09.2026): список открытых дел; при пустом бэклоге — «пусто», а не
+     * «ничего не записано» про несуществующий предмет.
+     */
+    readonly all: string;
+    readonly allEmpty: string;
     readonly line: (text: string) => string;
     /** «Что на завтра / выходных / неделе» (ревизия этапа 3, F2). */
     readonly period: (label: string) => string;

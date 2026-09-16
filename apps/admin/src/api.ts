@@ -228,6 +228,11 @@ export interface Overview {
    */
   readonly returnedUsers: number;
   /**
+   * Сколько раз бот не понял за период (заказчица, 16.09.2026, п. 3):
+   * реплики сдачи по словарю. Список — `misunderstoodList`.
+   */
+  readonly misunderstood: number;
+  /**
    * Сорвавшиеся выгрузки за период.
    *
    * Из того же множества, что `dumps`: разобрано — `done`, сорвалось —
@@ -394,6 +399,23 @@ export interface PersonCard {
 
 export function overview(days: number): Promise<Overview> {
   return call<Overview>(`/overview?days=${String(days)}`);
+}
+
+/** Журнал непонятого — список по клику с обзора (заказчица, 16.09.2026, п. 3). */
+export interface MisunderstoodView {
+  readonly days: number;
+  readonly rows: readonly {
+    readonly at: string;
+    readonly who: string;
+    readonly userId: string;
+    readonly said: string;
+    readonly replied: string;
+    readonly reason: string;
+  }[];
+}
+
+export function misunderstoodList(days: number): Promise<MisunderstoodView> {
+  return call<MisunderstoodView>(`/misunderstood?days=${String(days)}`);
 }
 
 /**

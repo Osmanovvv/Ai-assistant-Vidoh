@@ -6,6 +6,8 @@ import {
   besideQuestionRefusal,
   contentRefusal,
   editableReplies,
+  FALLBACK_REPLIES,
+  fallbackPathOf,
   NOT_EDITABLE,
   refusalFor,
   render,
@@ -312,6 +314,66 @@ describe('характер бота — текст заказчицы 16.09.2026
     expect(contentRefusal('Всё, забрала 😌 Записала 🙂')).toMatch(/одного/u);
     expect(contentRefusal('Ура ✨')).toMatch(/украшение/u);
     expect(contentRefusal('Готово 🥰')).toMatch(/украшение/u);
+  });
+});
+
+describe('реплики сдачи — журнал непонятого (заказчица, 16.09.2026, панель п. 3)', () => {
+  it('каждая реплика из списка есть в словаре каждого профиля и без подстановок', () => {
+    for (const [name, profile] of Object.entries(profiles)) {
+      const known = new Map(repliesOf(profile).map((one) => [one.path, one]));
+
+      for (const path of FALLBACK_REPLIES) {
+        const reply = known.get(path);
+
+        expect(reply, `${name}: реплики «${path}» в словаре нет`).toBeDefined();
+        expect(reply?.places, `${name}: «${path}» с подстановками — сравнивать не с чем`).toBe(0);
+      }
+    }
+  });
+
+  it('узнаёт сдачу по тексту: «ничего не записано», «расскажешь, что в голове», «такого дела не было»', () => {
+    expect(fallbackPathOf(defaultTexts.backlog.nothing, defaultTexts)).toBe('backlog.nothing');
+    expect(fallbackPathOf(defaultTexts.answer.nothingToParse, defaultTexts)).toBe(
+      'answer.nothingToParse',
+    );
+    expect(fallbackPathOf(defaultTexts.resolver.nothingToClose, defaultTexts)).toBe(
+      'resolver.nothingToClose',
+    );
+  });
+
+  it('сдача в многострочном ответе — по любой строке: шапка «ничего не записано» или строка среди отложенного', () => {
+    expect(
+      fallbackPathOf(
+        `${defaultTexts.resolver.unchanged}\n${defaultTexts.answer.patchParked}`,
+        defaultTexts,
+      ),
+    ).toBe('answer.patchParked');
+    // Хвост про длинную запись приклеивается к любому ответу — не мешает.
+    expect(
+      fallbackPathOf(
+        `${defaultTexts.backlog.nothing}\n\n${defaultTexts.listening.tooLong}`,
+        defaultTexts,
+      ),
+    ).toBe('backlog.nothing');
+  });
+
+  it('обычные ответы сдачей не считаются', () => {
+    expect(fallbackPathOf(defaultTexts.answer.thanks, defaultTexts)).toBeUndefined();
+    expect(fallbackPathOf(defaultTexts.menu.todayEmpty, defaultTexts)).toBeUndefined();
+    expect(
+      fallbackPathOf(`${defaultTexts.backlog.about}\n— Заказать цветы`, defaultTexts),
+    ).toBeUndefined();
+    expect(
+      fallbackPathOf('Всё, забрала. Записала 2 дела и разложила по местам.', defaultTexts),
+    ).toBeUndefined();
+  });
+
+  it('после правки реплики в панели сдача узнаётся по новому тексту, а по старому — нет', () => {
+    applyOverrides(new Map([['backlog.nothing', 'Про такое у меня пока ничего нет.']]));
+    const texts = textsFor();
+
+    expect(fallbackPathOf('Про такое у меня пока ничего нет.', texts)).toBe('backlog.nothing');
+    expect(fallbackPathOf(defaultTexts.backlog.nothing, texts)).toBeUndefined();
   });
 });
 

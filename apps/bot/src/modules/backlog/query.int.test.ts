@@ -278,6 +278,93 @@ describe('вопрос про дело, которое нашлось поиск
   });
 });
 
+describe('вопрос обо всём сразу (заказчица, 16.09.2026, панель п. 3)', () => {
+  /**
+   * На бою 16.09.2026 она спросила «Покажи все мои задачи» и «Какие у
+   * меня есть задачи?» — и при шести делах в базе получила «Про это у
+   * меня ничего не записано». Путей было два: «что на сегодня» и «что
+   * там с <предметом>» через поиск по смыслу; вопрос без предмета уходил
+   * во второй, а на «все задачи» ничего похожего не находилось. Вопрос,
+   * в котором нет ни дня, ни предмета, — про всё: отвечается списком
+   * открытых дел.
+   */
+  it('«Покажи все мои задачи» — список всех открытых дел', async () => {
+    await addItem('Заказать цветы', 'active');
+    await addItem('Написать список продуктов мужу', 'active');
+    await addItem('Купить торт', 'done');
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'Покажи все мои задачи' },
+    );
+
+    expect(answer.kind).toBe('all');
+    if (answer.kind !== 'all') return;
+    expect(answer.items.map((item) => item.text).sort()).toEqual([
+      'Заказать цветы',
+      'Написать список продуктов мужу',
+    ]);
+  });
+
+  it('«Какие у меня есть задачи?», «что записано?», «что у меня в списке?» — тоже про всё', async () => {
+    await addItem('Заказать цветы', 'active');
+
+    for (const text of [
+      'Какие у меня есть задачи?',
+      'что у меня записано',
+      'Что у меня в списке?',
+      'какие дела',
+    ]) {
+      const answer = await answerBacklogQuery({ db: testDb(), embedder, logger }, { userId, text });
+      expect(answer.kind, text).toBe('all');
+    }
+  });
+
+  it('вопрос обо всём при пустом бэклоге — «пусто», а не «ничего не записано» про несуществующий предмет', async () => {
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'Покажи все мои задачи' },
+    );
+
+    expect(answer.kind).toBe('allEmpty');
+  });
+
+  it('вопрос с предметом по-прежнему идёт поиском, а про день — списком дня', async () => {
+    await addItem('Заказать цветы', 'active');
+
+    expect(
+      (
+        await answerBacklogQuery(
+          { db: testDb(), embedder, logger },
+          { userId, text: 'что там с цветами' },
+        )
+      ).kind,
+    ).toBe('about');
+    expect(
+      (
+        await answerBacklogQuery(
+          { db: testDb(), embedder, logger },
+          { userId, text: 'что на сегодня' },
+        )
+      ).kind,
+    ).toBe('todayEmpty');
+  });
+
+  it('внутри ветки сферы «все задачи» — только её', async () => {
+    await addItem('Заказать цветы', 'active', { topic: 'дом' });
+    await addItem('Записать сына к врачу', 'active', { topic: 'дети' });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'покажи все задачи', topic: 'дети' },
+    );
+
+    expect(answer.kind).toBe('all');
+    if (answer.kind !== 'all') return;
+    expect(answer.items.map((item) => item.text)).toEqual(['Записать сына к врачу']);
+  });
+});
+
 describe('наш простой не выдаётся за отсутствие записей', () => {
   /**
    * Ревизия этапов 1–2, молчаливый отказ — и самый дорогой из них для

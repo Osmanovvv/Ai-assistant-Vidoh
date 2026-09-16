@@ -15,6 +15,7 @@ import {
   itemRevisions,
   items,
   messagesRaw,
+  misunderstood,
   pendingQuestions,
   projectSteps,
   recurrenceSuggestions,
@@ -182,6 +183,17 @@ async function seedUser(tgId: number): Promise<string> {
       expiresAt: new Date('2026-08-27T06:00:00.000Z'),
     });
 
+  // Журнал непонятого (панель, 16.09.2026): слова человека и ответ бота.
+  await testDb()
+    .insert(misunderstood)
+    .values({
+      userId: user.id,
+      batchId: dump?.id ?? null,
+      said: 'что там с котом',
+      replied: 'Про это у меня ничего не записано.',
+      reason: 'backlog.nothing',
+    });
+
   await testDb()
     .insert(recurrenceSuggestions)
     .values({
@@ -302,6 +314,29 @@ describe('exportUserData', () => {
     expect(data?.topics.find((topic) => topic.name === 'личное')?.isDefault).toBe(true);
   });
 
+  it('отдаёт непонятое: слова человека и ответ бота (журнал панели, 16.09.2026)', async () => {
+    // Слова в журнале — копия сказанного, но §16 отдаёт всё, где они лежат.
+    await testDb().insert(misunderstood).values({
+      userId,
+      said: 'Покажи все мои задачи',
+      replied: 'Про это у меня ничего не записано.',
+      reason: 'backlog.nothing',
+    });
+
+    const data = await exportUserData(testDb(), userId);
+
+    // Посев даёт «что там с котом», этот тест — второе; оба в выгрузке.
+    expect(data?.misunderstood.map((row) => row.said)).toEqual([
+      'что там с котом',
+      'Покажи все мои задачи',
+    ]);
+    expect(data?.misunderstood[1]).toMatchObject({
+      replied: 'Про это у меня ничего не записано.',
+    });
+    expect(typeof data?.misunderstood[0]?.at).toBe('string');
+    expect(data?.misunderstood[0]).not.toHaveProperty('reason');
+  });
+
   it('отдаёт настройки, появившиеся после 1.20', async () => {
     const data = await exportUserData(testDb(), userId);
 
@@ -360,6 +395,7 @@ describe('deleteUserData', () => {
     // ходу проекта, и «ничего не осталось» должно оставаться правдой.
     expect(await testDb().select().from(items)).toHaveLength(0);
     expect(await testDb().select().from(topics)).toHaveLength(0);
+    expect(await testDb().select().from(misunderstood)).toHaveLength(0);
 
     /**
      * Строка рассылки уходит, а сама рассылка остаётся.
