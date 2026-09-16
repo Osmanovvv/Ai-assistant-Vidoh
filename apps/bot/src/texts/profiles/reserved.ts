@@ -112,6 +112,9 @@ export const reserved: TextProfile = {
     dueToday: (list) => `На сегодня: ${list}.`,
     dueTomorrow: (list) => `На завтра: ${list}.`,
     allSaved: 'Всё сохранила.',
+    allSavedLong: 'Всё сохранила. На сегодня можно больше это не держать в голове 🤍',
+    feelingsOnlyClose: 'Давай пока просто оставим это здесь 🤍',
+    thanks: 'Пожалуйста 🤍 Я всё помню.',
 
     actionsLead: 'На сегодня я бы взяла вот это:',
     actionsLeadSingle: 'Предлагаю сделать только одно, самое главное:',

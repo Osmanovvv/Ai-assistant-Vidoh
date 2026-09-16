@@ -4,6 +4,7 @@ import { applyOverrides, defaultTexts, profiles, textsFor } from './index.js';
 import {
   BESIDE_QUESTION,
   besideQuestionRefusal,
+  contentRefusal,
   editableReplies,
   NOT_EDITABLE,
   refusalFor,
@@ -269,5 +270,16 @@ describe('правки из базы поверх словаря (§13.9)', () =
     }
 
     expect(editableReplies(defaultTexts).length).toBe(known.size - NOT_EDITABLE.size);
+  });
+});
+
+describe('фирменное сердечко 🤍 (заказчица, 16.09.2026)', () => {
+  it('🤍 в реплике — не украшение: это единственный знак тепла, который она оставила', () => {
+    expect(contentRefusal('Пожалуйста 🤍 Я всё помню.')).toBeUndefined();
+  });
+
+  it('другие сердечки и смайлики по-прежнему украшение', () => {
+    expect(contentRefusal('Спасибо ❤️')).toMatch(/украшение/u);
+    expect(contentRefusal('Готово 😊')).toMatch(/украшение/u);
   });
 });

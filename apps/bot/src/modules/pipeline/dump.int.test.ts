@@ -4347,6 +4347,39 @@ describe('вопрос по бэклогу ничего не создаёт (§1
     expect(saved.map((one) => one.text)).toEqual([FIRST, ASKED, LAST]);
   });
 
+  it('«спасибо» — «Пожалуйста 🤍 Я всё помню.», а не «расскажешь, что в голове?»', async () => {
+    /**
+     * Заказчица, 16.09.2026: сердечко — редкий знак тепла; «женщина
+     * поблагодарила бота» — одна из немногих ситуаций для него. Слово
+     * узнаётся по закрытому списку, маршрутизатор отдаёт его как
+     * SMALLTALK — прежде на такое приходило «Я здесь. Расскажешь, что в
+     * голове?», будто благодарность не услышана.
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Спасибо большое!', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'SMALLTALK', text: 'Спасибо большое!' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all).toEqual([defaultTexts.answer.thanks]);
+    expect(await testDb().select().from(items).where(eq(items.userId, userId))).toEqual([]);
+  });
+
   it('вопрос сам по себе, без мыслей рядом, отвечается «ничего не записано» как раньше', async () => {
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();

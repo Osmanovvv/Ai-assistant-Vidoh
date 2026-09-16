@@ -122,6 +122,9 @@ export interface BuildReplyParams {
  * разбора — само признание: оно называет состав выгрузки (промпт
  * презентера). Список по кнопке собирает `buildActionsReply`.
  */
+/** От скольких дел выгрузка считается длинной — и закрывается с 🤍. */
+export const LONG_DUMP_TASKS = 5;
+
 export function buildReply(params: BuildReplyParams): Reply {
   const { texts } = params;
   const answer = texts.answer;
@@ -134,7 +137,8 @@ export function buildReply(params: BuildReplyParams): Reply {
    * Кризис сюда не доходит: остановлен раньше своим сценарием.
    */
   if (params.feelingsOnly === true) {
-    return { text: params.acknowledgement, buttons: [] };
+    // Поделилась личным — одно из мест для 🤍 (заказчица, 16.09.2026).
+    return { text: `${params.acknowledgement} ${answer.feelingsOnlyClose}`, buttons: [] };
   }
 
   /**
@@ -162,7 +166,14 @@ export function buildReply(params: BuildReplyParams): Reply {
   if (tomorrow.length > 0) due.push(answer.dueTomorrow(inline(tomorrow)));
   if (due.length > 0) lines.push('', ...due);
 
-  lines.push('', answer.allSaved);
+  /**
+   * Длинную выгрузку контакт закрывает мягко — с 🤍; короткая кончается
+   * обычным «Всё сохранила.» (заказчица, 16.09.2026: «после длинной
+   * выгрузки, когда хочется мягко завершить контакт», «не после каждого
+   * действия»). Длинная — от пяти дел.
+   */
+  const total = (params.summary?.spheres ?? []).reduce((sum, sphere) => sum + sphere.count, 0);
+  lines.push('', total >= LONG_DUMP_TASKS ? answer.allSavedLong : answer.allSaved);
 
   const pick =
     params.batchId === undefined
