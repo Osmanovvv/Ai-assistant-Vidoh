@@ -135,6 +135,51 @@ describe('обзор (§15)', () => {
     expect(report.spend[0]?.micros).toBe(3_000_000);
   });
 
+  it('вернувшиеся — у кого разобранные выгрузки в 2+ разных дня; две за один день — не возврат', async () => {
+    /**
+     * Заказчица, 16.09.2026, п. 1: «нужен показатель не просто „активные
+     * за 30 дней", а сколько пользователей вернулись и сделали 2+
+     * выгрузки — ключевая метрика для теста». Возврат — это другой день:
+     * две выгрузки подряд в первую же встречу — одна встреча, а не
+     * возвращение. День — по часовому поясу человека.
+     */
+    const DAY = 24 * 3_600_000;
+    const dumpAt = async (userId: string, at: Date, status: 'done' | 'failed' = 'done') => {
+      await testDb()
+        .insert(batches)
+        .values({ userId, status, combinedText: 'дела', openedAt: at, processedAt: at });
+    };
+
+    // Аня: сегодня и три дня назад — вернулась.
+    await dumpAt(anya, new Date());
+    await dumpAt(anya, new Date(Date.now() - 3 * DAY));
+    // Борис: две выгрузки с разницей в час — один день, не вернулся.
+    await dumpAt(boris, new Date());
+    await dumpAt(boris, new Date(Date.now() - 3_600_000));
+
+    expect((await overview(testDb(), 30)).returnedUsers).toBe(1);
+  });
+
+  it('вернувшиеся: сорвавшаяся выгрузка и день за пределами периода не считаются', async () => {
+    const DAY = 24 * 3_600_000;
+    const dumpAt = async (userId: string, at: Date, status: 'done' | 'failed' = 'done') => {
+      await testDb()
+        .insert(batches)
+        .values({ userId, status, combinedText: 'дела', openedAt: at, processedAt: at });
+    };
+
+    // Аня: сегодня разобрано, три дня назад — сорвалось: второго дня нет.
+    await dumpAt(anya, new Date());
+    await dumpAt(anya, new Date(Date.now() - 3 * DAY), 'failed');
+    // Борис: сегодня и сорок дней назад — второй день вне периода.
+    await dumpAt(boris, new Date());
+    await dumpAt(boris, new Date(Date.now() - 40 * DAY));
+
+    expect((await overview(testDb(), 30)).returnedUsers).toBe(0);
+    // А за 60 дней Борис уже вернувшийся.
+    expect((await overview(testDb(), 60)).returnedUsers).toBe(1);
+  });
+
   it('без записанных моментов третий шаг не выдумывается, а объясняется', async () => {
     /**
      * Моменты конца пробного периода пишутся с выкладки 4.4 и задним

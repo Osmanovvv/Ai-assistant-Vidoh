@@ -273,6 +273,20 @@ export function OverviewPanel(): React.ReactElement {
           <span className="итог__имя">Активных за 30 дней</span>
           <span className="итог__число">{report.activeUsers}</span>
         </div>
+        {/*
+          Возвращаемость — заказчица, 16.09.2026, п. 1: «не просто
+          активные, а сколько вернулись и сделали 2+ выгрузки». Возврат —
+          другой день: две выгрузки в первую встречу — одна встреча.
+        */}
+        <div className="итог">
+          <span className="итог__имя">Вернулись за 30 дней</span>
+          <span className="итог__число" data-testid="returned-users">
+            {report.returnedUsers}
+          </span>
+          <span className="панель__кто" style={{ display: 'block', marginTop: 2 }}>
+            выгрузки в 2+ разных дня
+          </span>
+        </div>
         <div className="итог">
           <span className="итог__имя">Выгрузок разобрано за 30 дней</span>
           <span className="итог__число">{report.dumps}</span>

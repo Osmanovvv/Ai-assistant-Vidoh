@@ -315,6 +315,38 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     ).toHaveText('3');
   });
 
+  test('обзор показывает вернувшихся — своим числом, не активными', async ({ page }) => {
+    /**
+     * Заказчица, 16.09.2026, п. 1: «не просто активные за 30 дней, а
+     * сколько вернулись и сделали 2+ выгрузки — ключевая метрика для
+     * теста». Живьём: плитка есть и в ней число. Подменой: число своё —
+     * активных и вернувшихся заведомо разное количество, иначе подмена
+     * `{report.returnedUsers}` на `{report.activeUsers}` прошла бы.
+     */
+    await signIn(page);
+
+    const totals = page.locator('.итоги');
+    const returned = totals.locator('.итог', { hasText: 'Вернулись' });
+    await expect(returned.locator('.итог__число')).toHaveText(/^\d+$/u);
+    await expect(returned).toContainText('2+ разных дня');
+
+    await page.route('**/admin/api/overview?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+
+      await route.fulfill({ json: { ...body, activeUsers: 9, returnedUsers: 4 } });
+    });
+
+    await page.getByRole('button', { name: 'Настройки' }).click();
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await expect(page.getByTestId('overview')).toBeVisible();
+
+    await expect(page.getByTestId('returned-users')).toHaveText('4');
+    await expect(
+      totals.locator('.итог', { hasText: 'Активных за 30 дней' }).locator('.итог__число'),
+    ).toHaveText('9');
+  });
+
   test('карточка показывает, что именно поправили, и слова человека', async ({ page }) => {
     /**
      * §15 просит применённые изменения «для разбора жалоб на качество», а
