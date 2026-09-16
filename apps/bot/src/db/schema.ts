@@ -1474,6 +1474,49 @@ export const textOverrides = pgTable(
 export type TextOverride = typeof textOverrides.$inferSelect;
 
 /**
+ * Журнал непонятого (заказчица, 16.09.2026, панель п. 3).
+ *
+ * «Отдельная карточка на обзоре: сколько раз бот не понял пользователя за
+ * период. По клику — список: что написала пользовательница, что ответил
+ * бот.» Просьба выросла из живого случая: «Покажи все мои задачи» при
+ * шести делах в базе получало «ничего не записано».
+ *
+ * Строка пишется в момент отправки реплики сдачи (`FALLBACK_REPLIES` в
+ * словаре): слова человека целиком, ответ бота дословно, какая реплика.
+ * Слова здесь — копия сказанного из выгрузки, положенная рядом с ответом:
+ * иначе панели пришлось бы восстанавливать пару «сказала — ответил» по
+ * времени, а ответы нигде не хранятся. Уходит вместе с человеком (§16).
+ */
+export const misunderstood = pgTable(
+  'misunderstood',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** Выгрузка, в ответ на которую бот сдался; её удаление строку не трогает. */
+    batchId: uuid('batch_id').references(() => batches.id, { onDelete: 'set null' }),
+
+    /** Что человек написал или наговорил — выгрузка целиком. */
+    said: text('said').notNull(),
+    /** Что ответил бот — дословно, как ушло. */
+    replied: text('replied').notNull(),
+    /** Какая реплика сдачи: путь в словаре, например `backlog.nothing`. */
+    reason: text('reason').notNull(),
+
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index('misunderstood_created_idx').on(table.createdAt),
+    index('misunderstood_user_idx').on(table.userId, table.createdAt),
+  ],
+);
+
+/**
  * Журнал доступа к персональным данным (§16 ТЗ, задача 4.11).
  *
  * §16 дословно: «доступ к персональным данным в админ-панели

@@ -4,6 +4,8 @@ import type { Logger } from 'pino';
 import { items, userSettings, type Batch, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
+import { fallbackPathOf } from '../../texts/rules.js';
+import { recordMisunderstood } from '../misunderstood/misunderstood.repo.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { markTrialSpent, mayParseDump } from '../billing/subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
@@ -482,6 +484,30 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
               : texts.answer.patchParked;
 
     const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
+      /**
+       * Сдача — в журнал непонятого (заказчица, 16.09.2026, панель п. 3).
+       *
+       * У самой отправки, а не в местах сдачи: их с десяток по конвейеру,
+       * и новое однажды забыли бы записать. Реплика узнаётся по словарю с
+       * правками из панели; слова человека — выгрузка целиком, ответ —
+       * как ушёл. Журнал не обязан мешать ответу: не записалось — ответ
+       * всё равно уходит.
+       */
+      const fallback = fallbackPathOf(text, texts);
+      if (fallback !== undefined) {
+        try {
+          await recordMisunderstood(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            said: combined,
+            replied: text,
+            reason: fallback,
+          });
+        } catch (error: unknown) {
+          deps.logger?.warn({ err: error, batchId: batch.id }, 'Журнал непонятого не записался');
+        }
+      }
+
       if (happened.statusTaken) {
         await alsoSay(deps, target, text, buttons);
         return;
@@ -1210,11 +1236,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
                 ? texts.backlog.periodEmpty(periodLabel(answer.period))
                 : answer.kind === 'about'
                   ? texts.backlog.about
-                  : answer.kind === 'aboutClosed'
-                    ? texts.backlog.aboutClosed
-                    : answer.kind === 'unavailable'
-                      ? texts.backlog.unavailable
-                      : texts.backlog.nothing;
+                  : answer.kind === 'all'
+                    ? texts.backlog.all
+                    : answer.kind === 'allEmpty'
+                      ? texts.backlog.allEmpty
+                      : answer.kind === 'aboutClosed'
+                        ? texts.backlog.aboutClosed
+                        : answer.kind === 'unavailable'
+                          ? texts.backlog.unavailable
+                          : texts.backlog.nothing;
 
       /**
        * Шапка называет день — значит вчерашнее «завтра» в строке лишнее
@@ -1232,6 +1262,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const listed =
         answer.kind === 'today' ||
         answer.kind === 'about' ||
+        answer.kind === 'all' ||
         answer.kind === 'period' ||
         answer.kind === 'aboutClosed'
           ? answer.items
@@ -1240,7 +1271,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const rest = listed.length - shownItems.length;
 
       const body =
-        answer.kind === 'today' || answer.kind === 'about' || answer.kind === 'period'
+        answer.kind === 'today' ||
+        answer.kind === 'about' ||
+        answer.kind === 'all' ||
+        answer.kind === 'period'
           ? (await withNextSteps(db, shownItems)).map((item) =>
               texts.backlog.line(
                 answer.kind === 'today'

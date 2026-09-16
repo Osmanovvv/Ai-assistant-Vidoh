@@ -20,6 +20,7 @@ import {
   items,
   itemRevisions,
   messagesRaw,
+  misunderstood,
   promoCodes,
   promptVersions,
   reminders,
@@ -102,6 +103,7 @@ if (seedUrl !== undefined) {
   await seeded.delete(broadcastDeliveries);
   await seeded.delete(broadcasts);
   await seeded.delete(aiCalls);
+  await seeded.delete(misunderstood);
   /**
    * Счета чистятся **до** людей, и это не порядок ради порядка.
    *
@@ -182,6 +184,16 @@ if (seedUrl !== undefined) {
       text: 'нет, лучше в пятницу',
     })
     .returning({ id: messagesRaw.id });
+
+  // Журнал непонятого (заказчица, 16.09.2026, панель п. 3): одна строка —
+  // Аня спросила про кота, бот не нашёл. Плитка «Не поняла» и список по ней.
+  await seeded.insert(misunderstood).values({
+    userId: person.id,
+    batchId: batch.id,
+    said: 'что там с котом',
+    replied: 'Про это у меня ничего не записано.',
+    reason: 'backlog.nothing',
+  });
 
   const [seededItem] = await seeded
     .select({ id: items.id })

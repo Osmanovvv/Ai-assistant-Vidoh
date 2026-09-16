@@ -220,6 +220,19 @@ input {
   box-shadow: var(--тень);
 }
 
+/* Плитка-кнопка: та же плитка, но по ней можно нажать (список непонятого). */
+.итог--кнопка {
+  display: block;
+  width: 100%;
+  border: none;
+  color: inherit;
+  text-align: left;
+}
+
+.итог--кнопка:hover {
+  box-shadow: 0 0 0 2px var(--акцент);
+}
+
 .итог__имя {
   display: block;
   margin-bottom: 4px;

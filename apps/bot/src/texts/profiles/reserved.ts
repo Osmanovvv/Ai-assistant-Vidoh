@@ -259,6 +259,8 @@ export const reserved: TextProfile = {
   backlog: {
     today: 'На сегодня у тебя вот это:',
     about: 'Вот что у меня про это записано:',
+    all: 'Вот всё, что у меня записано:',
+    allEmpty: 'Пока пусто — расскажешь, что в голове?',
     line: (text) => `— ${text}`,
     period: (label) => `На ${label} у тебя вот это:`,
     periodEmpty: (label) => `На ${label} ничего не назначено.`,

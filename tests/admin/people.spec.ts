@@ -358,6 +358,44 @@ test.describe('обзор, люди и карточка (§15; задача 4.6)
     await expect(page.getByTestId('first-dump')).toHaveText('0 из 0');
   });
 
+  test('«Не поняла» — числом на обзоре, по клику список: что написала и что ответил бот', async ({
+    page,
+  }) => {
+    /**
+     * Заказчица, 16.09.2026, п. 3: «отдельная карточка на обзоре: сколько
+     * раз бот не понял за период; по клику — что написала пользовательница
+     * и что ответил бот». Стенд сеет одну строку: Аня спросила «что там с
+     * котом», бот ответил «ничего не записано».
+     */
+    await signIn(page);
+
+    const tile = page.getByTestId('misunderstood');
+    await expect(tile.locator('.итог__число')).toHaveText('1');
+    await expect(page.getByTestId('misunderstood-list')).toHaveCount(0);
+
+    await tile.click();
+
+    const list = page.getByTestId('misunderstood-list');
+    await expect(list).toBeVisible();
+    const row = list.getByRole('row', { name: /котом/u });
+    await expect(row).toContainText('Аня');
+    await expect(row).toContainText('что там с котом');
+    await expect(row).toContainText('Про это у меня ничего не записано.');
+
+    // Список — персональные данные: открытие записано в журнал §16.
+    await page.getByRole('button', { name: 'Настройки' }).click();
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await page.route('**/admin/api/overview?*', async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as Record<string, unknown>;
+
+      await route.fulfill({ json: { ...body, misunderstood: 7 } });
+    });
+    await page.getByRole('button', { name: 'Настройки' }).click();
+    await page.getByRole('button', { name: 'Обзор' }).click();
+    await expect(page.getByTestId('misunderstood').locator('.итог__число')).toHaveText('7');
+  });
+
   test('обзор показывает вернувшихся — своим числом, не активными', async ({ page }) => {
     /**
      * Заказчица, 16.09.2026, п. 1: «не просто активные за 30 дней, а
