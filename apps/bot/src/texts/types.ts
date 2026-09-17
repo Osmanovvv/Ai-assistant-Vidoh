@@ -117,6 +117,13 @@ export interface TextProfile {
      */
     readonly acknowledgementTasks: (tasks: string) => string;
     /**
+     * Дела и желания вместе (решение Никиты, 17.09.2026): «Записала 6 дел
+     * и 3 желания, разложила по местам.» Без желаний — образец выше.
+     */
+    readonly acknowledgementTasksAndDesires: (tasks: string, desires: string) => string;
+    /** Одни желания: «Записала 2 желания, разложила по местам.» */
+    readonly acknowledgementDesires: (desires: string) => string;
+    /**
      * Компактный итог разбора по её образцу (16.09.2026, п. 3): строка
      * сферы «Работа — 4» (иконку подставляет код), «На сегодня: …»,
      * «На завтра: …».

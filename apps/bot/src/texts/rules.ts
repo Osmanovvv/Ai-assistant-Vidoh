@@ -335,6 +335,8 @@ export const BESIDE_QUESTION = [
   'answer.acknowledgementAnnoyed',
   'answer.acknowledgementHeavy',
   'answer.acknowledgementTasks',
+  'answer.acknowledgementTasksAndDesires',
+  'answer.acknowledgementDesires',
   'answer.sphereLine',
   'answer.dueToday',
   'answer.dueTomorrow',

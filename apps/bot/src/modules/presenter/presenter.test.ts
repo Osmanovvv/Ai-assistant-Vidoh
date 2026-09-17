@@ -496,6 +496,30 @@ describe('acknowledgementOf — признание из состава (зака
     expect(withTasks(22)).toContain('Записала 22 дела и разложила по местам.');
   });
 
+  it('желания — в счёте рядом с делами (решение Никиты, 17.09.2026)', () => {
+    /**
+     * Блок B 17.09: девять записей, «Записала 6 дел» — три желания не
+     * упомянуты нигде, и человеку не понять, услышаны ли они. Желания
+     * называются вместе с делами; без желаний фраза — её образец, как
+     * была.
+     */
+    const withBoth = (tasks: number, desires: number): string =>
+      acknowledgementOf({ ...NOTHING, tasks, desires }, texts);
+
+    expect(withBoth(6, 3)).toBe(
+      'Всё, забрала — на сегодня можно больше это не держать в голове 🤍 Записала 6 дел и 3 желания, разложила по местам.',
+    );
+    expect(withBoth(2, 1)).toBe('Всё, забрала. Записала 2 дела и 1 желание, разложила по местам.');
+    expect(withBoth(1, 5)).toBe('Всё, забрала. Записала 1 дело и 5 желаний, разложила по местам.');
+    expect(withBoth(3, 11)).toContain('3 дела и 11 желаний,');
+    expect(withBoth(3, 21)).toContain('3 дела и 21 желание,');
+    expect(withBoth(3, 22)).toContain('3 дела и 22 желания,');
+    // Одни желания — тоже записаны.
+    expect(withBoth(0, 2)).toBe('Всё, забрала. Записала 2 желания, разложила по местам.');
+    // Без желаний — образец заказчицы без изменений.
+    expect(withBoth(3, 0)).toBe('Всё, забрала. Записала 3 дела и разложила по местам.');
+  });
+
   it('без дел — только признание', () => {
     expect(withTasks(0)).toBe(texts.answer.acknowledgementFallback);
   });
@@ -559,8 +583,11 @@ describe('presentDump — ответ на выгрузку целиком', () =
   it('признание из состава, вопрос «оставить или выбрать», две кнопки, дел под признанием нет', () => {
     const result = presentDump(params);
 
+    // В составе одно желание — оно в счёте (17.09.2026).
     expect(
-      result.reply.text.startsWith('Всё, забрала. Записала 3 дела и разложила по местам.'),
+      result.reply.text.startsWith(
+        'Всё, забрала. Записала 3 дела и 1 желание, разложила по местам.',
+      ),
     ).toBe(true);
     expect(result.reply.text).not.toContain('— Записать сына к врачу');
     expect(result.reply.text).toContain(texts.answer.keepOrPick);
@@ -584,7 +611,9 @@ describe('presentDump — ответ на выгрузку целиком', () =
     });
 
     expect(
-      result.reply.text.startsWith('Поняла, забрала. Записала 1 дело и разложила по местам.'),
+      result.reply.text.startsWith(
+        'Поняла, забрала. Записала 1 дело и 1 желание, разложила по местам.',
+      ),
     ).toBe(true);
     expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
     expect(countQuestions(result.reply.text)).toBe(1);
