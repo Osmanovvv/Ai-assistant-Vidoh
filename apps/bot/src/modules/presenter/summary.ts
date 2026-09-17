@@ -1,5 +1,7 @@
 import { isoDateIn, startOfDayAfter } from '../classifier/dates.js';
 import type { ItemType } from '../ai/schemas/index.js';
+import { withCapital } from '../items/item-text.js';
+import { titleWithoutDate } from '../resolver/title-date.js';
 import { normalizeTopicName } from '../topics/topics.repo.js';
 import { topicIcon } from '../topics/topics.service.js';
 
@@ -63,7 +65,9 @@ export function summarizeDump(
           task.deadline?.accuracy === 'day' &&
           isoDateIn(task.deadline.at, context.timeZone) === day,
       )
-      .map((task) => task.text);
+      // Под заголовком дня свой день в заголовке — эхо (прогон 18.09.2026):
+      // тот же срез, что в списке ветки, и с заглавной.
+      .map((task) => withCapital(titleWithoutDate(task.text)));
 
   return { spheres, today: dueOn(today), tomorrow: dueOn(tomorrow) };
 }
