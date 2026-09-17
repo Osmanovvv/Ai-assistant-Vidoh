@@ -355,6 +355,19 @@ try {
     await mkdir(runs, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
     await writeFile(join(runs, `${stamp}.json`), JSON.stringify(report, null, 2), 'utf8');
+    /**
+     * След — отдельным файлом: отчёт сравнивается с прошлым, и лишнее в
+     * нём мешало бы; след читается руками, когда промах надо объяснить.
+     */
+    await writeFile(
+      join(runs, `${stamp}.trace.json`),
+      JSON.stringify(
+        outcomes.map((outcome) => ({ id: outcome.id, trace: outcome.trace })),
+        null,
+        2,
+      ),
+      'utf8',
+    );
     logger.info({ файл: `${stamp}.json` }, 'Прогон сохранён');
   }
 

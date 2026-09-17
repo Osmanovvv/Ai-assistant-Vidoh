@@ -3,7 +3,9 @@ import type { Logger } from 'pino';
 import { batches } from '../db/schema.js';
 
 import type { AiClientDeps } from '../modules/ai/client.js';
-import { classifyUnits } from '../modules/classifier/classifier.service.js';
+import type { ClassifiedItems } from '../modules/ai/schemas/classifier.js';
+import type { ExtractedUnits } from '../modules/ai/schemas/extractor.js';
+import { type ClassifiedItem, classifyUnits } from '../modules/classifier/classifier.service.js';
 import { extractUnits } from '../modules/extractor/extractor.service.js';
 import { weaveForExtraction } from '../modules/pipeline/patch-in-place.js';
 import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
@@ -25,6 +27,24 @@ import { match, type MatchResult } from './matcher.js';
  * иначе прогоны исказят себестоимость выгрузки.
  */
 
+/**
+ * След разбора: что дошло до каждого этапа (прогон 17.09.2026).
+ *
+ * Отчёт хранил только числа, и когда правило названного месяца не
+ * сработало на живой расшифровке, объяснить промах было нечем: слова
+ * единицы, текст модели и её цитата срока нигде не оставались. След
+ * пишется рядом с отчётом и читается руками — в замеры не идёт.
+ */
+export interface CaseTrace {
+  /** Вход извлечения — отрезки `DUMP`, склеенные как в бою. */
+  readonly dumpText: string;
+  readonly units: readonly ExtractedUnits['units'][number][];
+  /** Ответ классификации до правок кода. */
+  readonly fromModel: readonly ClassifiedItems['items'][number][];
+  /** Записи после правок кода — то, что сравнивается с ожиданием. */
+  readonly items: readonly ClassifiedItem[];
+}
+
 export interface CaseOutcome {
   readonly id: string;
   readonly note: string;
@@ -40,6 +60,8 @@ export interface CaseOutcome {
     readonly extractor?: string | undefined;
     readonly classifier?: string | undefined;
   };
+  /** Есть только у случая, дошедшего до записей. */
+  readonly trace?: CaseTrace | undefined;
 }
 
 export interface RunnerDeps {
@@ -244,6 +266,12 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       result: match(item.expected.units, classified.items, item.expected.retracted),
       crisis: { detected: false, expected: item.expected.crisis },
       promptVersions: versions,
+      trace: {
+        dumpText,
+        units: extracted.units,
+        fromModel: classified.fromModel,
+        items: classified.items,
+      },
     };
   } catch (error) {
     deps.logger?.error({ err: error, id: item.id }, 'Случай не прогнался');

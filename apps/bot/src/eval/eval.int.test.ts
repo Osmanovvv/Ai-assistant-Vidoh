@@ -399,3 +399,49 @@ describe('отчёт', () => {
     expect(text).toContain('Ложных задач из желаний: 1  (+1)');
   });
 });
+
+describe('след прогона', () => {
+  /**
+   * Прогон 17.09.2026 на живой расшифровке: срок «пройти диспансеризацию»
+   * остался неделей 21.09, хотя правило названного месяца в коде есть.
+   * Отчёт хранил только числа — и по нему нельзя было понять, что
+   * именно дошло до правила: слова единицы, текст модели, её цитата
+   * срока. Число без объясняющей строки — не доказательство, поэтому
+   * исход случая несёт след: вход извлечения, единицы и сырой ответ
+   * классификации до правок кода.
+   */
+  it('исход хранит вход извлечения, единицы и сырой ответ классификации', async () => {
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const [outcome] = await runDataset(deps(goodModel(), registry), cases);
+
+    expect(outcome?.trace?.dumpText).toBe(cases[0]?.text);
+    expect(outcome?.trace?.units.map((unit) => unit.text)).toEqual([
+      'купить продукты',
+      'записаться к врачу',
+      'начать бегать по утрам',
+      'я ничего не успеваю',
+    ]);
+    expect(outcome?.trace?.fromModel[1]).toMatchObject({
+      text: 'записаться к врачу',
+      type: 'TASK',
+      deadline: '',
+      deadlineText: '',
+    });
+    expect(outcome?.trace?.items[1]).toMatchObject({
+      text: 'записаться к врачу',
+      topic: 'здоровье',
+    });
+  });
+
+  it('разбор не дошёл до записей — следа нет, но исход есть', async () => {
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const [outcome] = await runDataset(deps(routerLosesEverything(), registry), cases);
+
+    expect(outcome?.trace).toBeUndefined();
+    expect(outcome?.result.missed).toHaveLength(4);
+  });
+});
