@@ -186,6 +186,7 @@ export async function resolveSegment(
     thresholds: params.thresholds,
     // Слова человека: по ним ищется названная запись (четвёртый сигнал).
     spoken: params.segment,
+    timeZone: params.timeZone,
   });
 
   deps.logger?.debug(

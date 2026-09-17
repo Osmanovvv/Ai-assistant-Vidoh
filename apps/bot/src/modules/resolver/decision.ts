@@ -1,5 +1,6 @@
 import type { ResolverAction, ResolverAnswer } from '../ai/schemas/index.js';
 import type { Candidate } from './candidates.js';
+import { isoDateIn } from '../classifier/dates.js';
 import { hasTimeWord } from '../classifier/time-words.js';
 import { SETTINGS } from '../settings/settings.repo.js';
 
@@ -150,6 +151,26 @@ export interface DecideContext {
   readonly thresholds?: Partial<ResolverThresholds> | undefined;
   /** Слова человека — отрезок правки; по ним ищется названная запись. */
   readonly spoken?: string | undefined;
+  /** Пояс человека — сверить день срока с днём из ответа модели. */
+  readonly timeZone?: string | undefined;
+}
+
+/**
+ * Дата в фразе назвала запись, а не место, куда её двигают (прогон
+ * 17.09.2026, шаг 16).
+ *
+ * Кандидаты по сроку ищутся по дате из фразы. «Перенеси врача на
+ * понедельник» при стоматологе, уже стоящем на понедельник, находит
+ * стоматолога — по дате **назначения**, — и сигнал «подтверждено сроком»
+ * двигал его туда, где он и был («Там уже так — менять нечего»). Если
+ * новый срок из ответа модели — тот же день, что у кандидата сейчас,
+ * дата в фразе была назначением, и опознания нет.
+ */
+function datedByIdentity(candidate: Candidate, answer: ResolverAnswer, timeZone: string): boolean {
+  const proposed = answer.changes.deadline.trim();
+  if (proposed === '' || candidate.deadlineAt === null) return true;
+
+  return isoDateIn(candidate.deadlineAt, timeZone) !== proposed;
 }
 
 /** Слова-связки, которые ничего не называют, зато часто совпадают. */
@@ -372,7 +393,8 @@ export function decide(
    */
   if (
     candidate.sources.includes('deadline') &&
-    candidates.filter((one) => one.sources.includes('deadline')).length === 1
+    candidates.filter((one) => one.sources.includes('deadline')).length === 1 &&
+    datedByIdentity(candidate, answer, context.timeZone ?? 'Europe/Moscow')
   ) {
     return {
       kind: 'apply',
