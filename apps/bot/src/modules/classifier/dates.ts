@@ -2,6 +2,7 @@ import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
 import {
   hasTimeWord,
   monthsIn,
+  quoteClaimedBy,
   relativeDaysIn,
   timeQuoteInSpeech,
   weekdaysIn,
@@ -45,6 +46,16 @@ export type DeadlineOutcome =
   | { readonly ok: true; readonly deadline: undefined };
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/u;
+
+/**
+ * Месяц без дня — «2026-10» (бой 17.09.2026).
+ *
+ * Промпт просит ГГГГ-ММ-ДД и первое число для месяца, но на «в октябре»
+ * модель ответила «2026-10», и запись осталась без срока: «не в виде
+ * ГГГГ-ММ-ДД». Форма — не повод терять названный месяц: это первое число
+ * с точностью «месяц», какую бы точность модель ни назвала.
+ */
+const MONTH_ONLY = /^(\d{4})-(\d{2})$/u;
 
 /** Дальше этого срока планов не бывает: это модель ошиблась в годе. */
 const MAX_YEARS_AHEAD = 5;
@@ -331,6 +342,11 @@ export function resolveDeadline(
      * Не задана — ветка цитаты не работает, и остаётся прежнее правило.
      */
     readonly spoken?: string | undefined;
+    /**
+     * Слова соседних записей той же выгрузки: цитата, которую они
+     * содержат, принадлежит им, а не этой записи (`quoteClaimedBy`).
+     */
+    readonly siblings?: readonly string[] | undefined;
   },
 ): DeadlineOutcome {
   const text = raw.deadline.trim();
@@ -341,7 +357,8 @@ export function resolveDeadline(
     return { ok: true, deadline: undefined };
   }
 
-  const matched = DATE_ONLY.exec(text);
+  const monthOnly = MONTH_ONLY.exec(text);
+  const matched = monthOnly ?? DATE_ONLY.exec(text);
   if (!matched) {
     return { ok: false, reason: `срок «${text}» не в виде ГГГГ-ММ-ДД` };
   }
@@ -349,8 +366,9 @@ export function resolveDeadline(
   const parts: DateParts = {
     year: Number(matched[1]),
     month: Number(matched[2]),
-    day: Number(matched[3]),
+    day: monthOnly ? 1 : Number(matched[3]),
   };
+  const accuracy: DeadlineAccuracy = monthOnly ? 'month' : raw.accuracy;
 
   if (parts.month < 1 || parts.month > 12 || parts.day < 1 || parts.day > 31) {
     return { ok: false, reason: `срок «${text}» не существует` };
@@ -367,8 +385,8 @@ export function resolveDeadline(
   const weekendSaid =
     context.said !== undefined && /(?<!\p{L})выходн/u.test(context.said.toLowerCase());
   const settled = (instant: Date): Date =>
-    raw.accuracy === 'month' || (raw.accuracy === 'week' && !weekendSaid)
-      ? periodStartOf(instant, raw.accuracy, context.timeZone)
+    accuracy === 'month' || (accuracy === 'week' && !weekendSaid)
+      ? periodStartOf(instant, accuracy, context.timeZone)
       : instant;
 
   // Проверка на существование числа: 31 февраля превратится в 3 марта,
@@ -410,24 +428,27 @@ export function resolveDeadline(
      * Пустая строка — цитаты нет или она не подтвердилась. Тогда всё
      * как прежде.
      */
-    const quote =
-      context.quoted !== undefined &&
-      context.spoken !== undefined &&
-      timeQuoteInSpeech(context.quoted, context.spoken)
-        ? context.quoted.trim()
-        : '';
+    const quoted = context.quoted ?? '';
+    const spoken = context.spoken ?? '';
+    const inSpeech = quoted !== '' && spoken !== '' && timeQuoteInSpeech(quoted, spoken);
+    // Цитата, которую содержат слова соседней записи, — её, не эта.
+    const claimed = inSpeech && quoteClaimedBy(quoted, context.siblings ?? [], spoken);
+    const quote = inSpeech && !claimed ? quoted.trim() : '';
 
     if (!hasTimeWord(context.said) && quote === '') {
       /**
-       * Причину различаем: «цитаты не было» и «цитата не подтвердилась»
-       * — разные неполадки, и лечатся они по-разному. Без этого различия
-       * в журнале не понять, промахнулась модель или проверка.
+       * Причину различаем: «цитаты не было», «цитата не подтвердилась»
+       * и «цитата чужая» — разные неполадки, и лечатся они по-разному.
+       * Без этого различия в журнале не понять, промахнулась модель или
+       * проверка.
        */
       const attempted = context.quoted?.trim() ?? '';
       const reason =
         attempted === ''
           ? `срок «${text}» человеком не назван`
-          : `срок «${text}» опирается на цитату «${attempted}», которой в речи нет`;
+          : claimed
+            ? `срок «${text}» опирается на цитату «${attempted}», которая относится к другой записи`
+            : `срок «${text}» опирается на цитату «${attempted}», которой в речи нет`;
 
       return { ok: false, reason };
     }
@@ -479,7 +500,7 @@ export function resolveDeadline(
     const weekend = /(?<!\p{L})выходн/u.test(words.toLowerCase());
     const shifts = relativeDaysIn(words);
 
-    if (raw.accuracy === 'day' && weekend && named.length === 0 && shifts.length === 0) {
+    if (accuracy === 'day' && weekend && named.length === 0 && shifts.length === 0) {
       return {
         ok: true,
         deadline: { at: nearestWeekday(6, context), accuracy: 'week' },
@@ -487,7 +508,7 @@ export function resolveDeadline(
       };
     }
 
-    if (raw.accuracy === 'day' && named.length === 0 && shifts.length === 1) {
+    if (accuracy === 'day' && named.length === 0 && shifts.length === 1) {
       const shift = shifts[0] ?? 0;
       const wanted = new Date(
         startOfDayInZone(
@@ -499,7 +520,7 @@ export function resolveDeadline(
       const at2 = startOfDayInZone(localDateParts(wanted, context.timeZone), context.timeZone);
 
       if (at2.getTime() !== at.getTime()) {
-        return { ok: true, deadline: { at: at2, accuracy: raw.accuracy }, corrected: 'relative' };
+        return { ok: true, deadline: { at: at2, accuracy }, corrected: 'relative' };
       }
     }
 
@@ -540,7 +561,7 @@ export function resolveDeadline(
 
       return {
         ok: true,
-        deadline: { at: settled(nearest), accuracy: raw.accuracy },
+        deadline: { at: settled(nearest), accuracy },
         corrected: 'weekday',
       };
     }
@@ -567,22 +588,31 @@ export function resolveDeadline(
       const local = localDateParts(at, context.timeZone);
 
       if (local.month !== month) {
-        // Ближайший такой месяц: текущий и будущие — в этом году, прошедший
-        // — в следующем. «В сентябре», сказанное в сентябре, — этот сентябрь.
-        const todayParts = localDateParts(context.now, context.timeZone);
-        const year = month >= todayParts.month ? todayParts.year : todayParts.year + 1;
-
         return {
           ok: true,
-          deadline: {
-            at: startOfDayInZone({ year, month, day: 1 }, context.timeZone),
-            accuracy: 'month',
-          },
+          deadline: { at: nearestMonthStart(month, context), accuracy: 'month' },
           corrected: 'month',
         };
       }
     }
   }
 
-  return { ok: true, deadline: { at: settled(at), accuracy: raw.accuracy } };
+  return { ok: true, deadline: { at: settled(at), accuracy } };
+}
+
+/**
+ * Первое число ближайшего названного месяца в поясе человека.
+ *
+ * Текущий и будущие месяцы — в этом году, прошедший — в следующем: «в
+ * сентябре», сказанное в сентябре, — этот сентябрь; «в марте» в сентябре
+ * — март следующего года.
+ */
+export function nearestMonthStart(
+  month: number,
+  context: { readonly now: Date; readonly timeZone: string },
+): Date {
+  const today = localDateParts(context.now, context.timeZone);
+  const year = month >= today.month ? today.year : today.year + 1;
+
+  return startOfDayInZone({ year, month, day: 1 }, context.timeZone);
 }

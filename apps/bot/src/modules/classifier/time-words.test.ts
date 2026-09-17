@@ -594,3 +594,130 @@ describe('«на выходных» — неделя, а не день (зада
     }
   });
 });
+
+describe('цитата, которая принадлежит соседней записи (прогон 17.09.2026)', () => {
+  /**
+   * Стенд на живой расшифровке: «…на? Следующей неделе записаться к
+   * стоматологу давно уже откладываю в октябре пройти диспансеризацию».
+   * Извлечение потеряло «в октябре», и модель отдала диспансеризации
+   * срок соседа — 21.09, неделя, с цитатой «следующей неделе». Цитата в
+   * речи есть — проверка дословности её пропускала, а принадлежит она
+   * стоматологу: его слова её содержат. Чужая цитата срок не спасает.
+   */
+  const thursday = { now: new Date('2026-09-16T23:24:42.000Z'), timeZone: 'Europe/Moscow' };
+  const SPEECH =
+    'В пятницу надо забрать справку из поликлиники завтра позвонить в банк по карте, там что то с лимитом на? Следующей неделе записаться к стоматологу давно уже откладываю в октябре пройти диспансеризацию.';
+  const dentist = 'Следующей неделе записаться к стоматологу записаться к стоматологу';
+
+  it('цитата, которую содержат слова соседней записи, — не своя: срок снимается', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      {
+        ...thursday,
+        said: 'пройти диспансеризацию пройти диспансеризацию',
+        quoted: 'следующей неделе',
+        spoken: SPEECH,
+        siblings: [dentist],
+      },
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('другой записи');
+  });
+
+  it('без соседей та же цитата срок держит — прежнее поведение', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      {
+        ...thursday,
+        said: 'пройти диспансеризацию пройти диспансеризацию',
+        quoted: 'следующей неделе',
+        spoken: SPEECH,
+        siblings: ['забрать справку из поликлиники'],
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('фраза сказана дважды — на двоих её хватает', () => {
+    // «завтра позвонить в банк, завтра же купить хлеб»: сосед забрал одно
+    // «завтра», второе свободно.
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-18', accuracy: 'day' },
+      {
+        ...thursday,
+        said: 'купить хлеб',
+        quoted: 'завтра',
+        spoken: 'завтра позвонить в банк, завтра же купить хлеб',
+        siblings: ['завтра позвонить в банк позвонить в банк'],
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('свои слова о времени цитатой соседа не отменяются', () => {
+    // У записи есть своё «в октябре» — правило месяца работает как прежде,
+    // чужая цитата просто не участвует.
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      {
+        ...thursday,
+        said: 'в октябре пройти диспансеризацию',
+        quoted: 'следующей неделе',
+        spoken: SPEECH,
+        siblings: [dentist],
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.deadline.accuracy).toBe('month');
+      expect(outcome.deadline.at.toISOString()).toBe('2026-09-30T21:00:00.000Z');
+    }
+  });
+});
+
+describe('срок «ГГГГ-ММ» от модели (бой 17.09.2026)', () => {
+  /**
+   * Журнал боя: «срок «2026-10» не в виде ГГГГ-ММ-ДД» — запись осталась
+   * без срока. Промпт просит ГГГГ-ММ-ДД и первое число для месяца, но
+   * месяц без дня — естественный ответ на «в октябре», и терять его
+   * из-за формы нельзя: это месяц, первое число.
+   */
+  const thursday = { now: new Date('2026-09-16T23:24:42.000Z'), timeZone: 'Europe/Moscow' };
+
+  it('«2026-10» — первое октября с точностью «месяц», какую бы точность модель ни назвала', () => {
+    for (const accuracy of ['month', 'day', 'week'] as const) {
+      const outcome = resolveDeadline(
+        { deadline: '2026-10', accuracy },
+        { ...thursday, said: 'в октябре пройти диспансеризацию' },
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok && outcome.deadline) {
+        expect(outcome.deadline.at.toISOString()).toBe('2026-09-30T21:00:00.000Z');
+        expect(outcome.deadline.accuracy).toBe('month');
+      }
+    }
+  });
+
+  it('месяц без слов человека о времени — по-прежнему не срок', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-10', accuracy: 'month' },
+      { ...thursday, said: 'за осень сделать ремонт в спальне' },
+    );
+
+    expect(outcome.ok).toBe(false);
+  });
+
+  it('несуществующий месяц — отказ', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-13', accuracy: 'month' },
+      { ...thursday, said: 'в октябре пройти диспансеризацию' },
+    );
+
+    expect(outcome.ok).toBe(false);
+  });
+});
