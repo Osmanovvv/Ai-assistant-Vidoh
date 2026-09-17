@@ -137,5 +137,18 @@ export function createTelegramSender(deps: TelegramSenderDeps): StatusSender {
         return 'failed';
       }
     },
+
+    async delete({ chatId, messageId }) {
+      try {
+        await deps.api.deleteMessage(chatId, messageId);
+        return true;
+      } catch (error) {
+        // Уже удалено человеком — цель достигнута: сообщения нет.
+        if (isMessageGone(error)) return true;
+
+        await handle(error, chatId, 'delete');
+        return false;
+      }
+    },
   };
 }

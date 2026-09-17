@@ -5,7 +5,7 @@ import { batches, messagesRaw } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
-import { finishStatus, showStatus, type StatusSender } from './status.service.js';
+import { finishStatus, moveStatus, showStatus, type StatusSender } from './status.service.js';
 
 const T0 = new Date('2026-08-23T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
@@ -15,9 +15,10 @@ let batchId: string;
 let seq = 0;
 
 /** Считает обращения к Telegram: их число и есть предмет проверки. */
-function recordingSender() {
+function recordingSender(options: { readonly deleteFails?: boolean } = {}) {
   const sent: string[] = [];
   const edited: string[] = [];
+  const deleted: number[] = [];
   let nextMessageId = 100;
 
   const sender: StatusSender = {
@@ -29,9 +30,14 @@ function recordingSender() {
       edited.push(text);
       return Promise.resolve('edited' as const);
     },
+    delete: ({ messageId }) => {
+      if (options.deleteFails === true) return Promise.resolve(false);
+      deleted.push(messageId);
+      return Promise.resolve(true);
+    },
   };
 
-  return { sender, sent, edited };
+  return { sender, sent, edited, deleted };
 }
 
 beforeEach(async () => {
@@ -118,6 +124,102 @@ describe('последующие обновления', () => {
     }
 
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe('«Слушаю» переезжает под новое сообщение серии (Никита, 17.09.2026)', () => {
+  /**
+   * Три голосовых подряд: «Слушаю» ушло после первого, итог правился в
+   * него — и оказался над двумя последними голосовыми. Реплика бота
+   * по-прежнему одна, но с каждым новым сообщением серии она переезжает
+   * под него: старое удаляется, новое отправляется, итог ляжет под
+   * последним.
+   */
+  it('старое удаляется, новое отправляется, выгрузка помнит новое', async () => {
+    const { sender, sent, deleted } = recordingSender();
+    const deps = { db: testDb(), sender, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    await moveStatus({ ...deps, now: () => at(3_000) }, target(), 'Слушаю.');
+    await moveStatus({ ...deps, now: () => at(6_000) }, target(), 'Слушаю.');
+
+    expect(sent).toEqual(['Слушаю.', 'Слушаю.', 'Слушаю.']);
+    expect(deleted).toEqual([100, 101]);
+
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.statusMessageId).toBe(102);
+  });
+
+  it('итог правит последнее из них', async () => {
+    const { sender, edited, deleted } = recordingSender();
+    const deps = { db: testDb(), sender, minEditIntervalMs: 0 };
+    const edits: number[] = [];
+    const spying: StatusSender = {
+      ...sender,
+      edit: (params) => {
+        edits.push(params.messageId);
+        return sender.edit(params);
+      },
+    };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    await moveStatus({ ...deps, now: () => at(3_000) }, target(), 'Слушаю.');
+    await showStatus({ ...deps, sender: spying, now: () => at(40_000) }, target(), 'Готово.', {
+      force: true,
+    });
+
+    expect(deleted).toEqual([100]);
+    expect(edits).toEqual([101]);
+    expect(edited).toEqual(['Готово.']);
+  });
+
+  it('без статуса — просто отправка, как в первый раз', async () => {
+    const { sender, sent, deleted } = recordingSender();
+
+    await moveStatus({ db: testDb(), sender, now: () => at(0) }, target(), 'Слушаю.');
+
+    expect(sent).toEqual(['Слушаю.']);
+    expect(deleted).toEqual([]);
+  });
+
+  it('удалить не вышло — старое остаётся, второго «Слушаю» нет', async () => {
+    const { sender, sent } = recordingSender({ deleteFails: true });
+    const deps = { db: testDb(), sender, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    await moveStatus({ ...deps, now: () => at(3_000) }, target(), 'Слушаю.');
+
+    expect(sent).toEqual(['Слушаю.']);
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.statusMessageId).toBe(100);
+  });
+
+  it('ответ по существу не переезжает: занятый слот не трогается', async () => {
+    const { sender, sent, deleted } = recordingSender();
+    const deps = { db: testDb(), sender, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Готово.', { force: true });
+    await moveStatus({ ...deps, now: () => at(3_000) }, target(), 'Слушаю.');
+
+    expect(sent).toEqual(['Готово.']);
+    expect(deleted).toEqual([]);
+  });
+
+  it('отправитель без удаления — прежнее поведение: одно сообщение', async () => {
+    const sent: string[] = [];
+    const sender: StatusSender = {
+      send: ({ text }) => {
+        sent.push(text);
+        return Promise.resolve(7);
+      },
+      edit: () => Promise.resolve('edited' as const),
+    };
+    const deps = { db: testDb(), sender, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    await moveStatus({ ...deps, now: () => at(3_000) }, target(), 'Слушаю.');
+
+    expect(sent).toEqual(['Слушаю.']);
   });
 });
 
