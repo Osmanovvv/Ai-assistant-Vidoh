@@ -1,5 +1,6 @@
 import type { ResolverAction, ResolverAnswer } from '../ai/schemas/index.js';
 import type { Candidate } from './candidates.js';
+import { hasTimeWord } from '../classifier/time-words.js';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 /**
@@ -147,6 +148,98 @@ export interface Decision {
 export interface DecideContext {
   readonly now: Date;
   readonly thresholds?: Partial<ResolverThresholds> | undefined;
+  /** Слова человека — отрезок правки; по ним ищется названная запись. */
+  readonly spoken?: string | undefined;
+}
+
+/** Слова-связки, которые ничего не называют, зато часто совпадают. */
+const FILLER_WORDS = new Set([
+  'надо',
+  'нужно',
+  'лучше',
+  'давай',
+  'давайте',
+  'потом',
+  'попозже',
+  'ещё',
+  'еще',
+  'тоже',
+  'вообще',
+  'просто',
+  'только',
+  'сейчас',
+  'вроде',
+  'точно',
+  'также',
+  'чтобы',
+  'когда',
+  'если',
+  'этот',
+  'этого',
+  'этому',
+  'дело',
+  'дела',
+  'делу',
+  'запись',
+]);
+
+/** Глагол в повелении — «купить», «записаться»: он у половины дел, именем не бывает. */
+const INFINITIVE = /(?:ть|ться|чь|чься)$/u;
+
+/**
+ * Слова, которыми можно назвать запись: не короче четырёх букв, не о
+ * времени («в субботу» называет день, а не дело), не связка и не
+ * глагол-повеление.
+ */
+function namingWords(text: string): readonly string[] {
+  return text
+    .toLowerCase()
+    .replace(/ё/gu, 'е')
+    .split(/[^\p{L}]+/u)
+    .filter(
+      (word) =>
+        word.length >= 4 && !FILLER_WORDS.has(word) && !INFINITIVE.test(word) && !hasTimeWord(word),
+    );
+}
+
+/**
+ * Одно ли это слово в разных падежах: «стоматологу» и «стоматолога»,
+ * «врача» и «врачу», «собакой» и «собаке». Сверяется общее начало без
+ * двух последних букв более короткого, но не короче четырёх: иначе
+ * «банк» и «бант» стали бы одним.
+ */
+function sameWord(left: string, right: string): boolean {
+  const length = Math.max(4, Math.min(left.length, right.length) - 2);
+  return left.slice(0, length) === right.slice(0, length);
+}
+
+function namesCandidate(spoken: readonly string[], candidate: Candidate): boolean {
+  const own = namingWords(candidate.text);
+  return spoken.some((word) => own.some((other) => sameWord(word, other)));
+}
+
+/**
+ * Человек назвал запись её словом, и такая она одна (прогон 17.09.2026).
+ *
+ * «Нет, к стоматологу лучше в субботу» при тринадцати кандидатах: модель
+ * уверена и права, а близость, свежесть и срок молчат — и бот спрашивал
+ * «это про … или отдельная история?». Слово «стоматологу» есть ровно в
+ * одной записи — та же дословность и единственность, что у срока.
+ * Считается только тогда, когда названная запись и есть выбор модели:
+ * названо одно, выбрано другое — это разногласие, а не подтверждение.
+ */
+function namedAlone(
+  candidate: Candidate,
+  candidates: readonly Candidate[],
+  spoken: string | undefined,
+): boolean {
+  if (spoken === undefined) return false;
+
+  const words = namingWords(spoken);
+  if (words.length === 0) return false;
+
+  const named = candidates.filter((one) => namesCandidate(words, one));
+  return named.length === 1 && named[0]?.id === candidate.id;
 }
 
 /** Запись тронута только что, и такая она одна среди кандидатов. */
@@ -287,6 +380,16 @@ export function decide(
       candidate,
       newThought: false,
       why: 'подтверждено сроком',
+    };
+  }
+
+  if (namedAlone(candidate, candidates, context.spoken)) {
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено словом',
     };
   }
 
