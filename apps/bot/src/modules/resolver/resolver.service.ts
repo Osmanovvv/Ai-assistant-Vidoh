@@ -184,6 +184,8 @@ export async function resolveSegment(
   const decision = decide({ ...outcome.value, itemId: chosen?.id ?? '' }, params.candidates, {
     now,
     thresholds: params.thresholds,
+    // Слова человека: по ним ищется названная запись (четвёртый сигнал).
+    spoken: params.segment,
   });
 
   deps.logger?.debug(

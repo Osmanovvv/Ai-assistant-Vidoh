@@ -187,6 +187,128 @@ describe('второй сигнал: без подтверждения не ме
   });
 });
 
+describe('четвёртый сигнал: человек назвал запись её словом (прогон 17.09.2026, блок E)', () => {
+  /**
+   * Бой: «Нет, к стоматологу лучше в субботу» при 13 кандидатах —
+   * модель уверена (1,0), выбрала «Записаться к стоматологу», дата
+   * верная, а бот спросил «это про … или отдельная история?»: запись
+   * несвежая (80 минут), по сроку не выделяется, вектор отрыва не дал.
+   * Но слово «стоматологу» есть ровно в одной записи из тринадцати —
+   * дословность и единственность, как у срока и свежести.
+   */
+  const stale = (id: string, text: string): Candidate =>
+    candidate({
+      id,
+      text,
+      updatedAt: new Date(NOW.getTime() - 80 * 60_000),
+      sources: ['session', 'semantic'],
+      similarity: 0.3,
+    });
+
+  const dentist = stale('i-1', 'Записаться к стоматологу');
+  const others = [
+    stale('i-2', 'Записаться к парикмахеру'),
+    stale('i-3', 'Пройти диспансеризацию'),
+    stale('i-4', 'Забрать справку из поликлиники'),
+  ];
+
+  it('слово, которое есть у одного кандидата, и он же выбран моделью — применить', () => {
+    const verdict = decide(answer({ confidence: 1 }), [dentist, ...others], {
+      now: NOW,
+      spoken: 'Нет, к стоматологу лучше в субботу.',
+    });
+
+    expect(verdict.kind).toBe('apply');
+    expect(verdict.why).toBe('подтверждено словом');
+  });
+
+  it('слово общее для двух кандидатов не подтверждает: «записаться» есть у двоих', () => {
+    const verdict = decide(answer({ confidence: 1 }), [dentist, ...others], {
+      now: NOW,
+      spoken: 'Нет, записаться лучше в субботу.',
+    });
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('слово о времени не считается: «в субботу» — не имя записи', () => {
+    const saturday = stale('i-5', 'Разобрать балкон в субботу');
+    const verdict = decide(answer({ confidence: 1, itemId: 'i-5' }), [dentist, saturday], {
+      now: NOW,
+      spoken: 'Нет, лучше в субботу.',
+    });
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('названо слово другой записи, а модель выбрала не её — спросить, не применять', () => {
+    const verdict = decide(answer({ confidence: 1, itemId: 'i-3' }), [dentist, ...others], {
+      now: NOW,
+      spoken: 'Нет, к стоматологу лучше в субботу.',
+    });
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('склонение не мешает: «врача» находит «врачу», «стоматолога» — «стоматологу»', () => {
+    const doctor = stale('i-6', 'Записать сына к врачу');
+    const verdict = decide(answer({ confidence: 1, itemId: 'i-6' }), [doctor, dentist], {
+      now: NOW,
+      spoken: 'Врача перенеси на пятницу.',
+    });
+
+    expect(verdict.kind).toBe('apply');
+    expect(verdict.why).toBe('подтверждено словом');
+  });
+
+  it('глагол дела — не имя: «купила» не называет «Купить корм коту» (набор резолвера, случай 06)', () => {
+    const food = stale('i-7', 'Купить корм коту');
+    const list = stale('i-8', 'Проверить список продуктов');
+    const verdict = decide(
+      answer({ confidence: 1, itemId: 'i-7', action: 'complete' }),
+      [food, list],
+      {
+        now: NOW,
+        spoken: 'купила',
+      },
+    );
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('склонение с другой длиной тоже находит: «собакой» — «собаке», но у трёх собачьих дел единственности нет', () => {
+    const collar = stale('i-9', 'Купить собаке новый ошейник');
+    const leash = stale('i-10', 'Купить новый поводок для собаки');
+    const alone = decide(answer({ confidence: 1, itemId: 'i-9' }), [collar, dentist], {
+      now: NOW,
+      spoken: 'Дело с собакой перенеси на вторник.',
+    });
+    expect(alone.kind).toBe('apply');
+
+    const crowd = decide(answer({ confidence: 1, itemId: 'i-9' }), [collar, leash, dentist], {
+      now: NOW,
+      spoken: 'Дело с собакой перенеси на вторник.',
+    });
+    expect(crowd.kind).toBe('ask');
+  });
+
+  it('короткие и служебные слова не считаются', () => {
+    const verdict = decide(answer({ confidence: 1 }), [dentist, ...others], {
+      now: NOW,
+      spoken: 'Нет, это лучше не так.',
+    });
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('без слов человека сигнала нет — прежнее поведение', () => {
+    const verdict = decide(answer({ confidence: 1 }), [dentist, ...others], { now: NOW });
+
+    expect(verdict.kind).toBe('ask');
+    expect(verdict.why).toContain('второго сигнала нет');
+  });
+});
+
 describe('защита от выдуманного ответа', () => {
   it('запись не из списка не применяется ни при какой уверенности', () => {
     // Модель может назвать идентификатор, которого мы ей не давали.
