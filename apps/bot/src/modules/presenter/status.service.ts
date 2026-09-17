@@ -46,6 +46,13 @@ export interface StatusSender {
     readonly text: string;
     readonly buttons?: readonly StatusButton[] | undefined;
   }): Promise<'edited' | 'gone' | 'failed'>;
+
+  /**
+   * Удаление своего сообщения — для переезда «Слушаю» под новое сообщение
+   * серии (`moveStatus`). Необязательно: отправитель без него оставляет
+   * прежнее поведение — одно сообщение, которое только правится.
+   */
+  delete?(params: { readonly chatId: number; readonly messageId: number }): Promise<boolean>;
 }
 
 export interface StatusDeps {
@@ -197,6 +204,65 @@ export async function showStatus(
   if (edited === 'failed') return false;
 
   return true;
+}
+
+/**
+ * Переезд «Слушаю» под новое сообщение серии (Никита, 17.09.2026).
+ *
+ * Три голосовых подряд: «Слушаю» уходило после первого, итог правился в
+ * него — и оказывался **над** двумя последними голосовыми. Обещание §9.2
+ * остаётся — реплика бота на выгрузку одна, — но с каждым новым
+ * сообщением она переезжает под него: старое удаляется, новое
+ * отправляется, выгрузка запоминает новое; итог разбора ляжет под
+ * последним сказанным.
+ *
+ * Чего не делает: не трогает слот, занятый ответом по существу (туда
+ * уже смотрит человек); без удаления в отправителе или при его отказе
+ * оставляет старое — два «Слушаю» хуже одного не на месте.
+ */
+export async function moveStatus(
+  deps: StatusDeps,
+  target: StatusTarget,
+  text: string,
+): Promise<boolean> {
+  const [batch] = await deps.db
+    .select({ statusMessageId: batches.statusMessageId, statusTaken: batches.statusTaken })
+    .from(batches)
+    .where(eq(batches.id, target.batchId))
+    .limit(1);
+
+  if (!batch) {
+    throw new Error(`Выгрузка ${target.batchId} не найдена`);
+  }
+
+  if (batch.statusMessageId === null) return await showStatus(deps, target, text);
+  if (batch.statusTaken) return false;
+  if (deps.sender.delete === undefined) return false;
+
+  const removed = await deps.sender.delete({
+    chatId: target.chatId,
+    messageId: batch.statusMessageId,
+  });
+  if (!removed) return false;
+
+  const messageId = await deps.sender.send({
+    chatId: target.chatId,
+    threadId: target.threadId,
+    text,
+  });
+
+  const now = (deps.now ?? (() => new Date()))();
+  await deps.db
+    .update(batches)
+    .set({
+      // Ноль — отправка не удалась: старое уже удалено, помнить нечего;
+      // следующий вызов отправит заново, как при первом сообщении.
+      statusMessageId: messageId === 0 ? null : messageId,
+      statusUpdatedAt: now,
+    })
+    .where(eq(batches.id, target.batchId));
+
+  return messageId !== 0;
 }
 
 /**

@@ -19,7 +19,11 @@ import { BILLING_ACTION } from './billing.js';
 import { acceptUpdate } from '../../modules/gateway/gateway.service.js';
 import { heldMessagesOf, markConsumed, markRefused } from '../../modules/gateway/orphans.js';
 import { effectiveLimits, type SettingsRegistry } from '../../modules/settings/settings.repo.js';
-import { showStatus, type StatusSender } from '../../modules/presenter/status.service.js';
+import {
+  moveStatus,
+  showStatus,
+  type StatusSender,
+} from '../../modules/presenter/status.service.js';
 import { consentConfirmedOf } from '../../modules/users/users.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
 import { textsFor } from '../../texts/index.js';
@@ -444,18 +448,23 @@ async function bufferMessage(
   // одна на выгрузку, а не на каждое сообщение. Ставится после
   // постановки заданий: медленный Telegram не должен задерживать
   // конвейер, а сбой отправки не должен мешать разбору.
-  if (deps.sender && params.chatId !== undefined && attached.messageCount === 1) {
+  // Со второго сообщения серии реплика переезжает под новое (Никита,
+  // 17.09.2026): иначе итог разбора оказывается над последними
+  // голосовыми.
+  if (deps.sender && params.chatId !== undefined) {
     const texts = textsFor(await textProfileOf(deps.db, userId));
+    const statusDeps = { db: deps.db, sender: deps.sender };
+    const target = {
+      batchId: attached.batchId,
+      chatId: params.chatId,
+      threadId: params.threadId,
+    };
 
-    await showStatus(
-      { db: deps.db, sender: deps.sender },
-      {
-        batchId: attached.batchId,
-        chatId: params.chatId,
-        threadId: params.threadId,
-      },
-      texts.listening.acknowledged,
-    );
+    if (attached.messageCount === 1) {
+      await showStatus(statusDeps, target, texts.listening.acknowledged);
+    } else {
+      await moveStatus(statusDeps, target, texts.listening.acknowledged);
+    }
   }
 }
 

@@ -59,11 +59,13 @@ let userId: string;
  * «бот ничего не ответил» проходила бы и на сломанном коде. Именно так
  * и случилось при первом заходе — диверсия её не свалила.
  */
-function recordingStatus(): { sender: StatusSender; said: string[] } {
+function recordingStatus(): { sender: StatusSender; said: string[]; deleted: number[] } {
   const said: string[] = [];
+  const deleted: number[] = [];
 
   return {
     said,
+    deleted,
     sender: {
       send: ({ text }) => {
         said.push(text);
@@ -72,6 +74,10 @@ function recordingStatus(): { sender: StatusSender; said: string[] } {
       edit: ({ text }) => {
         said.push(text);
         return Promise.resolve('edited' as const);
+      },
+      delete: ({ messageId }) => {
+        deleted.push(messageId);
+        return Promise.resolve(true);
       },
     },
   };
@@ -497,6 +503,30 @@ describe('служебное сообщение об оплате не стан�
     // прошла бы и на боте, который молчит всегда.
     await bot.handleUpdate(textUpdate('купить продукты'));
     expect(said).toHaveLength(1);
+  });
+
+  it('серия из трёх сообщений: «Слушаю» переезжает под каждое новое, в чате оно одно (Никита, 17.09.2026)', async () => {
+    const { sender, said, deleted } = recordingStatus();
+    const { bot } = createTestBot({ sender });
+
+    await bot.handleUpdate(textUpdate('Надо отдать пальто в химчистку.'));
+    await bot.handleUpdate(textUpdate('И записаться к парикмахеру.'));
+    await bot.handleUpdate(textUpdate('И купить батарейки.'));
+
+    // Три отправки, два удаления: в чате в каждый момент одно «Слушаю»,
+    // и оно под последним сообщением — итог разбора ляжет туда же.
+    expect(said).toEqual([
+      defaultTexts.listening.acknowledged,
+      defaultTexts.listening.acknowledged,
+      defaultTexts.listening.acknowledged,
+    ]);
+    expect(deleted).toEqual([1, 2]);
+
+    const [open] = await testDb()
+      .select({ statusMessageId: batches.statusMessageId })
+      .from(batches)
+      .where(and(eq(batches.userId, userId), eq(batches.status, 'open')));
+    expect(open?.statusMessageId).toBe(3);
   });
 
   it('обычное сообщение по-прежнему становится выгрузкой', async () => {
