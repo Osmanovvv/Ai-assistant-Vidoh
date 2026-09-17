@@ -52,8 +52,8 @@ async function statusOf(batchId: string): Promise<string | undefined> {
   return row?.status;
 }
 
-/** Закрыта на 31-й секунде; потолок обработки три минуты — значит, застряла. */
-const STUCK = 31_000 + 4 * 60_000;
+/** Закрыта на 31-й секунде; на минуту позже потолка обработки — значит, застряла. */
+const STUCK = 31_000 + DEFAULT_LIMITS.maxProcessingMs + 60_000;
 
 describe('выгрузка, застрявшая в обработке', () => {
   it('возвращается в очередь', async () => {
@@ -207,7 +207,10 @@ describe('восстановление в целом', () => {
     await testDb().update(batches).set({ status: 'processing' }).where(eq(batches.id, stuck));
     await openBatchAt(120_000);
 
-    const report = await recoverStuckBatches(testDb(), { now: at(300_000) });
+    // Позже обоих потолков: обработки — для застрявшей, возраста — для открытой.
+    const report = await recoverStuckBatches(testDb(), {
+      now: at(Math.max(DEFAULT_LIMITS.maxProcessingMs, DEFAULT_LIMITS.maxBatchAgeMs) + 60_000),
+    });
 
     expect(report.requeuedProcessing).toBe(1);
     expect(report.closedOrphanedOpen).toBe(1);

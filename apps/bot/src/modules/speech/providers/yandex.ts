@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import {
@@ -45,6 +46,11 @@ export interface YandexSpeechOptions {
   readonly model?: string | undefined;
   readonly pollIntervalMs?: number | undefined;
   readonly maxPollMs?: number | undefined;
+  /**
+   * Сколько помнить начатую операцию для повтора с тем же звуком.
+   * По умолчанию три потолка ожидания: столько попыток даёт очередь.
+   */
+  readonly maxPendingMs?: number | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
   /** Пауза между опросами. Подменяется в тестах, чтобы не ждать по-настоящему. */
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
@@ -69,7 +75,21 @@ const MAX_POLL_INTERVAL_MS = 3_000;
  * Держится ниже таймаута вызова из speech.service, чтобы причина отказа
  * была внятной: «распознавание не успело», а не безымянный таймаут снаружи.
  */
-const DEFAULT_MAX_POLL_MS = 240_000;
+/**
+ * Потолок ожидания одной попытки — десять минут (бой 17.09.2026).
+ *
+ * Очередь длинных записей у Яндекса отдавала текст за 2–11 минут при
+ * обычных трёх секундах; четырёх минут не хватило дважды подряд. Таймаут
+ * снаружи (`speech.service`) и досмотр очереди (`maxProcessingMs`)
+ * обязаны быть длиннее — связку держит `timeouts.test.ts`.
+ */
+export const DEFAULT_MAX_POLL_MS = 600_000;
+
+/** Начатая операция, которую повтор с тем же звуком опросит, а не заведёт заново. */
+interface PendingOperation {
+  readonly operationId: string;
+  readonly startedAt: number;
+}
 
 /** Коды HTTP, при которых повтор имеет смысл. */
 const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -302,8 +322,21 @@ export class YandexSpeechProvider implements SpeechProvider {
   private readonly model: string;
   private readonly pollIntervalMs: number;
   private readonly maxPollMs: number;
+  private readonly maxPendingMs: number;
   private readonly doFetch: typeof fetch;
   private readonly pause: (ms: number) => Promise<void>;
+
+  /**
+   * Начатые операции по отпечатку звука (бой 17.09.2026).
+   *
+   * SpeechKit принял 56 секунд и не отдал текст за четыре минуты —
+   * дважды. Каждая попытка очереди отправляла звук заново и платила
+   * снова: 0,65 ₽ × 3 вместо одного. Платит отправка, значит и граница
+   * повтора — отправка: пока операция жива, повтор с тем же звуком
+   * опрашивает её. Память процесса: после перезапуска бота отправка
+   * повторится — редко и честно.
+   */
+  private readonly pending = new Map<string, PendingOperation>();
 
   constructor(private readonly options: YandexSpeechOptions) {
     if (options.apiKey.trim() === '') {
@@ -319,6 +352,7 @@ export class YandexSpeechProvider implements SpeechProvider {
     this.operationsUrl = (options.operationsUrl ?? DEFAULT_OPERATIONS_URL).replace(/\/+$/u, '');
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.maxPollMs = options.maxPollMs ?? DEFAULT_MAX_POLL_MS;
+    this.maxPendingMs = options.maxPendingMs ?? 3 * this.maxPollMs;
     this.doFetch = options.fetchImpl ?? fetch;
     this.pause =
       options.sleep ??
@@ -354,30 +388,60 @@ export class YandexSpeechProvider implements SpeechProvider {
      * наверху он остаётся временным («попробую позже»), но отправкой
      * больше не повторяется.
      */
-    const operationId = await this.startRecognition(audio, request.language);
+    const key = createHash('sha256').update(audio).digest('hex');
+    const reused = this.pendingFor(key);
+
+    let operationId: string;
+    if (reused === undefined) {
+      operationId = await this.startRecognition(audio, request.language);
+      this.pending.set(key, { operationId, startedAt: Date.now() });
+
+      /**
+       * Звук принят — деньги списаны. Говорим об этом немедленно.
+       *
+       * Наш таймаут стоит **снаружи** вызова, и если гонку выиграет он,
+       * до пометки в `catch` ниже дело просто не дойдёт: наверх уйдёт
+       * чужой отказ без пометки, а повтор отправит те же секунды заново.
+       */
+      request.onSent?.(audioSeconds);
+    } else {
+      operationId = reused.operationId;
+    }
 
     /**
-     * Звук принят — деньги списаны. Говорим об этом немедленно.
-     *
-     * Наш таймаут стоит **снаружи** вызова, и если гонку выиграет он, до
-     * пометки в `catch` ниже дело просто не дойдёт: наверх уйдёт чужой
-     * отказ без пометки, а повтор отправит те же секунды заново.
+     * Оплаченные секунды **этой попытки**: при повторе по прежней
+     * операции их ноль — отправки не было. Это число уходит в учёт и в
+     * пометку отказа; иначе вторая попытка записала бы тот же расход
+     * дважды, а `withRetry` отправил бы звук в третий раз.
      */
-    request.onSent?.(audioSeconds);
+    const paidNow = reused === undefined ? audioSeconds : 0;
 
     try {
       await this.awaitOperation(operationId);
       const recognition = await this.fetchRecognition(operationId);
+      this.pending.delete(key);
 
       return {
         text: recognition.text,
         model: this.model,
-        audioSeconds,
+        audioSeconds: paidNow,
         utterances: recognition.utterances,
       };
     } catch (error) {
-      throw markAlreadyPaid(error, { audioSeconds });
+      // Отказавшая насовсем операция не оживёт: следующая попытка — заново.
+      if (!(error instanceof TransientSpeechError)) this.pending.delete(key);
+      throw markAlreadyPaid(error, { audioSeconds: paidNow });
     }
+  }
+
+  /** Живая операция для этого звука; устаревшие забываются по пути. */
+  private pendingFor(key: string): PendingOperation | undefined {
+    const now = Date.now();
+    for (const [other, entry] of this.pending) {
+      if (now - entry.startedAt > this.maxPendingMs) this.pending.delete(other);
+    }
+
+    return this.pending.get(key);
   }
 
   private async startRecognition(audio: Buffer, language: string | undefined): Promise<string> {

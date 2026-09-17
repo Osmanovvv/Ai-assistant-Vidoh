@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { batches, items, messagesRaw, pendingQuestions, telegramUpdates } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { testDb } from '../../test/db.js';
-import { attachMessageToBatch } from '../buffer/buffer.service.js';
+import { attachMessageToBatch, DEFAULT_LIMITS } from '../buffer/buffer.service.js';
 import { askQuestion } from '../resolver/questions.repo.js';
 import { confirmConsent, upsertUser } from '../users/users.repo.js';
 import { sweepOnce } from './sweeper.js';
@@ -128,8 +128,8 @@ describe('sweepOnce', () => {
       onOutcome: ignoreOutcome,
       db: testDb(),
       logger,
-      // Потолок обработки три минуты; четыре — точно застряла (задача 3.58).
-      now: () => at(4 * 60_000),
+      // Позже потолка обработки на минуту — точно застряла (задача 3.58).
+      now: () => at(DEFAULT_LIMITS.maxProcessingMs + 60_000),
       process: () => Promise.resolve(),
     });
 

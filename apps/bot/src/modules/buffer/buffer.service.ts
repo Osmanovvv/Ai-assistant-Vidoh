@@ -53,8 +53,14 @@ export interface BufferLimits {
 export const DEFAULT_LIMITS: BufferLimits = {
   silenceWindowMs: SETTINGS.silenceWindowMs.fallback,
   maxBatchAgeMs: MAX_BATCH_AGE_MS,
-  // Втрое дольше обычного разбора и короче потолка открытой выгрузки.
-  maxProcessingMs: 3 * 60_000,
+  /**
+   * Пятнадцать минут (бой 17.09.2026): расшифровка длинной записи ждёт
+   * SpeechKit до одиннадцати, разбор после неё — ещё до двух. При трёх
+   * минутах досмотр вернул в очередь выгрузку посреди живого
+   * распознавания — от двойного ответа спас только замок на
+   * пользователя. Связку потолков держит `speech/timeouts.test.ts`.
+   */
+  maxProcessingMs: 15 * 60_000,
   maxMessagesPerBatch: 15,
   maxDumpsPerDay: SETTINGS.dumpsPerDay.fallback,
 };

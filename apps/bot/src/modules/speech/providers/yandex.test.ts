@@ -1,4 +1,9 @@
-import { AccessDeniedError, isAlreadyPaid, PermanentError } from '../../../infra/failures.js';
+import {
+  AccessDeniedError,
+  isAlreadyPaid,
+  paidUsage,
+  PermanentError,
+} from '../../../infra/failures.js';
 import { isTransientFailure } from '../../../infra/errors.js';
 import { withRetry } from '../../../infra/retry.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -8,7 +13,12 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PermanentSpeechError, TransientSpeechError } from './types.js';
-import { YandexSpeechProvider, parseRecognition, toYandexLanguage } from './yandex.js';
+import {
+  DEFAULT_MAX_POLL_MS,
+  YandexSpeechProvider,
+  parseRecognition,
+  toYandexLanguage,
+} from './yandex.js';
 
 /**
  * Провайдер проверяется на подменённом fetch: живой вызов стоит денег и
@@ -641,5 +651,128 @@ describe('за один звук платим один раз (задача 3.82
 
     expect(result.text).toBe('со второго раза');
     expect(starts).toBe(2);
+  });
+});
+
+describe('повтор по той же операции (бой 17.09.2026)', () => {
+  /**
+   * SpeechKit принял 56 секунд и не отдал текст за четыре минуты — дважды
+   * подряд. Каждая попытка очереди отправляла звук заново и платила
+   * снова: 0,65 ₽ × 3 вместо одного. Платит отправка, значит и граница
+   * повтора — отправка: пока операция жива, повтор с тем же звуком
+   * опрашивает её, а не заводит новую.
+   */
+  const timedOutProvider = (calls: Call[], fetchImpl: typeof fetch, extra = {}) =>
+    new YandexSpeechProvider({
+      apiKey: 'k',
+      pollIntervalMs: 700,
+      maxPollMs: 2_000,
+      fetchImpl,
+      sleep: (ms) => {
+        vi.advanceTimersByTime(ms);
+        return Promise.resolve();
+      },
+      ...extra,
+    });
+
+  const startCalls = (calls: Call[]) =>
+    calls.filter((call) => call.url.includes('recognizeFileAsync')).length;
+
+  it('после таймаута тот же звук не отправляется заново: опрашивается прежняя операция', async () => {
+    vi.useFakeTimers();
+    // Первая попытка успевает два опроса и упирается в потолок; вторая
+    // застаёт операцию готовой на четвёртом опросе.
+    const { fetchImpl, calls } = stub({ pendingPolls: 3, recognition: finalLine(0, 'готово') });
+    const instance = timedOutProvider(calls, fetchImpl);
+
+    const first = await instance.transcribe(request()).catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(TransientSpeechError);
+    expect(isAlreadyPaid(first)).toBe(true);
+    expect(paidUsage(first)).toEqual({ audioSeconds: 14 });
+    expect(startCalls(calls)).toBe(1);
+
+    const sent: number[] = [];
+    const second = await instance.transcribe({
+      ...request(),
+      onSent: (seconds) => {
+        sent.push(seconds);
+      },
+    });
+
+    expect(second.text).toBe('готово');
+    // Отправки не было — ни запроса, ни оплаты, ни пометки о приёме.
+    expect(startCalls(calls)).toBe(1);
+    expect(sent).toEqual([]);
+    expect(second.audioSeconds).toBe(0);
+  });
+
+  it('повтор, не дождавшийся результата, помечен оплаченным на ноль секунд: в учёт не идёт второй расход', async () => {
+    vi.useFakeTimers();
+    const { fetchImpl, calls } = stub({ pendingPolls: 100 });
+    const instance = timedOutProvider(calls, fetchImpl);
+
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(TransientSpeechError);
+    const again = await instance.transcribe(request()).catch((error: unknown) => error);
+
+    expect(again).toBeInstanceOf(TransientSpeechError);
+    expect(isAlreadyPaid(again)).toBe(true);
+    expect(paidUsage(again)).toEqual({ audioSeconds: 0 });
+    expect(startCalls(calls)).toBe(1);
+  });
+
+  it('готовая операция забывается: тот же звук потом — новая отправка', async () => {
+    const { instance, calls } = provider({ recognition: finalLine(0, 'раз') });
+
+    await instance.transcribe(request());
+    await instance.transcribe(request());
+
+    expect(startCalls(calls)).toBe(2);
+  });
+
+  it('операция, отказавшая насовсем, забывается: следующая попытка отправляет заново', async () => {
+    const { fetchImpl, calls } = stub({ operationError: { code: 3, message: 'битый файл' } });
+    const instance = new YandexSpeechProvider({
+      apiKey: 'k',
+      fetchImpl,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(PermanentSpeechError);
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(PermanentSpeechError);
+
+    expect(startCalls(calls)).toBe(2);
+  });
+
+  it('другой звук — другая операция', async () => {
+    vi.useFakeTimers();
+    const { fetchImpl, calls } = stub({ pendingPolls: 100 });
+    const instance = timedOutProvider(calls, fetchImpl);
+    const otherPath = join(dir, 'part-01.wav');
+    await writeFile(otherPath, Buffer.from([0x52, 0x49, 0x46, 0x46, 0x2b, 0x00]));
+
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(TransientSpeechError);
+    await expect(instance.transcribe({ ...request(), filePath: otherPath })).rejects.toBeInstanceOf(
+      TransientSpeechError,
+    );
+
+    expect(startCalls(calls)).toBe(2);
+  });
+
+  it('слишком старая операция не переиспользуется: звук отправляется заново', async () => {
+    vi.useFakeTimers();
+    const { fetchImpl, calls } = stub({ pendingPolls: 100 });
+    const instance = timedOutProvider(calls, fetchImpl, { maxPendingMs: 5_000 });
+
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(TransientSpeechError);
+    vi.advanceTimersByTime(6_000);
+    await expect(instance.transcribe(request())).rejects.toBeInstanceOf(TransientSpeechError);
+
+    expect(startCalls(calls)).toBe(2);
+  });
+
+  it('потолок ожидания одной попытки — десять минут, а не четыре', () => {
+    // Очередь длинных записей у Яндекса 17.09.2026 отдавала текст за
+    // 2–11 минут; четырёх минут не хватало, а повторов было три.
+    expect(DEFAULT_MAX_POLL_MS).toBe(600_000);
   });
 });
