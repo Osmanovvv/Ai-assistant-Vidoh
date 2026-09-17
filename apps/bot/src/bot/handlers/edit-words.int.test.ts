@@ -14,7 +14,7 @@ import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited } from './awaiting.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
-import { registerCardHandlers } from './card.js';
+import { registerCardHandlers, registerPendingEditGuard } from './card.js';
 import { incomingMiddleware } from './incoming.js';
 
 /**
@@ -79,6 +79,9 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
       consume: consumeAwaited({ db: testDb(), logger }),
     }),
   );
+  // Страж — раньше всех кнопок, как в index.ts: любое нажатие снимает
+  // ожидание заголовка, а обработчики кнопок дальше не передают.
+  registerPendingEditGuard(bot, testDb());
   registerCardHandlers(bot, { db: testDb(), logger }, MENU_ACTION.root);
   // Настройки — сосед ожидания: их переключатели правят ту же строку
   // `user_settings`, и окно ожидания обязано этого не замечать.
@@ -271,6 +274,70 @@ describe('правка записи словами', () => {
  * остаются настоящими, иначе запрос к базе повис бы на подменённом
  * `setTimeout`.
  */
+describe('передумал переименовывать (Никита, 17.09.2026, блок G)', () => {
+  /**
+   * Нажал «Изменить» — и назад дороги не было: только ждать пятнадцать
+   * минут или писать заголовок, иначе следующее сообщение станет им.
+   * Теперь под подсказкой кнопка «Не менять», а любое другое нажатие
+   * тоже снимает ожидание: человек ушёл дальше — значит, не
+   * переименовывает.
+   */
+  it('под подсказкой есть «Не менять», и она снимает ожидание', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem('К врачу');
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+
+    const hint = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(hint)).toBe(defaultTexts.card.editHint);
+    const keep = keyboardOf(hint).find(
+      (button) => button.text === defaultTexts.card.buttonKeepTitle,
+    );
+    expect(keep?.callback_data).toBe(`i:edx:${toShortId(itemId)}`);
+
+    await bot.handleUpdate(callbackUpdate(keep?.callback_data ?? ''));
+
+    expect(await awaitingOfUser()).toBeNull();
+    const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(last)).toBe(defaultTexts.card.editKept);
+
+    // Следующее сообщение — мысль, а не заголовок.
+    await bot.handleUpdate(textUpdate('Купить хлеб'));
+    expect(await textOfItem(itemId)).toBe('К врачу');
+    expect(await wentToDump('Купить хлеб')).toBe(true);
+  });
+
+  it('любая другая кнопка тоже снимает ожидание: человек ушёл дальше', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await addItem('К врачу');
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+    expect(await awaitingOfUser()).toBe(`edit:${itemId}`);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.root));
+
+    expect(await awaitingOfUser()).toBeNull();
+    await bot.handleUpdate(textUpdate('Купить хлеб'));
+    expect(await textOfItem(itemId)).toBe('К врачу');
+  });
+
+  it('ожидание имени в опросе кнопки не снимают: это не правка заголовка', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    await testDb()
+      .update(userSettings)
+      .set({ awaitingInput: 'name', awaitingSince: new Date() })
+      .where(eq(userSettings.userId, userId));
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.root));
+
+    expect(await awaitingOfUser()).toBe('name');
+  });
+});
+
 describe('окно ожидания', () => {
   const pressedAt = new Date('2026-09-04T10:00:00Z');
 

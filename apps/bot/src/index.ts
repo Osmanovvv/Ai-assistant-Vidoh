@@ -41,7 +41,7 @@ import { startRenewals } from './modules/billing/renewal.service.js';
 import { createPaymentNotifier } from './modules/billing/notify.js';
 import type { PaymentProvider } from './modules/billing/provider.js';
 import type { Rail } from './modules/billing/tariffs.js';
-import { registerCardHandlers } from './bot/handlers/card.js';
+import { registerCardHandlers, registerPendingEditGuard } from './bot/handlers/card.js';
 import { effectiveLimits, SettingsRegistry } from './modules/settings/settings.repo.js';
 import { TextsRegistry } from './texts/registry.js';
 import { runCloseBatchJob } from './modules/pipeline/close-job.js';
@@ -923,6 +923,8 @@ async function main(): Promise<void> {
   // Служебные строки Telegram о наших ветках и закреплениях — прочь
   // (заказчица, 16.09.2026).
   registerServiceMessageHandlers(bot, logger);
+  // Любое нажатие снимает ожидание заголовка — раньше всех кнопок.
+  registerPendingEditGuard(bot, db);
   registerOnboardingHandlers(bot, db, logger);
   registerMenuHandlers(bot, db, logger);
 
