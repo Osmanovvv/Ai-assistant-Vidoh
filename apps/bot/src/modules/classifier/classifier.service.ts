@@ -118,6 +118,14 @@ export interface Corrections {
 interface ClassifySuccess {
   readonly ok: true;
   readonly items: readonly ClassifiedItem[];
+  /**
+   * Ответ модели до правок кода — след для стенда (прогон 17.09.2026).
+   *
+   * По одним записям нельзя понять, почему правило срока не сработало:
+   * что модель написала в `deadline`, какую цитату дала в `deadlineText`.
+   * Бой этим не пользуется.
+   */
+  readonly fromModel: readonly ClassifiedItems['items'][number][];
   readonly promptVersion: string;
   readonly corrections: Corrections;
 }
@@ -650,5 +658,11 @@ export async function classifyUnits(
     logger: deps.logger,
   });
 
-  return { ok: true, items, promptVersion: outcome.promptVersion, corrections };
+  return {
+    ok: true,
+    items,
+    fromModel: outcome.value.items,
+    promptVersion: outcome.promptVersion,
+    corrections,
+  };
 }
