@@ -300,20 +300,23 @@ export function buildActionsReply(params: ActionsReplyParams): Reply {
  * (§13.7), счёт дел — цифрой и со склонением, как в её образце от
  * 16.09.2026 («Записала 6 дел»): 1 дело, 2 дела, 5 дел.
  */
-function tasksPhrase(count: number): string {
-  const number = String(count);
+/** Число со склонением: «1 дело», «2 дела», «5 дел», «21 дело», «11 дел». */
+function counted(count: number, forms: readonly [string, string, string]): string {
+  const [one, few, many] = forms;
   const tail = count % 100;
   const last = count % 10;
   const noun =
-    tail >= 11 && tail <= 14
-      ? 'дел'
-      : last === 1
-        ? 'дело'
-        : last >= 2 && last <= 4
-          ? 'дела'
-          : 'дел';
+    tail >= 11 && tail <= 14 ? many : last === 1 ? one : last >= 2 && last <= 4 ? few : many;
 
-  return `${number} ${noun}`;
+  return `${String(count)} ${noun}`;
+}
+
+function tasksPhrase(count: number): string {
+  return counted(count, ['дело', 'дела', 'дел']);
+}
+
+function desiresPhrase(count: number): string {
+  return counted(count, ['желание', 'желания', 'желаний']);
 }
 
 export function acknowledgementOf(
@@ -347,9 +350,24 @@ export function acknowledgementOf(
               ? answer.acknowledgementLong
               : answer.acknowledgementFallback;
 
-  if (composition.tasks <= 0) return opening;
+  /**
+   * Желания — в счёте рядом с делами (решение Никиты, 17.09.2026).
+   *
+   * Блок B: девять записей, «Записала 6 дел» — три желания не упомянуты
+   * нигде, и человеку не понять, услышаны ли они. Без желаний фраза —
+   * образец заказчицы, как была.
+   */
+  const { tasks, desires } = composition;
+  if (tasks <= 0 && desires <= 0) return opening;
 
-  return `${opening} ${texts.answer.acknowledgementTasks(tasksPhrase(composition.tasks))}`;
+  const recorded =
+    tasks > 0 && desires > 0
+      ? texts.answer.acknowledgementTasksAndDesires(tasksPhrase(tasks), desiresPhrase(desires))
+      : tasks > 0
+        ? texts.answer.acknowledgementTasks(tasksPhrase(tasks))
+        : texts.answer.acknowledgementDesires(desiresPhrase(desires));
+
+  return `${opening} ${recorded}`;
 }
 
 export interface PresentParams {

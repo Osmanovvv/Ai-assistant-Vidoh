@@ -113,6 +113,9 @@ export const reserved: TextProfile = {
     acknowledgementAnnoyed: 'Понимаю 🙃 Давай хотя бы это больше не держать в голове.',
     acknowledgementHeavy: 'Вижу, сейчас тяжело.',
     acknowledgementTasks: (tasks) => `Записала ${tasks} и разложила по местам.`,
+    acknowledgementTasksAndDesires: (tasks, desires) =>
+      `Записала ${tasks} и ${desires}, разложила по местам.`,
+    acknowledgementDesires: (desires) => `Записала ${desires}, разложила по местам.`,
     sphereLine: (name, count) => `${name} — ${count}`,
     dueToday: 'На сегодня:',
     dueTomorrow: 'На завтра:',

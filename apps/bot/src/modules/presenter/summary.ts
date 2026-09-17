@@ -10,9 +10,11 @@ import { topicIcon } from '../topics/topics.service.js';
  * завтра: съездить в офис и распечатать документы.» — одним сообщением
  * вместо серии служебных (открытие и вопрос — по её тексту о характере:
  * «Всё, забрала… Оставить как есть или выбрать главное?»). Здесь
- * считается сама раскладка: дела по сферам (больше — выше) и дела с
- * дневным сроком на сегодня и на завтра в поясе человека. Неточные сроки
- * («на неделе», «в октябре») сюда не идут — они не «на завтра».
+ * считается сама раскладка: дела и желания по сферам (больше — выше;
+ * желания — с 17.09.2026, решение Никиты: признание называет «6 дел и 3
+ * желания», и у желаний должно быть своё место) и дела с дневным сроком
+ * на сегодня и на завтра в поясе человека. Неточные сроки («на неделе»,
+ * «в октябре») сюда не идут — они не «на завтра».
  */
 export interface SummarizedUnit {
   readonly text: string;
@@ -38,11 +40,12 @@ export function summarizeDump(
   context: { readonly now: Date; readonly timeZone: string },
 ): DumpSummary {
   const tasks = units.filter((unit) => unit.type === 'TASK');
+  const placed = units.filter((unit) => unit.type === 'TASK' || unit.type === 'DESIRE');
 
   const counts = new Map<string, { name: string; count: number }>();
-  for (const task of tasks) {
-    const key = normalizeTopicName(task.topic);
-    const entry = counts.get(key) ?? { name: task.topic.trim(), count: 0 };
+  for (const unit of placed) {
+    const key = normalizeTopicName(unit.topic);
+    const entry = counts.get(key) ?? { name: unit.topic.trim(), count: 0 };
     counts.set(key, { ...entry, count: entry.count + 1 });
   }
 

@@ -13,7 +13,10 @@ const MOSCOW = 'Europe/Moscow';
 const at = (iso: string) => new Date(iso);
 
 describe('summarizeDump', () => {
-  it('считает дела по сферам, больше — выше, при равенстве — по имени', () => {
+  it('считает дела и желания по сферам, больше — выше, при равенстве — по имени', () => {
+    // Желания — в счёте с 17.09.2026 (решение Никиты): признание называет
+    // «6 дел и 3 желания», и у желаний должно быть своё место в сферах.
+    // Состояние — по-прежнему нет: это не запись, которую разложили.
     const summary = summarizeDump(
       [
         { text: 'Съездить в офис', type: 'TASK', topic: 'работа' },
@@ -31,6 +34,7 @@ describe('summarizeDump', () => {
     expect(summary.spheres).toEqual([
       { name: 'работа', icon: '💼', count: 3 },
       { name: 'покупки', icon: '🛒', count: 2 },
+      { name: 'личное', icon: '🌱', count: 1 },
       { name: 'семья', icon: '👨‍👩‍👧', count: 1 },
     ]);
   });
