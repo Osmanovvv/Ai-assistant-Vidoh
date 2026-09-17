@@ -291,6 +291,15 @@ export function correctItems(
   // Входные тексты годятся только при совпадении числа записей.
   const aligned = ctx.said?.length === raw.items.length;
 
+  /**
+   * Слова каждой записи — человека и модели вместе — считаются заранее:
+   * правилу срока нужны и свои, и соседей (чужая цитата, прогон
+   * 17.09.2026).
+   */
+  const saidOf = raw.items.map(
+    (item, index) => `${aligned ? (ctx.said[index] ?? '') : ''} ${item.text}`,
+  );
+
   for (const [index, item] of raw.items.entries()) {
     const type = item.type;
 
@@ -328,7 +337,8 @@ export function correctItems(
         timeZone: ctx.timeZone,
         // Слова человека и пересказ модели вместе: слово о времени хоть
         // в одном из них — уже основание для срока.
-        said: `${aligned ? (ctx.said[index] ?? '') : ''} ${item.text}`,
+        said: saidOf[index] ?? item.text,
+        siblings: saidOf.filter((_, other) => other !== index),
         /**
          * Вторая дорога к сроку (задача 3.37): цитата модели и речь, в
          * которой код её проверит. Без речи ветка не работает — и это

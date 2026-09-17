@@ -432,3 +432,34 @@ export function monthsIn(text: string): readonly number[] {
 
   return found;
 }
+
+/**
+ * Цитата, которую содержат слова соседней записи, — не своя (прогон
+ * 17.09.2026).
+ *
+ * Стенд на живой расшифровке: «…Следующей неделе записаться к стоматологу
+ * давно уже откладываю в октябре пройти диспансеризацию» — извлечение
+ * потеряло «в октябре», и модель отдала диспансеризации срок соседа с
+ * цитатой «следующей неделе». В речи цитата есть, и дословность её
+ * пропускала. Но фраза одна, а записей, на неё опирающихся, две — и одна
+ * из них содержит её в своих же словах. Ей фраза и принадлежит.
+ *
+ * Сказанное дважды на двоих хватает: «завтра позвонить в банк, завтра же
+ * купить хлеб» — сосед забрал одно «завтра», второе свободно.
+ */
+export function quoteClaimedBy(
+  quote: string,
+  siblings: readonly string[],
+  speech: string,
+): boolean {
+  const needle = words(quote);
+  if (needle.trim().length < 3) return false;
+
+  const claimers = siblings.filter((said) => timeQuoteInSpeech(quote, said)).length;
+  if (claimers === 0) return false;
+
+  const spoken = words(speech);
+  const times = spoken.split(needle).length - 1;
+
+  return claimers >= Math.max(times, 1);
+}

@@ -1,4 +1,4 @@
-import { localDateParts, nearestWeekday, startOfDayInZone } from './dates.js';
+import { localDateParts, nearestMonthStart, nearestWeekday, startOfDayInZone } from './dates.js';
 
 /**
  * День из **своего предложения речи** (задача 3.49).
@@ -35,7 +35,7 @@ import { localDateParts, nearestWeekday, startOfDayInZone } from './dates.js';
 
 export interface SentenceDay {
   readonly at: Date;
-  readonly accuracy: 'day' | 'week';
+  readonly accuracy: 'day' | 'week' | 'month';
 }
 
 /** Обозначения дня: слово → смещение в сутках от сегодня. */
@@ -65,6 +65,53 @@ const WEEKDAYS: readonly (readonly [string, number])[] = [
 
 /** «Выходные» — период, а не день: дата ставится на ближайшую субботу. */
 const WEEKEND = ['выходные', 'выходных'];
+
+/**
+ * Названный месяц — такое же обозначение дня (прогон 17.09.2026).
+ *
+ * Без него в предложении «Следующей неделе записаться к стоматологу давно
+ * уже откладываю в октябре пройти диспансеризацию» путь видел одно
+ * обозначение — неделю — и отдал бы диспансеризации срок соседа. Формы —
+ * целыми словами: «в октябре», «октября», «октябрь».
+ */
+const MONTHS: readonly (readonly [string, number])[] = [
+  ['январе', 1],
+  ['января', 1],
+  ['январь', 1],
+  ['феврале', 2],
+  ['февраля', 2],
+  ['февраль', 2],
+  ['марте', 3],
+  ['марта', 3],
+  ['март', 3],
+  ['апреле', 4],
+  ['апреля', 4],
+  ['апрель', 4],
+  ['мае', 5],
+  ['мая', 5],
+  ['май', 5],
+  ['июне', 6],
+  ['июня', 6],
+  ['июнь', 6],
+  ['июле', 7],
+  ['июля', 7],
+  ['июль', 7],
+  ['августе', 8],
+  ['августа', 8],
+  ['август', 8],
+  ['сентябре', 9],
+  ['сентября', 9],
+  ['сентябрь', 9],
+  ['октябре', 10],
+  ['октября', 10],
+  ['октябрь', 10],
+  ['ноябре', 11],
+  ['ноября', 11],
+  ['ноябрь', 11],
+  ['декабре', 12],
+  ['декабря', 12],
+  ['декабрь', 12],
+];
 
 /**
  * Обозначения срока, из которых **дня не вывести**: недели, месяцы,
@@ -111,13 +158,16 @@ type DayMark =
   | { readonly kind: 'weekend' }
   /** «Следующая неделя» — период, у которого дата всё же считается. */
   | { readonly kind: 'nextWeek' }
-  /** Срок назван, но дня в нём нет: недели, месяцы, «через». */
+  /** Названный месяц — его первое число (прогон 17.09.2026). */
+  | { readonly kind: 'month'; readonly month: number }
+  /** Срок назван, но дня в нём нет: «неделя», «месяц», «через». */
   | { readonly kind: 'vague' };
 
 /** Ключ обозначения дня: по нему считается, сколько их названо разных. */
 function keyOf(mark: DayMark): string {
   if (mark.kind === 'relative') return `r${String(mark.shift)}`;
   if (mark.kind === 'weekday') return `w${String(mark.weekday)}`;
+  if (mark.kind === 'month') return `m${String(mark.month)}`;
   return mark.kind;
 }
 
@@ -164,6 +214,9 @@ function markAt(words: readonly string[], index: number): DayMark | undefined {
     if (word === name) return { kind: 'weekday', weekday };
   }
   if (WEEKEND.includes(word)) return { kind: 'weekend' };
+  for (const [name, month] of MONTHS) {
+    if (word === name) return { kind: 'month', month };
+  }
   if (VAGUE.includes(word)) return { kind: 'vague' };
 
   return undefined;
@@ -335,6 +388,11 @@ function dateOf(mark: DayMark, now: Date, timeZone: string): SentenceDay | undef
   // недельная — человек назвал период, а не день.
   if (mark.kind === 'nextWeek') {
     return { at: nearestWeekday(1, context), accuracy: 'week' };
+  }
+
+  // Названный месяц: его первое число, точность «месяц».
+  if (mark.kind === 'month') {
+    return { at: nearestMonthStart(mark.month, context), accuracy: 'month' };
   }
 
   // Выходные: ближайшая суббота, точность «неделя» — человек назвал

@@ -5,7 +5,8 @@ import type { Logger } from 'pino';
 import { isMessageGone } from '../../bot/message-gone.js';
 import { items, topics, type Item } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { localDateParts } from '../classifier/dates.js';
+import { deadlineWords } from '../items/deadline-words.js';
+import { withCapital } from '../items/item-text.js';
 import { OPEN_STATUSES } from '../items/items.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import {
@@ -40,11 +41,6 @@ export interface SummaryDeps {
 }
 
 /** Дата для строки сводки: день и месяц в поясе человека. */
-function shortDate(at: Date, timeZone: string): string {
-  const parts = localDateParts(at, timeZone);
-  return `${String(parts.day).padStart(2, '0')}.${String(parts.month).padStart(2, '0')}`;
-}
-
 /**
  * Текст сводки. Чистая функция: её можно проверить таблицей случаев, а
  * §8.2 говорит про содержимое, а не про способ отправки.
@@ -67,12 +63,18 @@ export function buildSummary(params: {
   lines.push('');
 
   for (const item of shown) {
+    /**
+     * Срок — теми же словами, что в карточке: неделя и месяц не число
+     * (прогон 17.09.2026). Заголовок без своего дня — и с заглавной, как
+     * в карточке и в списке дня: «надо забрать справку» рядом с «Позвонить
+     * в банк» читалось небрежностью.
+     */
     lines.push(
       item.deadlineAt === null
         ? texts.summary.line(item.text)
         : texts.summary.lineWithDate(
-            titleWithoutDate(item.text),
-            shortDate(item.deadlineAt, params.timeZone),
+            withCapital(titleWithoutDate(item.text)),
+            deadlineWords({ ...item, deadlineAt: item.deadlineAt }, params.timeZone, texts),
           ),
     );
   }

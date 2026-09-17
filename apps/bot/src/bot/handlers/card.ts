@@ -5,7 +5,7 @@ import type { Logger } from 'pino';
 
 import { items, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
-import { localDateParts } from '../../modules/classifier/dates.js';
+import { deadlineWords } from '../../modules/items/deadline-words.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { describeChange } from '../../modules/resolver/change-text.js';
 import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
@@ -51,31 +51,6 @@ import { undoKeyboard } from './undo.js';
 
 export const CARD_PREFIX = 'i:';
 
-function shortDate(at: Date, timeZone: string): string {
-  const parts = localDateParts(at, timeZone);
-  return `${String(parts.day).padStart(2, '0')}.${String(parts.month).padStart(2, '0')}`;
-}
-
-/** Месяц в предложном падеже: «в октябре». Не реплика — склонение. */
-const MONTHS_IN = [
-  'январе',
-  'феврале',
-  'марте',
-  'апреле',
-  'мае',
-  'июне',
-  'июле',
-  'августе',
-  'сентябре',
-  'октябре',
-  'ноябре',
-  'декабре',
-] as const;
-
-function monthNameIn(at: Date, timeZone: string): string {
-  return MONTHS_IN[localDateParts(at, timeZone).month - 1] ?? '';
-}
-
 /** Текст карточки: заголовок, тема, срок, статус. */
 export function cardText(item: Item, texts: TextProfile, timeZone: string): string {
   const card = texts.card;
@@ -90,17 +65,12 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
   if (item.deadlineAt === null) {
     lines.push(`${card.deadlineLabel}: ${card.noDeadline}`);
   } else {
-    const date = shortDate(item.deadlineAt, timeZone);
     // Неточный срок числом называть нельзя: «на следующей неделе» — это
     // не четвёртое сентября, и напоминание по нему сработает не тогда.
-    // Неделя хранится понедельником, месяц — первым числом (`dates.ts`).
-    const deadline =
-      item.deadlineAccuracy === 'week'
-        ? card.deadlineWeek(date)
-        : item.deadlineAccuracy === 'month'
-          ? card.deadlineMonth(monthNameIn(item.deadlineAt, timeZone))
-          : date;
-    lines.push(`${card.deadlineLabel}: ${deadline}`);
+    // Раскладка общая со списком ветки (`deadline-words.ts`).
+    lines.push(
+      `${card.deadlineLabel}: ${deadlineWords({ ...item, deadlineAt: item.deadlineAt }, timeZone, texts)}`,
+    );
   }
 
   // Регулярность показывается словами человека, а не нашим пересказом
