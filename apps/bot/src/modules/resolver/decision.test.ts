@@ -173,17 +173,46 @@ describe('второй сигнал: без подтверждения не ме
     expect(verdict.kind).toBe('ask');
   });
 
-  it('совпадение по сроку подтверждает', () => {
+  it('совпадение по сроку подтверждает: «то, что в четверг, — на десятое»', () => {
+    // Дата в фразе назвала запись (у неё срок четверг), а новый срок — другой.
     const dated = candidate({
       sources: ['deadline'],
       updatedAt: new Date(NOW.getTime() - 5 * 60 * 60_000),
       deadlineAt: new Date('2026-09-03T21:00:00.000Z'),
     });
 
-    const verdict = decide(answer(), [dated], { now: NOW });
+    const verdict = decide(
+      answer({ changes: { ...answer().changes, deadline: '2026-09-10' } }),
+      [dated],
+      { now: NOW },
+    );
 
     expect(verdict.kind).toBe('apply');
     expect(verdict.why).toContain('сроком');
+  });
+
+  it('дата назначения не опознаёт запись: «перенеси врача на понедельник» при деле, уже стоящем на понедельник (прогон 17.09.2026, шаг 16)', () => {
+    /**
+     * Бой: «врача» в делах нет, у стоматолога срок «на неделе с 21.09»
+     * (понедельник). Кандидаты по сроку нашли стоматолога — по дате
+     * **назначения**, — сигнал засчитался, и бот «перенёс» его туда, где
+     * он и был: «Там уже так — менять нечего». Должен был спросить.
+     */
+    const monday = candidate({
+      id: 'i-1',
+      text: 'Записаться к стоматологу',
+      sources: ['session', 'deadline'],
+      updatedAt: new Date(NOW.getTime() - 40 * 60_000),
+      deadlineAt: new Date('2026-09-20T21:00:00.000Z'),
+    });
+
+    const verdict = decide(
+      answer({ confidence: 1, changes: { ...answer().changes, deadline: '2026-09-21' } }),
+      [monday],
+      { now: NOW, spoken: 'перенеси врача на понедельник' },
+    );
+
+    expect(verdict.kind).toBe('ask');
   });
 });
 
