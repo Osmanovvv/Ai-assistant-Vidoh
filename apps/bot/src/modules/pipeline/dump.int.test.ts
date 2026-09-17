@@ -1174,7 +1174,8 @@ describe('разбор', () => {
       userId,
     );
 
-    expect(await pickedNow()).toContain('просроченное дело');
+    // Просроченное — с числом после дела: видно, что день прошёл.
+    expect(await pickedNow()).toContain('просроченное дело · 23.08');
   });
 });
 

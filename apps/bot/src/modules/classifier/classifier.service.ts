@@ -76,6 +76,12 @@ export interface ClassifyParams {
    * единственность слова в речи, один день на предложение.
    */
   readonly speech?: string | undefined;
+  /**
+   * Слова записей той же выгрузки, разобранных другим проходом (поздняя
+   * мысль, 17.09.2026): обозначение дня и цитата из их слов принадлежат
+   * им. Соседи внутри одного прохода считаются сами.
+   */
+  readonly siblings?: readonly string[] | undefined;
   readonly now?: Date | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
@@ -254,6 +260,8 @@ export interface CorrectionContext {
    * тексты не используются — гадать, кто с кем, нельзя.
    */
   readonly said?: readonly string[] | undefined;
+  /** Слова записей другого прохода той же выгрузки (см. `ClassifyParams`). */
+  readonly outside?: readonly string[] | undefined;
   /** Идёт в предупреждения: без версии непонятно, какой промпт виноват. */
   readonly promptVersion: string;
   readonly logger?: Logger | undefined;
@@ -299,6 +307,10 @@ export function correctItems(
   const saidOf = raw.items.map(
     (item, index) => `${aligned ? (ctx.said[index] ?? '') : ''} ${item.text}`,
   );
+  const siblingsOf = (index: number): readonly string[] => [
+    ...saidOf.filter((_, other) => other !== index),
+    ...(ctx.outside ?? []),
+  ];
 
   for (const [index, item] of raw.items.entries()) {
     const type = item.type;
@@ -338,7 +350,7 @@ export function correctItems(
         // Слова человека и пересказ модели вместе: слово о времени хоть
         // в одном из них — уже основание для срока.
         said: saidOf[index] ?? item.text,
-        siblings: saidOf.filter((_, other) => other !== index),
+        siblings: siblingsOf(index),
         /**
          * Вторая дорога к сроку (задача 3.37): цитата модели и речь, в
          * которой код её проверит. Без речи ветка не работает — и это
@@ -389,6 +401,7 @@ export function correctItems(
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
+        siblings: siblingsOf(index),
       });
 
       if (fromSentence) {
@@ -664,6 +677,7 @@ export async function classifyUnits(
     now,
     said: params.units.map((unit) => unit.text),
     ...(params.speech === undefined ? {} : { speech: params.speech }),
+    ...(params.siblings === undefined ? {} : { outside: params.siblings }),
     promptVersion: outcome.promptVersion,
     logger: deps.logger,
   });

@@ -996,6 +996,7 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
         batchId: own?.id,
         now: new Date(),
         timeZone: active.timeZone,
+        texts: active.texts,
       });
       const reply = buildActionsReply({ texts: active.texts, ...picked });
 

@@ -982,7 +982,8 @@ describe('срок соседа по чужой цитате (прогон 17.09
      * модель отдала диспансеризации 21.09/неделя с цитатой «следующей
      * неделе» — словами стоматолога. Проверка дословности цитату
      * пропускала: в речи она есть. Запасной путь по своему предложению
-     * тоже молчит: в предложении два обозначения (неделя и месяц).
+     * затем находит свободное обозначение: неделя занята стоматологом,
+     * месяц свободен и стоит в том же предложении — октябрь.
      */
     const prompts = await prepare();
     const provider = new MockLlmProvider({
@@ -1013,7 +1014,9 @@ describe('срок соседа по чужой цитате (прогон 17.09
     if (!result.ok) throw new Error('разбор должен был удаться');
 
     expect(result.items[0]?.deadline?.accuracy).toBe('week');
-    expect(result.items[1]?.deadline).toBeUndefined();
-    expect(result.corrections.deadline).toBe(1);
+    expect(result.items[1]?.deadline?.accuracy).toBe('month');
+    expect(result.items[1]?.deadline?.at.toISOString()).toBe('2026-09-30T21:00:00.000Z');
+    // Снятие чужого срока и срок из своего предложения — две правки.
+    expect(result.corrections.deadline).toBe(2);
   });
 });

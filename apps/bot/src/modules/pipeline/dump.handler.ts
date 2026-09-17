@@ -1731,6 +1731,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         spoken: spokenLate,
         // Правилам дня — речь целиком, как и у основного прохода.
         speech: combined,
+        // …и слова записей основного прохода — человека (единицы) и
+        // модели: их день — не поздней мысли («записать сына к врачу в
+        // четверг, купить молоко», 17.09.2026). Единицы обязательны:
+        // заголовок со сроком уже без своего дня.
+        siblings: [
+          ...extracted.units.map((unit) => unit.text),
+          ...classified.items.map((item) => item.text),
+        ],
         topics: topics.names,
         defaultTopic: threadTopic?.name ?? topics.defaultName,
         timeZone: context.timeZone,
