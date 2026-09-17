@@ -127,6 +127,44 @@ describe('разбор намерений', () => {
   });
 });
 
+describe('явное дополнение поверх ответа модели (прогон 17.09.2026)', () => {
+  it('«К банку добавь: …», названное моделью вопросом, становится правкой', async () => {
+    const prompts = await prepare();
+    const input = 'К банку добавь: спросить про лимит по карте';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['PATCH']);
+  });
+
+  it('то же, если модель сочла его новой мыслью', async () => {
+    const prompts = await prepare();
+    const input = 'Допиши к стоматологу: взять полис';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['PATCH']);
+  });
+
+  it('настоящий вопрос вопросом и остаётся', async () => {
+    const prompts = await prepare();
+    const input = 'Что у меня добавлено на завтра?';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['QUERY']);
+  });
+});
+
 describe('когда намерения не разобрались', () => {
   it('считает всю выгрузку одной мыслью, а не теряет её', async () => {
     // DUMP — самое частое намерение, и такая замена ничего не теряет.

@@ -1,6 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
-import { looksLikeAppend, looksLikeCorrection } from './append.js';
+import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -191,8 +191,12 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * стоит вызовов модели.
    */
   const marked = segments.map((segment) =>
-    segment.intent === 'DUMP' &&
-    (looksLikeAppend(segment.text) || looksLikeCorrection(segment.text))
+    (segment.intent === 'DUMP' &&
+      (looksLikeAppend(segment.text) || looksLikeCorrection(segment.text))) ||
+    // «К банку добавь: …» — и мыслью, и вопросом (прогон 17.09.2026):
+    // человек назвал и запись, и действие, спорить с этим модели нечем.
+    ((segment.intent === 'DUMP' || segment.intent === 'QUERY') &&
+      looksLikeExplicitAppend(segment.text))
       ? { ...segment, intent: 'PATCH' as const }
       : segment,
   );
