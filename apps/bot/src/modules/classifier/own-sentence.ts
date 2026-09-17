@@ -289,6 +289,15 @@ export function dayFromOwnSentence(params: {
   readonly spoken: string;
   readonly now: Date;
   readonly timeZone: string;
+  /**
+   * Слова соседних записей той же выгрузки (прогон 17.09.2026).
+   *
+   * Обозначение дня, которое стоит в словах соседа, принадлежит ему:
+   * «записать сына к врачу в четверг, купить молоко» — четверг врача, а
+   * не молока. И наоборот: из двух обозначений в предложении одно занято
+   * соседом — второе свободно и берётся, как единственное.
+   */
+  readonly siblings?: readonly string[] | undefined;
 }): SentenceDay | undefined {
   const item = tokens(params.itemText);
   if (item.length < 2) return undefined;
@@ -347,7 +356,11 @@ export function dayFromOwnSentence(params: {
     for (const mark of marksIn(sentence)) seen.set(keyOf(mark), mark);
   }
 
-  const marks = [...seen.values()];
+  // Обозначения из слов соседей — их, не этой записи.
+  const claimed = new Set(
+    (params.siblings ?? []).flatMap((said) => marksIn(said).map((mark) => keyOf(mark))),
+  );
+  const marks = [...seen.values()].filter((mark) => !claimed.has(keyOf(mark)));
 
   /**
    * Обозначений два и больше — предложение неоднозначно, и тогда

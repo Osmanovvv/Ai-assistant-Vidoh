@@ -2,7 +2,9 @@ import { and, eq } from 'drizzle-orm';
 
 import { batches, items } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { dueWords } from '../items/deadline-words.js';
 import { openItemsFor } from '../items/items.repo.js';
+import { textsFor, type TextProfile } from '../../texts/index.js';
 import { selectForOutput } from '../output/filter.js';
 import { withNextSteps } from '../projects/projects.service.js';
 
@@ -34,6 +36,7 @@ export async function pickMain(
     readonly batchId?: string | undefined;
     readonly now: Date;
     readonly timeZone: string;
+    readonly texts?: TextProfile | undefined;
   },
 ): Promise<PickedActions> {
   const mentioned = params.batchId === undefined ? undefined : await mentionedIn(db, params);
@@ -48,8 +51,24 @@ export async function pickMain(
   // §13.2: большая цель занимает строку своим первым шагом, не заголовком.
   const shown = await withNextSteps(db, selection.shown);
 
+  /**
+   * Срок — после дела (Никита, 17.09.2026).
+   *
+   * Бой: «На сегодня я бы взяла: — В пятницу надо забрать справку» — день
+   * был виден только потому, что модель оставила его в заголовке. С
+   * чистыми заголовками список читался бы как «сделай сегодня», а справка
+   * в пятницу. Хвост — как в списке ветки: «· завтра», «· на неделе с
+   * 21.09», «· в октябре»; у сегодняшних и бессрочных хвоста нет.
+   */
+  const texts = params.texts ?? textsFor(null);
+  const withDue = (item: (typeof shown)[number]): string => {
+    if (item.deadlineAt === null) return item.text;
+    const when = dueWords({ ...item, deadlineAt: item.deadlineAt }, params, texts);
+    return when === undefined ? item.text : `${item.text} · ${when}`;
+  };
+
   return {
-    actions: shown.map((item) => item.text),
+    actions: shown.map(withDue),
     hidden: selection.hidden,
     firstItemId: selection.shown[0]?.id,
   };

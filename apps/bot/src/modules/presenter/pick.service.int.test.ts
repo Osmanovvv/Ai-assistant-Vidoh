@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, items } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
+import { defaultTexts } from '../../texts/index.js';
 import { upsertUser } from '../users/users.repo.js';
 import { pickMain, rememberMentioned } from './pick.service.js';
 
@@ -29,7 +30,11 @@ async function batch(): Promise<string> {
 
 async function task(
   text: string,
-  extra: { sourceBatchId?: string; priority?: 'NOW' | 'SOON' | 'LATER' } = {},
+  extra: {
+    sourceBatchId?: string;
+    priority?: 'NOW' | 'SOON' | 'LATER';
+    due?: { at: string; accuracy: 'day' | 'week' | 'month' };
+  } = {},
 ) {
   await testDb()
     .insert(items)
@@ -40,6 +45,8 @@ async function task(
       priority: extra.priority ?? 'SOON',
       topic: 'личное',
       sourceBatchId: extra.sourceBatchId ?? null,
+      deadlineAt: extra.due === undefined ? null : new Date(extra.due.at),
+      deadlineAccuracy: extra.due?.accuracy ?? null,
     });
 }
 
@@ -113,5 +120,64 @@ describe('pickMain', () => {
     const picked = await pickMain(testDb(), { userId, now: NOW, timeZone: MOSCOW });
 
     expect(picked).toEqual({ actions: [], hidden: 0, firstItemId: undefined });
+  });
+
+  it('срок — после дела, словами карточки (Никита, 17.09.2026)', async () => {
+    /**
+     * Бой 17.09: «На сегодня я бы взяла: — В пятницу надо забрать
+     * справку» — день был виден только потому, что модель оставила его в
+     * заголовке. С чистыми заголовками список читался бы как «сделай
+     * сегодня», а справка — в пятницу. Срок дописывается после дела, как
+     * в списке ветки; «сегодня» не пишется — заголовок уже про сегодня.
+     */
+    // NOW — 15.09.2026, вторник, 12:00 по Москве.
+    await task('Забрать справку', {
+      priority: 'NOW',
+      due: { at: '2026-09-15T21:00:00.000Z', accuracy: 'day' },
+    });
+    await task('Записаться к стоматологу', {
+      due: { at: '2026-09-20T21:00:00.000Z', accuracy: 'week' },
+    });
+    await task('Пройти диспансеризацию', {
+      due: { at: '2026-09-30T21:00:00.000Z', accuracy: 'month' },
+    });
+
+    const picked = await pickMain(testDb(), {
+      userId,
+      now: NOW,
+      timeZone: MOSCOW,
+      texts: defaultTexts,
+    });
+
+    expect(picked.actions).toEqual([
+      'Забрать справку · завтра',
+      'Записаться к стоматологу · на неделе с 21.09',
+      'Пройти диспансеризацию · в октябре',
+    ]);
+  });
+
+  it('сегодня и без срока — без хвоста; послезавтра — числом', async () => {
+    await task('Позвонить в банк', {
+      priority: 'NOW',
+      due: { at: '2026-09-14T21:00:00.000Z', accuracy: 'day' },
+    });
+    await task('Отвести дочку на танцы', {
+      priority: 'NOW',
+      due: { at: '2026-09-16T21:00:00.000Z', accuracy: 'day' },
+    });
+    await task('Попросить мужа забрать посылку', { priority: 'NOW' });
+
+    const picked = await pickMain(testDb(), {
+      userId,
+      now: NOW,
+      timeZone: MOSCOW,
+      texts: defaultTexts,
+    });
+
+    expect(picked.actions).toEqual([
+      'Позвонить в банк',
+      'Отвести дочку на танцы · 17.09',
+      'Попросить мужа забрать посылку',
+    ]);
   });
 });
