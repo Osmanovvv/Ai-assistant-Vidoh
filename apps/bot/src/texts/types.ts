@@ -303,6 +303,13 @@ export interface TextProfile {
     readonly editHint: string;
     /** Правка не легла: записи нет или текст тот же. */
     readonly editNotApplied: string;
+    /**
+     * Передумал переименовывать (Никита, 17.09.2026): кнопка под
+     * подсказкой и ответ на неё. Без них назад дороги не было — только
+     * ждать пятнадцать минут или писать заголовок.
+     */
+    readonly buttonKeepTitle: string;
+    readonly editKept: string;
     /** Выбор сферы и три исхода переноса (§8.2: обновляются обе ветки). */
     readonly moveWhere: string;
     readonly moveNoTopics: string;

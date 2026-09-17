@@ -9,7 +9,7 @@ import { deadlineWords } from '../../modules/items/deadline-words.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { describeChange } from '../../modules/resolver/change-text.js';
 import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
-import { AWAITING, setAwaiting } from '../../modules/onboarding/awaiting.js';
+import { AWAITING, awaitingOf, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
 import { moveItemToTopic } from '../../modules/topics/topics.service.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
@@ -108,6 +108,33 @@ export interface CardDeps {
   readonly logger: Logger;
   /** Нужен, чтобы после смены статуса поправить сводку темы (§8.2). */
   readonly topics?: TopicGateway | undefined;
+}
+
+/** Снимает ожидание нового заголовка, если оно есть; другие ожидания не трогает. */
+async function dropPendingEdit(db: Database, userId: string): Promise<void> {
+  const state = await awaitingOf(db, userId);
+  if (state.expired || state.awaiting?.kind !== 'edit') return;
+
+  await setAwaiting(db, userId, null);
+}
+
+/**
+ * Любое нажатие снимает ожидание заголовка (Никита, 17.09.2026).
+ *
+ * Нажал «Изменить», передумал, ушёл в меню — а бот пятнадцать минут
+ * ждал заголовок и принял бы за него следующую мысль. Кнопка — не
+ * заголовок: человек ушёл дальше, значит, не переименовывает. Ставится
+ * **раньше** обработчиков кнопок: те дальше не передают.
+ * Ожидания опроса (имя, время, город) не трогаются — там кнопки и есть
+ * ответ.
+ */
+export function registerPendingEditGuard(bot: Bot, db: Database): void {
+  bot.on('callback_query:data', async (ctx, next) => {
+    const user = await findByTgId(db, ctx.from.id);
+    if (user) await dropPendingEdit(db, user.id);
+
+    await next();
+  });
 }
 
 export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): void {
@@ -306,7 +333,30 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
 
     await ctx.answerCallbackQuery();
     await setAwaiting(db, active.userId, `${AWAITING.editPrefix}${active.item.id}`);
-    await ctx.reply(active.texts.card.editHint);
+    // «Не менять» — выход для передумавшего (Никита, 17.09.2026).
+    await ctx.reply(active.texts.card.editHint, {
+      reply_markup: fitKeyboard([
+        [
+          {
+            label: active.texts.card.buttonKeepTitle,
+            action: `${CARD_ACTION.editCancel}${toShortId(active.item.id)}`,
+          },
+        ],
+      ]),
+    });
+  });
+
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.editCancel}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const user = await findByTgId(db, ctx.from.id);
+    if (user) await dropPendingEdit(db, user.id);
+    const profile = user ? (await outputContextOf(db, user.id)).textProfile : null;
+
+    try {
+      await ctx.editMessageText(textsFor(profile).card.editKept);
+    } catch (error) {
+      logger.debug({ err: error }, 'Подсказку «Изменить» не удалось заменить');
+    }
   });
   /**
    * «В другую сферу»: экран выбора (§8.2, запрос на изменение №3).

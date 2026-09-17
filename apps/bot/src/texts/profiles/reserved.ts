@@ -207,6 +207,8 @@ export const reserved: TextProfile = {
     snoozedAlready: (date) => `Уже отложено до ${date}.`,
     editHint: 'Напиши, как назвать это дело. Срок и статус — кнопками рядом.',
     editNotApplied: 'Оставила как было.',
+    buttonKeepTitle: 'Не менять',
+    editKept: 'Хорошо, оставила как было.',
     moveWhere: 'В какую сферу переложить?',
     moveNoTopics: 'Других сфер пока нет.',
     moved: (topic) => `Переложила в «${topic}».`,
