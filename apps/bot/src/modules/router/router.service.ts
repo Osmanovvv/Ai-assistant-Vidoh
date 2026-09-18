@@ -1,6 +1,7 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
 import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
+import { splitClosings } from './closing.js';
 import { splitDayQuestions } from './day-question.js';
 
 /**
@@ -233,8 +234,23 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  /**
+   * Отметка и отмена — по одному делу на отрезок (серия голосовых
+   * 18.09.2026, голос 5): «продукты купила, а в школу звонить не надо»
+   * модель отдаёт одним закрытием, и резолвер не может выбрать дело.
+   * См. `closing.ts`.
+   */
+  const split = splitClosings(withQuestions);
+
+  if (split.length !== withQuestions.length) {
+    deps.logger?.info(
+      { promptVersion: outcome.promptVersion, before: withQuestions.length, after: split.length },
+      'Закрытия разрезаны кодом по одному делу',
+    );
+  }
+
   return {
-    segments: withQuestions,
+    segments: split,
     crisis: outcome.value.crisis,
     promptVersion: outcome.promptVersion,
     reordered,

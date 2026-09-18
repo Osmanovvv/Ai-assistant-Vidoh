@@ -1,0 +1,86 @@
+import type { Segment } from './router.service.js';
+
+/**
+ * Отметка и отмена — по одному делу на отрезок (серия голосовых
+ * 18.09.2026, голос 5).
+ *
+ * «Продукты купила уже, а в школу звонить не надо. Всё решилось» —
+ * модель маршрутизатора отдала это одним `COMPLETE`. Резолвер получил
+ * одну реплику про два разных дела, выбрать не смог, сказал «новая
+ * мысль» — и школа осталась открытой, а слова легли черновиком. Промпт
+ * маршрутизатора не трогаем: он теряет единицы от любого утяжеления.
+ *
+ * Правило, а не догадка: отрезок закрытия режется по границам
+ * предложений и по запятой с союзом («, а», «, и», «, но», «, зато»).
+ * Часть без своего сказуемого — перечисление или объяснение («и хлеб»,
+ * «всё решилось») — остаётся при предыдущей. Намерение каждой части —
+ * по её словам: «не надо», «передумала», «отменяется» — отмена; глагол
+ * в прошедшем без «не» — отметка; и то и другое или ни того, ни
+ * другого — как сказала модель про весь отрезок. Запятая без союза не
+ * режет: «записала сына к врачу, как ты просила» — одно дело.
+ */
+
+/** Чьи сегменты разбираются: закрытия. Мысли, вопросы, правки — нет. */
+const CLOSINGS = new Set<Segment['intent']>(['COMPLETE', 'CANCEL']);
+
+/** Границы: конец предложения или запятая с союзом. Знак остаётся при части. */
+const BOUNDARY = /(?<=[.!?;])\s+|,\s+(?=(?:а|и|но|зато)\s)/iu;
+
+/** Слова отмены. */
+const CANCEL_WORDS =
+  /(?<!\p{L})(?:не\s+(?:надо|нужно|буду|будем|стоит|требуется|актуально)|отмен\p{L}*|передумал\p{L}*|больше\s+не|неактуальн\p{L}*|отпал\p{L}*)(?!\p{L})/iu;
+
+/** Глагол в прошедшем без «не» перед ним: «купила», «сходили», «записался». */
+const DONE_WORD = /(?<!\p{L})(?<!не\s)(\p{L}{3,}(?:ла|ли|лся|лась|лись))(?!\p{L})/giu;
+
+/** Существительные на «-ла/-ли», которые глаголом не являются. */
+const NOT_VERBS = new Set(['дела', 'недели', 'тела', 'земли', 'мысли', 'цели']);
+
+/** Повеление или «надо»: у части есть своё сказуемое. */
+const PREDICATE = /(?<!\p{L})(?:\p{L}+(?:ть|ться|чь|чься)|надо|нужно|сделано|готово)(?!\p{L})/iu;
+
+function isDone(text: string): boolean {
+  return [...text.matchAll(DONE_WORD)].some(
+    (match) => !NOT_VERBS.has(match[1]?.toLowerCase() ?? ''),
+  );
+}
+
+function isCancel(text: string): boolean {
+  return CANCEL_WORDS.test(text);
+}
+
+function hasPredicate(text: string): boolean {
+  return isCancel(text) || isDone(text) || PREDICATE.test(text);
+}
+
+function intentOf(part: string, parent: Segment['intent']): Segment['intent'] {
+  const cancel = isCancel(part);
+  const done = isDone(part);
+  if (cancel && !done) return 'CANCEL';
+  if (done && !cancel) return 'COMPLETE';
+  return parent;
+}
+
+function splitSegment(segment: Segment): readonly Segment[] {
+  const parts: string[] = [];
+  for (const raw of segment.text.split(BOUNDARY)) {
+    const piece = raw.trim();
+    if (piece.length === 0) continue;
+    const last = parts.length - 1;
+    if (last >= 0 && !hasPredicate(piece)) parts[last] = `${parts[last] ?? ''} ${piece}`;
+    else parts.push(piece);
+  }
+
+  if (parts.length <= 1) return [segment];
+
+  return parts.map((part) => ({
+    intent: intentOf(part, segment.intent),
+    text: part.replace(/,\s*$/u, ''),
+  }));
+}
+
+export function splitClosings(segments: readonly Segment[]): readonly Segment[] {
+  return segments.flatMap((segment) =>
+    CLOSINGS.has(segment.intent) ? splitSegment(segment) : [segment],
+  );
+}

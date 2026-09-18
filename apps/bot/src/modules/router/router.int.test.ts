@@ -184,6 +184,36 @@ describe('вопрос о дне внутри мысли (серия голос�
   });
 });
 
+describe('два закрытия одним отрезком (серия голосовых 18.09.2026, голос 5)', () => {
+  it('отметка и отмена, склеенные моделью в один COMPLETE, режутся кодом на два отрезка', async () => {
+    const prompts = await prepare();
+    const input =
+      'Продукты купила уже, а в школу звонить не надо. Все решилось, зато надо записаться к косметологу.';
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          crisis: false,
+          segments: [
+            {
+              intent: 'COMPLETE',
+              text: 'Продукты купила уже, а в школу звонить не надо. Все решилось,',
+            },
+            { intent: 'DUMP', text: 'зато надо записаться к косметологу.' },
+          ],
+        }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([
+      { intent: 'COMPLETE', text: 'Продукты купила уже' },
+      { intent: 'CANCEL', text: 'а в школу звонить не надо. Все решилось' },
+      { intent: 'DUMP', text: 'зато надо записаться к косметологу.' },
+    ]);
+  });
+});
+
 describe('когда намерения не разобрались', () => {
   it('считает всю выгрузку одной мыслью, а не теряет её', async () => {
     // DUMP — самое частое намерение, и такая замена ничего не теряет.
