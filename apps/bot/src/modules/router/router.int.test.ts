@@ -165,6 +165,25 @@ describe('явное дополнение поверх ответа модели
   });
 });
 
+describe('вопрос о дне внутри мысли (серия голосовых 18.09.2026, голос 3)', () => {
+  it('модель оставила всё мыслью — вопрос выделяется кодом, «и ещё …» после него остаётся мыслью', async () => {
+    const prompts = await prepare();
+    const input =
+      'Надо позвонить в школу на счет экскурсии. Кстати, что у меня там на завтра и еще платить интернет?';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([
+      { intent: 'DUMP', text: 'Надо позвонить в школу на счет экскурсии.' },
+      { intent: 'QUERY', text: 'Кстати, что у меня там на завтра' },
+      { intent: 'DUMP', text: 'и еще платить интернет?' },
+    ]);
+  });
+});
+
 describe('когда намерения не разобрались', () => {
   it('считает всю выгрузку одной мыслью, а не теряет её', async () => {
     // DUMP — самое частое намерение, и такая замена ничего не теряет.
