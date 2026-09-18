@@ -1,6 +1,7 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
 import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
+import { splitDayQuestions } from './day-question.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -217,8 +218,23 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  /**
+   * Вопрос о дне внутри мысли — кодом (серия голосовых 18.09.2026,
+   * голос 3): расшифровка склеивает «что у меня на завтра» с соседними
+   * мыслями, и модель то делает из вопроса дело, то теряет мысль в
+   * вопросе. См. `day-question.ts`.
+   */
+  const withQuestions = splitDayQuestions(marked);
+
+  if (withQuestions.length !== marked.length) {
+    deps.logger?.info(
+      { promptVersion: outcome.promptVersion, before: marked.length, after: withQuestions.length },
+      'Вопрос о дне внутри мысли выделен кодом',
+    );
+  }
+
   return {
-    segments: marked,
+    segments: withQuestions,
     crisis: outcome.value.crisis,
     promptVersion: outcome.promptVersion,
     reordered,
