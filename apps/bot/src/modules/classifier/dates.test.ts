@@ -249,6 +249,43 @@ describe('resolveDeadline', () => {
     expect(weekday.deadline.at.toISOString()).toBe('2026-09-17T21:00:00.000Z');
   });
 
+  it('назван день недели — это день, даже если модель сказала «неделя»: «по средам» остаётся средой (голос 4, 18.09.2026)', () => {
+    /**
+     * Бой: «по средам английский» — модель дала верную среду 23.09 с
+     * точностью `week`, укладка на начало периода увела срок на
+     * понедельник 21.09, а с ним и якорь правила «по средам». Названный
+     * день недели — это день (§2.7), и начало недели ему не нужно.
+     */
+    const friday = { now: new Date('2026-09-18T13:14:49.000Z'), timeZone: MOSCOW };
+
+    const wednesday = resolveDeadline(
+      { deadline: '2026-09-23', accuracy: 'week' },
+      { ...friday, said: 'по средам английский' },
+    );
+    if (!wednesday.ok || !wednesday.deadline) throw new Error('ожидался срок');
+    expect(wednesday.deadline.at.toISOString()).toBe('2026-09-22T21:00:00.000Z');
+    expect(wednesday.deadline.accuracy).toBe('day');
+    expect(wednesday.corrected).toBe('weekday');
+
+    // Модель ещё и день перепутала — правится и день, и точность.
+    const fromMonday = resolveDeadline(
+      { deadline: '2026-09-21', accuracy: 'week' },
+      { ...friday, said: 'по средам английский' },
+    );
+    if (!fromMonday.ok || !fromMonday.deadline) throw new Error('ожидался срок');
+    expect(fromMonday.deadline.at.toISOString()).toBe('2026-09-22T21:00:00.000Z');
+    expect(fromMonday.deadline.accuracy).toBe('day');
+
+    // Неделя без дня недели — по-прежнему неделя с понедельника.
+    const week = resolveDeadline(
+      { deadline: '2026-09-23', accuracy: 'week' },
+      { ...friday, said: 'на следующей неделе записаться к стоматологу' },
+    );
+    if (!week.ok || !week.deadline) throw new Error('ожидался срок');
+    expect(week.deadline.at.toISOString()).toBe('2026-09-20T21:00:00.000Z');
+    expect(week.deadline.accuracy).toBe('week');
+  });
+
   it('«на выходных» началом периода не трогается: суббота остаётся субботой', () => {
     const tuesday = { now: new Date('2026-09-15T05:00:00.000Z'), timeZone: 'Asia/Omsk' };
 

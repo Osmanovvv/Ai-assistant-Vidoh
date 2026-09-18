@@ -467,6 +467,16 @@ export function resolveDeadline(
     const named = weekdaysIn(words);
 
     /**
+     * Назван день недели — это день, даже если модель сказала «неделя»
+     * (серия голосовых 18.09.2026, голос 4). «По средам английский»:
+     * модель дала верную среду с точностью `week`, укладка на начало
+     * периода увела срок на понедельник — а с ним и якорь правила «по
+     * средам», который берётся из срока. §2.7: `day` — назван конкретный
+     * день; начало недели ему не нужно.
+     */
+    const dayNamed = named.length > 0 && accuracy === 'week';
+
+    /**
      * «Сегодня», «завтра», «послезавтра» — дата считается кодом (3.41).
      *
      * Живая выгрузка проджекта 03.09.2026: «ещё **сегодня** хотел
@@ -561,9 +571,13 @@ export function resolveDeadline(
 
       return {
         ok: true,
-        deadline: { at: settled(nearest), accuracy },
+        deadline: dayNamed ? { at: nearest, accuracy: 'day' } : { at: settled(nearest), accuracy },
         corrected: 'weekday',
       };
+    }
+
+    if (dayNamed) {
+      return { ok: true, deadline: { at, accuracy: 'day' }, corrected: 'weekday' };
     }
 
     /**
