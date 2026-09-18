@@ -17,6 +17,7 @@ import {
 import { testDb } from '../../test/db.js';
 import { putSetting, SettingsRegistry } from '../settings/settings.repo.js';
 import { touchActivity, upsertUser } from '../users/users.repo.js';
+import type { CardSender } from '../cards/cards.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   dispatchReminders,
@@ -209,6 +210,69 @@ describe('отправка', () => {
     await testDb().update(users).set({ isBlocked: true }).where(eq(users.id, userId));
 
     expect(await dispatchReminders(deps(), { now: new Date('2026-08-30T05:30:00.000Z') })).toBe(0);
+  });
+});
+
+describe('карточка первого утра (ТЗ по визуалам, проджект 18.09.2026)', () => {
+  /**
+   * Первое утро после начала пользования — картинка с подписью «Доброе
+   * утро ☀️ Вот что сегодня важно:», следом обычный утренний список;
+   * дальше картинку не дублировать ежедневно.
+   */
+  function recordingCards(options: { readonly fails?: boolean } = {}) {
+    const shown: { chatId: number; card: string; caption: string }[] = [];
+    const cards: CardSender = {
+      send: ({ chatId, card, caption }) => {
+        if (options.fails === true) return Promise.resolve(0);
+        shown.push({ chatId, card, caption });
+        return Promise.resolve(8000 + shown.length);
+      },
+    };
+    return { cards, shown };
+  }
+
+  const morning = new Date('2026-08-30T05:30:00.000Z'); // 08:30 МСК
+  const nextMorning = new Date(morning.getTime() + DAY);
+
+  it('первое утро — карточка перед списком, второе — без карточки', async () => {
+    const { cards, shown } = recordingCards();
+    await planReminders({ ...deps(), cards }, { now: NOW });
+    await dispatchReminders({ ...deps(), cards }, { now: morning });
+
+    expect(shown).toEqual([{ chatId: tgId, card: 'morning', caption: defaultTexts.cards.morning }]);
+    expect(outbox).toHaveLength(1);
+    const [settings] = await testDb()
+      .select({ at: userSettings.morningCardAt })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.at).not.toBeNull();
+
+    await planReminders({ ...deps(), cards }, { now: morning });
+    await dispatchReminders({ ...deps(), cards }, { now: nextMorning });
+
+    expect(shown).toHaveLength(1);
+    expect(outbox).toHaveLength(2);
+  });
+
+  it('карточка не ушла — утро идёт текстом, и карточка попробуется завтра', async () => {
+    const { cards, shown } = recordingCards({ fails: true });
+    await planReminders({ ...deps(), cards }, { now: NOW });
+    await dispatchReminders({ ...deps(), cards }, { now: morning });
+
+    expect(shown).toEqual([]);
+    expect(outbox).toHaveLength(1);
+    const [settings] = await testDb()
+      .select({ at: userSettings.morningCardAt })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.at).toBeNull();
+  });
+
+  it('без карточек в зависимостях — как раньше', async () => {
+    await planReminders(deps(), { now: NOW });
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(outbox).toHaveLength(1);
   });
 });
 

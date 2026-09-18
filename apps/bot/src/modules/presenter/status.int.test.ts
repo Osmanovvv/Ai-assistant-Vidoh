@@ -5,7 +5,14 @@ import { batches, messagesRaw } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { upsertUser } from '../users/users.repo.js';
-import { finishStatus, moveStatus, showStatus, type StatusSender } from './status.service.js';
+import type { CardSender } from '../cards/cards.js';
+import {
+  finishStatus,
+  finishWithCard,
+  moveStatus,
+  showStatus,
+  type StatusSender,
+} from './status.service.js';
 
 const T0 = new Date('2026-08-23T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
@@ -124,6 +131,104 @@ describe('последующие обновления', () => {
     }
 
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe('итог карточкой (ТЗ по визуалам, 18.09.2026)', () => {
+  /**
+   * Фото не правится из текстового сообщения: «Слушаю» удаляется, карточка
+   * с подписью уходит своим сообщением и занимает слот — всё дальнейшее
+   * идёт отдельными сообщениями, как после любого итога.
+   */
+  function recordingCards(options: { readonly fails?: boolean } = {}) {
+    const shown: { card: string; caption: string; buttons: number }[] = [];
+    const cards: CardSender = {
+      send: ({ card, caption, buttons }) => {
+        if (options.fails === true) return Promise.resolve(0);
+        shown.push({ card, caption, buttons: buttons?.length ?? 0 });
+        return Promise.resolve(900 + shown.length);
+      },
+    };
+    return { cards, shown };
+  }
+
+  it('«Слушаю» удаляется, карточка занимает слот, выгрузка помнит её', async () => {
+    const { sender, deleted } = recordingSender();
+    const { cards, shown } = recordingCards();
+    const deps = { db: testDb(), sender, cards, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    const done = await finishWithCard(
+      { ...deps, now: () => at(5_000) },
+      target(),
+      'week',
+      'Собрала главное на неделю.',
+      [{ label: 'Выбрать главное', action: 'a:pick' }],
+    );
+
+    expect(done).toBe(true);
+    expect(shown).toEqual([{ card: 'week', caption: 'Собрала главное на неделю.', buttons: 1 }]);
+    expect(deleted).toEqual([100]);
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.statusMessageId).toBe(901);
+    expect(batch?.statusTaken).toBe(true);
+  });
+
+  it('карточка не ушла — «Слушаю» остаётся, слот свободен: итог пойдёт текстом', async () => {
+    const { sender, deleted } = recordingSender();
+    const { cards } = recordingCards({ fails: true });
+    const deps = { db: testDb(), sender, cards, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Слушаю.');
+    const done = await finishWithCard(
+      { ...deps, now: () => at(5_000) },
+      target(),
+      'week',
+      'Неделя.',
+    );
+
+    expect(done).toBe(false);
+    expect(deleted).toEqual([]);
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.statusMessageId).toBe(100);
+    expect(batch?.statusTaken).toBe(false);
+  });
+
+  it('слот уже занят ответом — карточка уходит следом, ответ не трогается', async () => {
+    const { sender, sent, deleted } = recordingSender();
+    const { cards, shown } = recordingCards();
+    const deps = { db: testDb(), sender, cards, minEditIntervalMs: 0 };
+
+    await showStatus({ ...deps, now: () => at(0) }, target(), 'Готово.', { force: true });
+    await finishWithCard(
+      { ...deps, now: () => at(5_000) },
+      target(),
+      'evening',
+      'На сегодня всё 🤍',
+    );
+
+    expect(sent).toEqual(['Готово.']);
+    expect(deleted).toEqual([]);
+    expect(shown.map((one) => one.card)).toEqual(['evening']);
+  });
+
+  it('без статусного сообщения — просто карточка, и она занимает слот', async () => {
+    const { sender, deleted } = recordingSender();
+    const { cards, shown } = recordingCards();
+
+    const done = await finishWithCard(
+      { db: testDb(), sender, cards, now: () => at(0) },
+      target(),
+      'start',
+      'Просто напиши.',
+    );
+
+    expect(done).toBe(true);
+    expect(shown).toHaveLength(1);
+    expect(deleted).toEqual([]);
+    const [batch] = await testDb().select().from(batches).where(eq(batches.id, batchId));
+    expect(batch?.statusMessageId).toBe(901);
+    expect(batch?.statusTaken).toBe(true);
   });
 });
 

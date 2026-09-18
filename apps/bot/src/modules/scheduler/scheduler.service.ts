@@ -27,6 +27,7 @@ import type { TextProfile } from '../../texts/types.js';
 import { localDateParts, startOfDayInZone } from '../classifier/dates.js';
 import { openItemsFor, openItemsWhere } from '../items/items.repo.js';
 import { selectForToday } from '../output/filter.js';
+import type { CardName, CardSender } from '../cards/cards.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import { nudgeDue } from '../projects/projects.service.js';
@@ -81,6 +82,11 @@ export interface SchedulerDeps {
   readonly db: Database;
   readonly sender: QuestionSender;
   readonly logger: Logger;
+  /**
+   * Бренд-карточки (ТЗ по визуалам, проджект 18.09.2026): карточка
+   * первого утра перед списком. Без них утро идёт текстом, как раньше.
+   */
+  readonly cards?: CardSender | undefined;
   /**
    * Искать ли регулярность в накопленной истории (задача 3.17а).
    *
@@ -449,6 +455,19 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
    * частоту за собственный сбой. §5 ТЗ держит для этого колонку
    * `attempts`, и держит не ради статистики: повтор должен быть конечным.
    */
+  /**
+   * Карточка — перед сообщением, своим фото (ТЗ по визуалам 18.09.2026).
+   * Не ушла — сообщение идёт всё равно: картинка украшение, список суть.
+   */
+  if (message.card !== undefined && deps.cards !== undefined) {
+    const shown = await deps.cards.send({
+      chatId: person.tgId,
+      card: message.card.name,
+      caption: message.card.caption,
+    });
+    if (shown !== 0) await message.card.afterShown();
+  }
+
   const messageId = await deps.sender.ask({
     chatId: person.tgId,
     text: message.text,
@@ -493,6 +512,18 @@ export interface ComposedReminder {
    * записанное при сборке.
    */
   readonly undoIfUnsent?: (() => Promise<void>) | undefined;
+  /**
+   * Карточка перед сообщением (ТЗ по визуалам 18.09.2026): первое утро.
+   * `afterShown` — что записать, когда карточка ушла: сорвавшаяся
+   * попробуется завтра, а показанная дважды не бывает.
+   */
+  readonly card?:
+    | {
+        readonly name: CardName;
+        readonly caption: string;
+        readonly afterShown: () => Promise<void>;
+      }
+    | undefined;
 }
 
 /**
@@ -543,6 +574,29 @@ export async function composeMorning(
 ): Promise<ComposedReminder> {
   const { userId, now } = params;
   const context = await outputContextOf(deps.db, userId);
+
+  /**
+   * Карточка первого утра (ТЗ по визуалам 18.09.2026, 02): пока не
+   * показана — идёт перед списком; дальше картинку не дублировать.
+   */
+  const [shownBefore] = await deps.db
+    .select({ at: userSettings.morningCardAt })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId))
+    .limit(1);
+  const card =
+    deps.cards === undefined || shownBefore?.at !== null
+      ? undefined
+      : {
+          name: 'morning' as const,
+          caption: texts.cards.morning,
+          afterShown: async (): Promise<void> => {
+            await deps.db
+              .update(userSettings)
+              .set({ morningCardAt: now })
+              .where(eq(userSettings.userId, userId));
+          },
+        };
 
   /**
    * Разбор вчерашнего (запрос на изменение №4, решение заказчицы
@@ -627,6 +681,7 @@ export async function composeMorning(
       await unmarkReviewed(deps.db, reviewedIds);
       if (offer !== undefined) await unmarkOffered(deps.db, offer.id);
     },
+    card,
   };
 }
 
