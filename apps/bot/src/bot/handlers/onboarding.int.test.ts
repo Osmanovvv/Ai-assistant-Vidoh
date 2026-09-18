@@ -25,6 +25,7 @@ import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited, type AwaitingDeps } from './awaiting.js';
+import type { CardSender } from '../../modules/cards/cards.js';
 import { createPromoConsumer } from './billing.js';
 import { CONSENT_ACTION, incomingMiddleware, releaseHeldMessages } from './incoming.js';
 import { registerOnboardingHandlers } from './onboarding.js';
@@ -90,6 +91,8 @@ function createTestBot(
   log: Logger = logger,
   /** Приём промокода словами — как в бою, обратным вызовом (§14). */
   promo?: AwaitingDeps['promo'],
+  /** Бренд-карточки (ТЗ по визуалам 18.09.2026): карточка старта после опроса. */
+  cards?: CardSender,
 ): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
@@ -122,7 +125,7 @@ function createTestBot(
     consentUrl: CONSENT_URL,
     // Ответ словами (задача 3.61): без этого текстовая реплика
     // уходит в буфер выгрузки, как было до задачи.
-    consume: consumeAwaited({ db: testDb(), logger: log, promo }),
+    consume: consumeAwaited({ db: testDb(), logger: log, promo, cards }),
   };
   bot.use(incomingMiddleware(incoming));
   registerStartHandlers(bot, {
@@ -134,9 +137,23 @@ function createTestBot(
     release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
     ...(questions === undefined ? {} : { onboarding: questions }),
   });
-  registerOnboardingHandlers(bot, testDb(), logger);
+  registerOnboardingHandlers(bot, testDb(), logger, { cards });
 
   return { bot, calls };
+}
+
+/** Считает показанные карточки. */
+function recordingCards(): { cards: CardSender; shown: { card: string; caption: string }[] } {
+  const shown: { card: string; caption: string }[] = [];
+  return {
+    shown,
+    cards: {
+      send: ({ card, caption }) => {
+        shown.push({ card, caption });
+        return Promise.resolve(7000 + shown.length);
+      },
+    },
+  };
 }
 
 /** Так Telegram помечает команду. */
@@ -434,6 +451,35 @@ describe('полный путь', () => {
 
     const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
     expect(textOf(last)).toBe(defaultTexts.onboarding.finished);
+  });
+
+  it('после опроса — карточка старта с приглашением, без кнопок (ТЗ по визуалам 18.09.2026)', async () => {
+    const { cards, shown } = recordingCards();
+    const { bot } = createTestBot(undefined, undefined, undefined, undefined, cards);
+    await bot.init();
+    await startedAt(STEP.evening);
+
+    await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}22:00`));
+
+    expect(shown).toEqual([{ card: 'start', caption: defaultTexts.cards.start }]);
+  });
+
+  it('опрос закрыт словами — карточка старта тоже', async () => {
+    const { cards, shown } = recordingCards();
+    const { bot } = createTestBot(
+      recordingQuestions().sender,
+      undefined,
+      undefined,
+      undefined,
+      cards,
+    );
+    await bot.init();
+    await startedAt(STEP.evening);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.eveningOwn));
+    await bot.handleUpdate(textUpdate('в 21 45'));
+
+    expect(shown.map((one) => one.card)).toEqual(['start']);
   });
 
   it('каждый ответ правит ту же реплику, а не шлёт новую', async () => {

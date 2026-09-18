@@ -58,15 +58,18 @@ import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
+import { looksLikeDayClosing } from './day-closing.js';
 import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
+  finishWithCard,
   showStatus,
   type StatusButton,
   type StatusSender,
   type StatusTarget,
 } from '../presenter/status.service.js';
+import type { CardName, CardSender } from '../cards/cards.js';
 import { routeIntents, type Segment } from '../router/router.service.js';
 import {
   detectByMarkers,
@@ -121,6 +124,9 @@ const PARSED_INTENTS = new Set(['DUMP']);
 
 /** Сколько строк списка называть голосом — столько же, сколько на странице кнопки «Сегодня». */
 const SPOKEN_LIST_LIMIT = PAGE_SIZE;
+
+/** Предел Telegram на подпись к фото: длиннее — итог идёт текстом. */
+const CAPTION_LIMIT = 1_024;
 
 /**
  * Намерения, с которыми работает резолвер (§7 ТЗ, задача 3.6а).
@@ -192,6 +198,11 @@ export interface DumpHandlerDeps {
    */
   readonly embedder?: EmbeddingProvider | undefined;
   readonly sender?: StatusSender | undefined;
+  /**
+   * Бренд-карточки (ТЗ по визуалам, проджект 18.09.2026). Без них
+   * сценарии те же, только текстом: карточка — украшение, не суть.
+   */
+  readonly cards?: CardSender | undefined;
   /**
    * Отправитель вопросов онбординга (§12.2, задача 2.13).
    *
@@ -545,6 +556,32 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * И к кризисной реплике не договаривается тоже: там человеку не до
      * длины записи (§13.7).
      */
+    /**
+     * Карточка вместо текстового итога (ТЗ по визуалам 18.09.2026).
+     *
+     * Ложь — карточки нет, отправить не вышло или подпись длиннее предела
+     * Telegram на подпись к фото: тогда вызывающий код говорит то же
+     * текстом. Удалась — слот занят, дальнейшее уходит своими сообщениями.
+     */
+    const showCard = async (
+      card: CardName,
+      caption: string,
+      buttons?: readonly StatusButton[],
+    ): Promise<boolean> => {
+      if (!deps.cards || !deps.sender || !target || caption.length > CAPTION_LIMIT) return false;
+
+      const shown = await finishWithCard(
+        { db, sender: deps.sender, cards: deps.cards },
+        target,
+        card,
+        caption,
+        buttons,
+      );
+      if (shown) happened.said = true;
+      if (shown) happened.statusTaken = true;
+      return shown;
+    };
+
     const answer = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       const tail = `\n\n${texts.listening.tooLong}`;
       await tell(truncated ? `${text}${tail}` : text, buttons);
@@ -607,6 +644,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     };
 
     if (await stopOnCrisis(detectByMarkers(combined), 'markers')) return;
+
+    /**
+     * Закрытие дня словами (ТЗ по визуалам 18.09.2026, карточка 06):
+     * «на сегодня всё», «хватит» — точка завершения, без кнопок и без
+     * разбора. Считается здесь, до первой копейки модели. Карточка не
+     * ушла или карточек нет — те же слова текстом.
+     */
+    if (looksLikeDayClosing(combined)) {
+      const shown = await showCard('evening', texts.cards.evening);
+      if (!shown) await answer(texts.cards.evening);
+      return;
+    }
 
     /**
      * §10.5: мягкий лимит расхода (задача 2.22).
@@ -1386,6 +1435,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { label: texts.answer.buttonPick, action: ANSWER_ACTION.pick },
         ]);
         continue;
+      }
+
+      /**
+       * Неделя — карточкой (ТЗ по визуалам 18.09.2026, карточка 03):
+       * подпись, список в ней же и кнопки «Выбрать главное · Мои дела».
+       * Не ушла — тот же список текстом, как раньше.
+       */
+      if (answer.kind === 'period' && answer.period === 'week') {
+        const shown = await showCard('week', [texts.cards.week, ...body].join('\n'), [
+          { label: texts.answer.buttonPick, action: ANSWER_ACTION.pick },
+          { label: texts.cards.buttonMyTasks, action: ANSWER_ACTION.all },
+        ]);
+        if (shown) continue;
       }
 
       await tell([header, ...body].join('\n'));

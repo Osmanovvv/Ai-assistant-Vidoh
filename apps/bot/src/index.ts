@@ -81,6 +81,7 @@ import { AccessDeniedError } from './infra/failures.js';
 import { createServer, runHealthChecks, type HealthCheck } from './http/server.js';
 import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
 import { warnAboutUnpricedModels } from './modules/metering/pricing.js';
+import { createCardSender } from './modules/cards/cards.js';
 import { createQuestionSender, createTelegramSender } from './modules/presenter/telegram-sender.js';
 import { startScheduler } from './modules/scheduler/scheduler.service.js';
 import { findByTgId, touchActivity } from './modules/users/users.repo.js';
@@ -467,6 +468,11 @@ async function main(): Promise<void> {
   // клавиатура на нём мигала бы (§12.2, задача 2.13).
   const questions = createQuestionSender({ api: bot.api, db, logger });
 
+  // Бренд-карточки (ТЗ по визуалам, проджект 18.09.2026): старт после
+  // опроса, первое утро, неделя, закрытие дня. Один отправитель на всех:
+  // он помнит file_id картинок, и файл уходит в Telegram один раз.
+  const cards = createCardSender({ api: bot.api, db, logger });
+
   // Ветки личного чата. Проба 0.3 подтвердила, что в ЛС это работает;
   // если режим тем выключен в @BotFather, шлюз честно об этом скажет, и
   // продукт перейдёт в плоский режим §8.2.
@@ -492,6 +498,7 @@ async function main(): Promise<void> {
     embedder,
     logger,
     sender,
+    cards,
     onboarding: questions,
     topics: topicGateway,
     /**
@@ -879,6 +886,7 @@ async function main(): Promise<void> {
     consume: consumeAwaited({
       db,
       logger,
+      cards,
       // Вектор заголовка после правки словами из карточки (A5).
       embedder,
       spendGuard,
@@ -925,7 +933,7 @@ async function main(): Promise<void> {
   registerServiceMessageHandlers(bot, logger);
   // Любое нажатие снимает ожидание заголовка — раньше всех кнопок.
   registerPendingEditGuard(bot, db);
-  registerOnboardingHandlers(bot, db, logger);
+  registerOnboardingHandlers(bot, db, logger, { cards });
   registerMenuHandlers(bot, db, logger);
 
   // Команды платёжной платформы — после приёма: сперва сохраняем
@@ -1211,6 +1219,7 @@ async function main(): Promise<void> {
     ? startScheduler({
         db,
         sender: questions,
+        cards,
         logger,
         suggestRecurrence: env.RECURRENCE_SUGGESTIONS,
         // Чтобы напоминание не приглашало выгружать того, кому бот в

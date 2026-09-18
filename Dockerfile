@@ -56,6 +56,8 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/bot/node_modules ./apps/bot/node_modules
 COPY --from=build /app/apps/bot/dist ./apps/bot/dist
+# Бренд-карточки едут вместе с кодом: бот шлёт их в Telegram сам.
+COPY --from=build /app/apps/bot/assets ./apps/bot/assets
 # Собранная панель — только файлы, без исходников и без зависимостей
 # сборки: в бою она статика.
 COPY --from=build /app/apps/admin/dist ./apps/admin/dist

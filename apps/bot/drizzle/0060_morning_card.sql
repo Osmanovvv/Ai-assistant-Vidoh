@@ -1,0 +1,1 @@
+ALTER TABLE "user_settings" ADD COLUMN "morning_card_at" timestamp with time zone;

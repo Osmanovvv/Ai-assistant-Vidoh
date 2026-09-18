@@ -156,7 +156,8 @@ export const reserved: TextProfile = {
     title: 'Что показать?',
     buttonVoice: 'Наговорить',
     buttonText: 'Написать',
-    buttonAll: 'Все задачи',
+    // «Мои дела» — так кнопка названа в ТЗ проджекта 17.09.2026 (4.4).
+    buttonAll: 'Мои дела',
     buttonToday: 'Сегодня',
     buttonHelp: 'Помощь',
     buttonSettings: 'Настройки',
@@ -342,6 +343,14 @@ export const reserved: TextProfile = {
     savedName: (name) => `Готово, буду звать ${name}.`,
   },
 
+  cards: {
+    start: 'Просто напиши или наговори всё, что сейчас держишь в голове. Можно как есть.',
+    morning: 'Доброе утро ☀️ Вот что сегодня важно:',
+    week: 'Собрала главное на неделю. Спокойно, по шагам.',
+    evening: 'На сегодня всё 🤍',
+    buttonMyTasks: 'Мои дела',
+  },
+
   returning: {
     greeting: [
       'С возвращением. За это время у тебя кое-что накопилось.',
@@ -350,7 +359,7 @@ export const reserved: TextProfile = {
     ].join('\n'),
     buttonContinue: 'Продолжить старое',
     buttonFresh: 'Начать с чистого листа',
-    moved: (count) => `Убрала ${String(count)} из поля зрения. Всё цело — лежит в «Все задачи».`,
+    moved: (count) => `Убрала ${String(count)} из поля зрения. Всё цело — лежит в «Мои дела».`,
     nothingToMove: 'Поле и так чистое.',
   },
 

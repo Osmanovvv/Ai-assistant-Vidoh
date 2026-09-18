@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 
 import { batches } from '../../db/schema.js';
+import type { CardName, CardSender } from '../cards/cards.js';
 import type { Database } from '../../infra/db.js';
 
 /**
@@ -284,6 +285,59 @@ export async function statusIsTaken(deps: StatusDeps, batchId: string): Promise<
 }
 
 /** Финальный ответ: правка проходит независимо от ограничения частоты. */
+/**
+ * Итог карточкой (ТЗ по визуалам, проджект 18.09.2026).
+ *
+ * Фото не сделать правкой текстового сообщения: «Слушаю» удаляется,
+ * карточка с подписью и кнопками уходит своим сообщением и занимает слот
+ * — всё дальнейшее идёт отдельными сообщениями, как после любого итога.
+ * Порядок нарочно «сначала фото, потом удаление»: в чате ни на миг не
+ * остаётся пусто. Занятый слот не трогается — карточка уходит следом.
+ * Карточка не ушла (ноль от отправителя) — ничего не менялось, и
+ * вызывающий код отдаёт итог текстом, как обычно.
+ */
+export async function finishWithCard(
+  deps: StatusDeps & { readonly cards: CardSender },
+  target: StatusTarget,
+  card: CardName,
+  caption: string,
+  buttons?: readonly StatusButton[],
+): Promise<boolean> {
+  const now = (deps.now ?? (() => new Date()))();
+
+  const [batch] = await deps.db
+    .select({ statusMessageId: batches.statusMessageId, statusTaken: batches.statusTaken })
+    .from(batches)
+    .where(eq(batches.id, target.batchId))
+    .limit(1);
+
+  if (!batch) {
+    throw new Error(`Выгрузка ${target.batchId} не найдена`);
+  }
+
+  const messageId = await deps.cards.send({
+    chatId: target.chatId,
+    threadId: target.threadId,
+    card,
+    caption,
+    ...(buttons === undefined ? {} : { buttons }),
+  });
+  if (messageId === 0) return false;
+
+  if (batch.statusTaken) return true;
+
+  if (batch.statusMessageId !== null && deps.sender.delete !== undefined) {
+    await deps.sender.delete({ chatId: target.chatId, messageId: batch.statusMessageId });
+  }
+
+  await deps.db
+    .update(batches)
+    .set({ statusMessageId: messageId, statusUpdatedAt: now, statusTaken: true })
+    .where(eq(batches.id, target.batchId));
+
+  return true;
+}
+
 export async function finishStatus(
   deps: StatusDeps,
   target: StatusTarget,

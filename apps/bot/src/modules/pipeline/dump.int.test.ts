@@ -27,6 +27,7 @@ import { defaultTexts } from '../../texts/index.js';
 import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
+import type { CardSender } from '../cards/cards.js';
 import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
 import { QUESTION_ACTION } from '../resolver/change-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
@@ -262,6 +263,8 @@ async function seedPrompts(): Promise<PromptRegistry> {
 
 interface HandlerOptions {
   readonly speech: MockSpeechProvider;
+  /** Бренд-карточки (ТЗ по визуалам 18.09.2026). */
+  readonly cards?: CardSender | undefined;
   readonly topics?: FakeTopicGateway | undefined;
   readonly llm?: MockLlmProvider;
   /** Лёгкая модель: на неё переходят тяжёлые стадии при превышении лимита. */
@@ -302,6 +305,7 @@ function handler(options: HandlerOptions) {
       ...(options.speechLimits === undefined ? {} : { limits: options.speechLimits }),
       ...(options.slowAfterMs === undefined ? {} : { slowAfterMs: options.slowAfterMs }),
     },
+    ...(options.cards === undefined ? {} : { cards: options.cards }),
     ai: {
       provider: options.llm ?? echoingLlm(),
       prompts: options.prompts,
@@ -2571,6 +2575,111 @@ function recordingSender(): {
     },
   };
 }
+
+/** Считает показанные карточки: какая, с какой подписью и кнопками. */
+function recordingCards(): {
+  cards: CardSender;
+  shown: { card: string; caption: string; buttons: string[] }[];
+} {
+  const shown: { card: string; caption: string; buttons: string[] }[] = [];
+  return {
+    shown,
+    cards: {
+      send: ({ card, caption, buttons }) => {
+        shown.push({ card, caption, buttons: (buttons ?? []).map((one) => one.label) });
+        return Promise.resolve(5000 + shown.length);
+      },
+    },
+  };
+}
+
+describe('бренд-карточки (ТЗ по визуалам, проджект 18.09.2026)', () => {
+  it('«На сегодня всё» — карточка вечера без кнопок, без разбора и без обращения к модели', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'Ладно, на сегодня всё.', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const { cards, shown } = recordingCards();
+    const llm = echoingLlm();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, cards, llm }),
+      },
+      userId,
+    );
+
+    expect(shown).toEqual([{ card: 'evening', caption: defaultTexts.cards.evening, buttons: [] }]);
+    expect(llm.requests).toHaveLength(0);
+    // Записей не появилось, текстового итога тоже: карточка и есть ответ.
+    expect(await testDb().select().from(items).where(eq(items.userId, userId))).toHaveLength(0);
+    expect(all.filter((text) => text === defaultTexts.cards.evening)).toHaveLength(0);
+  });
+
+  it('без карточек «На сегодня всё» отвечается теми же словами текстом', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'На сегодня хватит', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe(defaultTexts.cards.evening);
+  });
+
+  it('вопрос про неделю — карточка недели с подписью, списком и кнопками «Выбрать главное · Мои дела»', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Сдать отчёт',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'работа',
+        status: 'new',
+        // Часы разбора — `at(60_000)` от T0: срок через два дня от них.
+        deadlineAt: new Date(T0.getTime() + 2 * 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      });
+    await queuedBatchOf([{ kind: 'text', text: 'Что у меня на неделе?', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const { cards, shown } = recordingCards();
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Что у меня на неделе?' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, cards, llm }),
+      },
+      userId,
+    );
+
+    expect(shown).toHaveLength(1);
+    expect(shown[0]?.card).toBe('week');
+    expect(shown[0]?.caption.startsWith(defaultTexts.cards.week)).toBe(true);
+    expect(shown[0]?.caption).toContain('Сдать отчёт');
+    expect(shown[0]?.buttons).toEqual([
+      defaultTexts.answer.buttonPick,
+      defaultTexts.cards.buttonMyTasks,
+    ]);
+    // Список не дублируется текстом.
+    expect(all.some((text) => text.includes('Сдать отчёт'))).toBe(false);
+  });
+});
 
 describe('ответ пользователю', () => {
   it('под разбором стоят две кнопки: «Оставить как есть» и «Выбрать главное» с кодом выгрузки', async () => {

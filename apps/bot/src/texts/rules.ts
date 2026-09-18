@@ -109,7 +109,20 @@ export const MARKER_EMOJI = new Set(['⭐', '☑']);
  * усталости, улыбка при лёгкой досаде. 😮‍💨 — составной знак (лицо,
  * соединитель, облачко): считается одним, см. `picturesIn`.
  */
-export const TONE_EMOJI = new Set(['😌', '🙂', '🙌', '🛒', '📌', '⏰', '🤍', '😮‍💨', '🙃']);
+/** ☀ и 🌙 — из приветствий утра и вечера в ТЗ проджекта 17.09.2026 (2.9); селектор начертания снят, как у ☑. */
+export const TONE_EMOJI = new Set([
+  '😌',
+  '🙂',
+  '🙌',
+  '🛒',
+  '📌',
+  '⏰',
+  '🤍',
+  '😮‍💨',
+  '🙃',
+  '☀',
+  '🌙',
+]);
 export const ALLOWED_EMOJI = new Set([...MARKER_EMOJI, ...TONE_EMOJI]);
 
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });

@@ -421,6 +421,13 @@
       "when": 1789571053073,
       "tag": "0059_misunderstood_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1789747752576,
+      "tag": "0060_morning_card",
+      "breakpoints": true
     }
   ]
 }
