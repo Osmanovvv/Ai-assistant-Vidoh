@@ -300,14 +300,18 @@ describe('сорвавшаяся отправка (§5 ТЗ, колонка atte
 });
 
 describe('сроки (3.16)', () => {
-  async function sow(deadline: Date, accuracy: 'day' | 'week' | 'month'): Promise<string> {
+  async function sow(
+    deadline: Date,
+    accuracy: 'day' | 'week' | 'month',
+    type: 'TASK' | 'INFO' | 'DESIRE' = 'TASK',
+  ): Promise<string> {
     const [row] = await testDb()
       .insert(items)
       .values({
         userId,
-        text: 'Оплатить квитанцию',
-        type: 'TASK',
-        priority: 'SOON',
+        text: type === 'TASK' ? 'Оплатить квитанцию' : '25 сентября у мамы день рождения',
+        type,
+        priority: type === 'TASK' ? 'SOON' : 'NONE',
         topic: 'деньги',
         deadlineAt: deadline,
         deadlineAccuracy: accuracy,
@@ -316,6 +320,37 @@ describe('сроки (3.16)', () => {
 
     return row?.id ?? '';
   }
+
+  it('сведение с датой напоминаний не получает: «Завтра срок» и «Сделано» — не про него (прогон 18.09.2026)', async () => {
+    /**
+     * Бой: «25 сентября у мамы день рождения» легло сведением с датой —
+     * верно, это не дело. Но планировщик брал все открытые записи с
+     * датой, и накануне пришло бы «Завтра срок: 25 сентября у мамы день
+     * рождения» с кнопкой «Сделано». Дата у сведения остаётся в карточке.
+     */
+    await sow(new Date('2026-08-31T09:00:00.000Z'), 'day', 'INFO');
+    await sow(new Date('2026-08-31T09:00:00.000Z'), 'week', 'INFO');
+    await planReminders(deps(), { now: NOW });
+
+    const kinds = await testDb()
+      .select({ kind: reminders.kind })
+      .from(reminders)
+      .where(eq(reminders.userId, userId));
+
+    expect(kinds.map((one) => one.kind).sort()).toEqual(['evening', 'morning']);
+  });
+
+  it('желание с периодом напоминается, как дело: «Ты хотела на этой неделе» — его слова', async () => {
+    await sow(new Date('2026-08-31T09:00:00.000Z'), 'week', 'DESIRE');
+    await planReminders(deps(), { now: NOW });
+
+    const kinds = await testDb()
+      .select({ kind: reminders.kind })
+      .from(reminders)
+      .where(eq(reminders.userId, userId));
+
+    expect(kinds.map((one) => one.kind).sort()).toEqual(['evening', 'morning', 'period']);
+  });
 
   it('точность «день» даёт напоминание накануне и утром', async () => {
     await sow(new Date('2026-08-31T09:00:00.000Z'), 'day');

@@ -7,7 +7,7 @@ import {
   unmarkOffered,
   unmarkReviewed,
 } from '../review/review.service.js';
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import {
@@ -269,6 +269,11 @@ async function deadlinesOf(db: Database, userId: string, now: Date): Promise<Pla
     .where(
       and(
         openItemsWhere(userId),
+        // Сведение с датой не напоминается (прогон 18.09.2026): «25
+        // сентября у мамы день рождения» хранит дату в карточке, но
+        // «Завтра срок» с кнопкой «Сделано» — не про него. Желание
+        // напоминается, как дело: «Ты хотела на этой неделе» — его слова.
+        ne(items.type, 'INFO'),
         isNotNull(items.deadlineAt),
         lte(items.deadlineAt, until),
         or(
