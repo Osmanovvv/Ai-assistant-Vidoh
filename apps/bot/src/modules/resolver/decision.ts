@@ -263,6 +263,34 @@ function namedAlone(
   return named.length === 1 && named[0]?.id === candidate.id;
 }
 
+/**
+ * Перенос срока, а срок есть у одной записи (прогон 18.09.2026, голос 2).
+ *
+ * «Записать кота к ветеринару в среду, хотя нет, в среду не могу, давай
+ * в четверг, и ещё купить ему корм» — одним голосовым. Правка «давай в
+ * четверг» меняет только срок; кандидатов два, оба свежие, близости
+ * нет, слова записи не названо — и бот спрашивал «это про ветеринара?».
+ * Но срок из двух записей есть у одной: перенос — это когда есть что
+ * переносить, а переносить больше нечего. Та же единственность, что у
+ * свежести и срока. Правка с новым текстом — не перенос: там сигнал
+ * молчит. Не перенос и срок в тот же день, где запись уже стоит (шаг 16:
+ * «перенеси врача на понедельник» при стоматологе на понедельник).
+ */
+function onlyDated(
+  candidate: Candidate,
+  candidates: readonly Candidate[],
+  answer: ResolverAnswer,
+  timeZone: string,
+): boolean {
+  const { changes } = answer;
+  if (changes.deadline.trim() === '') return false;
+  if (changes.text.trim() !== '' || changes.note.trim() !== '') return false;
+  if (candidate.deadlineAt === null) return false;
+  if (!datedByIdentity(candidate, answer, timeZone)) return false;
+
+  return candidates.filter((one) => one.deadlineAt !== null).length === 1;
+}
+
 /** Запись тронута только что, и такая она одна среди кандидатов. */
 function freshAlone(
   candidate: Candidate,
@@ -412,6 +440,16 @@ export function decide(
       candidate,
       newThought: false,
       why: 'подтверждено словом',
+    };
+  }
+
+  if (onlyDated(candidate, candidates, answer, context.timeZone ?? 'Europe/Moscow')) {
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено переносом',
     };
   }
 
