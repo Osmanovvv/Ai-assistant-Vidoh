@@ -51,6 +51,8 @@ export interface FunnelRow {
   readonly registered: number;
   /** Из них: есть разобранная выгрузка. */
   readonly firstDump: number;
+  /** С двумя и более разобранными выгрузками (ТЗ 17.09.2026, 5 п. 6): вернулась ли. */
+  readonly secondDump: number;
   /** Из них: записан момент конца пробного периода. */
   readonly trialOver: number;
   /** Из дошедших до границы — заплатившие. */
@@ -131,6 +133,7 @@ async function rowsOf(
     source: string | null;
     registered: number;
     first_dump: number;
+    second_dump: number;
     trial_over: number;
     paid_after_trial: number;
     paid_without_trial_over: number;
@@ -167,6 +170,7 @@ async function rowsOf(
       source,
       count(*)::int as registered,
       count(*) filter (where done > 0)::int as first_dump,
+      count(*) filter (where done > 1)::int as second_dump,
       count(*) filter (where over_at is not null)::int as trial_over,
       count(*) filter (where over_at is not null and paid > 0)::int as paid_after_trial,
       count(*) filter (where over_at is null and paid > 0)::int as paid_without_trial_over,
@@ -210,6 +214,7 @@ async function rowsOf(
     source: row.source === null || row.source === '' ? null : row.source,
     registered: row.registered,
     firstDump: row.first_dump,
+    secondDump: row.second_dump,
     trialOver: row.trial_over,
     paidAfterTrial: row.paid_after_trial,
     paidWithoutTrialOver: row.paid_without_trial_over,
@@ -224,6 +229,7 @@ function sumRows(rows: readonly FunnelRow[]): FunnelRow {
       source: null,
       registered: all.registered + row.registered,
       firstDump: all.firstDump + row.firstDump,
+      secondDump: all.secondDump + row.secondDump,
       trialOver: all.trialOver + row.trialOver,
       paidAfterTrial: all.paidAfterTrial + row.paidAfterTrial,
       paidWithoutTrialOver: all.paidWithoutTrialOver + row.paidWithoutTrialOver,
@@ -234,6 +240,7 @@ function sumRows(rows: readonly FunnelRow[]): FunnelRow {
       source: null,
       registered: 0,
       firstDump: 0,
+      secondDump: 0,
       trialOver: 0,
       trialOverUnrecorded: 0,
       paidAfterTrial: 0,

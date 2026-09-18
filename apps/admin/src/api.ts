@@ -269,6 +269,8 @@ export interface FunnelRow {
   readonly source: string | null;
   readonly registered: number;
   readonly firstDump: number;
+  /** С двумя и более разобранными выгрузками (ТЗ 17.09.2026, 5 п. 6). */
+  readonly secondDump: number;
   readonly trialOver: number;
   readonly paidAfterTrial: number;
   readonly paidWithoutTrialOver: number;

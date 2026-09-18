@@ -22,3 +22,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 20 3 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/backup.sh >> /var/log/vydoh-backup.log 2>&1
 
 0 4 * * * root set -a && . /opt/vydoh/.env && . /opt/vydoh/backup.env && set +a && MONITORING_BOT_TOKEN="$BOT_TOKEN" bash /opt/vydoh/ops/restore-check.sh >> /var/log/vydoh-backup.log 2>&1
+
+# Вывод контейнеров (json-file, 20 МБ × 5 частей) ограничен размером, а не
+# сроком. Срок — не больше 30 дней (ТЗ проджекта 17.09.2026, раздел 7):
+# ротированные части старше месяца удаляются ежедневно; текущая часть при
+# нынешнем объёме держит дни, не недели.
+45 4 * * * root find /var/lib/docker/containers -name '*-json.log.[0-9]*' -mtime +30 -delete

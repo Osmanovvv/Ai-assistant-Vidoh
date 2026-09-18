@@ -868,11 +868,25 @@ try {
       const sentKinds = rows.filter((row) => row.sentAt !== null).map((row) => row.kind);
 
       if (morning === undefined && sentKinds.includes('morning')) {
-        morning = stub.texts().find((text) => text.includes(defaultTexts.reminders.morningInvite));
+        morning = stub
+          .texts()
+          .find((text) =>
+            Object.values(defaultTexts.reminders.morningHello).some((hello) =>
+              text.startsWith(hello),
+            ),
+          );
       }
 
       if (evening === undefined && sentKinds.includes('evening')) {
-        evening = stub.texts().find((text) => text.includes(defaultTexts.reminders.eveningInvite));
+        evening = stub
+          .texts()
+          .find(
+            (text) =>
+              text.startsWith(defaultTexts.reminders.eveningAllDone) ||
+              Object.values(defaultTexts.reminders.eveningHello).some((hello) =>
+                text.startsWith(hello),
+              ),
+          );
       }
 
       if (morning !== undefined && evening !== undefined) break;

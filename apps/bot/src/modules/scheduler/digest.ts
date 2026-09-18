@@ -3,6 +3,7 @@ import { toShortId } from '../shared/short-id.js';
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
+import { localDateParts } from '../classifier/dates.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
@@ -30,6 +31,24 @@ import { titleWithoutDate } from '../resolver/title-date.js';
  * тридцать человек получает больше, чем когда спрашивает сам.
  */
 export const MORNING_ACTIONS_LIMIT = 3;
+
+/**
+ * Какой из трёх вариантов приветствия сегодня (ТЗ 17.09.2026, 2.9): по
+ * номеру дня в поясе человека, по кругу. Не случайность и не модель:
+ * одно и то же утро у одного человека всегда собирается одинаково, и
+ * проверить это можно.
+ */
+function variantOf<T>(
+  variants: { readonly one: T; readonly two: T; readonly three: T },
+  day: { readonly now: Date; readonly timeZone: string },
+): T {
+  const parts = localDateParts(day.now, day.timeZone);
+  const days = Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / DAY_MS);
+  const all = [variants.one, variants.two, variants.three];
+  return all[days % all.length] ?? variants.one;
+}
+
+const DAY_MS = 24 * 60 * 60_000;
 
 /**
  * Утренняя реплика: приглашение и, если есть, дела на сегодня.
@@ -64,11 +83,27 @@ export function morningText(
    */
   extra: { readonly review?: Review | undefined; readonly offer?: Item | undefined } = {},
 ): string {
-  const lines = [mayDump ? texts.reminders.morningInvite : texts.reminders.needsPay];
-
+  /**
+   * Приветствие — одна строка, дальше сразу суть (ТЗ 17.09.2026, 2.9).
+   * Обычное утро: приветствие с переходом парой того же номера, потом
+   * дела без второй шапки. Лёгкий день (дел меньше лимита): приветствие,
+   * «На сегодня немного:», дела. Пусто: приветствие, «ничего срочного»,
+   * куда скидывать. Без доступа к разборам приглашение скидывать
+   * заменяется словами об оплате.
+   */
+  const hello = variantOf(texts.reminders.morningHello, day);
   const shown = actions.slice(0, MORNING_ACTIONS_LIMIT);
-  if (shown.length > 0) {
-    lines.push('', texts.reminders.morningActions);
+  const lines: string[] = [];
+
+  if (shown.length === 0) {
+    lines.push(
+      hello,
+      texts.reminders.morningEmpty,
+      mayDump ? texts.reminders.morningEmptyInvite : texts.reminders.needsPay,
+    );
+  } else {
+    if (shown.length < MORNING_ACTIONS_LIMIT) lines.push(hello, texts.reminders.morningLight);
+    else lines.push(`${hello} ${variantOf(texts.reminders.morningIntro, day)}`);
     for (const item of shown) lines.push(texts.reminders.line(titleUnderDayHeader(item, day)));
   }
 
@@ -87,6 +122,8 @@ export function morningText(
   if (extra.offer !== undefined) {
     lines.push('', texts.review.offer(titleWithoutDate(extra.offer.text)));
   }
+
+  if (!mayDump && shown.length > 0) lines.push(texts.reminders.needsPay);
 
   return lines.join('\n');
 }
@@ -130,16 +167,42 @@ export const REVIEW_ACTION = {
  */
 export function eveningText(
   texts: TextProfile,
-  closedToday: number,
-  suggestion?: string,
-  /** Есть ли доступ к новым разборам. См. `morningText`. */
-  mayDump = true,
+  params: {
+    /** Сколько закрыто сегодня — числом, если больше нуля. */
+    readonly closed: number;
+    /** Что на сегодня осталось открытым. */
+    readonly left: readonly Item[];
+    readonly day: { readonly now: Date; readonly timeZone: string };
+    readonly suggestion?: string | undefined;
+    /** Есть ли доступ к новым разборам. См. `morningText`. */
+    readonly mayDump?: boolean | undefined;
+  },
 ): string {
-  const summary =
-    closedToday > 0 ? texts.reminders.eveningClosed(closedToday) : texts.reminders.eveningQuiet;
+  /**
+   * Вечер по ТЗ 17.09.2026 (2.9): всё закрыто — «На сегодня всё 🤍» и
+   * «Остальное я помню.», точка завершения без приглашения; что-то
+   * осталось — приветствие по кругу, что осталось с сегодня и что с
+   * этим можно сделать. Закрытое — числом между ними, если есть что
+   * считать; ноль не пишется (§13.6).
+   */
+  const lines: string[] = [];
+  const closed = params.closed > 0 ? [texts.reminders.eveningClosed(params.closed)] : [];
 
-  const lines = [summary, mayDump ? texts.reminders.eveningInvite : texts.reminders.needsPay];
-  if (suggestion !== undefined && suggestion.length > 0) lines.push('', suggestion);
+  if (params.left.length === 0) {
+    lines.push(texts.reminders.eveningAllDone, ...closed, texts.reminders.remembered);
+  } else {
+    lines.push(variantOf(texts.reminders.eveningHello, params.day), ...closed);
+    lines.push(texts.reminders.eveningLeft);
+    for (const item of params.left) {
+      lines.push(texts.reminders.line(titleUnderDayHeader(item, params.day)));
+    }
+    lines.push(texts.reminders.eveningLeftHint);
+  }
+
+  if (params.mayDump === false) lines.push(texts.reminders.needsPay);
+  if (params.suggestion !== undefined && params.suggestion.length > 0) {
+    lines.push('', params.suggestion);
+  }
 
   return lines.join('\n');
 }

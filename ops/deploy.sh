@@ -286,6 +286,18 @@ if ! ssh $SSH_OPTS "$HOST" "cmp -s $REMOTE_DIR/ops/cron/vydoh /etc/cron.d/vydoh"
   exit 1
 fi
 
+# Ротация журналов — тоже из репозитория (ТЗ проджекта 17.09.2026, раздел
+# 7: срок хранения не больше 30 дней). До 18.09.2026 файл жил только на
+# сервере, и правка срока была бы правкой по памяти.
+say "Ставлю ротацию журналов"
+sshx "install -m 644 -o root -g root $REMOTE_DIR/ops/logrotate/vydoh /etc/logrotate.d/vydoh && logrotate -d /etc/logrotate.d/vydoh >/dev/null 2>&1"
+# shellcheck disable=SC2086
+if ! ssh $SSH_OPTS "$HOST" "cmp -s $REMOTE_DIR/ops/logrotate/vydoh /etc/logrotate.d/vydoh"; then
+  printf 'Ротация не встала: /etc/logrotate.d/vydoh отличается от того, что в репозитории.
+' >&2
+  exit 1
+fi
+
 say "Состояние сервисов"
 sshx "cd $REMOTE_DIR && $COMPOSE ps"
 

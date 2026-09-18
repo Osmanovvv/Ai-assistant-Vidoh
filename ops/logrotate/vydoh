@@ -1,0 +1,32 @@
+# Журналы бота ВЫДОХ (задача 3.51; срок хранения — ТЗ проджекта 17.09.2026,
+# раздел 7: «ротация файловых логов с фактическим сроком хранения не более
+# 30 дней»). Ставится выкладкой в /etc/logrotate.d/vydoh и сверяется с
+# репозиторием, как расписание cron.
+#
+# `rotate 30` держит тридцать суточных частей, `maxage 30` удаляет часть
+# старше тридцати дней независимо от числа: вместе они и есть «не более
+# 30 дней». copytruncate обязателен: файл держит открытым процесс в
+# контейнере, и переименование оставило бы его писать в удалённый файл.
+/opt/vydoh/logs/*.log {
+    daily
+    rotate 30
+    maxage 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}
+
+# Журналы заданий cron (пульс, копии): тот же срок.
+/var/log/vydoh-*.log {
+    weekly
+    rotate 4
+    maxage 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

@@ -79,6 +79,19 @@ let userId = '';
 let tgId = 0;
 let seq = 0;
 
+/** Утреннее сообщение — то, что начинается с одного из приветствий утра (2.9). */
+function isMorning(text: string): boolean {
+  return Object.values(defaultTexts.reminders.morningHello).some((hello) => text.startsWith(hello));
+}
+
+/** Вечернее — начинается с «На сегодня всё» или с вечернего приветствия. */
+function isEvening(text: string): boolean {
+  return (
+    text.startsWith(defaultTexts.reminders.eveningAllDone) ||
+    Object.values(defaultTexts.reminders.eveningHello).some((hello) => text.startsWith(hello))
+  );
+}
+
 const deps = () => ({ db: testDb(), sender, logger });
 
 /** 30 августа 2026, 06:00 в Москве: до утреннего напоминания два с половиной часа. */
@@ -530,7 +543,7 @@ describe('сроки (3.16)', () => {
     const morning = new Date('2026-08-30T05:30:00.000Z'); // 08:30 МСК
     await dispatchReminders(deps(), { now: morning });
 
-    const digest = outbox.find((one) => one.text.includes(defaultTexts.reminders.morningInvite));
+    const digest = outbox.find((one) => isMorning(one.text));
     const deadline = outbox.find((one) => one.buttons.includes(defaultTexts.reminders.buttonDone));
 
     expect(digest?.text).not.toContain('Оплатить квитанцию');
@@ -556,7 +569,7 @@ describe('сроки (3.16)', () => {
     await planReminders(deps(), { now: new Date('2026-08-29T03:00:00.000Z') });
     await dispatchReminders(deps(), { now: new Date('2026-08-30T05:30:00.000Z') });
 
-    const digest = outbox.find((one) => one.text.includes(defaultTexts.reminders.morningInvite));
+    const digest = outbox.find((one) => isMorning(one.text));
     expect(digest?.text).toContain('Позвонить мастеру');
     expect(digest?.text).not.toContain('Ремонт на кухне');
   });
@@ -892,11 +905,7 @@ describe('вечерний итог считает сделанные регул
   async function eveningTextSent(): Promise<string> {
     await planReminders(deps(), { now: NOW });
     await dispatchReminders(deps(), { now: evening });
-    return (
-      outbox
-        .map((one) => one.text)
-        .find((text) => text.includes('закончился') || text.includes('закрыто')) ?? ''
-    );
+    return outbox.map((one) => one.text).find((text) => isEvening(text)) ?? '';
   }
 
   it('сделанное сегодня регулярное — закрыто одно, а не «день закончился»', async () => {
@@ -909,7 +918,8 @@ describe('вечерний итог считает сделанные регул
   it('регулярное, сделанное вчера, сегодня не считается', async () => {
     await sow({ recurring: true, completedAt: new Date('2026-08-29T10:00:00.000Z') });
 
-    expect(await eveningTextSent()).toContain(defaultTexts.reminders.eveningQuiet);
+    expect(await eveningTextSent()).toContain(defaultTexts.reminders.eveningAllDone);
+    expect(await eveningTextSent()).not.toContain(defaultTexts.reminders.eveningClosed(1));
   });
 
   it('обычное закрытое и регулярное сделанное считаются вместе', async () => {
@@ -1099,7 +1109,7 @@ describe('разбор вчерашнего в утреннем (запрос н
   async function morning(): Promise<Sent | undefined> {
     await planReminders(deps(), { now: NOW });
     await dispatchReminders(deps(), { now: MORNING });
-    return outbox.find((one) => one.text.includes(defaultTexts.reminders.morningInvite));
+    return outbox.find((one) => isMorning(one.text));
   }
 
   it('просроченное — в разборе с кнопками, а не в списке на сегодня; отметка стоит', async () => {
@@ -1343,7 +1353,7 @@ describe('регулярность в накопленной истории (3.1
 
     const sent = outbox.at(-1);
 
-    expect(sent?.text).toContain(defaultTexts.reminders.eveningInvite);
+    expect(isEvening(sent?.text ?? '')).toBe(true);
     expect(sent?.text).toMatch(/каждый месяц/u);
     expect(sent?.buttons).toEqual([
       defaultTexts.resolver.buttonRemember,
@@ -1364,7 +1374,13 @@ describe('регулярность в накопленной истории (3.1
     await planReminders(deps(), { now: NOW });
     await dispatchReminders(deps(), { now: evening });
 
-    expect(outbox.at(-1)?.text).toBe(eveningText(defaultTexts, 0));
+    expect(outbox.at(-1)?.text).toBe(
+      eveningText(defaultTexts, {
+        closed: 0,
+        left: [],
+        day: { now: evening, timeZone: 'Europe/Moscow' },
+      }),
+    );
     expect(await offerCount()).toBe(0);
   });
 
@@ -1607,7 +1623,7 @@ describe('напоминание не приглашает того, кому б
     const sent = outbox.at(-1);
 
     expect(sent?.text).toContain(defaultTexts.reminders.needsPay);
-    expect(sent?.text).not.toContain(defaultTexts.reminders.morningInvite);
+    expect(sent?.text).not.toContain(defaultTexts.reminders.morningEmptyInvite);
 
     // И кнопка оплаты рядом: искать её в меню человек не должен.
     expect(sent?.buttons).toEqual([defaultTexts.menu.buttonSubscription]);
@@ -1619,7 +1635,7 @@ describe('напоминание не приглашает того, кому б
 
     const sent = outbox.at(-1);
 
-    expect(sent?.text).toContain(defaultTexts.reminders.morningInvite);
+    expect(isMorning(sent?.text ?? '')).toBe(true);
     expect(sent?.buttons).toEqual([]);
   });
 });
