@@ -412,6 +412,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         if (!deps.sender || !target) return;
         await showStatus({ db, sender: deps.sender }, target, texts.listening.working);
       },
+      // Расшифровка затянулась — сказать, что ждать и не перезаписывать
+      // (серия голосовых 18.09.2026, голос 4).
+      onSlow: async () => {
+        if (!deps.sender || !target) return;
+        await showStatus({ db, sender: deps.sender }, target, texts.listening.slow);
+      },
+      slowAfterMs: deps.speech.slowAfterMs,
     });
 
     /**

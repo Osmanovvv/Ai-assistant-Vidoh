@@ -64,6 +64,13 @@ export interface TextProfile {
   readonly listening: {
     readonly acknowledged: string;
     readonly working: string;
+    /**
+     * Расшифровка не пришла в ожидаемый срок (серия голосовых
+     * 18.09.2026, голос 4). SpeechKit в асинхронном режиме отдаёт текст
+     * от секунды до десяти с лишним минут, и всё это время человек видел
+     * «Секунду, слушаю запись» — не зная, ждать или перезаписывать.
+     */
+    readonly slow: string;
     readonly nothingHeard: string;
     /**
      * Не всё расшифровано: запись длиннее десяти минут или выгрузка
