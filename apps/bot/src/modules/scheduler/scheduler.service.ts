@@ -699,6 +699,16 @@ async function composeOne(
     case 'evening': {
       const context = await outputContextOf(deps.db, reminder.userId);
       const closed = await closedToday(deps.db, reminder.userId, now, context.timeZone);
+      /**
+       * Что на сегодня осталось (ТЗ 17.09.2026, 2.9): те же дела, что
+       * утро зовёт «на сегодня», — вечером они и есть «осталось с
+       * сегодня». Пусто — «На сегодня всё 🤍».
+       */
+      const left = selectForToday(await openItemsFor(deps.db, reminder.userId), {
+        now,
+        timeZone: context.timeZone,
+      }).slice(0, MORNING_ACTIONS_LIMIT);
+      const day = { now, timeZone: context.timeZone };
 
       /**
        * Обход накопленной истории (задача 3.17а).
@@ -721,22 +731,23 @@ async function composeOne(
 
       if (found === undefined) {
         return {
-          text: eveningText(texts, closed, undefined, mayDump),
+          text: eveningText(texts, { closed, left, day, mayDump }),
           buttons: mayDump ? [] : payButtons(texts),
         };
       }
 
       return {
-        text: eveningText(
-          texts,
+        text: eveningText(texts, {
           closed,
-          texts.resolver.noticed(
+          left,
+          day,
+          suggestion: texts.resolver.noticed(
             found.title,
             datesInWords(found.dates, context.timeZone),
             rhythmInWords(found.rhythm),
           ),
           mayDump,
-        ),
+        }),
         buttons: suggestButtons(found.suggestionId, texts),
         undoIfUnsent: () => withdrawOffer(deps.db, found.suggestionId),
       };

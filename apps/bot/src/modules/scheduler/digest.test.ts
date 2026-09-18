@@ -43,22 +43,93 @@ function paramsOf(fn: (...args: never[]) => unknown): string[] {
     .filter((one) => one.length > 0);
 }
 
+/** Вечер как вызывает планировщик: закрытых столько-то, осталось то-то. */
+const evening = (
+  closed: number,
+  left: readonly Item[] = [],
+  extra: { readonly suggestion?: string; readonly mayDump?: boolean; readonly now?: Date } = {},
+): string =>
+  eveningText(defaultTexts, {
+    closed,
+    left,
+    day: { now: extra.now ?? NOW, timeZone: MOSCOW },
+    ...(extra.suggestion === undefined ? {} : { suggestion: extra.suggestion }),
+    ...(extra.mayDump === undefined ? {} : { mayDump: extra.mayDump }),
+  });
+
 const all = (): string[] => [
   morningText(defaultTexts, [], TODAY),
   morningText(defaultTexts, [item('Позвонить в садик'), item('Забрать посылку')], TODAY),
-  eveningText(defaultTexts, 0),
-  eveningText(defaultTexts, 3),
+  evening(0),
+  evening(3),
+  evening(1, [item('Забрать посылку')]),
   deadlineText(defaultTexts, { item: item('Оплатить квитанцию'), onDay: true }),
   deadlineText(defaultTexts, { item: item('Оплатить квитанцию'), onDay: false }),
   projectText(defaultTexts, { title: 'День рождения сына', step: 'выбрать кафе' }),
 ];
 
-describe('утро', () => {
-  it('без дел — только приглашение, одной строкой', () => {
-    const text = morningText(defaultTexts, [], TODAY);
+/**
+ * Приветствие утром и вечером (ТЗ проджекта 17.09.2026, 2.9): одна
+ * короткая человеческая строка, после неё сразу полезная часть; 3–4
+ * заранее заданных варианта по кругу, не модель. «Остальное я помню» —
+ * фирменная формула.
+ */
+const hellos = Object.values(defaultTexts.reminders.morningHello);
+const intros = Object.values(defaultTexts.reminders.morningIntro);
+const dayAfter = (days: number): { readonly now: Date; readonly timeZone: string } => ({
+  now: new Date(NOW.getTime() + days * 24 * 60 * 60_000),
+  timeZone: MOSCOW,
+});
+const three = [item('Позвонить в садик'), item('Забрать посылку'), item('Купить хлеб')];
 
-    expect(text.split('\n')).toHaveLength(1);
-    expect(text).toMatch(/наговори|скажи|разложу/iu);
+describe('утро', () => {
+  it('обычное утро: приветствие с переходом к сути одной строкой, потом дела — без второй шапки', () => {
+    const lines = morningText(defaultTexts, three, TODAY).split('\n');
+
+    const first = lines[0] ?? '';
+    expect(hellos.some((hello) => first.startsWith(hello))).toBe(true);
+    expect(intros.some((intro) => first.endsWith(intro))).toBe(true);
+    expect(lines.slice(1)).toEqual([
+      defaultTexts.reminders.line('Позвонить в садик'),
+      defaultTexts.reminders.line('Забрать посылку'),
+      defaultTexts.reminders.line('Купить хлеб'),
+    ]);
+  });
+
+  it('приветствие меняется по кругу день за днём, а не одно и то же дословно', () => {
+    const firsts = [0, 1, 2, 3].map(
+      (days) => morningText(defaultTexts, three, dayAfter(days)).split('\n')[0],
+    );
+
+    expect(new Set(firsts.slice(0, 3)).size).toBe(3);
+    expect(firsts[3]).toBe(firsts[0]);
+  });
+
+  it('лёгкий день: приветствие, «На сегодня немного:», дела', () => {
+    const lines = morningText(defaultTexts, [item('Позвонить в садик')], TODAY).split('\n');
+
+    expect(hellos).toContain(lines[0]);
+    expect(lines[1]).toBe(defaultTexts.reminders.morningLight);
+    expect(lines[2]).toBe(defaultTexts.reminders.line('Позвонить в садик'));
+  });
+
+  it('без дел — приветствие, «ничего срочного нет» и куда скидывать: три строки', () => {
+    const lines = morningText(defaultTexts, [], TODAY).split('\n');
+
+    expect(hellos).toContain(lines[0]);
+    expect(lines.slice(1)).toEqual([
+      defaultTexts.reminders.morningEmpty,
+      defaultTexts.reminders.morningEmptyInvite,
+    ]);
+  });
+
+  it('без доступа к разборам приглашение «скидывай сюда» заменяется словами об оплате', () => {
+    const empty = morningText(defaultTexts, [], TODAY, false);
+    expect(empty).toContain(defaultTexts.reminders.needsPay);
+    expect(empty).not.toContain(defaultTexts.reminders.morningEmptyInvite);
+
+    const busy = morningText(defaultTexts, three, TODAY, false);
+    expect(busy.split('\n').at(-1)).toBe(defaultTexts.reminders.needsPay);
   });
 
   it('с делами — приглашение и список', () => {
@@ -127,24 +198,60 @@ describe('утро', () => {
 });
 
 describe('вечер', () => {
-  it('закрытое называет числом', () => {
-    expect(eveningText(defaultTexts, 3)).toContain('3');
+  const eveningHellos = Object.values(defaultTexts.reminders.eveningHello);
+
+  it('всё закрыто: «На сегодня всё 🤍», закрытое числом, «Остальное я помню.»', () => {
+    expect(evening(3).split('\n')).toEqual([
+      defaultTexts.reminders.eveningAllDone,
+      defaultTexts.reminders.eveningClosed(3),
+      defaultTexts.reminders.remembered,
+    ]);
+  });
+
+  it('что-то осталось: приветствие, что осталось с сегодня и что с этим можно сделать', () => {
+    const lines = evening(1, [item('Забрать посылку'), item('Купить хлеб')]).split('\n');
+
+    expect(eveningHellos).toContain(lines[0]);
+    expect(lines.slice(1)).toEqual([
+      defaultTexts.reminders.eveningClosed(1),
+      defaultTexts.reminders.eveningLeft,
+      defaultTexts.reminders.line('Забрать посылку'),
+      defaultTexts.reminders.line('Купить хлеб'),
+      defaultTexts.reminders.eveningLeftHint,
+    ]);
+  });
+
+  it('вечернее приветствие тоже идёт по кругу', () => {
+    const firsts = [0, 1, 2, 3].map(
+      (days) =>
+        evening(0, [item('Купить хлеб')], {
+          now: new Date(NOW.getTime() + days * 24 * 60 * 60_000),
+        }).split('\n')[0],
+    );
+
+    expect(new Set(firsts.slice(0, 3)).size).toBe(3);
+    expect(firsts[3]).toBe(firsts[0]);
   });
 
   it('пустой день не получает упрёка и не получает нуля', () => {
-    const text = eveningText(defaultTexts, 0);
+    const text = evening(0);
 
     expect(text).not.toContain('0');
     expect(text).not.toMatch(/не сделал|ничего не|успел|жаль|всего лишь/iu);
+    expect(text.split('\n')).toEqual([
+      defaultTexts.reminders.eveningAllDone,
+      defaultTexts.reminders.remembered,
+    ]);
   });
 
-  it('приглашает выгрузить накопившееся', () => {
-    expect(eveningText(defaultTexts, 0)).toMatch(/накопи|скажи/iu);
+  it('вечер — точка, а не приглашение: выгружать не зовёт', () => {
+    expect(evening(2)).not.toMatch(/накопи|наговори|скажи/iu);
   });
 
-  it('короткий: две строки, не больше', () => {
-    // §11 дословно: «короткий итог дня».
-    expect(eveningText(defaultTexts, 5).split('\n')).toHaveLength(2);
+  it('без доступа к разборам — слова об оплате последней строкой', () => {
+    expect(evening(0, [], { mayDump: false }).split('\n').at(-1)).toBe(
+      defaultTexts.reminders.needsPay,
+    );
   });
 });
 
@@ -156,34 +263,36 @@ describe('предложение запомнить регулярность в 
   );
 
   it('едет внутри вечерней сводки, а не отдельным сообщением', () => {
-    const text = eveningText(defaultTexts, 2, noticed);
+    const text = evening(2, [], { suggestion: noticed });
 
-    expect(text).toContain(defaultTexts.reminders.eveningInvite);
+    expect(text).toContain(defaultTexts.reminders.eveningAllDone);
     expect(text).toContain('Оплатить садик');
   });
 
   it('занимает единственный вопрос сводки', () => {
-    // §13.9: один вопрос на реплику. Приглашение выше — не вопрос.
-    const text = eveningText(defaultTexts, 2, noticed);
+    // §13.9: один вопрос на реплику. Итог выше — не вопрос.
+    const text = evening(2, [], { suggestion: noticed });
 
     expect((text.match(/\?/gu) ?? []).length).toBe(1);
   });
 
   it('без предложения сводка остаётся без вопросов вовсе', () => {
-    expect((eveningText(defaultTexts, 2).match(/\?/gu) ?? []).length).toBe(0);
+    expect((evening(2).match(/\?/gu) ?? []).length).toBe(0);
   });
 
   it('пустая строка предложением не считается', () => {
-    expect(eveningText(defaultTexts, 2, '')).toBe(eveningText(defaultTexts, 2));
+    expect(evening(2, [], { suggestion: '' })).toBe(evening(2));
   });
 
   it('предложение отделено пустой строкой от итога', () => {
-    // Иначе вопрос читается как продолжение приглашения.
-    expect(eveningText(defaultTexts, 2, noticed).split('\n')[2]).toBe('');
+    // Иначе вопрос читается как продолжение итога.
+    const lines = evening(2, [], { suggestion: noticed }).split('\n');
+    expect(lines.at(-2)).toBe('');
+    expect(lines.at(-1)).toBe(noticed);
   });
 
   it('и с предложением тон остаётся в рамках §13.8', () => {
-    expect(forbiddenPhraseIn(eveningText(defaultTexts, 0, noticed))).toBeUndefined();
+    expect(forbiddenPhraseIn(evening(0, [], { suggestion: noticed }))).toBeUndefined();
   });
 });
 
@@ -227,7 +336,10 @@ describe('§13.6: просроченное не провал', () => {
      * кнопок, не счёт. Проверка ниже держит это на самих текстах.
      */
     expect(paramsOf(morningText)).toEqual(['texts', 'actions', 'day', 'mayDump', 'extra']);
-    expect(paramsOf(eveningText)).toEqual(['texts', 'closedToday', 'suggestion', 'mayDump']);
+    // Вечеру передаются закрытое числом и оставшееся списком — ни числа
+    // просроченных, ни пропущенных дней среди параметров нет.
+    expect(paramsOf(eveningText)).toEqual(['texts', 'params']);
+    expect(evening(2, [item('Купить хлеб')])).not.toMatch(/просроч|пропущ|дней/iu);
   });
 
   it('шапки разбора вчерашнего — без числа (запрос №4, §13)', () => {
@@ -244,9 +356,10 @@ describe('§13.6: просроченное не провал', () => {
 
   it('предложение из «Позже» — её словами (правка заказчицы 14.09.2026, п. 1.4)', () => {
     // «Можно ещё вернуться к…» — так она это назвала; прежняя строка
-    // «Если захочется — из отложенного» была нашей.
+    // «Если захочется — из отложенного» была нашей. «…, если захочется»
+    // — из ТЗ проджекта 17.09.2026 (2.9, лёгкий день).
     expect(defaultTexts.review.offer('Разобрать балкон')).toBe(
-      'Можно ещё вернуться к «Разобрать балкон».',
+      'Можно ещё вернуться к «Разобрать балкон», если захочется.',
     );
   });
 });

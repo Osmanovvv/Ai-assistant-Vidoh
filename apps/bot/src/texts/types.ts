@@ -659,10 +659,21 @@ export interface TextProfile {
   };
 
   readonly reminders: {
-    /** Утро: приглашение выгрузить (§11). */
-    readonly morningInvite: string;
-    /** Заголовок перед делами на сегодня. */
-    readonly morningActions: string;
+    /**
+     * Приветствие утром (ТЗ проджекта 17.09.2026, 2.9): одна короткая
+     * человеческая строка, после неё сразу полезная часть. Три варианта
+     * — по кругу день за днём, а не одно и то же дословно и не на выбор
+     * модели. `morningHello` — само приветствие, `morningIntro` — переход
+     * к сути того же номера: обычное утро складывается из них парой,
+     * лёгкий и пустой день — из одного приветствия.
+     */
+    readonly morningHello: { readonly one: string; readonly two: string; readonly three: string };
+    readonly morningIntro: { readonly one: string; readonly two: string; readonly three: string };
+    /** Лёгкий день — дел меньше трёх. */
+    readonly morningLight: string;
+    /** На сегодня ничего — и куда скидывать, если появится. */
+    readonly morningEmpty: string;
+    readonly morningEmptyInvite: string;
     /**
      * Приглашение оплатить вместо «наговори» (ревизия четвёртого этапа).
      *
@@ -675,11 +686,17 @@ export interface TextProfile {
     readonly needsPay: string;
     readonly line: (text: string) => string;
 
-    /** Вечер: короткий итог дня. */
+    /** Вечер: закрытое числом — только если закрыто хоть что-то. */
     readonly eveningClosed: (count: number) => string;
-    /** Вечер без закрытых дел: итога нет, упрёка тоже. */
-    readonly eveningQuiet: string;
-    readonly eveningInvite: string;
+    /** Приветствие вечером — тоже по кругу (2.9). */
+    readonly eveningHello: { readonly one: string; readonly two: string; readonly three: string };
+    /** Всё закрыто — точка завершения, без приглашения. */
+    readonly eveningAllDone: string;
+    /** Что-то осталось: шапка списка и что с этим можно сделать. */
+    readonly eveningLeft: string;
+    readonly eveningLeftHint: string;
+    /** «Остальное я помню» — фирменная формула ВЫДОХа (2.9). */
+    readonly remembered: string;
 
     /** Накануне вечером о завтрашнем сроке. */
     /**

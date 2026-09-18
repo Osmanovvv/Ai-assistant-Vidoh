@@ -101,6 +101,20 @@ describe('четыре шага', () => {
     expect(funnel.total.firstDump).toBe(1);
   });
 
+  it('«2+ выгрузки» — люди с двумя и более разобранными (ТЗ проджекта 17.09.2026, 5 п. 6)', async () => {
+    // Шаг воронки между первой выгрузкой и концом пробного: вернулась ли
+    // женщина после первого раза. Считается по тому же `status = 'done'`.
+    await dump({ userId: anya });
+    await dump({ userId: anya });
+    await dump({ userId: boris });
+    await dump({ userId: boris, done: false });
+
+    const funnel = await funnelOf(testDb());
+
+    expect(funnel.total.firstDump).toBe(2);
+    expect(funnel.total.secondDump).toBe(1);
+  });
+
   it('конец пробного — записанный момент, а не пересчёт', async () => {
     /**
      * **Ключевая проверка задачи.** Предел правится из панели без
@@ -237,6 +251,7 @@ describe('четыре шага', () => {
 
     expect(total.paidAfterTrial).toBeLessThanOrEqual(total.trialOver);
     expect(total.trialOver).toBeLessThanOrEqual(total.firstDump);
+    expect(total.secondDump).toBeLessThanOrEqual(total.firstDump);
     expect(total.firstDump).toBeLessThanOrEqual(total.registered);
   });
 });

@@ -47,15 +47,29 @@ describe('выкладка ставит расписание', () => {
     expect(code).toContain('Расписание не встало');
   });
 
-  it('в расписании три задания: пульс, копия, проверка восстановления', () => {
+  it('в расписании четыре задания: пульс, копия, проверка восстановления, чистка вывода контейнеров', () => {
     // Число — не украшение: пропади строка пульса, и упавший бот перестал
     // бы о себе сообщать, а выглядело бы это как тишина здорового.
     const jobs = cron.split('\n').filter((line) => /^[\d*]/u.test(line.trim()));
 
-    expect(jobs).toHaveLength(3);
+    expect(jobs).toHaveLength(4);
     expect(cron).toContain('heartbeat.sh');
     expect(cron).toContain('backup.sh');
     expect(cron).toContain('restore-check.sh');
+    // Срок хранения вывода контейнеров ≤ 30 дней (ТЗ проджекта 17.09.2026, раздел 7).
+    expect(cron).toContain("-json.log.[0-9]*' -mtime +30 -delete");
+  });
+
+  it('ротация журналов ставится выкладкой и сверяется с репозиторием (ТЗ 17.09.2026, раздел 7)', () => {
+    // До 18.09.2026 /etc/logrotate.d/vydoh жил только на сервере: срок
+    // хранения правился бы по памяти и ничем не проверялся.
+    expect(code).toContain('ops/logrotate/vydoh /etc/logrotate.d/vydoh');
+    expect(code).toContain('Ротация не встала');
+
+    const rotation = readFileSync(resolve(root, 'ops/logrotate/vydoh'), 'utf8');
+    expect(rotation).toContain('/opt/vydoh/logs/*.log');
+    expect(rotation).toContain('maxage 30');
+    expect(rotation).toContain('rotate 30');
   });
 });
 

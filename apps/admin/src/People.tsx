@@ -582,11 +582,14 @@ function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement 
               {/*
                 Заголовки — словами, которые читаются без пояснения
                 (заказчица, 16.09.2026, п. 6): «Конец пробного / Ещё выбирает /
-                Отказ без момента» не считывались. Смысл столбцов прежний.
+                Отказ без момента» не считывались. Шаги и их названия —
+                из ТЗ проджекта 17.09.2026 (5 п. 6): «Регистрация → 1-я
+                выгрузка → 2+ выгрузки → Пробный закончился → Оплата».
               */}
-              <th className="таблица__число">Зарегистрировались</th>
-              <th className="таблица__число">Сделали первую выгрузку</th>
-              <th className="таблица__число">Пробный кончился</th>
+              <th className="таблица__число">Регистрация</th>
+              <th className="таблица__число">1-я выгрузка</th>
+              <th className="таблица__число">2+ выгрузки</th>
+              <th className="таблица__число">Пробный закончился</th>
               {/*
                 Две разные колонки вместо одной — правка ревизии этапа.
 
@@ -598,8 +601,8 @@ function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement 
                 двадцать упёрлись в отказ.
               */}
               <th className="таблица__число">Пробный ещё идёт</th>
-              <th className="таблица__число">Пробный кончился, дата неизвестна</th>
-              <th className="таблица__число">Оплатили после пробного</th>
+              <th className="таблица__число">Пробный закончился, дата неизвестна</th>
+              <th className="таблица__число">Оплата</th>
             </tr>
           </thead>
           <tbody>
@@ -610,6 +613,7 @@ function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement 
                 </td>
                 <td className="таблица__число">{row.registered}</td>
                 <td className="таблица__число">{row.firstDump}</td>
+                <td className="таблица__число">{row.secondDump}</td>
                 <td className="таблица__число">{row.trialOver}</td>
                 <td className="таблица__число">{row.trialStillRunning}</td>
                 <td className="таблица__число" data-testid={`funnel-unrecorded-${String(index)}`}>
@@ -634,7 +638,7 @@ function FunnelBlock({ value }: { readonly value: Funnel }): React.ReactElement 
 
       {rows[0] !== undefined && rows[0].trialOverUnrecorded > 0 && (
         <p className="оговорка">
-          «Пробный кончился, дата неизвестна» — пробные выгрузки у этих людей кончились, а когда
+          «Пробный закончился, дата неизвестна» — пробные выгрузки у этих людей кончились, а когда
           именно, сказать нечем: моменты ведутся с выкладки и задним числом не досыпаются, а
           снижение предела переводит человека за границу сразу. Бот им уже отказывает.
         </p>
