@@ -11,7 +11,7 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
-import { dayAfterRetraction, dayFromOwnSentence } from './own-sentence.js';
+import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
 
@@ -443,6 +443,42 @@ export function correctItems(
         logger?.info(
           { promptVersion, точность: moved.accuracy },
           'День перенесён: человек отменил прежний вслух',
+        );
+      }
+    }
+
+    /**
+     * Слово о времени суток берёт день у слова о дне перед ним (серия
+     * голосовых 18.09.2026, голос 8).
+     *
+     * Второе место, где день модели перебивается. «Завтра утром
+     * позвонить в поликлинику, вечером забрать заказ» — заказу модель
+     * дала сегодня: своего дня у него нет, а «вечером» — слово о
+     * времени, и страж дату пропустил. Человек называет день один раз
+     * на всю фразу; условия — в `own-sentence.ts`, все проверяемые:
+     * слово о времени суток без своего дня, одно предложение, ближайшее
+     * обозначение перед словами записи — определённый день, без «а/но»
+     * между ними. Только у дел и только при точности «день».
+     */
+    if (
+      isActionable(type) &&
+      heard !== undefined &&
+      deadline?.accuracy !== 'week' &&
+      deadline?.accuracy !== 'month'
+    ) {
+      const inherited = dayBeforeDaypart({
+        itemText: item.text,
+        spoken: heard,
+        now,
+        timeZone: ctx.timeZone,
+      });
+
+      if (inherited && deadline?.at.getTime() !== inherited.at.getTime()) {
+        deadline = { at: inherited.at, accuracy: inherited.accuracy };
+        corrections.deadline++;
+        logger?.info(
+          { promptVersion, точность: inherited.accuracy },
+          'День взят у слова о дне перед словом о времени суток',
         );
       }
     }
