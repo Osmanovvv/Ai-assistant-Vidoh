@@ -337,13 +337,22 @@ async function itemsInPeriod(
     to = startOfDayAfter(now, untilSaturday + 2, timeZone);
   }
 
+  /**
+   * Неточные сроки — тоже в окне, если их период в нём начинается
+   * (прогон 18.09.2026): «на неделе с 21.09» — на ближайшей неделе, а
+   * «в октябре» — нет. У «завтра» и «выходных» окно короче недели, и
+   * неделя в него не помещается — там только точные дни: «завтра» — день.
+   */
+  const accuracies: ('day' | 'week' | 'month')[] =
+    params.period === 'week' ? ['day', 'week', 'month'] : ['day'];
+
   return await db
     .select()
     .from(items)
     .where(
       and(
         openItemsWhere(params.userId),
-        eq(items.deadlineAccuracy, 'day'),
+        inArray(items.deadlineAccuracy, accuracies),
         gte(items.deadlineAt, from),
         lt(items.deadlineAt, to),
         params.topic === undefined ? undefined : eq(items.topic, params.topic),
