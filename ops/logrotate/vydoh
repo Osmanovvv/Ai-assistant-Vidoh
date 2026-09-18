@@ -29,4 +29,7 @@
     compress
     delaycompress
     copytruncate
+    # /var/log у Ubuntu доступен группе на запись — без su logrotate
+    # отказывается (поймано выкладкой 18.09.2026: `logrotate -d` красный).
+    su root root
 }
