@@ -338,6 +338,75 @@ describe('четвёртый сигнал: человек назвал запи�
   });
 });
 
+describe('пятый сигнал: перенос срока, а срок есть у одной записи (прогон 18.09.2026, голос 2)', () => {
+  /**
+   * Бой: «Записать кота к ветеринару в среду, хотя нет, в среду не могу,
+   * давай в четверг, и ещё купить ему корм» — одним голосовым. Правка
+   * «Не могу, давай в четверг» меняет только срок; кандидатов два, оба
+   * свежие, близости нет, слова записи не названо — и бот спросил «это
+   * про ветеринара?». Но срок из двух записей есть у одной: перенос —
+   * это когда есть что переносить, а переносить больше нечего.
+   */
+  const vet = candidate({
+    id: 'i-1',
+    text: 'Записать кота к ветеринару',
+    deadlineAt: new Date('2026-09-22T21:00:00.000Z'),
+  });
+  const food = candidate({ id: 'i-2', text: 'Купить коту корм' });
+  const thursday = (overrides: Partial<ResolverAnswer> = {}): ResolverAnswer =>
+    answer({
+      confidence: 1,
+      changes: { ...answer().changes, deadline: '2026-09-24' },
+      ...overrides,
+    });
+  const context = { now: NOW, spoken: 'Не могу, давай в четверг', timeZone: 'Europe/Moscow' };
+
+  it('две свежие записи, срок у одной, и её выбрала модель — применить', () => {
+    const verdict = decide(thursday(), [vet, food], context);
+
+    expect(verdict.kind).toBe('apply');
+    expect(verdict.why).toBe('подтверждено переносом');
+  });
+
+  it('срок у обеих — переносить можно любую, спросить', () => {
+    const dated = candidate({
+      id: 'i-2',
+      text: 'Купить коту корм',
+      deadlineAt: new Date('2026-09-20T21:00:00.000Z'),
+    });
+
+    const verdict = decide(thursday(), [vet, dated], context);
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('модель выбрала запись без срока — это не перенос, спросить', () => {
+    const verdict = decide(thursday({ itemId: 'i-2' }), [vet, food], context);
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('срок в тот же день, где запись и стоит, — не перенос: дата в фразе была назначением (шаг 16)', () => {
+    const verdict = decide(
+      thursday({ changes: { ...thursday().changes, deadline: '2026-09-23' } }),
+      [vet, food],
+      context,
+    );
+
+    expect(verdict.kind).toBe('ask');
+  });
+
+  it('правка не только срока — с новым текстом сигнал молчит', () => {
+    const verdict = decide(
+      thursday({ changes: { ...thursday().changes, text: 'Записать кота к грумеру' } }),
+      [vet, food],
+      context,
+    );
+
+    expect(verdict.kind).toBe('ask');
+  });
+});
+
 describe('защита от выдуманного ответа', () => {
   it('запись не из списка не применяется ни при какой уверенности', () => {
     // Модель может назвать идентификатор, которого мы ей не давали.
