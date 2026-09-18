@@ -3,6 +3,7 @@ import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
 import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
 import { splitClosings } from './closing.js';
 import { splitDayQuestions } from './day-question.js';
+import { splitPatchTails } from './patch-tail.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -249,8 +250,22 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  /**
+   * Мысль, приклеенная к правке (серия голосовых 18.09.2026, голос 10):
+   * «хотя нет, лучше в пятницу ещё оплатить садик» без точек уходило
+   * правкой целиком, и резолвер терял перенос. См. `patch-tail.ts`.
+   */
+  const withTails = splitPatchTails(split);
+
+  if (withTails.length !== split.length) {
+    deps.logger?.info(
+      { promptVersion: outcome.promptVersion, before: split.length, after: withTails.length },
+      'Мысль после правки отделена кодом',
+    );
+  }
+
   return {
-    segments: split,
+    segments: withTails,
     crisis: outcome.value.crisis,
     promptVersion: outcome.promptVersion,
     reordered,
