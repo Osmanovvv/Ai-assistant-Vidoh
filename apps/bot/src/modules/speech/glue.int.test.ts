@@ -14,7 +14,7 @@ import { makeAudio } from '../../test/audio.js';
 import { testDb } from '../../test/db.js';
 import { attachMessageToBatch } from '../buffer/buffer.service.js';
 import { SPEECH_BILLING_BLOCK_SEC } from '../metering/pricing.js';
-import { transcribeBatch } from '../pipeline/transcribe.js';
+import { slowAfterFor, transcribeBatch } from '../pipeline/transcribe.js';
 import { upsertUser } from '../users/users.repo.js';
 import { DEFAULT_AUDIO_LIMITS, GLUE_PAUSE_SEC } from './audio.service.js';
 import { probeDurationSec } from './ffmpeg.js';
@@ -410,6 +410,56 @@ describe('расшифровка выгрузки одним запросом', 
     );
 
     expect(await transcriptsInOrder()).toEqual(['Первое.', '', 'Третье.']);
+  });
+});
+
+describe('распознавание затянулось (серия голосовых 18.09.2026, голос 4)', () => {
+  /**
+   * SpeechKit в асинхронном режиме отдавал расшифровку от секунды до
+   * десяти с лишним минут — а человек видел «Секунду, слушаю запись» и
+   * не знал, ждать или перезаписывать. Когда расшифровка не пришла в
+   * ожидаемый срок, выгрузка получает сигнал `onSlow` — один раз.
+   */
+  class SlowProvider implements SpeechProvider {
+    readonly name = 'fake-slow';
+
+    constructor(private readonly delayMs: number) {}
+
+    async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      return { text: 'запись', model: 'fake', audioSeconds: Math.round(request.durationSec) };
+    }
+  }
+
+  it('расшифровка дольше срока — сигнал о задержке, один раз', async () => {
+    let slow = 0;
+
+    await transcribeBatch(
+      testDb(),
+      batch,
+      { provider: new SlowProvider(120), download },
+      { slowAfterMs: 20, onSlow: () => Promise.resolve(void slow++) },
+    );
+
+    expect(slow).toBe(1);
+  });
+
+  it('расшифровка уложилась в срок — сигнала нет', async () => {
+    let slow = 0;
+
+    await transcribeBatch(
+      testDb(),
+      batch,
+      { provider: new SlowProvider(0), download },
+      // Конвертация трёх записей ffmpeg сама занимает около секунды.
+      { slowAfterMs: 20_000, onSlow: () => Promise.resolve(void slow++) },
+    );
+
+    expect(slow).toBe(0);
+  });
+
+  it('срок по умолчанию — полминуты сверх длины звука: распознавание идёт примерно в реальном времени', () => {
+    expect(slowAfterFor([{ durationSec: 10 }, { durationSec: 5 }])).toBe(45_000);
   });
 });
 

@@ -48,6 +48,8 @@ export interface TranscribeDeps {
    */
   readonly spendGuard?: SpendGuard | undefined;
   readonly limits?: AudioLimits | undefined;
+  /** Через сколько говорить «слушаю дольше обычного»; не задан — `slowAfterFor`. */
+  readonly slowAfterMs?: number | undefined;
   readonly logger?: Logger | undefined;
 }
 
@@ -127,6 +129,29 @@ export interface TranscribeOptions {
    * невежливо.
    */
   readonly onStart?: (() => Promise<void>) | undefined;
+  /**
+   * Расшифровка не пришла в ожидаемый срок (серия голосовых 18.09.2026,
+   * голос 4). SpeechKit в асинхронном режиме отдавал текст от секунды до
+   * десяти с лишним минут — а человек всё это время видел «Секунду,
+   * слушаю запись» и не знал, ждать или наговаривать заново. Вызывается
+   * один раз, только если голосовые есть и расшифровка ещё идёт.
+   */
+  readonly onSlow?: (() => Promise<void>) | undefined;
+  /** Через сколько считать расшифровку затянувшейся; умолчание — `slowAfterFor`. */
+  readonly slowAfterMs?: number | undefined;
+}
+
+/** Запас сверх длины звука: распознавание идёт примерно в реальном времени. */
+const SLOW_GRACE_MS = 30_000;
+
+/**
+ * Срок, после которого расшифровка считается затянувшейся: полминуты
+ * сверх длины звука. Десять секунд записи — ждём 40 с, три минуты —
+ * три с половиной; «дольше обычного» для короткой записи наступает
+ * раньше, чем для длинной.
+ */
+export function slowAfterFor(voices: readonly { readonly durationSec: number }[]): number {
+  return SLOW_GRACE_MS + voices.reduce((sum, voice) => sum + voice.durationSec, 0) * 1000;
 }
 
 export interface TranscribeResult {
@@ -298,9 +323,30 @@ export async function transcribeBatch(
     return outcome.requests;
   };
 
-  const requests = canGlue(deps.provider, voices.length)
-    ? await glueAll()
-    : await onePerMessage(voices);
+  /**
+   * Сигнал о задержке — по таймеру, пока идёт расшифровка. Сбой самого
+   * сигнала расшифровку не прерывает: он вспомогательный.
+   */
+  const slowTimer =
+    voices.length === 0 || options.onSlow === undefined
+      ? undefined
+      : setTimeout(
+          () => {
+            options.onSlow?.().catch((error: unknown) => {
+              deps.logger?.warn({ err: error, batchId: batch.id }, 'Не удалось сказать о задержке');
+            });
+          },
+          options.slowAfterMs ?? slowAfterFor(voices),
+        );
+
+  let requests: number;
+  try {
+    requests = canGlue(deps.provider, voices.length)
+      ? await glueAll()
+      : await onePerMessage(voices);
+  } finally {
+    clearTimeout(slowTimer);
+  }
 
   return {
     combined: await combineBatch(db, batch.id),

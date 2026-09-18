@@ -271,6 +271,8 @@ interface HandlerOptions {
   readonly sender?: StatusSender | undefined;
   /** Потолки аудио: нужны тесту на обрезку (§10.5 ТЗ). */
   readonly speechLimits?: AudioLimits | undefined;
+  /** Через сколько говорить «слушаю дольше обычного» (голос 4, 18.09.2026). */
+  readonly slowAfterMs?: number | undefined;
   readonly embedder?: MockEmbeddingProvider | undefined;
   readonly onboarding?: QuestionSender | undefined;
   readonly now?: Date | undefined;
@@ -298,6 +300,7 @@ function handler(options: HandlerOptions) {
       download,
       pricing,
       ...(options.speechLimits === undefined ? {} : { limits: options.speechLimits }),
+      ...(options.slowAfterMs === undefined ? {} : { slowAfterMs: options.slowAfterMs }),
     },
     ai: {
       provider: options.llm ?? echoingLlm(),
@@ -881,6 +884,33 @@ describe('разбор', () => {
       ['надо продукты', 'нет, лучше в пятницу'].sort(),
     );
     expect(all.at(-1)).toBe(defaultTexts.answer.savedUnparsed);
+  });
+
+  it('распознавание затянулось — человеку говорят, что ждать и не перезаписывать (голос 4, 18.09.2026)', async () => {
+    // SpeechKit отдавал расшифровку и за секунду, и за десять минут; всё
+    // это время человек видел «Секунду, слушаю запись» — и не знал,
+    // ждать ли или наговаривать заново.
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    // Секунда с лишним: статусное сообщение правится не чаще раза в
+    // секунду, и «дольше обычного» обязано пройти через это же сито.
+    const speech = new MockSpeechProvider({ responses: ['купить продукты'], delayMs: 1_500 });
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech, prompts, sender, slowAfterMs: 1_100 }),
+      },
+      userId,
+    );
+
+    const slowAt = all.indexOf(defaultTexts.listening.slow);
+    expect(slowAt).toBeGreaterThan(all.indexOf(defaultTexts.listening.working));
+    expect(slowAt).toBeLessThan(all.length - 1);
+    // Итог всё равно пришёл и лёг последним.
+    expect(all.at(-1)).not.toBe(defaultTexts.listening.slow);
   });
 
   it('обрезка договаривается человеку, а не остаётся в журнале', async () => {
