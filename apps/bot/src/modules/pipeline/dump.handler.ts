@@ -51,6 +51,7 @@ import {
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
+import { deadlineWords } from '../items/deadline-words.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
@@ -1336,11 +1337,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const body =
         answer.kind === 'today' || answer.kind === 'about' || answer.kind === 'period'
           ? (await withNextSteps(db, shownItems)).map((item) =>
-              texts.backlog.line(
-                answer.kind === 'today'
-                  ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
-                  : item.text,
-              ),
+              answer.kind === 'period' &&
+              item.deadlineAt !== null &&
+              item.deadlineAccuracy !== 'day'
+                ? // Неточный срок в списке периода — словами карточки, чтобы
+                  // «на неделе с 21.09» не читалось как точный день.
+                  texts.summary.lineWithDate(
+                    item.text,
+                    deadlineWords(
+                      { ...item, deadlineAt: item.deadlineAt },
+                      context.timeZone,
+                      texts,
+                    ),
+                  )
+                : texts.backlog.line(
+                    answer.kind === 'today'
+                      ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
+                      : item.text,
+                  ),
             )
           : answer.kind === 'aboutClosed'
             ? shownItems.map((item) =>

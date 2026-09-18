@@ -55,7 +55,11 @@ let userId = '';
 async function addItem(
   text: string,
   where: 'active' | 'background' | 'done',
-  overrides: { readonly topic?: string; readonly deadlineAt?: Date } = {},
+  overrides: {
+    readonly topic?: string;
+    readonly deadlineAt?: Date;
+    readonly accuracy?: 'day' | 'week' | 'month';
+  } = {},
 ): Promise<void> {
   await testDb()
     .insert(items)
@@ -72,7 +76,10 @@ async function addItem(
       embedding: vector(1, 0, 0),
       ...(overrides.deadlineAt === undefined
         ? {}
-        : { deadlineAt: overrides.deadlineAt, deadlineAccuracy: 'day' as const }),
+        : {
+            deadlineAt: overrides.deadlineAt,
+            deadlineAccuracy: overrides.accuracy ?? ('day' as const),
+          }),
     });
 }
 
@@ -139,6 +146,44 @@ describe('вопрос про день, кроме сегодняшнего (р�
     expect(answer.kind === 'period' ? answer.items.map((one) => one.text) : []).toEqual([
       'сдать отчёт',
     ]);
+  });
+
+  it('неточный срок внутри окна тоже показывается: «на неделе с …» и «в …» (прогон 18.09.2026)', async () => {
+    /**
+     * Бой: «Расскажи мои задачи на ближайшую неделю» — стоматолог со
+     * сроком «на неделе с 21.09» в ответ не попал: выборка брала только
+     * точные дни. Неделя, начинающаяся внутри окна, — тоже на этой
+     * неделе; месяц, начинающийся внутри окна, — тоже.
+     */
+    // NOW — пятница 04.09; окно недели — 04.09…10.09.
+    await addItem('к стоматологу', 'active', { deadlineAt: dayAfter(3), accuracy: 'week' }); // пн 07.09
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(1) });
+    await addItem('к врачу', 'active', { deadlineAt: dayAfter(10), accuracy: 'week' }); // пн 14.09
+    await addItem('диспансеризация', 'active', {
+      deadlineAt: new Date('2026-09-30T21:00:00.000Z'),
+      accuracy: 'month',
+    });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что у меня на неделе', now: NOW },
+    );
+
+    expect(answer.kind === 'period' ? answer.items.map((one) => one.text) : []).toEqual([
+      'сдать отчёт',
+      'к стоматологу',
+    ]);
+  });
+
+  it('на завтра неточный срок не показывается: «завтра» — день, а неделя — не день', async () => {
+    await addItem('к стоматологу', 'active', { deadlineAt: dayAfter(1), accuracy: 'week' });
+
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text: 'что на завтра', now: NOW },
+    );
+
+    expect(answer.kind).toBe('periodEmpty');
   });
 
   it('на завтра пусто — так и сказано, а не «ничего не записано»', async () => {
