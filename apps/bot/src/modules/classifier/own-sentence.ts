@@ -610,3 +610,72 @@ export function dayAfterRetraction(params: {
 
   return undefined;
 }
+
+/** Слова о времени суток: день не называют, но день у них есть. */
+const DAYPARTS = ['утром', 'днем', 'вечером', 'ночью'];
+
+/** Союзы противопоставления: за ними день начинается заново. */
+const CONTRAST = ['а', 'но', 'зато'];
+
+/**
+ * Слово о времени суток берёт день у слова о дне перед ним (серия
+ * голосовых 18.09.2026, голос 8).
+ *
+ * «Завтра утром позвонить в поликлинику, вечером забрать заказ в пункте
+ * выдачи» — «забрать заказ» получило **сегодня**: своего дня у него нет,
+ * «вечером» — слово о времени, и дату модели страж пропустил. Но день в
+ * предложении назван — «завтра» — и стоит перед «вечером» в той же
+ * цепочке через запятую: человек называет день один раз на всю фразу.
+ *
+ * Правило, а не догадка, и условий четыре: в словах записи есть слово о
+ * времени суток и нет ни одного обозначения дня; запись дословно
+ * касается ровно одного предложения речи; ближайшее обозначение дня
+ * **перед** её словами в этом предложении — определённый день (завтра,
+ * день недели); между ним и записью нет противопоставления («а», «но»).
+ * Иначе — молчит, и решает модель.
+ */
+export function dayBeforeDaypart(params: {
+  readonly itemText: string;
+  readonly spoken: string;
+  readonly now: Date;
+  readonly timeZone: string;
+}): SentenceDay | undefined {
+  const item = tokens(params.itemText);
+  if (item.length < 2) return undefined;
+  if (!item.some((word) => DAYPARTS.includes(word))) return undefined;
+  if (marksIn(params.itemText).length > 0) return undefined;
+
+  const owning = touchedSentences(item, sentencesOf(params.spoken));
+  if (owning.length !== 1) return undefined;
+
+  const words = tokens(owning[0] ?? '');
+  const start = startOfLongestRun(item, words);
+  if (start === undefined) return undefined;
+
+  for (let index = start - 1; index >= 0; index--) {
+    const word = words[index] ?? '';
+    if (CONTRAST.includes(word)) return undefined;
+
+    const mark = markAt(words, index);
+    if (mark === undefined) continue;
+    if (!isDefinite(mark)) return undefined;
+
+    return dateOf(mark, params.now, params.timeZone);
+  }
+
+  return undefined;
+}
+
+/** Где в предложении начинается самая длинная дословная цепочка слов записи. */
+function startOfLongestRun(item: readonly string[], words: readonly string[]): number | undefined {
+  for (let length = item.length; length >= 2; length--) {
+    for (let from = 0; from + length <= item.length; from++) {
+      const run = item.slice(from, from + length);
+      for (let at = 0; at + length <= words.length; at++) {
+        if (run.every((word, offset) => words[at + offset] === word)) return at;
+      }
+    }
+  }
+
+  return undefined;
+}
