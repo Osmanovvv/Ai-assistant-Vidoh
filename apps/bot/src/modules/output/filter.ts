@@ -295,6 +295,37 @@ export function selectForOutput(items: readonly Item[], context: SelectContext):
  * этапа 3, E14): список «Сегодня» не урезается, а вызывающие раньше
  * считали уровень впустую.
  */
+/**
+ * Просроченное — вопросом «что просрочено» (21.09.2026).
+ *
+ * Из «Сегодня» просроченное убрано (запрос №4): оно разбирается утром и
+ * само уходит в «Позже». Но спросить о нём человек вправе, и ответ —
+ * ровно те дела, что очередь считает просроченными: точный срок до
+ * сегодня, неточный — когда прошёл весь период. Порядок — по сроку, от
+ * самого давнего: с него и начинать.
+ */
+export function selectOverdue(
+  items: readonly Item[],
+  context: Pick<SelectContext, 'now' | 'timeZone'>,
+): readonly Item[] {
+  const todayStart = startOfDayInZone(
+    localDateParts(context.now, context.timeZone),
+    context.timeZone,
+  );
+  const tomorrowStart = startOfDayInZone(
+    localDateParts(new Date(todayStart.getTime() + 24 * 60 * 60_000), context.timeZone),
+    context.timeZone,
+  );
+
+  return items
+    .filter(
+      (item) =>
+        isShowable(item, context.now) &&
+        bucketOf(item, todayStart, tomorrowStart, undefined) === BUCKET.overdue,
+    )
+    .sort((left, right) => (left.deadlineAt?.getTime() ?? 0) - (right.deadlineAt?.getTime() ?? 0));
+}
+
 export function selectForToday(
   items: readonly Item[],
   context: Pick<SelectContext, 'now' | 'timeZone'>,

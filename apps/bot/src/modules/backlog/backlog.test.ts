@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { pageOf, PAGE_SIZE } from './backlog.service.js';
 import { ToolRegistry } from './tools.js';
+import { doneWindow } from './periods.js';
 import {
   askedDay,
   asksAboutEverything,
@@ -251,6 +252,19 @@ describe('вопрос про отрезок дней: «на 3 дня», «на
     expect(askedDay(text)).toBe(period);
   });
 
+  it('время суток — сегодня: «что вечером», «что утром», «что до конца дня» (21.09.2026)', () => {
+    for (const text of [
+      'что вечером',
+      'что у меня утром',
+      'что до конца дня',
+      'что сегодня вечером',
+    ]) {
+      expect(askedDay(text), text).toBe('today');
+    }
+    // С предметом — про предмет: «что вечером с отчётом».
+    expect(askedDay('что вечером с отчётом')).toBeUndefined();
+  });
+
   it('прежние рамки не изменились', () => {
     expect(askedDay('что на завтра')).toBe('tomorrow');
     expect(askedDay('что на выходных')).toBe('weekend');
@@ -322,5 +336,40 @@ describe('окно отрезка — края, где легко ошибить
     // Понедельник 21.09, 18:00 по Москве: «в понедельник» — 28.09.
     expect(window('weekday:1', '2026-09-21T15:00:00.000Z')).toBe('2026-09-28..2026-09-29');
     expect(window('weekday:1:next', '2026-09-21T15:00:00.000Z')).toBe('2026-10-05..2026-10-06');
+  });
+});
+
+describe('окно «что я сделала» — смотрит назад, а не вперёд', () => {
+  const MOSCOW = 'Europe/Moscow';
+  const iso = (at: Date): string =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: MOSCOW }).format(at);
+  const window = (period: Parameters<typeof doneWindow>[0], now: string): string => {
+    const { from, to } = doneWindow(period, { now: new Date(now), timeZone: MOSCOW });
+    return `${iso(from)}..${iso(to)}`;
+  };
+  // Пятница 04.09.2026, 12:00 по Москве.
+  const NOW = '2026-09-04T09:00:00.000Z';
+
+  it('сегодня, вчера, неделя (7 дней включая сегодня), месяц (30), N дней', () => {
+    expect(window('today', NOW)).toBe('2026-09-04..2026-09-05');
+    expect(window('yesterday', NOW)).toBe('2026-09-03..2026-09-04');
+    expect(window('week', NOW)).toBe('2026-08-29..2026-09-05');
+    expect(window('month', NOW)).toBe('2026-08-06..2026-09-05');
+    expect(window('days:3', NOW)).toBe('2026-09-02..2026-09-05');
+  });
+
+  it('названный месяц — прошедший: август в сентябре — этого года, октябрь — прошлого', () => {
+    expect(window('month:8', NOW)).toBe('2026-08-01..2026-09-01');
+    expect(window('month:10', NOW)).toBe('2025-10-01..2025-11-01');
+    // Текущий месяц — с его начала по сегодня.
+    expect(window('month:9', NOW)).toBe('2026-09-01..2026-09-05');
+  });
+
+  it('день недели — последний такой; выходные — последние; будущие рамки читаются как неделя', () => {
+    expect(window('weekday:2', NOW)).toBe('2026-09-01..2026-09-02');
+    expect(window('weekday:5', NOW)).toBe('2026-09-04..2026-09-05');
+    expect(window('weekend', NOW)).toBe('2026-08-29..2026-08-31');
+    expect(window('tomorrow', NOW)).toBe('2026-08-29..2026-09-05');
+    expect(window('nextWeek', NOW)).toBe('2026-08-29..2026-09-05');
   });
 });
