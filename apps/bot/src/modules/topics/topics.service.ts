@@ -51,7 +51,8 @@ export const TOPIC_ICONS: Readonly<Record<string, string>> = {
   дети: '🧸',
   деньги: '💰',
   учёба: '📚',
-  личное: '🌱',
+  // 🤍 — из примеров ТЗ проджекта 17.09.2026 (2.4: «🤍 Личное — 1»); было 🌱.
+  личное: '🤍',
 };
 
 export interface TopicServiceDeps {

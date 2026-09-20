@@ -245,6 +245,8 @@ export interface TextProfile {
      * догадаешься спросить.
      */
     readonly buttonProjects: string;
+    /** Экран сфер с записями и карточками — вход к карточке любого дела. */
+    readonly buttonTopics: string;
     readonly projectsTitle: string;
     readonly noProjects: string;
 
@@ -469,6 +471,24 @@ export interface TextProfile {
      */
     readonly allOffer: string;
     readonly buttonAddMore: string;
+    /**
+     * «Мои дела» — полный список (ТЗ проджекта 17.09.2026, 2.4). Слова
+     * — их, из примеров ТЗ. Счёт дел — со склонением: «9 дел», «21 дело».
+     */
+    readonly tasksCount: (count: number) => string;
+    readonly openCount: (count: number) => string;
+    readonly myTasksHeader: (count: string) => string;
+    readonly myTasksFooter: string;
+    /** 16–30 дел: вступление про объём; `parts` — «двух» / «трёх». */
+    readonly myTasksParts: (count: string, parts: string) => string;
+    /** Больше 30: сводка по сферам и страницы. */
+    readonly myTasksMany: (count: string) => string;
+    readonly myTasksPaged: string;
+    readonly sphereCount: (name: string, count: number) => string;
+    readonly laterName: string;
+    readonly dueToday: string;
+    readonly buttonShowMore: string;
+    readonly buttonBack: string;
     readonly line: (text: string) => string;
     /** «Что на завтра / выходных / неделе» (ревизия этапа 3, F2). */
     readonly period: (label: string) => string;
@@ -628,6 +648,8 @@ export interface TextProfile {
     readonly week: string;
     /** 06 — человек сам закрыл день: «на сегодня всё», «хватит». */
     readonly evening: string;
+    /** 05 — «покажи всё» при 15+ делах; `count` уже со склонением. */
+    readonly all: (count: string) => string;
     readonly buttonMyTasks: string;
   };
 
