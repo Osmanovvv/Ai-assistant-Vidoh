@@ -10,6 +10,7 @@ import type {
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
+import { looksLikeDatedWish } from './dated-wish.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
@@ -109,6 +110,8 @@ export interface ClassifiedItem {
 
 /** Что пришлось поправить за моделью. Ненулевое — повод к промпту. */
 export interface Corrections {
+  /** Желание с рамкой срока, ставшее делом (`dated-wish.ts`). */
+  readonly type: number;
   /** Приоритет у не-TASK, который модель поставила не `NONE`. */
   readonly priority: number;
   /** Тема не из списка человека. */
@@ -287,6 +290,7 @@ export function correctItems(
   const byNormalized = new Map(ctx.topics.map((topic) => [normalizeTopic(topic), topic]));
 
   const corrections: { -readonly [K in keyof Corrections]: Corrections[K] } = {
+    type: 0,
     priority: 0,
     topic: 0,
     deadline: 0,
@@ -313,11 +317,29 @@ export function correctItems(
   ];
 
   for (const [index, item] of raw.items.entries()) {
-    const type = item.type;
+    let type = item.type;
+    let priority: Priority = item.priority;
+
+    /**
+     * Желание с рамкой срока — дело (блок B 17.09.2026, решение Никиты).
+     *
+     * «Хочу за осень сделать ремонт в спальне» — модель отдаёт желание,
+     * потому что «хочу» для неё сильнее срока и действия. Правило узкое,
+     * из трёх примет сразу (`dated-wish.ts`); важность — «позже», если
+     * своей модель не дала: рамка вроде «за осень» — не «сейчас».
+     */
+    if (
+      type === 'DESIRE' &&
+      looksLikeDatedWish(saidOf[index] ?? item.text, ctx.speech ?? ctx.spoken)
+    ) {
+      type = 'TASK';
+      if (priority === 'NONE') priority = 'LATER';
+      corrections.type++;
+      logger?.info({ promptVersion }, 'Желание с рамкой срока записано делом');
+    }
 
     // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не
     // попадают. Это то самое правило, которое модели нарушают чаще всего.
-    let priority: Priority = item.priority;
     if (!isActionable(type) && priority !== 'NONE') {
       priority = 'NONE';
       corrections.priority++;

@@ -60,7 +60,7 @@ import { PermanentSpeechError, TransientSpeechError } from '../speech/providers/
 import { createFailureReporter } from './failure-notice.js';
 import { upsertUser } from '../users/users.repo.js';
 import type { SpendLimit } from '../metering/limits.js';
-import { createDumpHandler } from './dump.handler.js';
+import { createDumpHandler, type PipelineEvent, type PipelineObserver } from './dump.handler.js';
 import { processUserBatches } from './pipeline.service.js';
 
 /**
@@ -279,6 +279,8 @@ interface HandlerOptions {
   readonly embedder?: MockEmbeddingProvider | undefined;
   readonly onboarding?: QuestionSender | undefined;
   readonly now?: Date | undefined;
+  /** Наблюдатель конвейера — для стенда набора (20.09.2026). */
+  readonly observe?: PipelineObserver | undefined;
 }
 
 /** Считает заданные вопросы онбординга вместо обращений к Telegram. */
@@ -325,6 +327,7 @@ function handler(options: HandlerOptions) {
     ...(options.sender === undefined ? {} : { sender: options.sender }),
     ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
     ...(options.topics === undefined ? {} : { topics: options.topics }),
+    ...(options.observe === undefined ? {} : { observe: options.observe }),
     /**
      * Реестр настроек — **всегда**, а не по желанию проверки.
      *
@@ -6035,5 +6038,90 @@ describe('сферы по содержанию (правка заказчицы 
     expect(saved).toHaveLength(2);
     expect(saved.every((item) => item.topic === 'саморазвитие')).toBe(true);
     expect(gateway.created.filter((thread) => thread.name === 'саморазвитие')).toHaveLength(1);
+  });
+});
+
+describe('наблюдатель конвейера (стенд набора, 20.09.2026)', () => {
+  /**
+   * Стенд контрольного набора шесть раз мерил не то, что работает в бою,
+   * — всякий раз потому, что собирал вход для модели сам. Теперь стенд
+   * гонит случай через этот же обработчик, а что именно дошло до каждого
+   * этапа, узнаёт наблюдателем: отрезки маршрутизатора, вход извлечения
+   * и его единицы, сырой ответ классификации и записи после правок кода.
+   * Наблюдатель ничего не меняет — только смотрит.
+   */
+  async function observed(text: string): Promise<PipelineEvent[]> {
+    const prompts = await seedPrompts();
+    const events: PipelineEvent[] = [];
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          observe: (event) => {
+            events.push(event);
+          },
+        }),
+      },
+      userId,
+    );
+
+    return events;
+  }
+
+  it('видит отрезки маршрутизатора, вход извлечения с единицами и ответ классификации', async () => {
+    const events = await observed(`купить хлеб${NEWLINE}записаться к врачу`);
+
+    expect(events.map((event) => event.kind)).toEqual(['routed', 'extracted', 'classified']);
+
+    const routed = events[0];
+    expect(routed?.kind === 'routed' && routed.segments).toEqual([
+      { intent: 'DUMP', text: `купить хлеб${NEWLINE}записаться к врачу` },
+    ]);
+
+    const extracted = events[1];
+    expect(extracted?.kind === 'extracted' && extracted.dumpText).toBe(
+      `купить хлеб${NEWLINE}записаться к врачу`,
+    );
+    expect(extracted?.kind === 'extracted' && extracted.units.map((unit) => unit.text)).toEqual([
+      'купить хлеб',
+      'записаться к врачу',
+    ]);
+
+    const classified = events[2];
+    expect(
+      classified?.kind === 'classified' && classified.fromModel.map((item) => item.text),
+    ).toEqual(['купить хлеб', 'записаться к врачу']);
+    // Записи после правок кода классификации; заглавная ставится позже,
+    // при сохранении (задача 3.25), и наблюдателю не видна.
+    expect(classified?.kind === 'classified' && classified.items.map((item) => item.text)).toEqual([
+      'купить хлеб',
+      'записаться к врачу',
+    ]);
+    expect(classified?.kind === 'classified' && classified.items[0]).toMatchObject({
+      type: 'TASK',
+      topic: 'личное',
+    });
+  });
+
+  it('без наблюдателя обработчик работает как прежде', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: 'купить хлеб', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved.map((item) => item.text)).toEqual(['Купить хлеб']);
   });
 });

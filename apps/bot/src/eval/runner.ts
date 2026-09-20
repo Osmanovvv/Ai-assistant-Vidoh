@@ -1,30 +1,43 @@
+import { and, eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { batches } from '../db/schema.js';
-
+import { aiCalls, batches, items, messagesRaw, topics, users } from '../db/schema.js';
 import type { AiClientDeps } from '../modules/ai/client.js';
 import type { ClassifiedItems } from '../modules/ai/schemas/classifier.js';
 import type { ExtractedUnits } from '../modules/ai/schemas/extractor.js';
-import { type ClassifiedItem, classifyUnits } from '../modules/classifier/classifier.service.js';
-import { extractUnits } from '../modules/extractor/extractor.service.js';
-import { weaveForExtraction } from '../modules/pipeline/patch-in-place.js';
-import { detectByMarkers, detectCrisis } from '../modules/safety/crisis.js';
-import { routeIntents } from '../modules/router/router.service.js';
+import { attachMessageToBatch } from '../modules/buffer/buffer.service.js';
+import type { ClassifiedItem } from '../modules/classifier/classifier.service.js';
+import type { EmbeddingProvider } from '../modules/embedder/providers/types.js';
+import { createDumpHandler, type PipelineEvent } from '../modules/pipeline/dump.handler.js';
+import type { StatusSender } from '../modules/presenter/status.service.js';
+import type { RecurrenceRule } from '../modules/recurrence/recurrence.js';
+import { SettingsRegistry } from '../modules/settings/settings.repo.js';
+import { MockSpeechProvider } from '../modules/speech/providers/mock.js';
+import { upsertUser } from '../modules/users/users.repo.js';
+import { defaultTexts } from '../texts/index.js';
 import type { EvalCase } from './dataset.js';
 import { match, type MatchResult } from './matcher.js';
 
 /**
- * Прогон контрольного набора (задача 2.19).
+ * Прогон одного случая набора (задача 2.19) — **через боевой обработчик
+ * выгрузки**, а не своей копией конвейера (20.09.2026).
  *
- * Гоняется тот же путь, которым идёт настоящий разбор: маршрутизатор,
- * извлечение, классификация, кризисный контур. Не весь конвейер — без
- * расшифровки, сохранения и ответа человеку: они к качеству разбора
- * отношения не имеют, а их подмена в стенде только добавляла бы мест,
- * где стенд может врать.
+ * До этого стенд собирал путь сам: маршрутизатор → извлечение →
+ * классификация. Шесть раз он из-за этого мерил не то, что работает в
+ * бою; последний случай — четыре «потери» из восьми на живом наборе были
+ * отрезками, которые бой возвращает в разбор вторым проходом резолвера,
+ * а стенд считал пропавшими. Своя копия пути всегда отстаёт от боя,
+ * потому что бой правят, а копию — когда вспомнят.
  *
- * **Расход пишется в учёт, как у настоящих вызовов.** Прогон стоит денег,
- * и знать сколько надо: §10.5. Поэтому стенду нужна база — но не боевая,
- * иначе прогоны исказят себестоимость выгрузки.
+ * Теперь случай идёт так же, как сообщение человека: заводится
+ * пользователь стенда с часовым поясом и сферами случая, его сообщение
+ * ложится в выгрузку, выгрузку разбирает `createDumpHandler` с теми же
+ * зависимостями, что в бою, и сравнивается **то, что легло в базу**.
+ * Внутренности — отрезки, единицы, сырой ответ классификации — стенд
+ * узнаёт наблюдателем конвейера, а не пересчитывает.
+ *
+ * Цена: там, где бой зовёт резолвер (правки, отметки), стенд зовёт его
+ * тоже. Это и есть замер боя; дешевле было бы мерить не бой.
  */
 
 /**
@@ -41,8 +54,13 @@ export interface CaseTrace {
   readonly units: readonly ExtractedUnits['units'][number][];
   /** Ответ классификации до правок кода. */
   readonly fromModel: readonly ClassifiedItems['items'][number][];
-  /** Записи после правок кода — то, что сравнивается с ожиданием. */
+  /** Записи после правок кода классификации. */
   readonly items: readonly ClassifiedItem[];
+}
+
+export interface RoutedSegment {
+  readonly intent: string;
+  readonly text: string;
 }
 
 export interface CaseOutcome {
@@ -75,42 +93,189 @@ export interface CaseOutcome {
   readonly routed?: readonly RoutedSegment[] | undefined;
 }
 
-export interface RoutedSegment {
-  readonly intent: string;
-  readonly text: string;
-}
-
 export interface RunnerDeps {
   readonly ai: AiClientDeps;
   /** Лёгкая модель для маршрутизатора, если она отличается (задача 2.4). */
   readonly aiLight?: AiClientDeps | undefined;
+  /** Вектора — как в бою: отсев повторов и кандидаты резолвера. */
+  readonly embedder?: EmbeddingProvider | undefined;
   readonly logger?: Logger | undefined;
-  /**
-   * Пользователь, от имени которого идёт прогон.
-   *
-   * Задан — и каждый случай получает свою выгрузку в базе, а расход
-   * ложится в учёт так же, как в бою: с привязкой к выгрузке. Без этого
-   * себестоимость выгрузки (2.21) из учёта не собрать — вызовы есть, а
-   * чьи они, неизвестно. Поймано отчётом себестоимости: «выгрузок: 0».
-   */
-  readonly owner?: string | undefined;
 }
 
-/** Выгрузка под один случай набора: к ней привяжется расход. */
-async function openBatch(deps: RunnerDeps, item: EvalCase): Promise<string | undefined> {
-  if (deps.owner === undefined) return undefined;
+/**
+ * Пользователи стенда: свой на каждый случай, заводится заново перед
+ * каждым прогоном.
+ *
+ * Идентификаторы заведомо не заняты живыми людьми — у Telegram таких не
+ * бывает. Свой на случай, а не один на всех: у случая своя обстановка
+ * (пояс, сферы), а записи прошлого случая стали бы кандидатами резолвера
+ * для следующего — чего в бою у этих выгрузок не было.
+ */
+const STAND_TG_BASE = 999_000_700;
+const STAND_TG_LIMIT = 999_000_999;
+const STAND_CHAT = 999_000_700;
 
-  const [row] = await deps.ai.db
-    .insert(batches)
+/** Цепочка причин ошибки — в одну строку, как в прежнем прогонщике. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : 'неизвестный отказ';
+}
+
+/** Пользователь стенда для случая: чистый, с поясом и сферами случая. */
+async function standUser(deps: RunnerDeps, item: EvalCase, index: number): Promise<string> {
+  const db = deps.ai.db;
+  const tgId = STAND_TG_BASE + index;
+
+  if (tgId > STAND_TG_LIMIT) {
+    throw new Error(
+      `набор больше ${String(STAND_TG_LIMIT - STAND_TG_BASE + 1)} случаев — не поместился в пользователей стенда`,
+    );
+  }
+
+  /**
+   * Прежний пользователь этого случая удаляется целиком — с записями,
+   * выгрузками, сферами: каскад по `users.id`. Учёт расхода при этом
+   * остаётся (у `ai_calls` связь гасится в `null`), и цена прогона по
+   * нему считается как прежде. Только пользователи стенда: у живого
+   * человека такого `tg_id` быть не может.
+   */
+  await db.delete(users).where(eq(users.tgId, tgId));
+
+  const user = await upsertUser(db, { tgId, firstName: `стенд ${item.id}` });
+  await db.update(users).set({ timezone: item.timeZone }).where(eq(users.id, user.id));
+
+  await db.insert(topics).values(
+    item.topics.map((name, order) => ({
+      userId: user.id,
+      name,
+      sortOrder: order,
+      isDefault: name === item.defaultTopic,
+    })),
+  );
+
+  return user.id;
+}
+
+/** Сообщение случая — в выгрузку, как от человека. */
+async function batchOf(
+  deps: RunnerDeps,
+  userId: string,
+  item: EvalCase,
+  index: number,
+  now: Date,
+): Promise<typeof batches.$inferSelect> {
+  const db = deps.ai.db;
+  // Номер сообщения — свой на каждый прогон: пара (чат, сообщение) уникальна.
+  const messageNumber = now.getTime() % 1_000_000_000;
+
+  const [message] = await db
+    .insert(messagesRaw)
     .values({
-      userId: deps.owner,
-      status: 'processing',
-      combinedText: item.text,
-      messageCount: 1,
+      userId,
+      updateId: messageNumber,
+      tgChatId: STAND_CHAT + index,
+      tgMessageId: messageNumber,
+      kind: 'text',
+      text: item.text,
+      receivedAt: now,
     })
-    .returning({ id: batches.id });
+    .returning({ id: messagesRaw.id });
 
-  return row?.id;
+  if (message === undefined) throw new Error('сообщение случая не легло в базу');
+
+  const attached = await attachMessageToBatch(db, { userId, messageId: message.id, now });
+
+  // Как очередь: выгрузка берётся в работу. Не через очередь, потому что
+  // той нужен Redis, а стенду — нет.
+  const [batch] = await db
+    .update(batches)
+    .set({ status: 'processing', processingAt: now })
+    .where(eq(batches.id, attached.batchId))
+    .returning();
+
+  if (batch === undefined) throw new Error('выгрузка случая не нашлась');
+
+  return batch;
+}
+
+/** Отправитель, который запоминает сказанное человеку — для кризиса. */
+function recordingSender(): { readonly sender: StatusSender; readonly texts: string[] } {
+  const texts: string[] = [];
+  let counter = 0;
+
+  return {
+    texts,
+    sender: {
+      send: ({ text }) => {
+        texts.push(text);
+        counter += 1;
+        return Promise.resolve(counter);
+      },
+      edit: ({ text }) => {
+        texts.push(text);
+        return Promise.resolve('edited' as const);
+      },
+    },
+  };
+}
+
+/** Записи выгрузки в виде, который сравнивает набор. */
+function classifiedOf(rows: readonly (typeof items.$inferSelect)[]): ClassifiedItem[] {
+  return rows.flatMap((row) => {
+    if (row.type === null || row.priority === null || row.topic === null) return [];
+
+    const rule = row.recurrenceRule as RecurrenceRule | null;
+    const recurrence =
+      rule === null && row.recurrenceText === null
+        ? undefined
+        : {
+            ...(rule === null ? {} : { rule }),
+            ...(row.recurrenceText === null ? {} : { text: row.recurrenceText }),
+            ...(row.recurrenceSource === null ? {} : { source: row.recurrenceSource }),
+          };
+
+    return [
+      {
+        text: row.text,
+        type: row.type,
+        priority: row.priority,
+        topic: row.topic,
+        isProject: row.isProject,
+        ...(row.deadlineAt === null || row.deadlineAccuracy === null
+          ? {}
+          : { deadline: { at: row.deadlineAt, accuracy: row.deadlineAccuracy } }),
+        ...(recurrence === undefined ? {} : { recurrence }),
+      },
+    ];
+  });
+}
+
+/** Версии промптов — из учёта: что именно спрашивали по этой выгрузке. */
+async function promptVersionsOf(
+  deps: RunnerDeps,
+  batchId: string,
+): Promise<CaseOutcome['promptVersions']> {
+  const rows = await deps.ai.db
+    .select({ stage: aiCalls.stage, version: aiCalls.promptVersion })
+    .from(aiCalls)
+    .where(eq(aiCalls.batchId, batchId));
+
+  const versions: { router?: string; extractor?: string; classifier?: string } = {};
+  for (const row of rows) {
+    if (row.version === null) continue;
+    if (row.stage === 'router' || row.stage === 'extractor' || row.stage === 'classifier') {
+      versions[row.stage] = row.version;
+    }
+  }
+
+  return versions;
+}
+
+/** Отказ разбора — по черновикам обработчика: он пишет причину словами. */
+function failureOf(drafts: readonly (typeof items.$inferSelect)[]): string | undefined {
+  const reason = drafts
+    .map((draft) => draft.draftReason ?? '')
+    .find((one) => one.includes('не удал'));
+  return reason === undefined || reason === '' ? undefined : reason;
 }
 
 /**
@@ -120,17 +285,13 @@ async function openBatch(deps: RunnerDeps, item: EvalCase): Promise<string | und
  * останавливаться на первом сбое сети, иначе мерить придётся по
  * настроению провайдера.
  */
-export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOutcome> {
+export async function runCase(deps: RunnerDeps, item: EvalCase, index = 0): Promise<CaseOutcome> {
   const now = new Date(item.now);
-  const versions: { router?: string; extractor?: string; classifier?: string } = {};
-  const batchId = await openBatch(deps, item);
-  const owner = { userId: deps.owner, batchId };
-  let routedSegments: readonly RoutedSegment[] | undefined;
-  const routedPart = (): { routed?: readonly RoutedSegment[] } =>
-    routedSegments === undefined ? {} : { routed: routedSegments };
+  const db = deps.ai.db;
+  const events: PipelineEvent[] = [];
+  const said = recordingSender();
 
-  /** Разбор до записей не дошёл: ни одной единицы, все ожидания потеряны. */
-  const lostAll = (crisisDetected: boolean): CaseOutcome => ({
+  const lost = (failed?: string): CaseOutcome => ({
     id: item.id,
     note: item.note,
     timeZone: item.timeZone,
@@ -141,185 +302,102 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       ambiguous: [],
       retracted: [],
     },
-    crisis: { detected: crisisDetected, expected: item.expected.crisis },
-    promptVersions: versions,
-    ...routedPart(),
+    crisis: { detected: false, expected: item.expected.crisis },
+    ...(failed === undefined ? {} : { failed }),
+    promptVersions: {},
   });
 
-  /** §13.7: при срабатывании кризисного контура разбор прекращается. */
-  const stopped = (): CaseOutcome => lostAll(true);
-
+  let batch: typeof batches.$inferSelect;
   try {
-    /**
-     * Первый контур считается до обращения к модели — как в бою.
-     *
-     * Порядок здесь не косметика. Спроси стенд модель прежде, чем
-     * проверить маркеры, — и он перестанет мерить то, что происходит на
-     * самом деле: свойство «на настоящем кризисе не тратим ни копейки»
-     * осталось бы непроверенным. Поймано тестом стенда, а не рассуждением.
-     */
-    if (detectByMarkers(item.text).detected) return stopped();
+    const userId = await standUser(deps, item, index);
+    batch = await batchOf(deps, userId, item, index, now);
+  } catch (error) {
+    deps.logger?.error({ err: error, id: item.id }, 'Обстановка случая не завелась');
+    return lost(`обстановка: ${describe(error)}`);
+  }
 
-    const routed = await routeIntents(deps.aiLight ?? deps.ai, { input: item.text, ...owner });
-    versions.router = routed.promptVersion;
-    routedSegments = routed.segments.map((segment) => ({
-      intent: segment.intent,
-      text: segment.text,
-    }));
+  const { db: _db, ...ai } = deps.ai;
+  const light =
+    deps.aiLight === undefined ? undefined : (({ db: _light, ...rest }) => rest)(deps.aiLight);
 
-    if (detectCrisis(item.text, routed.crisis).detected) return stopped();
+  const handle = createDumpHandler({
+    // Голос стенд не разбирает: случаи — расшифровки, снятые с боя.
+    speech: {
+      provider: new MockSpeechProvider(),
+      download: () => Promise.reject(new Error('стенд набора не скачивает голосовые')),
+    },
+    ai,
+    ...(light === undefined ? {} : { aiLight: light }),
+    ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
+    sender: said.sender,
+    settings: new SettingsRegistry({ db, ttlMs: 0 }),
+    now: () => now,
+    observe: (event) => {
+      events.push(event);
+    },
+    ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+  });
 
-    const parsed = routed.segments.filter((segment) => segment.intent === 'DUMP');
-
-    /**
-     * Ни одного отрезка `DUMP` — разбор окончен, как в бою.
-     *
-     * Бой на пустом `parsed` до извлечения не доходит: обработка кончается
-     * ветвью `parsed.length === 0` в `dump.handler.ts`, и человек не
-     * получает ни одной записи. Стенд считает так же — **по тому же
-     * условию, а не по пустоте склеенного текста**: все ожидания потеряны,
-     * дальше — ни одного вызова модели.
-     *
-     * **Здесь стоял запасной путь**: при пустом входе извлечению
-     * подавался текст случая целиком. Включался он ровно тогда, когда
-     * бой означает «разобрать нечего», — и показывал «найдено 100%».
-     * Регрессия промпта маршрутизатора, уводящая выгрузку из `DUMP`,
-     * осталась бы в отчёте невидимой. Шестой случай той же болезни;
-     * пятый описан ниже, у `spoken`.
-     *
-     * Потеря, а не отказ (`failed`): разбор прошёл и ничего не оставил —
-     * это наблюдение о качестве, и порог ловит его строкой «найдено
-     * единиц». Отказ — про сеть и модель, прогон из одних отказов в
-     * замеры не идёт; прогон из одних таких потерь идёт: он настоящий.
-     */
-    if (parsed.length === 0) return lostAll(false);
-
-    const dumpText = parsed.map((segment) => segment.text).join('\n');
-
-    /**
-     * Вход извлечения собирается **тем же кодом, что в бою** (задача 3.57).
-     *
-     * Правило выучено дорого: пять раз набор мерил не то, что работает, и
-     * каждый раз потому, что собирал вход сам. Поэтому вплетение правок
-     * зовётся здесь той же функцией, а не повторяется «эквивалентом».
-     */
-    const forExtraction = weaveForExtraction(parsed, routed.segments);
-
-    const extracted = await extractUnits(deps.ai, { input: forExtraction, ...owner });
-    versions.extractor = extracted.promptVersion;
-
-    if (!extracted.ok) {
-      return {
-        id: item.id,
-        note: item.note,
-        timeZone: item.timeZone,
-        result: {
-          matched: [],
-          missed: [...item.expected.units],
-          extra: [],
-          ambiguous: [],
-          retracted: [],
-        },
-        crisis: { detected: false, expected: item.expected.crisis },
-        failed: `извлечение: ${extracted.problem}`,
-        promptVersions: versions,
-        ...routedPart(),
-      };
-    }
-
-    const classified = await classifyUnits(deps.ai, {
-      units: extracted.units,
-      topics: item.topics,
-      defaultTopic: item.defaultTopic,
-      timeZone: item.timeZone,
-      /**
-       * Исходная речь передаётся, как и в бою — **и это `dumpText`, а не
-       * текст случая.**
-       *
-       * **Сперва не передавалась вовсе**, и набор не видел ни одной
-       * потерянной даты, показывая точность срока 100%. Починили,
-       * передав текст случая, — и это было **второе** расхождение,
-       * тоньше первого: бой подаёт сюда не речь человека, а пересобранную
-       * маршрутизатором выгрузку, только отрезки с намерением `DUMP`,
-       * склеенные переводами строк.
-       *
-       * **Разница не косметическая.** 04.09.2026 маршрутизатор отнёс
-       * «Хотя нет, давай мойку лучше в пятницу, вот в пятницу тогда надо
-       * помыть машину, ещё позвонить стоматологу, записаться на следующую
-       * неделю» к намерению `PATCH`. Этот отрезок в `dumpText` **не
-       * попадает вовсе** — 169 знаков речи, включая два новых дела и
-       * единственное «на следующую неделю». Набор же получал полный текст
-       * и потому показывал, что правила дня работают, тогда как в бою им
-       * нечего было читать.
-       *
-       * Правило простое и стоило трёх суток: сюда идёт **то же значение,
-       * что собирает бой**, а не то, из чего бой его собирает.
-       */
-      spoken: dumpText,
-      /**
-       * И речь целиком, как в бою: там это `combined`, до отбора по
-       * намерениям, здесь — текст случая (задача 3.56).
-       */
-      speech: item.text,
-      now,
-      ...owner,
-    });
-    versions.classifier = classified.promptVersion;
-
-    if (!classified.ok) {
-      return {
-        id: item.id,
-        note: item.note,
-        timeZone: item.timeZone,
-        result: {
-          matched: [],
-          missed: [...item.expected.units],
-          extra: [],
-          ambiguous: [],
-          retracted: [],
-        },
-        crisis: { detected: false, expected: item.expected.crisis },
-        failed: `классификация: ${classified.problem}`,
-        promptVersions: versions,
-        ...routedPart(),
-      };
-    }
-
-    return {
-      id: item.id,
-      note: item.note,
-      timeZone: item.timeZone,
-      result: match(item.expected.units, classified.items, item.expected.retracted),
-      crisis: { detected: false, expected: item.expected.crisis },
-      promptVersions: versions,
-      ...routedPart(),
-      trace: {
-        dumpText,
-        units: extracted.units,
-        fromModel: classified.fromModel,
-        items: classified.items,
-      },
-    };
+  let failed: string | undefined;
+  try {
+    await handle(db, batch);
+    await db
+      .update(batches)
+      .set({ status: 'done', processedAt: now, error: null })
+      .where(eq(batches.id, batch.id));
   } catch (error) {
     deps.logger?.error({ err: error, id: item.id }, 'Случай не прогнался');
+    failed = describe(error);
+  }
 
+  const routed = events.find((event) => event.kind === 'routed');
+  const routedPart = routed === undefined ? {} : { routed: routed.segments };
+
+  const crisisDetected = said.texts.includes(defaultTexts.safety.crisis);
+  const versions = await promptVersionsOf(deps, batch.id);
+
+  const rows = await db
+    .select()
+    .from(items)
+    .where(and(eq(items.sourceBatchId, batch.id)))
+    .orderBy(items.createdAt, items.sourceOrder);
+  const saved = rows.filter((row) => !row.isDraft);
+  const drafts = rows.filter((row) => row.isDraft);
+
+  const problem = failed ?? failureOf(drafts);
+
+  if (problem !== undefined) {
     return {
-      id: item.id,
-      note: item.note,
-      timeZone: item.timeZone,
-      result: {
-        matched: [],
-        missed: [...item.expected.units],
-        extra: [],
-        ambiguous: [],
-        retracted: [],
-      },
-      crisis: { detected: false, expected: item.expected.crisis },
-      failed: error instanceof Error ? error.message : 'неизвестный отказ',
+      ...lost(problem),
+      crisis: { detected: crisisDetected, expected: item.expected.crisis },
       promptVersions: versions,
-      ...routedPart(),
+      ...routedPart,
     };
   }
+
+  /** След — из наблюдателя: основной проход и поздние мысли вместе. */
+  const extracted = events.filter((event) => event.kind === 'extracted');
+  const classified = events.filter((event) => event.kind === 'classified');
+  const trace: CaseTrace | undefined =
+    extracted.length === 0
+      ? undefined
+      : {
+          dumpText: extracted.map((event) => event.dumpText).join('\n'),
+          units: extracted.flatMap((event) => event.units),
+          fromModel: classified.flatMap((event) => event.fromModel),
+          items: classified.flatMap((event) => event.items),
+        };
+
+  return {
+    id: item.id,
+    note: item.note,
+    timeZone: item.timeZone,
+    result: match(item.expected.units, classifiedOf(saved), item.expected.retracted),
+    crisis: { detected: crisisDetected, expected: item.expected.crisis },
+    promptVersions: versions,
+    ...routedPart,
+    ...(trace === undefined ? {} : { trace }),
+  };
 }
 
 export async function runDataset(
@@ -328,10 +406,9 @@ export async function runDataset(
 ): Promise<CaseOutcome[]> {
   const outcomes: CaseOutcome[] = [];
 
-  // Последовательно: параллельный прогон упёрся бы в ограничение частоты
-  // у провайдера, и часть случаев считалась бы сбойной без причины.
-  for (const item of cases) {
-    outcomes.push(await runCase(deps, item));
+  for (const [index, item] of cases.entries()) {
+    deps.logger?.info({ id: item.id }, 'Случай');
+    outcomes.push(await runCase(deps, item, index));
   }
 
   return outcomes;

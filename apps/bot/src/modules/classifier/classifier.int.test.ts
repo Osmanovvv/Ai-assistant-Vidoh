@@ -182,6 +182,67 @@ describe('желание не становится задачей', () => {
     expect(result.items[0]?.isProject).toBe(false);
     expect(result.corrections.project).toBe(1);
   });
+
+  it('«хочу за осень сделать ремонт» — дело с важностью «позже», не желание (блок B 17.09.2026)', async () => {
+    /**
+     * Решение Никиты 17.09.2026: «хочу за осень сделать ремонт в спальне:
+     * обои, потолок, шторы» — дело-цель с сезонным сроком. Модель отдаёт
+     * желание: и бой, и стенд на живом наборе 20.09.2026. Промпт не
+     * трогаем — правило кодом, по трём приметам сразу (`dated-wish.ts`).
+     * Признак цели от модели сохраняется, важность — «позже», раз своей
+     * модель не дала.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'за осень хочу сделать ремонт в спальне: обои, потолок, шторы',
+            type: 'DESIRE',
+            priority: 'NONE',
+            isProject: true,
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('за осень хочу сделать ремонт в спальне: обои, потолок, шторы'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.type).toBe('TASK');
+    expect(result.items[0]?.priority).toBe('LATER');
+    expect(result.items[0]?.isProject).toBe(true);
+    expect(result.corrections.type).toBe(1);
+  });
+
+  it('желание без рамки срока остаётся желанием — правило узкое', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'хочу наконец съездить в отпуск на море хотя бы на недельку',
+            type: 'DESIRE',
+            priority: 'NONE',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('хочу наконец съездить в отпуск на море хотя бы на недельку'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.type).toBe('DESIRE');
+    expect(result.corrections.type).toBe(0);
+  });
 });
 
 describe('темы', () => {

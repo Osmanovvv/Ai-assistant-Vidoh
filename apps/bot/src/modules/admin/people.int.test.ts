@@ -152,12 +152,17 @@ describe('обзор (§15)', () => {
         .values({ userId, status, combinedText: 'дела', openedAt: at, processedAt: at });
     };
 
-    // Аня: сегодня и три дня назад — вернулась.
-    await dumpAt(anya, new Date());
-    await dumpAt(anya, new Date(Date.now() - 3 * DAY));
+    // Полдень по Москве вчера, а не `Date.now()`: после полуночи «час
+    // назад» — уже другой день, и тест краснел по часам, а не по коду.
+    const noonYesterday = new Date(Date.now() - DAY);
+    noonYesterday.setUTCHours(9, 0, 0, 0);
+
+    // Аня: вчера и за три дня до того — вернулась.
+    await dumpAt(anya, noonYesterday);
+    await dumpAt(anya, new Date(noonYesterday.getTime() - 3 * DAY));
     // Борис: две выгрузки с разницей в час — один день, не вернулся.
-    await dumpAt(boris, new Date());
-    await dumpAt(boris, new Date(Date.now() - 3_600_000));
+    await dumpAt(boris, noonYesterday);
+    await dumpAt(boris, new Date(noonYesterday.getTime() + 3_600_000));
 
     expect((await overview(testDb(), 30)).returnedUsers).toBe(1);
   });

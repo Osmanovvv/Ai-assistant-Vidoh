@@ -2,7 +2,9 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { aiCalls, promptVersions } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+
+import { aiCalls, items, promptVersions, users } from '../db/schema.js';
 import { createLogger } from '../infra/logger.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
@@ -11,6 +13,7 @@ import type { CompletionRequest } from '../modules/ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
   EXTRACTOR_SCHEMA_NAME,
+  RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
 } from '../modules/ai/schemas/index.js';
 import { testDb } from '../test/db.js';
@@ -33,7 +36,12 @@ import { runDataset } from './runner.js';
 const logger = createLogger({ level: 'silent' });
 const SYNTHETIC = join(import.meta.dirname, 'synthetic');
 
-const MARKERS = { router: 'МАРШРУТ', extractor: 'ЕДИНИЦЫ', classifier: 'КЛАССЫ' } as const;
+const MARKERS = {
+  router: 'МАРШРУТ',
+  extractor: 'ЕДИНИЦЫ',
+  classifier: 'КЛАССЫ',
+  resolver: 'РЕЗОЛВЕР',
+} as const;
 
 function stageOf(request: CompletionRequest): keyof typeof MARKERS | undefined {
   for (const [stage, marker] of Object.entries(MARKERS)) {
@@ -160,6 +168,7 @@ async function prompts(): Promise<PromptRegistry> {
     { stage: 'router', schema: ROUTER_SCHEMA_NAME, marker: MARKERS.router },
     { stage: 'extractor', schema: EXTRACTOR_SCHEMA_NAME, marker: MARKERS.extractor },
     { stage: 'classifier', schema: CLASSIFIER_SCHEMA_NAME, marker: MARKERS.classifier },
+    { stage: 'resolver', schema: RESOLVER_SCHEMA_NAME, marker: MARKERS.resolver },
   ] as const;
 
   for (const { stage, schema, marker } of stages) {
@@ -463,5 +472,154 @@ describe('след прогона', () => {
 
     const [parsed] = await runDataset(deps(goodModel(), registry), cases);
     expect(parsed?.routed).toEqual([{ intent: 'DUMP', text: cases[0]?.text }]);
+  });
+});
+
+describe('стенд идёт тем же путём, что бой (шестое расхождение, 20.09.2026)', () => {
+  /**
+   * Живой набор 20.09.2026: «во вторник надо отвести дочку к врачу, хотя
+   * нет, к врачу лучше в пятницу, ещё оплатить садик до 20» —
+   * маршрутизатор отдал хвост правкой. Бой: правка после мысли ищет цель
+   * среди записей своей выгрузки, модель резолвера говорит «это новая
+   * мысль», и хвост идёт в разбор своим проходом — «Оплатить садик»
+   * появляется. Прежний стенд резолвер не звал и считал хвост потерянным:
+   * четыре «потери» из восьми были такими.
+   */
+  const THOUGHT = 'надо продукты купить и к врачу записаться';
+  const TAIL = 'ещё оплатить садик до 20';
+
+  function routerSplitsTail(): MockLlmProvider {
+    return new MockLlmProvider({
+      respond: (request) => {
+        switch (stageOf(request)) {
+          case 'router':
+            return JSON.stringify({
+              crisis: false,
+              segments: [
+                { intent: 'DUMP', text: THOUGHT },
+                { intent: 'PATCH', text: TAIL },
+              ],
+            });
+          case 'extractor':
+            return JSON.stringify({
+              units: request.input.includes('садик')
+                ? [unit('оплатить садик')]
+                : [unit('купить продукты'), unit('записаться к врачу')],
+            });
+          case 'classifier':
+            return JSON.stringify({
+              items: request.input.includes('садик')
+                ? [classified('оплатить садик', 'TASK', 'SOON', 'семья')]
+                : [
+                    classified('купить продукты', 'TASK', 'SOON', 'покупки'),
+                    classified('записаться к врачу', 'TASK', 'SOON', 'здоровье'),
+                  ],
+            });
+          case 'resolver':
+            // Как живая модель: среди продуктов и врача садика нет.
+            return JSON.stringify({
+              action: 'new',
+              mode: 'replace',
+              itemId: '',
+              confidence: 0.1,
+              changes: {
+                note: '',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'это новая мысль',
+            });
+          default:
+            return '{}';
+        }
+      },
+    });
+  }
+
+  it('правка без цели после мысли доходит до записи вторым проходом, как в бою', async () => {
+    const registry = await prompts();
+    const [base] = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+    const item = {
+      ...base!,
+      text: `${THOUGHT}, ${TAIL}`,
+      expected: {
+        ...base!.expected,
+        units: [
+          { ...base!.expected.units[0]!, keywords: ['продукт'] },
+          { ...base!.expected.units[1]!, keywords: ['врач'] },
+          { ...base!.expected.units[0]!, keywords: ['садик'], topic: 'семья' },
+        ],
+      },
+    };
+
+    const provider = routerSplitsTail();
+    const [outcome] = await runDataset(deps(provider, registry), [item]);
+
+    expect(outcome?.failed).toBeUndefined();
+    expect(outcome?.result.missed).toEqual([]);
+    expect(outcome?.result.matched.map((one) => one.actual.text)).toEqual([
+      'Купить продукты',
+      'Записаться к врачу',
+      'Оплатить садик',
+    ]);
+    // Бой зовёт резолвер один раз — на втором проходе, среди своей выгрузки.
+    const stages = (await testDb().select().from(aiCalls)).map((call) => call.stage);
+    expect(stages.filter((stage) => stage === 'resolver')).toHaveLength(1);
+    // След видит оба прохода: основной и поздней мысли.
+    expect(outcome?.trace?.units.map((one) => one.text)).toEqual([
+      'купить продукты',
+      'записаться к врачу',
+      'оплатить садик',
+    ]);
+    expect(outcome?.routed).toEqual([
+      { intent: 'DUMP', text: THOUGHT },
+      { intent: 'PATCH', text: TAIL },
+    ]);
+  });
+
+  it('обстановка случая — сферы и пояс — заводится у пользователя стенда, а не берётся из умолчаний', async () => {
+    const registry = await prompts();
+    const [base] = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+    const item = {
+      ...base!,
+      topics: ['учёба', 'здоровье'],
+      defaultTopic: 'учёба',
+      timeZone: 'Asia/Yekaterinburg',
+    };
+
+    const provider = new MockLlmProvider({
+      respond: (request) => {
+        if (stageOf(request) !== 'classifier') return answerCorrectly(request);
+        // Что видит классификация: сферы человека — из случая, впереди
+        // базовых, которые бой подсказывает следом (16.09.2026).
+        expect(request.input).toContain('учёба');
+        expect(request.input.indexOf('учёба')).toBeLessThan(request.input.indexOf('покупки'));
+        return answerCorrectly(request);
+      },
+    });
+
+    const [outcome] = await runDataset(deps(provider, registry), [item]);
+
+    expect(outcome?.failed).toBeUndefined();
+    const [user] = await testDb().select().from(users).where(eq(users.tgId, 999_000_700));
+    expect(user?.timezone).toBe('Asia/Yekaterinburg');
+  });
+
+  it('второй прогон того же случая начинает с чистого пользователя стенда', async () => {
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    await runDataset(deps(goodModel(), registry), cases);
+    const [second] = await runDataset(deps(goodModel(), registry), cases);
+
+    // Записи первого прогона не стали ни кандидатами, ни повторами.
+    expect(second?.result.extra).toEqual([]);
+    expect(second?.result.matched).toHaveLength(4);
+    const saved = await testDb().select().from(items);
+    expect(saved).toHaveLength(4);
   });
 });
