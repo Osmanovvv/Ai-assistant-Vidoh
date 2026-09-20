@@ -496,6 +496,18 @@ export interface TextProfile {
     readonly labelTomorrow: string;
     readonly labelWeekend: string;
     readonly labelWeek: string;
+    /**
+     * Отрезки, добавленные 21.09.2026: после «На …» — в винительном
+     * падеже. Дни недели и месяцы — по индексу `Date#getDay` и номеру
+     * месяца (с единицы); «следующий …» — со своим родом.
+     */
+    readonly labelAfterTomorrow: string;
+    readonly labelNextWeek: string;
+    readonly labelMonth: string;
+    readonly labelDays: (count: number) => string;
+    readonly labelWeekdays: readonly [string, string, string, string, string, string, string];
+    readonly labelNextWeekdays: readonly [string, string, string, string, string, string, string];
+    readonly labelMonths: readonly string[];
     /** Спросили про закрытое, убранное или ушедшее в фон дело (F1). */
     readonly aboutClosed: string;
     readonly closedLine: (text: string, state: string) => string;

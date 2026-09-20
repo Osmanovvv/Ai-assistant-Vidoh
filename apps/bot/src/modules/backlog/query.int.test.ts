@@ -196,6 +196,102 @@ describe('вопрос про день, кроме сегодняшнего (р�
 
     expect(answer.kind).toBe('periodEmpty');
   });
+
+  /**
+   * Отрезки, которых не было (21.09.2026, вопрос Никиты): N дней,
+   * послезавтра, следующая неделя, месяц, названный месяц, день недели.
+   * NOW — пятница 04.09.2026, 12:00 по Москве; `dayAfter(0)` — сегодня.
+   */
+  const listOf = async (text: string): Promise<readonly string[]> => {
+    const answer = await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text, now: NOW },
+    );
+    return answer.kind === 'period' ? answer.items.map((one) => one.text) : [answer.kind];
+  };
+
+  it('«на 3 дня» — сегодня, завтра и послезавтра', async () => {
+    await addItem('сегодняшнее', 'active', { deadlineAt: dayAfter(0) });
+    await addItem('послезавтрашнее', 'active', { deadlineAt: dayAfter(2) });
+    await addItem('через три дня', 'active', { deadlineAt: dayAfter(3) });
+
+    expect(await listOf('что у меня на эти 3 дня')).toEqual(['сегодняшнее', 'послезавтрашнее']);
+  });
+
+  it('«на послезавтра» — один день', async () => {
+    await addItem('завтрашнее', 'active', { deadlineAt: dayAfter(1) });
+    await addItem('послезавтрашнее', 'active', { deadlineAt: dayAfter(2) });
+
+    expect(await listOf('что на послезавтра')).toEqual(['послезавтрашнее']);
+  });
+
+  it('«на следующей неделе» — с понедельника по воскресенье, не семь дней от сегодня', async () => {
+    await addItem('в это воскресенье', 'active', { deadlineAt: dayAfter(2) }); // вс 06.09
+    await addItem('в следующий понедельник', 'active', { deadlineAt: dayAfter(3) }); // пн 07.09
+    await addItem('в следующее воскресенье', 'active', { deadlineAt: dayAfter(9) }); // вс 13.09
+    await addItem('через две недели', 'active', { deadlineAt: dayAfter(10) }); // пн 14.09
+
+    expect(await listOf('что у меня на следующей неделе')).toEqual([
+      'в следующий понедельник',
+      'в следующее воскресенье',
+    ]);
+  });
+
+  it('«на месяц» — тридцать дней от сегодня, неточные сроки внутри окна тоже', async () => {
+    await addItem('сегодняшнее', 'active', { deadlineAt: dayAfter(0) });
+    await addItem('на той неделе', 'active', { deadlineAt: dayAfter(10), accuracy: 'week' });
+    await addItem('через 29 дней', 'active', { deadlineAt: dayAfter(29) });
+    await addItem('через 31 день', 'active', { deadlineAt: dayAfter(31) });
+
+    expect(await listOf('что у меня на месяц')).toEqual([
+      'сегодняшнее',
+      'на той неделе',
+      'через 29 дней',
+    ]);
+  });
+
+  it('«в октябре» — календарный месяц', async () => {
+    await addItem('в конце сентября', 'active', {
+      deadlineAt: new Date('2026-09-29T21:00:00.000Z'),
+    });
+    await addItem('первого октября', 'active', {
+      deadlineAt: new Date('2026-09-30T21:00:00.000Z'),
+    });
+    await addItem('в октябре где-то', 'active', {
+      deadlineAt: new Date('2026-09-30T21:00:00.000Z'),
+      accuracy: 'month',
+    });
+    await addItem('первого ноября', 'active', { deadlineAt: new Date('2026-10-31T21:00:00.000Z') });
+
+    expect(await listOf('что у меня в октябре')).toEqual(['первого октября', 'в октябре где-то']);
+  });
+
+  it('«в сентябре», спрошенное в сентябре, — остаток месяца', async () => {
+    await addItem('вчерашнее', 'active', { deadlineAt: dayAfter(-1) });
+    await addItem('сегодняшнее', 'active', { deadlineAt: dayAfter(0) });
+    await addItem('в конце сентября', 'active', {
+      deadlineAt: new Date('2026-09-29T21:00:00.000Z'),
+    });
+    await addItem('первого октября', 'active', {
+      deadlineAt: new Date('2026-09-30T21:00:00.000Z'),
+    });
+
+    expect(await listOf('что в сентябре')).toEqual(['сегодняшнее', 'в конце сентября']);
+  });
+
+  it('«во вторник» — ближайший вторник, «в следующий вторник» — через неделю после него', async () => {
+    await addItem('во вторник', 'active', { deadlineAt: dayAfter(4) }); // вт 08.09
+    await addItem('через неделю во вторник', 'active', { deadlineAt: dayAfter(11) }); // вт 15.09
+
+    expect(await listOf('что у меня во вторник')).toEqual(['во вторник']);
+    expect(await listOf('что в следующий вторник')).toEqual(['через неделю во вторник']);
+  });
+
+  it('на день недели пусто — «на вторник ничего не назначено», а не поиск предмета', async () => {
+    await addItem('сдать отчёт', 'active', { deadlineAt: dayAfter(3) });
+
+    expect(await listOf('что у меня во вторник')).toEqual(['periodEmpty']);
+  });
 });
 
 describe('вопрос внутри ветки сферы (ревизия этапа 3, F4)', () => {

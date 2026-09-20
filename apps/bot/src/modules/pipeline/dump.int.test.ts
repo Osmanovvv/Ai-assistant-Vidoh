@@ -2682,6 +2682,49 @@ describe('бренд-карточки (ТЗ по визуалам, продже�
     // Список не дублируется текстом.
     expect(all.some((text) => text.includes('Сдать отчёт'))).toBe(false);
   });
+
+  it('«на 3 дня» и «во вторник» — отрезки с подписью словами (21.09.2026)', async () => {
+    /**
+     * Никита 21.09.2026: «а на 3 дня, 7 дней, месяц отвечает?» Не отвечал
+     * — уходил в поиск предмета и «не поняла». Подпись отрезка — из
+     * текстов: «На 3 дня у тебя вот это:», «На вторник ничего не
+     * назначено.»
+     */
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Сдать отчёт',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'работа',
+        status: 'new',
+        deadlineAt: new Date(T0.getTime() + 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      });
+    await queuedBatchOf([{ kind: 'text', text: 'Что у меня на 3 дня?', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Что у меня на 3 дня?' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, llm }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply.startsWith(defaultTexts.backlog.period('3 дня'))).toBe(true);
+    expect(reply).toContain('Сдать отчёт');
+  });
 });
 
 describe('ответ пользователю', () => {
