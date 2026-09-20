@@ -333,6 +333,36 @@ describe('согласие кнопкой «Согласна» (§16, решен
     expect(sent.map(textOf)).toEqual([defaultTexts.consent.accepted]);
   });
 
+  it('кнопка «Согласна» снимается после нажатия, повторное нажатие молчит (проджект, 20.09.2026)', async () => {
+    /**
+     * Скриншот проджекта: кнопка оставалась под сообщением, и каждое
+     * нажатие приносило новое «Спасибо. Теперь можно говорить…» — три
+     * подряд. Согласие — один раз: кнопка убирается правкой разметки,
+     * повторное нажатие только подтверждается Telegram'у, без реплик.
+     */
+    await withoutConsent();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.done })
+      .where(eq(userSettings.userId, userId));
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+    await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+    const sent = calls.filter((call) => call.method === 'sendMessage');
+    expect(sent.map(textOf)).toEqual([defaultTexts.consent.accepted]);
+    // Разметка снята с сообщения согласия — при первом же нажатии; на
+    // повторных правка идёт снова (кнопки уже нет — Telegram откажет, это
+    // не страшно), а реплики нет.
+    expect(
+      calls.filter((call) => call.method === 'editMessageReplyMarkup').length,
+    ).toBeGreaterThanOrEqual(1);
+    // Каждое нажатие подтверждено Telegram'у, чтобы часики не крутились.
+    expect(calls.filter((call) => call.method === 'answerCallbackQuery')).toHaveLength(3);
+  });
+
   it('сказанное до нажатия ждёт и после нажатия уходит в выгрузку', async () => {
     /**
      * §16 — ничего не теряется: слова до кнопки сохранены, но не
