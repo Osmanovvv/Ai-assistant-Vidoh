@@ -1,14 +1,7 @@
 import { and, desc, eq, isNull, ne } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import {
-  batches,
-  itemRevisions,
-  items,
-  userSettings,
-  type Batch,
-  type Item,
-} from '../../db/schema.js';
+import { itemRevisions, items, userSettings, type Batch, type Item } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import { fallbackOf } from '../../texts/rules.js';
@@ -330,15 +323,26 @@ async function undoLastByWords(
 
   if (revision === undefined) return texts.resolver.nothingToUndo;
 
-  // Последняя выгрузка, кроме текущей: текущая — сама просьба отменить.
-  const [previous] = await db
-    .select({ openedAt: batches.openedAt })
-    .from(batches)
-    .where(and(eq(batches.userId, batch.userId), ne(batches.id, batch.id)))
-    .orderBy(desc(batches.openedAt))
+  /**
+   * Последняя **запись**, а не последнее сообщение: вопросы между правкой
+   * и «отмени» записей не создают и последнего не меняют (бой 21.09.2026:
+   * три дня вопросов после правки — и «последнее — новые записи»).
+   * Текущая выгрузка — сама просьба отменить — не в счёт.
+   */
+  const [latest] = await db
+    .select({ createdAt: items.createdAt })
+    .from(items)
+    .where(
+      and(
+        eq(items.userId, batch.userId),
+        eq(items.isDraft, false),
+        ne(items.sourceBatchId, batch.id),
+      ),
+    )
+    .orderBy(desc(items.createdAt))
     .limit(1);
 
-  if (previous !== undefined && revision.createdAt.getTime() < previous.openedAt.getTime()) {
+  if (latest !== undefined && revision.createdAt.getTime() < latest.createdAt.getTime()) {
     return texts.resolver.undoIsRecords;
   }
 
