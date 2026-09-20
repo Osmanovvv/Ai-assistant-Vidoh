@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { pageOf, PAGE_SIZE } from './backlog.service.js';
 import { ToolRegistry } from './tools.js';
-import { askedDay, asksAboutEverything, asksAboutToday } from './query.service.js';
+import {
+  askedDay,
+  asksAboutEverything,
+  asksAboutToday,
+  periodLabel,
+  periodWindow,
+} from './query.service.js';
+import { defaultTexts } from '../../texts/index.js';
 
 /**
  * Списки и реестр инструментов (задача 3.11).
@@ -209,5 +216,111 @@ describe('вопрос про день или про предмет', () => {
     ]) {
       expect(asksAboutToday(text), text).toBe(false);
     }
+  });
+});
+
+describe('вопрос про отрезок дней: «на 3 дня», «на месяц», «во вторник» (21.09.2026)', () => {
+  /**
+   * Никита 21.09.2026: «а бот отвечает на „что у меня на эти 3 дня, 7
+   * дней, месяц, какие планы на неделю"?» Отвечал только на сегодня,
+   * завтра, выходные и неделю; остальное уходило в поиск предмета и
+   * кончалось «не поняла». Закрытый список новых рамок: N дней,
+   * «ближайшие дни», послезавтра, следующая неделя, месяц, названный
+   * месяц, день недели.
+   */
+  it.each([
+    ['что у меня на эти 3 дня', 'days:3'],
+    ['что на 7 дней', 'days:7'],
+    ['какие дела на ближайшие 3 дня', 'days:3'],
+    ['что на три дня', 'days:3'],
+    ['что у меня на пару дней', 'days:2'],
+    ['что на ближайшие дни', 'days:3'],
+    ['что на послезавтра', 'afterTomorrow'],
+    ['что у меня послезавтра', 'afterTomorrow'],
+    ['что у меня на следующей неделе', 'nextWeek'],
+    ['какие планы на следующую неделю', 'nextWeek'],
+    ['что у меня на месяц', 'month'],
+    ['что в этом месяце', 'month'],
+    ['что у меня в октябре', 'month:10'],
+    ['какие планы на октябрь', 'month:10'],
+    ['что у меня во вторник', 'weekday:2'],
+    ['что в пятницу', 'weekday:5'],
+    ['что там на воскресенье', 'weekday:0'],
+    ['что в следующий вторник', 'weekday:2:next'],
+  ])('«%s» → %s', (text, period) => {
+    expect(askedDay(text)).toBe(period);
+  });
+
+  it('прежние рамки не изменились', () => {
+    expect(askedDay('что на завтра')).toBe('tomorrow');
+    expect(askedDay('что на выходных')).toBe('weekend');
+    expect(askedDay('какие планы на неделю')).toBe('week');
+    expect(askedDay('что у меня на сегодня')).toBe('today');
+  });
+
+  it('с предметом — вопрос про предмет, а не про отрезок', () => {
+    for (const text of [
+      'что во вторник с отчётом',
+      'что там с балконом на неделе',
+      'что по стоматологу в октябре',
+      'на 3 дня отложи отчёт',
+    ]) {
+      expect(askedDay(text), text).toBeUndefined();
+    }
+  });
+
+  it('число дней вне разумного — не рамка', () => {
+    expect(askedDay('что на 0 дней')).toBeUndefined();
+    expect(askedDay('что на 45 дней')).toBeUndefined();
+  });
+});
+
+describe('подпись отрезка после «На …»', () => {
+  const label = (period: Parameters<typeof periodLabel>[0]): string =>
+    periodLabel(period, defaultTexts.backlog);
+
+  it.each([
+    ['tomorrow', 'завтра'],
+    ['afterTomorrow', 'послезавтра'],
+    ['weekend', 'выходные'],
+    ['week', 'неделю'],
+    ['nextWeek', 'следующую неделю'],
+    ['month', 'месяц'],
+    ['days:1', '1 день'],
+    ['days:3', '3 дня'],
+    ['days:7', '7 дней'],
+    ['month:10', 'октябрь'],
+    ['weekday:2', 'вторник'],
+    ['weekday:3', 'среду'],
+    ['weekday:3:next', 'следующую среду'],
+    ['weekday:0:next', 'следующее воскресенье'],
+  ] as const)('%s → «%s»', (period, expected) => {
+    expect(label(period)).toBe(expected);
+  });
+});
+
+describe('окно отрезка — края, где легко ошибиться', () => {
+  const MOSCOW = 'Europe/Moscow';
+  const iso = (at: Date): string =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: MOSCOW }).format(at);
+  const window = (period: Parameters<typeof periodWindow>[0], now: string): string => {
+    const { from, to } = periodWindow(period, { now: new Date(now), timeZone: MOSCOW });
+    return `${iso(from)}..${iso(to)}`;
+  };
+
+  it('«следующая неделя» в воскресенье — с завтрашнего понедельника, в понедельник — через неделю', () => {
+    expect(window('nextWeek', '2026-09-06T09:00:00.000Z')).toBe('2026-09-07..2026-09-14');
+    expect(window('nextWeek', '2026-09-07T09:00:00.000Z')).toBe('2026-09-14..2026-09-21');
+  });
+
+  it('названный месяц раньше текущего — в следующем году; декабрь не ломает год', () => {
+    expect(window('month:3', '2026-09-21T09:00:00.000Z')).toBe('2027-03-01..2027-04-01');
+    expect(window('month:12', '2026-09-21T09:00:00.000Z')).toBe('2026-12-01..2027-01-01');
+  });
+
+  it('день недели, совпадающий с сегодняшним, вечером — через неделю, как у разбора сроков', () => {
+    // Понедельник 21.09, 18:00 по Москве: «в понедельник» — 28.09.
+    expect(window('weekday:1', '2026-09-21T15:00:00.000Z')).toBe('2026-09-28..2026-09-29');
+    expect(window('weekday:1:next', '2026-09-21T15:00:00.000Z')).toBe('2026-10-05..2026-10-06');
   });
 });

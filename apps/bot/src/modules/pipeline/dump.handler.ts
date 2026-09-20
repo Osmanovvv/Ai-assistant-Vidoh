@@ -16,7 +16,7 @@ import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.ser
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
-import { answerBacklogQuery, type BacklogAnswer } from '../backlog/query.service.js';
+import { answerBacklogQuery, type BacklogAnswer, periodLabel } from '../backlog/query.service.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
@@ -1335,22 +1335,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * поискать» выглядят одинаково пустыми, а значат противоположное:
        * первое человек примет за факт о своих делах и не переспросит.
        */
-      const periodLabel = (period: 'tomorrow' | 'weekend' | 'week'): string =>
-        period === 'tomorrow'
-          ? texts.backlog.labelTomorrow
-          : period === 'weekend'
-            ? texts.backlog.labelWeekend
-            : texts.backlog.labelWeek;
-
       const header =
         answer.kind === 'today'
           ? texts.backlog.today
           : answer.kind === 'todayEmpty'
             ? texts.menu.todayEmpty
             : answer.kind === 'period'
-              ? texts.backlog.period(periodLabel(answer.period))
+              ? texts.backlog.period(periodLabel(answer.period, texts.backlog))
               : answer.kind === 'periodEmpty'
-                ? texts.backlog.periodEmpty(periodLabel(answer.period))
+                ? texts.backlog.periodEmpty(periodLabel(answer.period, texts.backlog))
                 : answer.kind === 'about'
                   ? texts.backlog.about
                   : answer.kind === 'all'
