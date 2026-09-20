@@ -10,6 +10,7 @@ import type {
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
+import { withoutDayQuestions } from '../router/day-question.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
@@ -415,7 +416,14 @@ export function correctItems(
      * перебивает. И только у дел: лишний срок у желания — выдуманный
      * срок, худшая из ошибок разбора.
      */
-    const heard = ctx.speech ?? ctx.spoken;
+    /**
+     * Речь для правил дня — без вопросов о дне (голос 10, 18.09.2026):
+     * «кстати, что у меня на выходных» стояло в одном предложении с
+     * «и ещё надо разобрать балкон», и запасной путь взял «на выходных»
+     * сроком балкона. Вопрос о дне сроком не бывает.
+     */
+    const heardWhole = ctx.speech ?? ctx.spoken;
+    const heard = heardWhole === undefined ? undefined : withoutDayQuestions(heardWhole);
 
     if (deadline === undefined && isActionable(type) && heard !== undefined) {
       const fromSentence = dayFromOwnSentence({

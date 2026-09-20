@@ -1,4 +1,10 @@
-import { localDateParts, nearestMonthStart, nearestWeekday, startOfDayInZone } from './dates.js';
+import {
+  localDateParts,
+  namedWeekday,
+  nearestMonthStart,
+  nearestWeekday,
+  startOfDayInZone,
+} from './dates.js';
 
 /**
  * День из **своего предложения речи** (задача 3.49).
@@ -400,7 +406,7 @@ function dateOf(mark: DayMark, now: Date, timeZone: string): SentenceDay | undef
   }
 
   if (mark.kind === 'weekday') {
-    return { at: nearestWeekday(mark.weekday, context), accuracy: 'day' };
+    return { at: namedWeekday(mark.weekday, context), accuracy: 'day' };
   }
 
   // Следующая неделя: её начало, ближайший понедельник. Точность

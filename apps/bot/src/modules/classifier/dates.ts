@@ -273,6 +273,53 @@ export function nearestWeekday(
   return today;
 }
 
+/** Час по поясу человека: 0–23. */
+function localHourOf(instant: Date, timeZone: string): number {
+  const hour = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' })
+    .formatToParts(instant)
+    .find((part) => part.type === 'hour')?.value;
+
+  return Number(hour ?? '0');
+}
+
+/** До этого часа сегодняшний день недели ещё «сегодня». */
+const NOON = 12;
+
+/**
+ * **Названный** день недели: «в пятницу», «во вторник».
+ *
+ * Отличается от `nearestWeekday` одним: сегодняшний день недели — это
+ * сегодня только **до полудня**. Голос 10 Никиты (пятница 18.09.2026,
+ * 18:21): «…хотя нет, к врачу лучше в пятницу» — модель отдала 25.09,
+ * код «поправил» на ближайшую пятницу, то есть на сегодняшний вечер.
+ * Проджект 03.09 (четверг, 20:00): «в четверг съездить к родителям» —
+ * модель дала 10.09, код вернул на сегодня. Оба раза модель была права:
+ * о сегодняшнем вечере человек говорит «сегодня», а «в пятницу» в
+ * пятницу вечером — следующая пятница.
+ *
+ * Полдень — закрытое правило, а не догадка по обстоятельствам: до него
+ * «в четверг заберу справку» в четверг может быть про сегодня, после —
+ * уже нет. Периодов это не касается: «на выходных» в субботу вечером —
+ * эти выходные, там остаётся `nearestWeekday`.
+ */
+export function namedWeekday(
+  weekday: number,
+  context: { readonly now: Date; readonly timeZone: string },
+): Date {
+  const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
+
+  if (weekdayOf(today, context.timeZone) === weekday) {
+    if (localHourOf(context.now, context.timeZone) < NOON) return today;
+
+    return nearestWeekday(weekday, {
+      now: startOfDayAfter(today, 1, context.timeZone),
+      timeZone: context.timeZone,
+    });
+  }
+
+  return nearestWeekday(weekday, context);
+}
+
 /**
  * Ближайший из названных дней недели.
  *
@@ -285,7 +332,7 @@ function nearestWeekdayAmong(
   context: { readonly now: Date; readonly timeZone: string },
 ): Date {
   const days = named
-    .map((weekday) => nearestWeekday(weekday, context))
+    .map((weekday) => namedWeekday(weekday, context))
     .sort((left, right) => left.getTime() - right.getTime());
 
   // Пустым список сюда не приходит: вызов стоит под проверкой длины. Но

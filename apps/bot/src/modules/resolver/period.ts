@@ -1,4 +1,4 @@
-import { localDateParts, nearestWeekday, startOfDayInZone } from '../classifier/dates.js';
+import { localDateParts, namedWeekday, startOfDayInZone } from '../classifier/dates.js';
 
 /**
  * Период, упомянутый в сегменте (§7.2 ТЗ, задача 3.1).
@@ -101,7 +101,8 @@ export function mentionedPeriod(text: string, context: PeriodContext): Period | 
 
     const weekday = WEEKDAYS.get(word);
     if (weekday !== undefined) {
-      return dayOf(nearestWeekday(weekday, context), context.timeZone);
+      // Названный день: сегодняшний — сегодня только до полудня.
+      return dayOf(namedWeekday(weekday, context), context.timeZone);
     }
   }
 

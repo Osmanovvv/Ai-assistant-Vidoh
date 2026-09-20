@@ -5,7 +5,7 @@ import type { Executor } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import {
   isoDateIn,
-  nearestWeekday,
+  namedWeekday,
   resolveDeadline,
   saysDistantWeek,
   startOfDayAfter,
@@ -354,7 +354,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
      * человека**: вместе со словами включилась бы и лицензия «названо ли
      * это вслух», а она ищет цифры и отвергала бы верные поправки.
      *
-     * Поэтому пересчёт стоит здесь, до проверки: тем же `nearestWeekday`,
+     * Поэтому пересчёт стоит здесь, до проверки: тем же `namedWeekday`,
      * что у классификации, и по тому же условию — назван **ровно один**
      * день недели и точность дневная.
      */
@@ -367,7 +367,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     const corrected =
       only !== undefined && deadlineAccuracy === 'day' && !saysDistantWeek(params.spoken ?? '')
         ? new Intl.DateTimeFormat('sv-SE', { timeZone: params.timeZone }).format(
-            nearestWeekday(only, { now, timeZone: params.timeZone }),
+            namedWeekday(only, { now, timeZone: params.timeZone }),
           )
         : deadline;
 
@@ -397,7 +397,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    *
    * **Стоит после разбора срока, и это не косметика.** Правило опирается
    * на дату, и брать её надо ту, которая у записи действительно будет, —
-   * не строку модели. Строку тут же ниже пересчитывает `nearestWeekday`:
+   * не строку модели. Строку тут же ниже пересчитывает `namedWeekday`:
    * человек сказал «в четверг», модель ответила средой, срок исправлен, а
    * якорь оставался средой — и «каждый четверг» становилось «каждой
    * средой» навсегда (ревизия этапов 1–2). Порядок — и есть починка.

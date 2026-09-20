@@ -17,7 +17,8 @@ import { hasTimeWord, relativeDaysIn, timeQuoteInSpeech, weekdayIn } from './tim
  */
 
 /** Четверг, 27 августа 2026, полдень по Москве. */
-const NOW = new Date('2026-08-27T09:00:00.000Z');
+// Четверг, 11:00 по Москве: до полудня «в четверг» — ещё сегодня (`namedWeekday`).
+const NOW = new Date('2026-08-27T08:00:00.000Z');
 const ZONE = 'Europe/Moscow';
 
 describe('слова о времени', () => {
@@ -140,8 +141,8 @@ describe('день недели считает код, а не модель', ()
 
     expect(outcome.ok).toBe(true);
     if (outcome.ok && outcome.deadline) {
-      // Ближайший четверг от четверга — это сегодня: человек говорит о
-      // ближайшем, иначе сказал бы «в следующий».
+      // Ближайший четверг от четверга утром — это сегодня: человек говорит о
+      // ближайшем, иначе сказал бы «в следующий». Вечером — см. ниже.
       expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-08-26');
       expect(outcome.corrected).toBe('weekday');
     }
@@ -367,6 +368,22 @@ describe('назван день недели — берётся ближайши
 
     expect(outcome.ok).toBe(true);
     if (outcome.ok && outcome.deadline) expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('после полудня сегодняшний четверг — уже следующий (голос 10, 18.09.2026)', () => {
+    // Тот же четверг, 15:00 по Москве: о сегодняшнем вечере человек
+    // говорит «сегодня», а «в четверг» — про 3 сентября. Модель как раз
+    // так и отвечала; прежний код тянул её на сегодня.
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-03', accuracy: 'day' },
+      { now: new Date('2026-08-27T12:00:00.000Z'), timeZone: ZONE, said: `${SAID} в четверг` },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok && outcome.deadline) {
+      expect(outcome.corrected).toBeUndefined();
+      expect(outcome.deadline.at.toISOString().slice(0, 10)).toBe('2026-09-02');
+    }
   });
 
   it('правило работает и через цитату', () => {
