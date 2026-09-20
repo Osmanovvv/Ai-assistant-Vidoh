@@ -62,6 +62,22 @@ export interface CaseOutcome {
   };
   /** Есть только у случая, дошедшего до записей. */
   readonly trace?: CaseTrace | undefined;
+  /**
+   * Отрезки маршрутизатора — у всякого случая, где он ответил
+   * (прогон 20.09.2026).
+   *
+   * След начинается с `dumpText`, а потери случаются раньше: отрезок
+   * ушёл в `PATCH`, склеился с соседним, пропал. На живом наборе так
+   * потерялись три единицы из восьми, и объяснить их без повторного
+   * платного прогона было нечем. Поэтому отрезки хранятся и тогда, когда
+   * до записей не дошло, — именно тогда они и нужны.
+   */
+  readonly routed?: readonly RoutedSegment[] | undefined;
+}
+
+export interface RoutedSegment {
+  readonly intent: string;
+  readonly text: string;
 }
 
 export interface RunnerDeps {
@@ -109,6 +125,9 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
   const versions: { router?: string; extractor?: string; classifier?: string } = {};
   const batchId = await openBatch(deps, item);
   const owner = { userId: deps.owner, batchId };
+  let routedSegments: readonly RoutedSegment[] | undefined;
+  const routedPart = (): { routed?: readonly RoutedSegment[] } =>
+    routedSegments === undefined ? {} : { routed: routedSegments };
 
   /** Разбор до записей не дошёл: ни одной единицы, все ожидания потеряны. */
   const lostAll = (crisisDetected: boolean): CaseOutcome => ({
@@ -124,6 +143,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
     },
     crisis: { detected: crisisDetected, expected: item.expected.crisis },
     promptVersions: versions,
+    ...routedPart(),
   });
 
   /** §13.7: при срабатывании кризисного контура разбор прекращается. */
@@ -142,6 +162,10 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
 
     const routed = await routeIntents(deps.aiLight ?? deps.ai, { input: item.text, ...owner });
     versions.router = routed.promptVersion;
+    routedSegments = routed.segments.map((segment) => ({
+      intent: segment.intent,
+      text: segment.text,
+    }));
 
     if (detectCrisis(item.text, routed.crisis).detected) return stopped();
 
@@ -199,6 +223,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
         crisis: { detected: false, expected: item.expected.crisis },
         failed: `извлечение: ${extracted.problem}`,
         promptVersions: versions,
+        ...routedPart(),
       };
     }
 
@@ -256,6 +281,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
         crisis: { detected: false, expected: item.expected.crisis },
         failed: `классификация: ${classified.problem}`,
         promptVersions: versions,
+        ...routedPart(),
       };
     }
 
@@ -266,6 +292,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       result: match(item.expected.units, classified.items, item.expected.retracted),
       crisis: { detected: false, expected: item.expected.crisis },
       promptVersions: versions,
+      ...routedPart(),
       trace: {
         dumpText,
         units: extracted.units,
@@ -290,6 +317,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase): Promise<CaseOut
       crisis: { detected: false, expected: item.expected.crisis },
       failed: error instanceof Error ? error.message : 'неизвестный отказ',
       promptVersions: versions,
+      ...routedPart(),
     };
   }
 }
