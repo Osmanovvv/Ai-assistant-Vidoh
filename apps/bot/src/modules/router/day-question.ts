@@ -107,3 +107,25 @@ export function splitDayQuestions(segments: readonly Segment[]): readonly Segmen
     return true;
   });
 }
+
+/**
+ * Речь без вопросов о дне — для правил дня классификации (голос 10,
+ * 18.09.2026).
+ *
+ * Маршрутизатор убирает вопрос из разбора, но правила дня читают речь
+ * **целиком**, и «на выходных» из «кстати, что у меня на выходных» стало
+ * сроком соседнего дела «разобрать балкон» — выдуманный срок, худшая из
+ * ошибок разбора. Вопрос о дне сроком быть не может ни для кого;
+ * вырезается он тем же правилом, каким выделяется, — иначе два способа
+ * узнать вопрос разошлись бы.
+ */
+export function withoutDayQuestions(speech: string): string {
+  const kept = speech
+    .split(SENTENCE_END)
+    .filter((sentence) => sentence.trim().length > 0)
+    .flatMap(splitAndMore)
+    .filter((part) => part.thought || !isDayQuestion(part.text))
+    .map((part) => part.text.trim());
+
+  return kept.join(' ');
+}

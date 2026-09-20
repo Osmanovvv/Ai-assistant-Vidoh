@@ -219,6 +219,29 @@ describe('желание не становится задачей', () => {
     expect(result.corrections.type).toBe(1);
   });
 
+  it('«на выходных» из вопроса «что у меня на выходных» не становится сроком соседнего дела (голос 10)', async () => {
+    /**
+     * Живой набор 20.09.2026, live-14: модель срока балкону не дала,
+     * а запасной путь взял «на выходных» из вопроса в том же предложении
+     * речи. Вопрос о дне — не срок; речь для правил дня идёт без него.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ text: 'Надо разобрать балкон', type: 'TASK', priority: 'LATER' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Надо разобрать балкон'),
+      spoken: 'и еще и еще надо разобрать балкон.',
+      speech:
+        'Я так устала за эту неделю. Просто нет сил ни на что, кстати, что у меня на выходных и еще и еще надо разобрать балкон.',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.deadline).toBeUndefined();
+  });
+
   it('желание без рамки срока остаётся желанием — правило узкое', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({

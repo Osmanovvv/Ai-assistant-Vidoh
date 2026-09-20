@@ -4,6 +4,8 @@ import {
   describeToday,
   isoDateIn,
   localDateParts,
+  namedWeekday,
+  nearestWeekday,
   resolveDeadline,
   startOfDayInZone,
 } from './dates.js';
@@ -385,6 +387,71 @@ describe('resolveDeadline', () => {
  * правилом «каждую среду». Навсегда и у каждого, кто восточнее
  * Гринвича, то есть у всех наших.
  */
+describe('названный день недели, совпадающий с сегодняшним', () => {
+  /**
+   * Голос 10 Никиты, пятница 18.09.2026, 18:21 по Москве: «…хотя нет, к
+   * врачу лучше в пятницу». Модель отдала 25.09, код «поправил» на
+   * ближайшую пятницу — сегодня, 18.09, — и дело уехало в «сегодня
+   * вечером». Тот же день у проджекта 03.09 (четверг, 20:00): «в четверг
+   * съездить к родителям» — модель дала 10.09, код вернул на сегодня.
+   *
+   * Правило: сегодняшний день недели — сегодня только **до полудня**. О
+   * сегодняшнем вечере человек говорит «сегодня», а «в пятницу» в
+   * пятницу вечером — следующая пятница. Закрытое правило, а не догадка:
+   * полдень по поясу человека.
+   */
+  const FRIDAY_MORNING = { now: new Date('2026-09-18T06:00:00.000Z'), timeZone: MOSCOW };
+  const FRIDAY_EVENING = { now: new Date('2026-09-18T15:21:00.000Z'), timeZone: MOSCOW };
+
+  it('утром — сегодня', () => {
+    expect(namedWeekday(5, FRIDAY_MORNING).toISOString()).toBe('2026-09-17T21:00:00.000Z');
+  });
+
+  it('после полудня — через неделю', () => {
+    expect(namedWeekday(5, FRIDAY_EVENING).toISOString()).toBe('2026-09-24T21:00:00.000Z');
+  });
+
+  it('ровно полдень — уже через неделю', () => {
+    const noon = { now: new Date('2026-09-18T09:00:00.000Z'), timeZone: MOSCOW };
+    expect(namedWeekday(5, noon).toISOString()).toBe('2026-09-24T21:00:00.000Z');
+  });
+
+  it('другой день недели — ближайший, время суток не важно', () => {
+    expect(namedWeekday(6, FRIDAY_EVENING).toISOString()).toBe('2026-09-18T21:00:00.000Z');
+    expect(namedWeekday(4, FRIDAY_EVENING).toISOString()).toBe('2026-09-23T21:00:00.000Z');
+  });
+
+  it('модель сказала «через неделю» — вечером код её не тянет на сегодня', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-25', accuracy: 'day' },
+      { ...FRIDAY_EVENING, said: 'к врачу лучше в пятницу' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok || !outcome.deadline) throw new Error('ожидался срок');
+    expect(outcome.deadline.at.toISOString()).toBe('2026-09-24T21:00:00.000Z');
+    expect(outcome.corrected).toBeUndefined();
+  });
+
+  it('а утром ту же дату тянет на сегодня: ближайшая пятница', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-09-25', accuracy: 'day' },
+      { ...FRIDAY_MORNING, said: 'в пятницу забрать справку' },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok || !outcome.deadline) throw new Error('ожидался срок');
+    expect(outcome.deadline.at.toISOString()).toBe('2026-09-17T21:00:00.000Z');
+    expect(outcome.corrected).toBe('weekday');
+  });
+
+  it('выходные и неделя — периоды, сегодня в них входит и вечером', () => {
+    // «На выходных», сказанное в субботу вечером, — эти выходные.
+    const saturdayEvening = { now: new Date('2026-09-19T16:00:00.000Z'), timeZone: MOSCOW };
+    expect(nearestWeekday(6, saturdayEvening).toISOString()).toBe('2026-09-18T21:00:00.000Z');
+  });
+});
+
 describe('isoDateIn', () => {
   it('полночь в поясе человека остаётся его датой', () => {
     /**
