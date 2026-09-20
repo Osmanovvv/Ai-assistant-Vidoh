@@ -1,16 +1,29 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import {
+  BadBudgetError,
+  estimateLine,
+  isLiveRun,
+  latestReportName,
+  parseBudget,
+  recordingEnvFor,
+  refusalWithoutBudget,
+  reportNames,
+  withRunBudget,
+} from '../eval/budget.js';
 import { loadDataset } from '../eval/dataset.js';
-import { parsePins } from '../eval/pins.js';
+import { BadPinError, parsePins } from '../eval/pins.js';
 import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
 import { runDataset } from '../eval/runner.js';
 import { modelEnvSchema } from '../config/env.js';
+import type { AiStage } from '../db/schema.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { ceilingFromEnv } from '../modules/metering/account-spend.js';
-import { costLine, runCost } from '../modules/metering/run-cost.js';
+import { costLine, runCost, type RunCost } from '../modules/metering/run-cost.js';
 import { createSpendGuard } from '../modules/metering/spend-guard.js';
 import { createLogger } from '../infra/logger.js';
+import { flushCassette } from '../modules/ai/cassette/session.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
 import { upsertUser } from '../modules/users/users.repo.js';
@@ -32,25 +45,56 @@ import { upsertUser } from '../modules/users/users.repo.js';
  */
 
 /**
- * Аргументы: путь к набору и необязательные прикрепления версий.
+ * Аргументы: путь к набору, потолок прогона и необязательные
+ * прикрепления версий.
  *
- *   npx tsx src/scripts/run-eval.ts ../../docs/eval
- *   npx tsx src/scripts/run-eval.ts ../../docs/eval --use classifier=classifier@6
+ *   npx tsx src/scripts/run-eval.ts ../../docs/eval --budget 40
+ *   npx tsx src/scripts/run-eval.ts ../../docs/eval --budget 40 --use classifier=classifier@6
  *
- * Второй вид нужен, чтобы измерить версию **до** включения: этого
+ * Прикрепление нужно, чтобы измерить версию **до** включения: этого
  * требует связка §15 и §10.3 (см. `eval/pins.ts`).
+ *
+ * **Потолок обязателен у живого прогона** (20.09.2026, см. `eval/budget.ts`):
+ * без него прогон не начнётся, а перед отказом назовёт цену прошлого
+ * прогона из журнала. Живой прогон всегда пишет ответы модели рядом с
+ * отчётом — `runs/<штамп>.cassette.json`, — и повторить его по записи
+ * можно бесплатно:
+ *
+ *   AI_PROVIDER=cassette CASSETTE_PATH=../../docs/eval/runs/<штамп>.cassette.json \
+ *     npx tsx src/scripts/run-eval.ts ../../docs/eval
  */
-const { pinned, rest } = parsePins(process.argv.slice(2));
-const [directory] = rest;
-
-if (directory === undefined) {
+function usage(problem?: string): never {
   process.stderr.write(
-    'Использование: run-eval <папка-с-набором> [--use стадия=версия]\n' +
+    (problem === undefined ? '' : `${problem}\n\n`) +
+      'Использование: run-eval <папка-с-набором> --budget <₽> [--use стадия=версия]\n' +
       '  Настоящий набор лежит в docs/eval — вне репозитория.\n' +
-      '  Синтетический, для проверки самого стенда: src/eval/synthetic\n',
+      '  Синтетический, для проверки самого стенда: src/eval/synthetic\n' +
+      '  --budget — потолок этого прогона в рублях; обязателен для живой модели.\n',
   );
   process.exit(2);
 }
+
+let pinned: ReadonlyMap<AiStage, string>;
+let budgetRub: number | undefined;
+let rest: readonly string[];
+
+try {
+  const pins = parsePins(process.argv.slice(2));
+  const budget = parseBudget(pins.rest);
+  pinned = pins.pinned;
+  budgetRub = budget.budgetRub;
+  rest = budget.rest;
+} catch (error) {
+  if (error instanceof BadPinError || error instanceof BadBudgetError) usage(error.message);
+  throw error;
+}
+
+const [directory] = rest;
+
+if (directory === undefined) usage();
+
+/** Папка набора — уже проверенная: объявлениям функций ниже сужение не видно. */
+const datasetDir: string = directory;
 
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.
@@ -61,13 +105,31 @@ const db = getDb();
 /** Прошлый прогон: по нему считается разница. */
 async function previousRun(runs: string): Promise<EvalReport | undefined> {
   try {
-    const files = (await readdir(runs)).filter((name) => name.endsWith('.json')).sort();
-    const last = files.at(-1);
+    const last = latestReportName(await readdir(runs));
     if (last === undefined) return undefined;
 
     return JSON.parse(await readFile(join(runs, last), 'utf8')) as EvalReport;
   } catch {
     // Первого прогона ещё не было — это не ошибка.
+    return undefined;
+  }
+}
+
+/**
+ * Последний прогон **с ценой**: по нему оценивается этот.
+ *
+ * Не просто последний: между живыми прогонами бывают прогоны по записи и
+ * на подмене, у них цены нет — и оценка «около 0 ₽» была бы ложью.
+ */
+async function lastPricedRun(runs: string): Promise<EvalReport | undefined> {
+  try {
+    const names = [...reportNames(await readdir(runs))].reverse();
+    for (const name of names) {
+      const report = JSON.parse(await readFile(join(runs, name), 'utf8')) as EvalReport;
+      if (report.cost !== undefined) return report;
+    }
+    return undefined;
+  } catch {
     return undefined;
   }
 }
@@ -80,9 +142,63 @@ async function previousRun(runs: string): Promise<EvalReport | undefined> {
  */
 const startedAt = new Date();
 
+/**
+ * Штамп прогона — один на отчёт, след и запись ответов, и ставится до
+ * первого обращения к модели: путь записи нужен провайдеру при создании.
+ */
+const stamp = startedAt.toISOString().replace(/[:.]/gu, '-');
+const runs = join(directory, 'runs');
+const live = isLiveRun(env);
+
+/** Сохранить записанные ответы; печатает, как повторить прогон бесплатно. */
+async function saveAnswers(): Promise<void> {
+  if (!live) return;
+
+  try {
+    const summary = await flushCassette();
+    if (summary === undefined) return;
+
+    process.stdout.write(
+      [
+        '',
+        `Ответы модели записаны: ${summary.path} (${String(summary.answers)} ответов` +
+          `${summary.collisions > 0 ? `, ${String(summary.collisions)} разночтений` : ''}).`,
+        'Повторить прогон бесплатно, по записи:',
+        `  AI_PROVIDER=cassette CASSETTE_PATH=${summary.path} npx tsx src/scripts/run-eval.ts ${datasetDir}`,
+        '',
+      ].join('\n'),
+    );
+  } catch (error) {
+    logger.warn({ err: error }, 'Запись ответов модели не сохранилась');
+  }
+}
+
 try {
   const cases = await loadDataset(directory);
   logger.info({ случаев: cases.length }, 'Набор загружен');
+  const previous = await previousRun(runs);
+
+  /**
+   * Живой прогон — только с названным потолком (20.09.2026).
+   *
+   * Оценка печатается из журнала прошлого прогона, а не из головы:
+   * «≈20–25 ₽» из головы обернулись 73 ₽ трижды. Без суммы прогон не
+   * начинается.
+   */
+  if (live) {
+    const priced = await lastPricedRun(runs);
+
+    if (budgetRub === undefined) {
+      process.stderr.write(`\n${refusalWithoutBudget(priced, cases.length)}\n\n`);
+      await closeDb();
+      process.exit(2);
+    }
+
+    process.stdout.write(
+      `\n${estimateLine(priced, cases.length)}\nПотолок этого прогона: ${budgetRub.toFixed(2)} ₽.\n\n`,
+    );
+    await mkdir(runs, { recursive: true });
+  }
 
   /**
    * Потолок расхода проверяется **до** прогона (задача 3.79).
@@ -100,12 +216,19 @@ try {
       : { daily: ceilingFromEnv(env.ACCOUNT_SPEND_DAILY_RUB) }),
   };
 
-  const spendGuard = createSpendGuard({
+  const accountGuard = createSpendGuard({
     db,
     ceilings,
     warnShare: env.ACCOUNT_SPEND_WARN_SHARE,
     logger,
   });
+
+  // Потолок прогона — поверх потолков счёта: первый про эти деньги,
+  // вторые про все.
+  const spendGuard =
+    budgetRub === undefined
+      ? accountGuard
+      : withRunBudget(accountGuard, { db, startedAt, budgetRub });
 
   try {
     await spendGuard.beforeCall();
@@ -130,8 +253,11 @@ try {
     );
   }
 
-  const full = createLlmProvider(env);
-  const light = createLlmProvider(env, { light: true });
+  // Живой прогон всегда пишет ответы: следующий замер той же правки кода
+  // будет по записи и бесплатно.
+  const modelEnv = recordingEnvFor(env, join(runs, `${stamp}.cassette.json`));
+  const full = createLlmProvider(modelEnv);
+  const light = createLlmProvider(modelEnv, { light: true });
 
   logger.info({ полная: full.name, лёгкая: light.name }, 'Провайдеры выбраны');
 
@@ -155,11 +281,31 @@ try {
     cases,
   );
 
+  /**
+   * Цена прогона считается до отчёта: она ложится в него, и по ней
+   * следующий прогон оценивается заранее.
+   *
+   * В своём try/catch: это три запроса к базе, и отвались соединение —
+   * код выхода соврал бы про **качество** из-за строчки про деньги.
+   */
+  let cost: RunCost | undefined;
+  try {
+    cost = await runCost(db, { startedAt, now: new Date() });
+  } catch (error) {
+    logger.warn({ err: error }, 'Цену прогона посчитать не удалось');
+  }
+
   // Модели пишутся в отчёт вместе с версиями промптов: разница между
   // двумя прогонами может быть не в промпте, а в поколении модели.
-  const report = { ...collect(outcomes), models: { полная: full.name, лёгкая: light.name } };
-  const runs = join(directory, 'runs');
-  const previous = await previousRun(runs);
+  const report: EvalReport = {
+    ...collect(outcomes),
+    models: { полная: full.name, лёгкая: light.name },
+    // Цена — только у живого прогона, который что-то потратил: прогон по
+    // записи или на подмене стоит ноль, и как основа оценки он врал бы.
+    ...(live && cost !== undefined && cost.runMicros > 0
+      ? { cost: { runMicros: cost.runMicros, calls: cost.calls } }
+      : {}),
+  };
 
   process.stdout.write(`\n${format(report, previous)}\n\n`);
 
@@ -353,7 +499,6 @@ try {
     );
   } else {
     await mkdir(runs, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
     await writeFile(join(runs, `${stamp}.json`), JSON.stringify(report, null, 2), 'utf8');
     /**
      * След — отдельным файлом: отчёт сравнивается с прошлым, и лишнее в
@@ -362,7 +507,11 @@ try {
     await writeFile(
       join(runs, `${stamp}.trace.json`),
       JSON.stringify(
-        outcomes.map((outcome) => ({ id: outcome.id, trace: outcome.trace })),
+        outcomes.map((outcome) => ({
+          id: outcome.id,
+          routed: outcome.routed,
+          trace: outcome.trace,
+        })),
         null,
         2,
       ),
@@ -371,25 +520,18 @@ try {
     logger.info({ файл: `${stamp}.json` }, 'Прогон сохранён');
   }
 
-  /**
-   * Цена прогона — последней строкой, рядом с итогом.
-   *
-   * В своём try/catch: это три запроса к базе уже после того, как отчёт
-   * сохранён и порог сошёлся. Отвались соединение — и код выхода соврал
-   * бы про **качество** из-за строчки про деньги. Тот же довод, что в
-   * сквозном; здесь обёртку сперва забыли, нашла встречная проверка.
-   */
-  try {
-    const cost = await runCost(db, { startedAt, now: new Date() });
+  // Цена прогона — последней строкой, рядом с итогом.
+  if (cost !== undefined) {
     process.stdout.write(['', costLine(cost, ceilings), '', ''].join('\n'));
-  } catch (error) {
-    logger.warn({ err: error }, 'Цену прогона посчитать не удалось');
   }
 
+  await saveAnswers();
   await closeDb();
   process.exit(verdict.passed ? 0 : 1);
 } catch (error) {
   logger.error({ err: error }, 'Прогон не удался');
+  // Ответы, за которые уже заплачено, сохраняются и при отказе прогона.
+  await saveAnswers();
   await closeDb();
   process.exit(1);
 }

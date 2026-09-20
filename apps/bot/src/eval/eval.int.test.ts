@@ -444,4 +444,24 @@ describe('след прогона', () => {
     expect(outcome?.trace).toBeUndefined();
     expect(outcome?.result.missed).toHaveLength(4);
   });
+
+  /**
+   * Прогон 20.09.2026 на живом наборе: случай «оговорка» потерял единственное
+   * ожидание, а случай «десятый голос» — два дела из восьми. В обоих след
+   * начинался с `dumpText`, и **что именно сделал маршрутизатор** — увёл
+   * отрезок в `PATCH`, потерял его, склеил с соседним — узнать было нечем,
+   * кроме повторного платного прогона. Отрезки маршрутизатора хранятся в
+   * исходе всегда, в том числе когда до записей не дошло: именно тогда они
+   * и нужны.
+   */
+  it('исход хранит отрезки маршрутизатора — и когда до записей не дошло', async () => {
+    const registry = await prompts();
+    const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
+
+    const [lost] = await runDataset(deps(routerLosesEverything(), registry), cases);
+    expect(lost?.routed).toEqual([{ intent: 'PATCH', text: cases[0]?.text }]);
+
+    const [parsed] = await runDataset(deps(goodModel(), registry), cases);
+    expect(parsed?.routed).toEqual([{ intent: 'DUMP', text: cases[0]?.text }]);
+  });
 });

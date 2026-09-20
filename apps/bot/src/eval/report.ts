@@ -104,6 +104,14 @@ export interface EvalReport {
    * которому нельзя сказать, что именно сравнивали, сравнивать нельзя.
    */
   readonly models?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Цена прогона по учёту (20.09.2026).
+   *
+   * Следующий живой прогон оценивается **по ней**, а не из головы: замер
+   * живого набора обещался в «≈20–25 ₽», а стоил 73 ₽ — три раза подряд.
+   * Нет у прогонов без учёта (подмена, воспроизведение) и у старых отчётов.
+   */
+  readonly cost?: { readonly runMicros: number; readonly calls: number } | undefined;
 }
 
 export interface Shares {
