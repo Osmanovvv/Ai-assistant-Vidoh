@@ -208,10 +208,27 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
 
     const confirmed = await confirmConsent(db, user.id, { edition: deps.privacyPolicyEdition });
     await ctx.answerCallbackQuery();
+
+    /**
+     * Кнопка снимается с сообщения: согласие — один раз (проджект,
+     * 20.09.2026: кнопка оставалась, и каждое нажатие приносило новое
+     * «Спасибо»). Отказ правки не страшен — сообщение могло быть старым
+     * или уже без кнопки; на повторное нажатие ответ ниже всё равно не
+     * уходит.
+     */
+    try {
+      await ctx.editMessageReplyMarkup();
+    } catch (error) {
+      logger.debug({ err: error, userId: user.id }, 'Кнопку «Согласна» снять не удалось');
+    }
+
     logger.info(
       { userId: user.id, edition: deps.privacyPolicyEdition ?? null, first: confirmed },
       'Нажата «Согласна»',
     );
+
+    // Повторное нажатие: согласие уже записано, говорить второй раз нечего.
+    if (!confirmed) return;
 
     /**
      * После согласия — то, что раньше было первым экраном: первый вопрос
