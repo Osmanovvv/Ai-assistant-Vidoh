@@ -26,7 +26,7 @@ import { createLogger } from '../infra/logger.js';
 import { flushCassette } from '../modules/ai/cassette/session.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
-import { upsertUser } from '../modules/users/users.repo.js';
+import { createEmbeddingProvider } from '../modules/embedder/providers/factory.js';
 
 /**
  * Прогон контрольного набора (задачи 2.19 и 2.20).
@@ -259,24 +259,26 @@ try {
   const full = createLlmProvider(modelEnv);
   const light = createLlmProvider(modelEnv, { light: true });
 
-  logger.info({ полная: full.name, лёгкая: light.name }, 'Провайдеры выбраны');
+  // Вектора — тем же провайдером, что модель: в бою они есть, и без них
+  // стенд отсеивал бы повторы и искал цели правок иначе, чем бой.
+  const embedder = createEmbeddingProvider(modelEnv);
+
+  logger.info(
+    { полная: full.name, лёгкая: light.name, вектора: embedder.name },
+    'Провайдеры выбраны',
+  );
 
   /**
-   * Пользователь стенда: от его имени открываются выгрузки, к которым
-   * привязывается расход. Без привязки себестоимость выгрузки (2.21) из
-   * учёта не собирается — вызовы есть, а к чему они относятся, нет.
-   *
-   * Идентификатор заведомо не занят живым человеком: у Telegram таких
-   * не бывает. Тот же приём, что в сквозном тесте первого этапа.
+   * Случаи идут через боевой обработчик выгрузки (20.09.2026): у каждого
+   * свой пользователь стенда с поясом и сферами случая — их заводит
+   * прогонщик. Расход ложится в учёт с привязкой к выгрузке, как в бою.
    */
-  const owner = await upsertUser(db, { tgId: 999_000_777, firstName: 'стенд' });
-
   const outcomes = await runDataset(
     {
       ai: { db, provider: full, prompts, logger, spendGuard },
       aiLight: { db, provider: light, prompts, logger, spendGuard },
+      embedder,
       logger,
-      owner: owner.id,
     },
     cases,
   );

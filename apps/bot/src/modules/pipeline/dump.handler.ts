@@ -10,6 +10,8 @@ import type { AiClientDeps } from '../ai/client.js';
 import { markTrialSpent, mayParseDump } from '../billing/subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
 import { decideDegradation, type SpendLimit } from '../metering/limits.js';
+import type { ClassifiedItems } from '../ai/schemas/classifier.js';
+import type { ExtractedUnits } from '../ai/schemas/extractor.js';
 import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.service.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
@@ -166,8 +168,38 @@ const IGNORED_INTENTS = new Set(['SMALLTALK']);
  */
 const ANSWER_INTENT = 'ANSWER';
 
+/**
+ * Что видел конвейер на каждом этапе — для стенда набора (20.09.2026).
+ *
+ * Стенд шесть раз мерил не то, что работает в бою, и всякий раз потому,
+ * что собирал вход для модели сам. Теперь он гонит случай через этот
+ * же обработчик, а внутренности — отрезки маршрутизатора, вход
+ * извлечения с единицами, сырой ответ классификации и записи после
+ * правок кода — узнаёт отсюда. Наблюдатель только смотрит: ни одно
+ * событие ничего не меняет, и без наблюдателя обработчик идёт как шёл.
+ */
+export type PipelineEvent =
+  | { readonly kind: 'routed'; readonly segments: readonly Segment[] }
+  | {
+      readonly kind: 'extracted';
+      /** Вход извлечения: отрезки `DUMP`, как их получила модель. */
+      readonly dumpText: string;
+      readonly units: readonly ExtractedUnits['units'][number][];
+    }
+  | {
+      readonly kind: 'classified';
+      /** Ответ модели до правок кода. */
+      readonly fromModel: readonly ClassifiedItems['items'][number][];
+      /** Записи после правок кода — то, что сохраняется. */
+      readonly items: readonly ClassifiedItem[];
+    };
+
+export type PipelineObserver = (event: PipelineEvent) => void;
+
 export interface DumpHandlerDeps {
   readonly speech: TranscribeDeps;
+  /** Стенд набора смотрит на этапы конвейера; в бою не задаётся. */
+  readonly observe?: PipelineObserver | undefined;
   /** Полная модель: извлечение, классификация, представление. */
   readonly ai: Omit<AiClientDeps, 'db'>;
   /**
@@ -744,6 +776,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         ? {}
         : { openQuestion: texts.resolver.question(titleWithoutDate(askedAbout)) }),
     });
+
+    deps.observe?.({ kind: 'routed', segments: routed.segments });
 
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
     // здесь решает только он.
@@ -1540,6 +1574,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       batchId: batch.id,
     });
 
+    if (extracted.ok) deps.observe?.({ kind: 'extracted', dumpText, units: extracted.units });
+
     if (!extracted.ok) {
       await parkPending('правка ждала разбора выгрузки, а извлечение не удалось');
       await saveDraft(db, {
@@ -1602,6 +1638,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       userId: batch.userId,
       batchId: batch.id,
     });
+
+    if (classified.ok) {
+      deps.observe?.({
+        kind: 'classified',
+        fromModel: classified.fromModel,
+        items: classified.items,
+      });
+    }
 
     if (!classified.ok) {
       await parkPending('правка ждала разбора выгрузки, а классификация не удалась');
@@ -1793,6 +1837,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         return await park(`поздняя мысль: извлечение не удалось: ${lateExtracted.problem}`, true);
       }
 
+      deps.observe?.({ kind: 'extracted', dumpText: spokenLate, units: lateExtracted.units });
+
       if (lateExtracted.units.length === 0) {
         return await park('поздняя мысль: извлечение не нашло в ней единиц');
       }
@@ -1824,6 +1870,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           true,
         );
       }
+
+      deps.observe?.({
+        kind: 'classified',
+        fromModel: lateClassified.fromModel,
+        items: lateClassified.items,
+      });
 
       // Сферы по содержанию — и у поздней записи (п. 1.1), тем же путём
       // и с той же оговоркой про ветку.
