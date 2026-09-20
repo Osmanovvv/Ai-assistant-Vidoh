@@ -1,3 +1,4 @@
+import { counted } from '../plural.js';
 import type { TextProfile } from '../types.js';
 
 /**
@@ -169,6 +170,7 @@ export const reserved: TextProfile = {
     pageOf: (page, pages) => `${String(page)} из ${String(pages)}`,
 
     buttonProjects: 'Большие цели',
+    buttonTopics: 'По сферам',
     projectsTitle: 'Большие цели:',
     noProjects: 'Больших целей пока нет. Скажи о задумке — разложу на шаги.',
 
@@ -272,6 +274,20 @@ export const reserved: TextProfile = {
     allEmpty: 'Пока пусто — расскажешь, что в голове?',
     allOffer: 'Если хочешь, помогу выбрать главное.',
     buttonAddMore: 'Добавить ещё',
+    tasksCount: (count) => counted(count, ['дело', 'дела', 'дел']),
+    openCount: (count) =>
+      counted(count, ['незавершённое дело', 'незавершённых дела', 'незавершённых дел']),
+    myTasksHeader: (count) => `Вот что сейчас осталось — ${count}.`,
+    myTasksFooter: 'Всё актуальное сейчас здесь. Остальное я помню.',
+    myTasksParts: (count, parts) =>
+      `Я помню ${count}. Чтобы не заваливать тебя одной стеной текста, разложу всё по сферам и покажу в ${parts} коротких сообщениях — ничего не потеряю.`,
+    myTasksMany: (count) => `Я помню ${count}.`,
+    myTasksPaged: 'Покажу по частям, чтобы это можно было спокойно прочитать.',
+    sphereCount: (name, count) => `${name} — ${String(count)}`,
+    laterName: 'Позже',
+    dueToday: 'сегодня',
+    buttonShowMore: 'Показать ещё',
+    buttonBack: 'Назад',
     line: (text) => `— ${text}`,
     period: (label) => `На ${label} у тебя вот это:`,
     periodEmpty: (label) => `На ${label} ничего не назначено.`,
@@ -348,6 +364,7 @@ export const reserved: TextProfile = {
     morning: 'Доброе утро ☀️ Вот что сегодня важно:',
     week: 'Собрала главное на неделю. Спокойно, по шагам.',
     evening: 'На сегодня всё 🤍',
+    all: (count) => `Собрала всё, что сейчас есть — ${count}.`,
     buttonMyTasks: 'Мои дела',
   },
 

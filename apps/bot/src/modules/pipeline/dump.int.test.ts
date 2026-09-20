@@ -4293,17 +4293,18 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply.startsWith(defaultTexts.backlog.all)).toBe(true);
+    expect(reply.startsWith(defaultTexts.backlog.myTasksHeader('2 дела'))).toBe(true);
     expect(reply).toContain('— Заказать цветы');
     expect(reply).toContain('— Написать список продуктов мужу');
     expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 
-  it('«Покажи мои дела» — по сферам с иконками, только непустые, предложение и две кнопки (макет, вариант 2)', async () => {
+  it('«Покажи мои дела» — по сферам со счётчиками и иконками, только непустые, подпись и две кнопки (ТЗ 17.09.2026, 2.4)', async () => {
     /**
-     * Макет заказчицы 16.09.2026, вариант 2: «Вот что сейчас есть:» →
-     * группы «💼 Работа» / «🛒 Покупки» с делами, пустых сфер нет, внизу
-     * «Если хочешь, помогу выбрать главное» и кнопки «Выбрать главное» /
+     * Макет заказчицы 16.09.2026, вариант 2, и ТЗ проджекта 17.09.2026
+     * (2.4): «Вот что сейчас осталось — N дел.» → группы «💼 Работа — 2»
+     * / «🛒 Покупки — 1» с делами, пустых сфер нет, внизу «Всё актуальное
+     * сейчас здесь. Остальное я помню.» и кнопки «Выбрать главное» /
      * «Добавить ещё».
      */
     const prompts = await seedPrompts();
@@ -4337,20 +4338,122 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     const reply = all.at(-1) ?? '';
     expect(reply).toBe(
       [
-        defaultTexts.backlog.all,
+        defaultTexts.backlog.myTasksHeader('3 дела'),
         '',
-        '💼 Работа',
+        '💼 Работа — 2',
         '— Съездить в офис и распечатать документы',
         '— Отправить Антоновой документы',
         '',
-        '🛒 Покупки',
+        '🛒 Покупки — 1',
         '— Заказать цветы',
         '',
-        defaultTexts.backlog.allOffer,
+        defaultTexts.backlog.myTasksFooter,
       ].join('\n'),
     );
     expect(reply).not.toContain('Личное');
     expect(buttons).toEqual([defaultTexts.answer.buttonPick, defaultTexts.backlog.buttonAddMore]);
+  });
+
+  it('16–30 дел — вступление, 2–3 части по сферам, кнопки под последней, карточка «всё накопившееся» перед списком (ТЗ 2.4, визуал 05)', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all, said } = recordingSender();
+    const { cards, shown } = recordingCards();
+    for (let index = 1; index <= 20; index += 1) {
+      await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: `Дело номер ${String(index)}`,
+          type: 'TASK',
+          priority: 'SOON',
+          topic: index <= 12 ? 'работа' : 'дом',
+        });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'Что у меня накопилось?', offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Что у меня накопилось?' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender, cards }),
+      },
+      userId,
+    );
+
+    // Карточка — с числом дел, без кнопок; за ней вступление и части.
+    expect(shown).toEqual([
+      { card: 'all', caption: defaultTexts.cards.all('20 дел'), buttons: [] },
+    ]);
+    const parts = all.filter((text) => text.includes('— Дело номер'));
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.length).toBeLessThanOrEqual(3);
+    expect(
+      parts
+        .join('\n')
+        .split('\n')
+        .filter((line) => line.startsWith('— ')),
+    ).toHaveLength(20);
+    // Кнопки — только под последним сообщением.
+    const withButtons = said.filter((one) => one.buttons.length > 0);
+    expect(withButtons).toHaveLength(1);
+    expect(withButtons[0]?.text).toBe(all.at(-1));
+    expect(withButtons[0]?.buttons).toEqual([
+      defaultTexts.answer.buttonPick,
+      defaultTexts.backlog.buttonAddMore,
+    ]);
+  });
+
+  it('больше 30 дел — сводка по сферам и первая страница с «Показать ещё» (ТЗ 2.4)', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all, said } = recordingSender();
+    for (let index = 1; index <= 35; index += 1) {
+      await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: `Дело номер ${String(index)}`,
+          type: 'TASK',
+          priority: 'SOON',
+          topic: index <= 20 ? 'работа' : 'дом',
+        });
+    }
+
+    await queuedBatchOf([{ kind: 'text', text: 'Покажи всё незавершённое', offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Покажи всё незавершённое' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const summary =
+      all.find((text) =>
+        text.startsWith(defaultTexts.backlog.myTasksMany('35 незавершённых дел')),
+      ) ?? '';
+    expect(summary).toContain('💼 Работа — 20');
+    expect(summary).toContain('🏠 Дом — 15');
+    const page = all.at(-1) ?? '';
+    expect(page.split('\n').filter((line) => line.startsWith('— ')).length).toBeLessThanOrEqual(12);
+    expect(said.at(-1)?.buttons).toEqual([
+      defaultTexts.backlog.buttonShowMore,
+      defaultTexts.answer.buttonPick,
+    ]);
   });
 
   it('«что на сегодня» при пустом дне, но с открытыми делами — число дел и две кнопки (находка 21)', async () => {

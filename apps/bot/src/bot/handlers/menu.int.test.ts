@@ -191,6 +191,9 @@ describe('меню', () => {
       defaultTexts.menu.buttonToday,
       // «Большие цели» — §12.1, пункт появился 10.09.2026.
       defaultTexts.menu.buttonProjects,
+      // «По сферам» — прежний экран «Все задачи»: с 20.09.2026 «Мои дела»
+      // показывает список (ТЗ 2.4), а к карточке любого дела ведёт этот.
+      defaultTexts.menu.buttonTopics,
       defaultTexts.menu.buttonHelp,
       defaultTexts.menu.buttonSettings,
       defaultTexts.menu.buttonSubscription,
@@ -411,14 +414,76 @@ describe('меню', () => {
     });
   });
 
-  it('«Все задачи» ведёт по сферам, а сферы — к записям и карточке', async () => {
+  it('«Мои дела» — полный список одним сообщением с двумя кнопками (ТЗ проджекта 17.09.2026, 2.4)', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await addTopic(userId, 'здоровье');
+    await addItem({ owner: userId, text: 'к врачу', topic: 'здоровье' });
+    await addItem({ owner: userId, text: 'купить хлеб', topic: 'покупки' });
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+
+    // Список — новым сообщением, меню на месте.
+    const list = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(list).split('\n')).toEqual([
+      defaultTexts.backlog.myTasksHeader('2 дела'),
+      '',
+      '💊 Здоровье — 1',
+      '— К врачу',
+      '',
+      '🛒 Покупки — 1',
+      '— Купить хлеб',
+      '',
+      defaultTexts.backlog.myTasksFooter,
+    ]);
+    expect(keyboardOf(list).map((button) => button.text)).toEqual([
+      defaultTexts.answer.buttonPick,
+      defaultTexts.backlog.buttonAddMore,
+    ]);
+  });
+
+  it('большой список листается правкой того же сообщения: «Показать ещё» / «Назад»', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    for (let index = 1; index <= 33; index += 1) {
+      await addItem({ owner: userId, text: `дело ${String(index)}`, topic: 'работа' });
+    }
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+    const first = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    const more = keyboardOf(first).find(
+      (button) => button.text === defaultTexts.backlog.buttonShowMore,
+    );
+    expect(more?.callback_data).toBe('mt:p:1');
+
+    await bot.handleUpdate(callbackUpdate(more!.callback_data!));
+    const second = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(second).split('\n')[0]).toBe('💼 Работа — 33');
+    expect(keyboardOf(second).map((button) => button.text)).toEqual([
+      defaultTexts.backlog.buttonShowMore,
+      defaultTexts.backlog.buttonBack,
+      defaultTexts.answer.buttonPick,
+    ]);
+    // На первой и второй страницах — разные дела.
+    const firstLines = textOf(first)
+      .split('\n')
+      .filter((line) => line.startsWith('— '));
+    const secondLines = textOf(second)
+      .split('\n')
+      .filter((line) => line.startsWith('— '));
+    expect(firstLines.some((line) => secondLines.includes(line))).toBe(false);
+  });
+
+  it('«По сферам» ведёт по сферам, а сферы — к записям и карточке', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();
 
     const topicId = await addTopic(userId, 'здоровье');
     const itemId = await addItem({ owner: userId, text: 'к врачу', topic: 'здоровье' });
 
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topics));
     const topicsScreen = calls.filter((call) => call.method === 'editMessageText').at(-1);
     expect(textOf(topicsScreen)).toBe(defaultTexts.menu.topicsTitle);
     expect(keyboardOf(topicsScreen).map((button) => button.text)).toContain('здоровье');
@@ -558,7 +623,9 @@ describe('меню', () => {
     const { bot, calls } = createTestBot();
     await bot.init();
 
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+    // «Мои дела» с 20.09.2026 уходит списком новым сообщением (ТЗ 2.4);
+    // экраны меню — «По сферам», «Сегодня», назад — правят одну реплику.
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topics));
     await bot.handleUpdate(callbackUpdate(MENU_ACTION.today));
     await bot.handleUpdate(callbackUpdate(MENU_ACTION.root));
 
@@ -586,7 +653,9 @@ describe('кнопки под ответом не стирают выдачу (�
     await bot.handleUpdate(callbackUpdate(ANSWER_ACTION.all));
 
     expect(edited(calls)).toEqual([]);
-    expect(textOf(sent(calls).at(-1))).toBe(defaultTexts.menu.topicsTitle);
+    // С 20.09.2026 «Мои дела» под ответом — тот же полный список (ТЗ 2.4);
+    // без дел — «пусто», как у вопроса обо всём.
+    expect(textOf(sent(calls).at(-1))).toBe(defaultTexts.backlog.allEmpty);
   });
 
   it('«Сделать сейчас» под ответом — новым сообщением', async () => {
@@ -605,7 +674,7 @@ describe('кнопки под ответом не стирают выдачу (�
     await bot.init();
     await addTopic(userId, 'дом', true);
 
-    await bot.handleUpdate(callbackUpdate(MENU_ACTION.all));
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.topics));
 
     expect(textOf(edited(calls).at(-1))).toBe(defaultTexts.menu.topicsTitle);
   });

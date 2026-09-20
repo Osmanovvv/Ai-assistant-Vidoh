@@ -934,7 +934,7 @@ async function main(): Promise<void> {
   // Любое нажатие снимает ожидание заголовка — раньше всех кнопок.
   registerPendingEditGuard(bot, db);
   registerOnboardingHandlers(bot, db, logger, { cards });
-  registerMenuHandlers(bot, db, logger);
+  registerMenuHandlers(bot, db, logger, { cards });
 
   // Команды платёжной платформы — после приёма: сперва сохраняем
   // обращение человека, потом отвечаем (ревизия четвёртого этапа).

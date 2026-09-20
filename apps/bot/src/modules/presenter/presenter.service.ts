@@ -1,4 +1,5 @@
 import { toShortId } from '../shared/short-id.js';
+import { counted } from '../../texts/plural.js';
 import type { ItemType } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import type { Mood } from './mood.js';
@@ -300,17 +301,6 @@ export function buildActionsReply(params: ActionsReplyParams): Reply {
  * (§13.7), счёт дел — цифрой и со склонением, как в её образце от
  * 16.09.2026 («Записала 6 дел»): 1 дело, 2 дела, 5 дел.
  */
-/** Число со склонением: «1 дело», «2 дела», «5 дел», «21 дело», «11 дел». */
-function counted(count: number, forms: readonly [string, string, string]): string {
-  const [one, few, many] = forms;
-  const tail = count % 100;
-  const last = count % 10;
-  const noun =
-    tail >= 11 && tail <= 14 ? many : last === 1 ? one : last >= 2 && last <= 4 ? few : many;
-
-  return `${String(count)} ${noun}`;
-}
-
 function tasksPhrase(count: number): string {
   return counted(count, ['дело', 'дела', 'дел']);
 }

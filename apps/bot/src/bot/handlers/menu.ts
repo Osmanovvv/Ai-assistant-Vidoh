@@ -36,6 +36,14 @@ import { pickMain } from '../../modules/presenter/pick.service.js';
 import { pageOf } from '../../modules/backlog/backlog.service.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
+import {
+  layoutMyTasks,
+  MY_TASKS_ACTION,
+  pageOf as myTasksPage,
+  renderMyTasks,
+  SINGLE_LIMIT,
+} from '../../modules/backlog/my-tasks.js';
+import type { CardSender } from '../../modules/cards/cards.js';
 
 /**
  * Меню и списки (§12.1 ТЗ, задача 2.18).
@@ -76,6 +84,8 @@ export const MENU_ACTION = {
   hintVoice: 'menu:hv',
   hintText: 'menu:ht',
   all: 'menu:all',
+  /** Сферы с записями и карточками (прежний экран «Все задачи»). */
+  topics: 'menu:topics',
   today: 'menu:today',
   help: 'menu:help',
   /** `menu:t:<код>` — тема коротким кодом, как и запись. */
@@ -142,7 +152,11 @@ export function rootKeyboard(texts: TextProfile): InlineKeyboard {
       { label: texts.menu.buttonAll, action: MENU_ACTION.all },
       { label: texts.menu.buttonToday, action: MENU_ACTION.today },
     ],
-    [{ label: texts.menu.buttonProjects, action: MENU_ACTION.projects }],
+    [
+      { label: texts.menu.buttonProjects, action: MENU_ACTION.projects },
+      // Вход к карточке любого дела: «Мои дела» с 20.09.2026 — список (ТЗ 2.4).
+      { label: texts.menu.buttonTopics, action: MENU_ACTION.topics },
+    ],
     [{ label: texts.menu.buttonHelp, action: MENU_ACTION.help }],
     [{ label: texts.menu.buttonSettings, action: MENU_ACTION.settings }],
     /**
@@ -225,7 +239,17 @@ function itemsKeyboard(
   return keyboard.text(texts.menu.buttonBack, back);
 }
 
-export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): void {
+export interface MenuOptions {
+  /** Бренд-карточки (ТЗ по визуалам 18.09.2026): «всё накопившееся» при 15+ делах. */
+  readonly cards?: CardSender | undefined;
+}
+
+export function registerMenuHandlers(
+  bot: Bot,
+  db: Database,
+  logger: Logger,
+  options: MenuOptions = {},
+): void {
   /** Кто нажал и с какими текстами ему отвечать. */
   async function acting(
     tgId: number,
@@ -700,13 +724,73 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
 
     await showProject(ctx, item, active.texts);
   });
-  // ── Все задачи: сначала сферы, потом записи внутри ────────────────────
+  // ── Мои дела: полный список (ТЗ проджекта 17.09.2026, 2.4) ────────────
   /**
-   * Полный бэклог по темам. Два входа, одна реализация: пункт меню и
-   * кнопка «Разобрать все» под разбором (§13.2). Разводить их значило бы
-   * получить два экрана, которые разойдутся.
+   * Тот же список, что на «покажи мои дела» голосом: одна раскладка на
+   * оба входа (`backlog/my-tasks.ts`). Новыми сообщениями, а не правкой
+   * меню: список длинный, и правка экрана меню под него не годится.
+   * Карточка «всё накопившееся» — при 15+ делах, перед списком (визуал 05).
    */
   bot.callbackQuery([MENU_ACTION.all, ANSWER_ACTION.all], async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const context = await outputContextOf(db, active.userId);
+    const day = { now: new Date(), timeZone: context.timeZone };
+    const layout = layoutMyTasks(await openItemsFor(db, active.userId), day);
+    const view = renderMyTasks(layout, day, active.texts);
+    const chatId = ctx.chat?.id;
+
+    if (options.cards !== undefined && chatId !== undefined && layout.total >= SINGLE_LIMIT) {
+      await options.cards.send({
+        chatId,
+        card: 'all',
+        caption: active.texts.cards.all(active.texts.backlog.tasksCount(layout.total)),
+      });
+    }
+
+    for (const [index, message] of view.messages.entries()) {
+      const last = index === view.messages.length - 1;
+      await ctx.reply(
+        message,
+        last && view.buttons.length > 0 ? { reply_markup: fitKeyboard([view.buttons]) } : {},
+      );
+    }
+  });
+
+  /** Страница большого списка — правкой того же сообщения. */
+  bot.callbackQuery(new RegExp(`^${MY_TASKS_ACTION.pagePrefix}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const index = Number.parseInt(
+      ctx.callbackQuery.data.slice(MY_TASKS_ACTION.pagePrefix.length),
+      10,
+    );
+    const context = await outputContextOf(db, active.userId);
+    const day = { now: new Date(), timeZone: context.timeZone };
+    const layout = layoutMyTasks(await openItemsFor(db, active.userId), day);
+    const page = myTasksPage(layout, Number.isNaN(index) ? 0 : index, day, active.texts);
+
+    // Страницы нет — список сократился: показать первую, а не молчать.
+    const shown = page ?? myTasksPage(layout, 0, day, active.texts);
+    if (shown === undefined) {
+      await ctx.editMessageText(active.texts.backlog.allEmpty);
+      return;
+    }
+
+    await ctx.editMessageText(shown.text, { reply_markup: fitKeyboard([shown.buttons]) });
+  });
+
+  // ── По сферам: сначала сферы, потом записи внутри ─────────────────────
+  /**
+   * Бэклог по темам — вход к карточке любого дела. До 20.09.2026 это и
+   * был пункт «Все задачи»; теперь «Мои дела» — список по ТЗ 2.4, а
+   * экран сфер живёт своим пунктом.
+   */
+  bot.callbackQuery(MENU_ACTION.topics, async (ctx) => {
     await ctx.answerCallbackQuery();
     const active = await acting(ctx.from.id);
     if (!active) return;
@@ -745,7 +829,7 @@ export function registerMenuHandlers(bot: Bot, db: Database, logger: Logger): vo
       // Заголовок из словаря, тот же, что у закреплённой сводки: строить
       // видимый человеку текст в коде нельзя даже из одного двоеточия.
       inTopic.length === 0 ? active.texts.summary.empty : active.texts.summary.header(topic.name),
-      itemsKeyboard(active.texts, inTopic, MENU_ACTION.all, {
+      itemsKeyboard(active.texts, inTopic, MENU_ACTION.topics, {
         index: page,
         action: (next) => `${MENU_ACTION.pagePrefix}${code}:${String(next)}`,
       }),

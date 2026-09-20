@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { pageOf, PAGE_SIZE } from './backlog.service.js';
 import { ToolRegistry } from './tools.js';
-import { askedDay, asksAboutToday } from './query.service.js';
+import { askedDay, asksAboutEverything, asksAboutToday } from './query.service.js';
 
 /**
  * Списки и реестр инструментов (задача 3.11).
@@ -162,12 +162,24 @@ describe('вопрос про день или про предмет', () => {
     for (const text of [
       'Что на сегодня?',
       'Что у меня сегодня?',
-      'Что у меня сейчас?',
       'Что мне нужно сделать сегодня?',
       'Какие планы на сегодня?',
       'Что в ближайшее время?',
     ]) {
       expect(asksAboutToday(text), text).toBe(true);
+    }
+  });
+
+  it('«сейчас» — не «сегодня»: «Что у меня сейчас есть?» — вопрос обо всём (ТЗ проджекта 17.09.2026, 2.4)', () => {
+    for (const text of [
+      'Что у меня сейчас есть?',
+      'Что у меня сейчас?',
+      'Что у меня накопилось?',
+      'Покажи всё незавершённое',
+      'Покажи все мои дела',
+    ]) {
+      expect(asksAboutToday(text), text).toBe(false);
+      expect(asksAboutEverything(text), text).toBe(true);
     }
   });
 
