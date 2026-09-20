@@ -6320,6 +6320,45 @@ describe('слова к самому боту: помощь и отмена по
     expect(all.at(-1)).toBe(defaultTexts.resolver.undoIsRecords);
   });
 
+  it('вопросы между правкой и «отмени» не считаются: сравнивается с последней записью, а не с последним сообщением', async () => {
+    /**
+     * Бой 21.09.2026: Никита поправил дело 18.09, потом три дня только
+     * спрашивал («что на 3 дня», «что ты умеешь») — и на «отмени последнее»
+     * услышал «последнее — новые записи», хотя записей после правки не
+     * было. Последнее — это правка или запись, а не любое сообщение.
+     */
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Сверить кассу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'деньги',
+        status: 'new',
+      })
+      .returning();
+    const renamed = { ...item!, text: 'Сверить кассу и отчёт' };
+    await testDb().update(items).set({ text: renamed.text }).where(eq(items.id, item!.id));
+    const revision = await recordRevision(testDb(), {
+      itemId: item!.id,
+      userId,
+      changedBy: 'user',
+      before: item!,
+      after: renamed,
+    });
+    await testDb()
+      .update(itemRevisions)
+      .set({ createdAt: new Date(T0.getTime() - 3_600_000) })
+      .where(eq(itemRevisions.id, revision.id));
+    // Вопрос между правкой и отменой — записей не создаёт.
+    await say('что у меня на 3 дня');
+
+    const { all } = await say('отмени последнее');
+
+    expect(all.at(-1)).toBe(defaultTexts.resolver.undoneOf('Сверить кассу'));
+  });
+
   it('отменять нечего — так и сказано', async () => {
     const { all } = await say('отмени последнее');
 
