@@ -1,7 +1,14 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { items, userSettings, type Batch, type Item } from '../../db/schema.js';
+import {
+  batches,
+  itemRevisions,
+  items,
+  userSettings,
+  type Batch,
+  type Item,
+} from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import { fallbackOf } from '../../texts/rules.js';
@@ -16,7 +23,12 @@ import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.ser
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
-import { answerBacklogQuery, type BacklogAnswer, periodLabel } from '../backlog/query.service.js';
+import {
+  answerBacklogQuery,
+  type BacklogAnswer,
+  listHeader,
+  periodLabel,
+} from '../backlog/query.service.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
@@ -46,6 +58,7 @@ import {
 } from '../onboarding/onboarding.service.js';
 import {
   ANSWER_ACTION,
+  buildActionsReply,
   composeOf,
   feelingsOnlyReply,
   presentDump,
@@ -60,9 +73,11 @@ import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
 import { isQuickAdd } from '../presenter/quick-add.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
+import { revertRevision } from '../resolver/revisions.repo.js';
 import { layoutMyTasks, renderMyTasks, SINGLE_LIMIT } from '../backlog/my-tasks.js';
 import { topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
+import { looksLikeHelpRequest, looksLikeUndoRequest } from './bot-words.js';
 import { looksLikeDayClosing } from './day-closing.js';
 import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
@@ -82,7 +97,7 @@ import {
   type CrisisContour,
   type CrisisOutcome,
 } from '../safety/crisis.js';
-import { rememberMentioned } from '../presenter/pick.service.js';
+import { pickMain, rememberMentioned } from '../presenter/pick.service.js';
 import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { refreshSummaries } from '../topics/summary.service.js';
@@ -289,6 +304,83 @@ function rememberTopics(into: Set<string>, applied: Applied): void {
 }
 
 /** Обновляет сводки тронутых тем, если ветки вообще есть. */
+/**
+ * «Отмени последнее» словами (21.09.2026, список Никиты, п. 13).
+ *
+ * Откатывается последняя неотменённая ревизия человека — та же, что
+ * стоит за кнопкой «Отменить». Но только если она **новее последней
+ * выгрузки**: после выгрузки «последнее» — новые записи, а не старая
+ * правка, и откатывать её было бы подменой смысла. Тогда человеку
+ * говорится, как убрать запись. Ревизий нет — «отменять нечего».
+ */
+async function undoLastByWords(
+  db: Database,
+  deps: DumpHandlerDeps,
+  batch: Batch,
+  context: { readonly timeZone: string; readonly textProfile: string },
+): Promise<string> {
+  const texts = textsFor(context.textProfile);
+
+  const [revision] = await db
+    .select()
+    .from(itemRevisions)
+    .where(and(eq(itemRevisions.userId, batch.userId), isNull(itemRevisions.revertedAt)))
+    .orderBy(desc(itemRevisions.createdAt))
+    .limit(1);
+
+  if (revision === undefined) return texts.resolver.nothingToUndo;
+
+  // Последняя выгрузка, кроме текущей: текущая — сама просьба отменить.
+  const [previous] = await db
+    .select({ openedAt: batches.openedAt })
+    .from(batches)
+    .where(and(eq(batches.userId, batch.userId), ne(batches.id, batch.id)))
+    .orderBy(desc(batches.openedAt))
+    .limit(1);
+
+  if (previous !== undefined && revision.createdAt.getTime() < previous.openedAt.getTime()) {
+    return texts.resolver.undoIsRecords;
+  }
+
+  const outcome = await revertRevision(db, { revisionId: revision.id, userId: batch.userId });
+
+  if (outcome.kind !== 'reverted') {
+    return {
+      already: texts.resolver.alreadyUndone,
+      gone: texts.resolver.undoGone,
+      overtaken: texts.resolver.undoOvertaken,
+    }[outcome.kind];
+  }
+
+  // Откат вернул прежний заголовок — вектор вслед, как у кнопки (A5).
+  await reembedIfRetitled(
+    {
+      db,
+      ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
+      ...(deps.ai.spendGuard === undefined ? {} : { spendGuard: deps.ai.spendGuard }),
+      ...(deps.ai.pricing === undefined ? {} : { pricing: deps.ai.pricing }),
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    },
+    { after: outcome.item, fields: outcome.fields },
+  );
+
+  const target = await statusTarget(db, batch.id);
+  await refreshTouched(
+    db,
+    deps,
+    target,
+    { userId: batch.userId, timeZone: context.timeZone, textProfile: context.textProfile },
+    new Set(outcome.topics),
+  );
+
+  deps.logger?.info(
+    { userId: batch.userId, revisionId: revision.id },
+    'Человек отменил последнее изменение словами',
+  );
+
+  return texts.resolver.undoneOf(outcome.item.text);
+}
+
 async function refreshTouched(
   db: Database,
   deps: DumpHandlerDeps,
@@ -687,6 +779,21 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     if (looksLikeDayClosing(combined)) {
       const shown = await showCard('evening', texts.cards.evening);
       if (!shown) await answer(texts.cards.evening);
+      return;
+    }
+
+    /**
+     * Слова к самому боту (21.09.2026): «что ты умеешь» — текст помощи из
+     * меню; «отмени последнее» — откат последнего изменения, как кнопкой
+     * «Отменить». Оба — до первой копейки модели и без разбора.
+     */
+    if (looksLikeHelpRequest(combined)) {
+      await answer(texts.menu.help);
+      return;
+    }
+
+    if (looksLikeUndoRequest(combined)) {
+      await answer(await undoLastByWords(db, deps, batch, context));
       return;
     }
 
@@ -1325,6 +1432,56 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          */
         await tell(describeProject(answer.item, context, texts), stepButtons(context.next, texts));
 
+        continue;
+      }
+
+      /**
+       * «С чего начать» словами — тот же выбор главного, что у кнопки
+       * (21.09.2026): без кода выгрузки, потому что спросили не под
+       * разбором, а отдельно.
+       */
+      if (answer.kind === 'pick') {
+        const picked = await pickMain(db, {
+          userId: batch.userId,
+          now,
+          timeZone: context.timeZone,
+          texts,
+        });
+        const reply = buildActionsReply({ texts, ...picked });
+        await tell(reply.text, reply.buttons.length === 0 ? undefined : reply.buttons);
+        continue;
+      }
+
+      /** «Сколько у меня дел» — одной строкой с раскладкой. */
+      if (answer.kind === 'count') {
+        await tell(
+          answer.open === 0
+            ? texts.backlog.countEmpty
+            : texts.backlog.count(
+                texts.backlog.tasksCount(answer.open),
+                answer.today,
+                answer.overdue,
+                answer.later,
+              ),
+        );
+        continue;
+      }
+
+      /**
+       * Список по признаку (21.09.2026): шапка из текстов, строки как у
+       * остальных списков голосом, тот же предел на длину. Пустой список
+       * — одна шапка: «Просроченного нет» — тоже ответ.
+       */
+      if (answer.kind === 'listed') {
+        const shownItems = answer.items.slice(0, SPOKEN_LIST_LIMIT);
+        const rest = answer.items.length - shownItems.length;
+        const lines = shownItems.map((item) => texts.backlog.line(item.text));
+        if (rest > 0) lines.push(texts.backlog.more(rest));
+        await tell(
+          [listHeader(answer.question, answer.items.length === 0, texts.backlog), ...lines].join(
+            '\n',
+          ),
+        );
         continue;
       }
 

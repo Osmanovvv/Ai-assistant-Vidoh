@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items } from '../../db/schema.js';
+import { batches, items, topics } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
 import { SpendCeilingError } from '../../infra/failures.js';
 import { testDb } from '../../test/db.js';
@@ -59,6 +59,12 @@ async function addItem(
     readonly topic?: string;
     readonly deadlineAt?: Date;
     readonly accuracy?: 'day' | 'week' | 'month';
+    readonly type?: 'TASK' | 'DESIRE' | 'IDEA';
+    readonly isProject?: boolean;
+    readonly deferredAt?: Date;
+    readonly createdAt?: Date;
+    readonly completedAt?: Date;
+    readonly sourceBatchId?: string;
   } = {},
 ): Promise<void> {
   await testDb()
@@ -66,14 +72,19 @@ async function addItem(
     .values({
       userId,
       text,
-      type: 'TASK',
-      priority: 'SOON',
+      type: overrides.type ?? 'TASK',
+      priority: (overrides.type ?? 'TASK') === 'TASK' ? 'SOON' : 'NONE',
       topic: overrides.topic ?? 'дети',
       status: where === 'done' ? 'done' : 'active',
-      completedAt: where === 'done' ? new Date('2026-09-10T10:00:00.000Z') : null,
+      completedAt:
+        where === 'done' ? (overrides.completedAt ?? new Date('2026-09-10T10:00:00.000Z')) : null,
       // Ушедшее в фон (§13.6) поиск находит, а «открытые» не отдают.
       backgroundedAt: where === 'background' ? new Date() : null,
       embedding: vector(1, 0, 0),
+      isProject: overrides.isProject ?? false,
+      deferredAt: overrides.deferredAt ?? null,
+      sourceBatchId: overrides.sourceBatchId ?? null,
+      ...(overrides.createdAt === undefined ? {} : { createdAt: overrides.createdAt }),
       ...(overrides.deadlineAt === undefined
         ? {}
         : {
@@ -81,6 +92,10 @@ async function addItem(
             deadlineAccuracy: overrides.accuracy ?? ('day' as const),
           }),
     });
+}
+
+async function addTopic(name: string): Promise<void> {
+  await testDb().insert(topics).values({ userId, name });
 }
 
 beforeEach(async () => {
@@ -587,5 +602,137 @@ describe('наш простой не выдаётся за отсутствие 
     );
 
     expect(answer.kind).toBe('nothing');
+  });
+});
+
+describe('вопросы-списки по признаку (21.09.2026)', () => {
+  const DAY = 24 * 60 * 60_000;
+  // Пятница 04.09.2026, 12:00 по Москве.
+  const NOW = new Date('2026-09-04T09:00:00.000Z');
+  const dayAfter = (days: number): Date =>
+    new Date(new Date('2026-09-03T21:00:00.000Z').getTime() + days * DAY);
+
+  const ask = async (text: string, batchId?: string) =>
+    await answerBacklogQuery(
+      { db: testDb(), embedder, logger },
+      { userId, text, now: NOW, ...(batchId === undefined ? {} : { batchId }) },
+    );
+  const titles = (answer: Awaited<ReturnType<typeof ask>>): readonly string[] =>
+    answer.kind === 'listed' ? answer.items.map((one) => one.text) : [answer.kind];
+
+  it('«что просрочено» — дела с прошедшим сроком, просроченные неточные тоже, сегодняшние — нет', async () => {
+    await addItem('вчерашнее', 'active', { deadlineAt: dayAfter(-1) });
+    await addItem('на прошлой неделе', 'active', { deadlineAt: dayAfter(-10), accuracy: 'week' });
+    await addItem('на этой неделе', 'active', { deadlineAt: dayAfter(-3), accuracy: 'week' });
+    await addItem('сегодняшнее', 'active', { deadlineAt: dayAfter(0) });
+    await addItem('закрытое старое', 'done', { deadlineAt: dayAfter(-5) });
+
+    const answer = await ask('что просрочено');
+    expect(answer.kind === 'listed' && answer.question.kind).toBe('overdue');
+    expect(titles(answer)).toEqual(['на прошлой неделе', 'вчерашнее']);
+  });
+
+  it('«что на потом» — отложенные, «что без срока» — открытые дела без даты', async () => {
+    await addItem('отложенное', 'active', { deferredAt: dayAfter(-2) });
+    await addItem('без даты', 'active');
+    await addItem('с датой', 'active', { deadlineAt: dayAfter(2) });
+    await addItem('мечта', 'active', { type: 'DESIRE' });
+
+    expect(titles(await ask('что на потом'))).toEqual(['отложенное']);
+    expect(titles(await ask('что без срока'))).toEqual(['без даты', 'отложенное']);
+  });
+
+  it('«сколько у меня дел» — открытые дела с раскладкой: сегодня, просрочено, на потом', async () => {
+    await addItem('просроченное', 'active', { deadlineAt: dayAfter(-1) });
+    await addItem('сегодняшнее', 'active', { deadlineAt: dayAfter(0) });
+    await addItem('отложенное', 'active', { deferredAt: dayAfter(-2) });
+    await addItem('просто дело', 'active');
+    await addItem('мечта', 'active', { type: 'DESIRE' });
+    await addItem('закрытое', 'done');
+
+    const answer = await ask('сколько у меня дел');
+    // «Сегодня» — по правилу продукта: просроченное в него не входит (запрос №4).
+    expect(answer).toEqual({ kind: 'count', open: 4, today: 1, overdue: 1, later: 1 });
+  });
+
+  it('«с чего начать» — тот же выбор главного, что у кнопки', async () => {
+    expect((await ask('с чего начать')).kind).toBe('pick');
+    expect((await ask('что важное')).kind).toBe('pick');
+  });
+
+  it('«что я сегодня записала» — записанное сегодня, «что последнее» — последняя выгрузка', async () => {
+    const [older] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done', combinedText: 'старая', openedAt: dayAfter(-3) })
+      .returning({ id: batches.id });
+    const [latest] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done', combinedText: 'вчерашняя', openedAt: dayAfter(-1) })
+      .returning({ id: batches.id });
+    const [current] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'processing', combinedText: 'что последнее', openedAt: NOW })
+      .returning({ id: batches.id });
+
+    await addItem('позавчерашняя запись', 'active', {
+      createdAt: dayAfter(-3),
+      sourceBatchId: older!.id,
+    });
+    await addItem('вчерашняя запись', 'active', {
+      createdAt: dayAfter(-1),
+      sourceBatchId: latest!.id,
+    });
+    await addItem('сегодняшняя запись', 'active', { createdAt: NOW });
+
+    expect(titles(await ask('что я сегодня записала'))).toEqual(['сегодняшняя запись']);
+    // Текущая выгрузка — сам вопрос, и её записи не «последние».
+    expect(titles(await ask('что последнее записала', current!.id))).toEqual(['вчерашняя запись']);
+  });
+
+  it('«что я сделала за неделю» — закрытые за последние семь дней; «вчера» — за вчера', async () => {
+    await addItem('закрыто сегодня', 'done', { completedAt: new Date(NOW.getTime() - 3_600_000) });
+    await addItem('закрыто вчера', 'done', { completedAt: dayAfter(-1) });
+    await addItem('закрыто неделю назад', 'done', { completedAt: dayAfter(-8) });
+    await addItem('открытое', 'active');
+
+    expect(titles(await ask('что я сделала за неделю'))).toEqual([
+      'закрыто вчера',
+      'закрыто сегодня',
+    ]);
+    expect(titles(await ask('что я сделала вчера'))).toEqual(['закрыто вчера']);
+    expect(titles(await ask('что я сделала сегодня'))).toEqual(['закрыто сегодня']);
+  });
+
+  it('«покажи желания», «идеи», «цели» — по виду записи', async () => {
+    await addItem('дело', 'active');
+    await addItem('мечта', 'active', { type: 'DESIRE' });
+    await addItem('замысел', 'active', { type: 'IDEA' });
+    await addItem('большая цель', 'active', { isProject: true });
+    await addItem('цель-желание', 'active', { type: 'DESIRE', isProject: true });
+
+    expect(titles(await ask('покажи желания'))).toEqual(['цель-желание', 'мечта']);
+    expect(titles(await ask('какие у меня идеи'))).toEqual(['замысел']);
+    expect(titles(await ask('какие у меня цели'))).toEqual(['цель-желание', 'большая цель']);
+  });
+
+  it('«что по работе» — дела сферы человека, названной любым падежом', async () => {
+    await addTopic('работа');
+    await addTopic('дом');
+    await addItem('отчёт', 'active', { topic: 'работа' });
+    await addItem('полка', 'active', { topic: 'дом' });
+    await addItem('витамины', 'active', { topic: 'здоровье' });
+
+    expect(titles(await ask('что по работе'))).toEqual(['отчёт']);
+    expect(titles(await ask('что у меня по дому'))).toEqual(['полка']);
+    // Сферы «учёба» у человека нет — это вопрос про предмет, не про сферу.
+    expect((await ask('что по учёбе')).kind).not.toBe('listed');
+  });
+
+  it('пустой список — тоже ответ, а не «ничего не записано»', async () => {
+    await addItem('дело', 'active');
+
+    const answer = await ask('что просрочено');
+    expect(answer.kind).toBe('listed');
+    expect(answer.kind === 'listed' && answer.items).toEqual([]);
   });
 });

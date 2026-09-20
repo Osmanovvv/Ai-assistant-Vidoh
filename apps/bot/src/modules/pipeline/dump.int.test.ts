@@ -32,7 +32,7 @@ import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
 import { QUESTION_ACTION } from '../resolver/change-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
-import { revertRevision } from '../resolver/revisions.repo.js';
+import { recordRevision, revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
@@ -2724,6 +2724,63 @@ describe('бренд-карточки (ТЗ по визуалам, продже�
     const reply = all.at(-1) ?? '';
     expect(reply.startsWith(defaultTexts.backlog.period('3 дня'))).toBe(true);
     expect(reply).toContain('Сдать отчёт');
+  });
+
+  it('«что просрочено», «сколько у меня дел», «с чего начать» — списки по признаку словами (21.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values([
+        {
+          userId,
+          text: 'Сдать отчёт',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'работа',
+          status: 'new',
+          deadlineAt: new Date(T0.getTime() - 3 * 24 * 60 * 60_000),
+          deadlineAccuracy: 'day',
+        },
+        {
+          userId,
+          text: 'Купить хлеб',
+          type: 'TASK',
+          priority: 'NOW',
+          topic: 'покупки',
+          status: 'new',
+        },
+      ]);
+
+    const ask = async (text: string): Promise<readonly string[]> => {
+      await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+      const { sender, all } = recordingSender();
+      const llm = echoingLlm({
+        router: JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text }] }),
+      });
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, llm }),
+        },
+        userId,
+      );
+      return all;
+    };
+
+    const overdue = (await ask('что у меня просрочено?')).at(-1) ?? '';
+    expect(overdue.split(NEWLINE)).toEqual([defaultTexts.backlog.overdue, '— Сдать отчёт']);
+
+    const count = (await ask('сколько у меня дел')).at(-1) ?? '';
+    expect(count).toBe(defaultTexts.backlog.count('2 дела', 1, 1, 0));
+
+    const pick = (await ask('с чего начать')).at(-1) ?? '';
+    // Тот же выбор, что у кнопки «Выбрать главное»: просроченное и срочное.
+    expect(pick).toContain('Сдать отчёт');
+    expect(pick).toContain('Купить хлеб');
+
+    const later = (await ask('что на потом')).at(-1) ?? '';
+    expect(later).toBe(defaultTexts.backlog.laterEmpty);
   });
 });
 
@@ -6166,5 +6223,106 @@ describe('наблюдатель конвейера (стенд набора, 20
 
     const saved = await testDb().select().from(items).where(eq(items.userId, userId));
     expect(saved.map((item) => item.text)).toEqual(['Купить хлеб']);
+  });
+});
+
+describe('слова к самому боту: помощь и отмена последнего (21.09.2026)', () => {
+  const say = async (text: string): Promise<{ all: string[]; calls: number }> => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, llm }),
+      },
+      userId,
+    );
+    return { all, calls: llm.callCount };
+  };
+
+  it('«что ты умеешь?» — текст помощи из меню, модель не зовётся, записей нет', async () => {
+    const { all, calls } = await say('что ты умеешь?');
+
+    expect(all.at(-1)).toBe(defaultTexts.menu.help);
+    expect(calls).toBe(0);
+    expect(await testDb().select().from(items).where(eq(items.userId, userId))).toHaveLength(0);
+  });
+
+  it('«отмени последнее» после правки — откат, как кнопкой «Отменить»', async () => {
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Отвести дочку к врачу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        status: 'new',
+        deadlineAt: new Date(T0.getTime() + 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      })
+      .returning();
+    // Правка была: срок перенесли; ревизия — как её пишет резолвер.
+    const moved = { ...item!, deadlineAt: new Date(T0.getTime() + 4 * 24 * 60 * 60_000) };
+    await testDb()
+      .update(items)
+      .set({ deadlineAt: moved.deadlineAt })
+      .where(eq(items.id, item!.id));
+    await recordRevision(testDb(), {
+      itemId: item!.id,
+      userId,
+      changedBy: 'resolver',
+      before: item!,
+      after: moved,
+    });
+
+    const { all, calls } = await say('отмени последнее');
+
+    expect(all.at(-1)).toBe(defaultTexts.resolver.undoneOf('Отвести дочку к врачу'));
+    expect(calls).toBe(0);
+    const [after] = await testDb().select().from(items).where(eq(items.id, item!.id));
+    expect(after?.deadlineAt?.toISOString()).toBe(item!.deadlineAt!.toISOString());
+  });
+
+  it('«отмени последнее» после выгрузки — последнее это записи, и бот говорит, как их убрать', async () => {
+    // Выгрузка с записью — последнее, что было; старая правка её старше.
+    const [older] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Старое дело',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        status: 'new',
+      })
+      .returning();
+    const revision = await recordRevision(testDb(), {
+      itemId: older!.id,
+      userId,
+      changedBy: 'resolver',
+      before: older!,
+      after: { ...older!, text: 'Старое дело, поправленное' },
+    });
+    // Часы проверки стоят на T0, а база пишет своё «сейчас»: правка — за
+    // час до выгрузки, как и было бы на самом деле.
+    await testDb()
+      .update(itemRevisions)
+      .set({ createdAt: new Date(T0.getTime() - 3_600_000) })
+      .where(eq(itemRevisions.id, revision.id));
+    await say('надо купить хлеб');
+
+    const { all } = await say('верни как было');
+
+    expect(all.at(-1)).toBe(defaultTexts.resolver.undoIsRecords);
+  });
+
+  it('отменять нечего — так и сказано', async () => {
+    const { all } = await say('отмени последнее');
+
+    expect(all.at(-1)).toBe(defaultTexts.resolver.nothingToUndo);
   });
 });

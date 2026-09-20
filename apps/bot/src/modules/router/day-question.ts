@@ -1,4 +1,5 @@
-import { askedDay } from '../backlog/query.service.js';
+import { askedList } from '../backlog/list-questions.js';
+import { askedDay } from '../backlog/periods.js';
 import type { Segment } from './router.service.js';
 
 /**
@@ -43,8 +44,17 @@ const AND_MORE = /[\s,]+(?:(?:и|а)\s+)?(?:ещё|еще)\s+/giu;
 /** Глагол в повелении — «платить», «записаться». */
 const INFINITIVE = /\p{L}+(?:ть|ться|чь|чься)(?!\p{L})/u;
 
+/**
+ * Вопрос о дне — или список по признаку (21.09.2026): «что просрочено»,
+ * «сколько у меня дел», «что я сделала» — те же вопросы к бэклогу, и
+ * из мысли они выделяются тем же правилом. «Сколько» — само по себе
+ * вопросительное слово.
+ */
+const ASK_WORD_MORE = /(?<!\p{L})(?:сколько|много\s+ли)(?!\p{L})/iu;
+
 function isDayQuestion(text: string): boolean {
-  return askedDay(text) !== undefined && (ASK_WORD.test(text) || text.trim().endsWith('?'));
+  const asks = ASK_WORD.test(text) || ASK_WORD_MORE.test(text) || text.trim().endsWith('?');
+  return asks && (askedDay(text) !== undefined || askedList(text) !== undefined);
 }
 
 /** Части предложения: вопрос о дне и приклеенная к нему мысль. */

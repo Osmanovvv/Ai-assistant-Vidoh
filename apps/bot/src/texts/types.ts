@@ -391,6 +391,13 @@ export interface TextProfile {
     /** Повторное нажатие: кнопка живёт в чате вечно. */
     readonly alreadyUndone: string;
     readonly undoGone: string;
+    /**
+     * Отмена словами (21.09.2026): «отмени последнее», «верни как было».
+     * С названием записи — человек не видит, что именно вернулось, иначе.
+     */
+    readonly undoneOf: (title: string) => string;
+    readonly nothingToUndo: string;
+    readonly undoIsRecords: string;
     /** После этой правки то же поле меняли ещё раз (ревизия этапа 3, A1). */
     readonly undoOvertaken: string;
 
@@ -508,6 +515,36 @@ export interface TextProfile {
     readonly labelWeekdays: readonly [string, string, string, string, string, string, string];
     readonly labelNextWeekdays: readonly [string, string, string, string, string, string, string];
     readonly labelMonths: readonly string[];
+    /**
+     * Списки по признаку (21.09.2026): шапка со списком и шапка пустого
+     * списка — пустой список тоже ответ. «Сделано за …» берёт подпись
+     * отрезка; «сегодня» и «вчера» — свои.
+     */
+    readonly overdue: string;
+    readonly overdueEmpty: string;
+    readonly later: string;
+    readonly laterEmpty: string;
+    readonly undated: string;
+    readonly undatedEmpty: string;
+    readonly recentToday: string;
+    readonly recentTodayEmpty: string;
+    readonly recentLast: string;
+    readonly recentLastEmpty: string;
+    readonly done: (label: string) => string;
+    readonly doneEmpty: (label: string) => string;
+    readonly labelToday: string;
+    readonly labelYesterday: string;
+    readonly desires: string;
+    readonly desiresEmpty: string;
+    readonly ideas: string;
+    readonly ideasEmpty: string;
+    readonly goals: string;
+    readonly goalsEmpty: string;
+    readonly byTopic: (name: string) => string;
+    readonly byTopicEmpty: (name: string) => string;
+    /** «Сколько у меня дел»: `open` уже со склонением. */
+    readonly count: (open: string, today: number, overdue: number, later: number) => string;
+    readonly countEmpty: string;
     /** Спросили про закрытое, убранное или ушедшее в фон дело (F1). */
     readonly aboutClosed: string;
     readonly closedLine: (text: string, state: string) => string;
