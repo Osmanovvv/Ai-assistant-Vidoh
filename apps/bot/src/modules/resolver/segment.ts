@@ -14,6 +14,7 @@ import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
 import { startsWithReplacement } from '../router/append.js';
+import { looksLikeThought } from '../router/thought-words.js';
 
 /**
  * Разбор одной правки: от сегмента до последствия (§7 ТЗ, задача 3.6а).
@@ -281,7 +282,30 @@ export async function resolvePatchSegment(
       };
     }
 
-    return decision.newThought
+    /**
+     * Правка без единого кандидата, но с делом внутри, — мысль (стенд
+     * 21.09.2026, живой набор `live-08`).
+     *
+     * «Зато надо записаться к стоматологу, ой, не к стоматологу, к
+     * косметологу» маршрутизатор отдаёт правкой; у человека без записей
+     * кандидатов нет, модель не зовётся, и решение «создать, но не
+     * мысль» отправляло дело в черновик. Правило второго этапа верно для
+     * «нет, в пятницу» — там мысли нет. Но слово долга или глагол дела
+     * (`thought-words.ts`, закрытые списки) отличают дело от обрывка, и
+     * без записей спорить с ними некому. Только когда кандидатов не
+     * было вовсе: решение модели, видевшей записи, не перебивается.
+     */
+    const thoughtWithoutCandidates =
+      candidates.length === 0 && params.intent === 'PATCH' && looksLikeThought(params.text);
+
+    if (thoughtWithoutCandidates) {
+      deps.logger?.info(
+        { userId: params.userId, batchId: params.batchId },
+        'Правка без кандидатов несёт дело — разбираем как мысль',
+      );
+    }
+
+    return decision.newThought || thoughtWithoutCandidates
       ? { kind: 'newThought' }
       : {
           kind: 'parked',

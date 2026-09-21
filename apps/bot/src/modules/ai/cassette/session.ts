@@ -32,6 +32,10 @@ interface Session {
   readonly mode: 'record' | 'replay';
   readonly recorder?: CassetteRecorder | undefined;
   readonly player?: CassettePlayer | undefined;
+  /** Прежняя запись в основе новой (`CASSETTE_BASE`): только при записи. */
+  readonly base?: CassettePlayer | undefined;
+  /** Кто считает взятое из основы: провайдеры записи сообщают сюда. */
+  readonly reused?: { llm: number; vectors: number } | undefined;
 }
 
 let session: Session | undefined;
@@ -55,6 +59,8 @@ export function cassetteSession(env: ModelEnv): Session {
       path,
       mode: 'record',
       recorder: new CassetteRecorder(new Date(), env.YANDEX_LLM_MODEL),
+      ...(env.CASSETTE_BASE === undefined ? {} : { base: openBase(env.CASSETTE_BASE) }),
+      reused: { llm: 0, vectors: 0 },
     };
 
     return session;
@@ -79,11 +85,27 @@ export function cassetteSession(env: ModelEnv): Session {
   return session;
 }
 
+/**
+ * Основа читается так же строго, как запись для воспроизведения: нет
+ * файла — отказ сразу, а не молчаливый живой прогон за полную цену.
+ */
+function openBase(path: string): CassettePlayer {
+  try {
+    return new CassettePlayer(parseCassette(readFileSync(path, 'utf8'), path));
+  } catch (error) {
+    throw new Error(`не удалось прочитать запись-основу ${path} (CASSETTE_BASE)`, {
+      cause: error,
+    });
+  }
+}
+
 export interface CassetteSummary {
   readonly path: string;
   readonly mode: 'record' | 'replay';
   readonly answers: number;
   readonly vectors: number;
+  /** Взято из основы бесплатно: ответов и векторов. */
+  readonly reused: { readonly llm: number; readonly vectors: number };
   /** Один запрос с двумя разными ответами: прогон недетерминирован. */
   readonly collisions: number;
   /** Запросов, которых в записи не нашлось. */
@@ -101,6 +123,7 @@ export async function flushCassette(): Promise<CassetteSummary | undefined> {
       mode: 'replay',
       answers: active.player?.size ?? 0,
       vectors: 0,
+      reused: { llm: 0, vectors: 0 },
       collisions: 0,
       misses: active.player?.missCount ?? 0,
     };
@@ -116,6 +139,7 @@ export async function flushCassette(): Promise<CassetteSummary | undefined> {
     mode: 'record',
     answers: recorder.size,
     vectors: recorder.vectorCount,
+    reused: { ...(active.reused ?? { llm: 0, vectors: 0 }) },
     collisions: recorder.collisionCount,
     misses: 0,
   };

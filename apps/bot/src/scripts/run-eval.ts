@@ -162,7 +162,11 @@ async function saveAnswers(): Promise<void> {
       [
         '',
         `Ответы модели записаны: ${summary.path} (${String(summary.answers)} ответов` +
-          `${summary.collisions > 0 ? `, ${String(summary.collisions)} разночтений` : ''}).`,
+          (summary.collisions > 0 ? `, ${String(summary.collisions)} разночтений` : '') +
+          (summary.reused.llm + summary.reused.vectors > 0
+            ? `; из основы бесплатно: ${String(summary.reused.llm)} ответов и ${String(summary.reused.vectors)} векторов`
+            : '') +
+          ').',
         'Повторить прогон бесплатно, по записи:',
         `  AI_PROVIDER=cassette CASSETTE_PATH=${summary.path} npx tsx src/scripts/run-eval.ts ${datasetDir}`,
         '',

@@ -54,13 +54,28 @@ export function createEmbeddingProvider(env: ModelEnv): EmbeddingProvider {
         throw new Error('для записи нужны YANDEX_API_KEY и YANDEX_FOLDER_ID');
       }
 
-      return new RecordingEmbeddingProvider(
+      const recording = new RecordingEmbeddingProvider(
         new YandexEmbeddingProvider({
           apiKey: env.YANDEX_API_KEY,
           folderId: env.YANDEX_FOLDER_ID,
         }),
         session.recorder,
+        session.base,
       );
+      const reused = session.reused;
+      if (reused === undefined) return recording;
+
+      // Взятое из основы считается в итог прогона: сколько не куплено.
+      return {
+        name: recording.name,
+        dimensions: recording.dimensions,
+        embed: async (request) => {
+          const before = recording.reused;
+          const result = await recording.embed(request);
+          reused.vectors += recording.reused - before;
+          return result;
+        },
+      };
     }
   }
 }

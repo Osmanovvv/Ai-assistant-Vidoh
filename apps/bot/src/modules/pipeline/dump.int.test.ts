@@ -656,6 +656,94 @@ describe('разбор', () => {
     expect(all.at(-1)).toContain(defaultTexts.answer.savedUnparsed);
   });
 
+  it('эхо самопоправки не становится второй записью: «К врачу лучше в пятницу» (стенд 21.09.2026)', async () => {
+    /**
+     * Живой набор, `live-14`: извлечение сделало из «хотя нет к врачу
+     * лучше в пятницу» отдельную единицу; день у «отвезти дочку к врачу»
+     * перенесён верно, а эхо поправки ложилось второй записью про врача.
+     */
+    const prompts = await seedPrompts();
+    const speech = 'Так, во вторник надо отвезти дочку к врачу, хотя нет к врачу лучше в пятницу.';
+    await queuedBatchOf([{ kind: 'text', text: speech, offsetMs: 0 }]);
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: speech }] }),
+      extractor: () =>
+        JSON.stringify({
+          units: [
+            { text: 'Во вторник надо отвезти дочку к врачу', isProject: false, isEmotion: false },
+            { text: 'К врачу лучше в пятницу', isProject: false, isEmotion: false },
+          ],
+        }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
+
+    expect(saved.filter((item) => item.isDraft)).toHaveLength(0);
+    expect(saved.map((item) => item.text)).toEqual(['Отвезти дочку к врачу']);
+  });
+
+  it('правка без цели, но с делом внутри, — мысль: «зато надо записаться … к косметологу» (стенд 21.09.2026)', async () => {
+    /**
+     * Живой набор, `live-08`: «…зато надо записаться к стоматологу, ой,
+     * не к стоматологу, к косметологу» маршрутизатор отдал `PATCH`. У
+     * человека без записей кандидатов нет, резолвер без модели отвечает
+     * «создать, но не мысль» — и дело уходило в черновик. Правило второго
+     * этапа верно для «нет, в пятницу»; здесь же есть слово долга и
+     * глагол дела (`thought-words.ts`), и это мысль. У нового человека
+     * первая же самопоправка иначе теряла дело.
+     */
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'зато надо записаться к стоматологу, ой, не к стоматологу, к косметологу.',
+        offsetMs: 0,
+      },
+    ]);
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          {
+            intent: 'PATCH',
+            text: 'зато надо записаться к стоматологу, ой, не к стоматологу, к косметологу.',
+          },
+        ],
+      }),
+      extractor: () =>
+        JSON.stringify({
+          units: [{ text: 'записаться к косметологу', isProject: false, isEmotion: false }],
+        }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
+
+    expect(saved.filter((item) => item.isDraft)).toHaveLength(0);
+    expect(saved.map((item) => item.text)).toEqual(['Записаться к косметологу']);
+  });
+
   it('мысль, принятая за правку после первой мысли, становится записью (ревизия этапа 3, A4-средняя)', async () => {
     /**
      * «Записать сына к врачу, купить молоко»: маршрутизатор счёл второе

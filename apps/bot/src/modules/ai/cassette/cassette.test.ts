@@ -355,6 +355,101 @@ describe('воспроизведение', () => {
   });
 });
 
+describe('запись поверх старой (21.09.2026)', () => {
+  /**
+   * Правка кода меняет вход одного-двух вызовов, а живой режим прогонял
+   * случай целиком: 21.09.2026 замер двух случаев стоил 12,69 ₽ при
+   * названных 10, и один из них не дошёл до конца. Со старой записью в
+   * основе живьём идёт только то, чего в ней нет; совпавшее берётся из
+   * неё бесплатно — и ложится в новую запись, чтобы та была полной.
+   */
+  const LATER = new Date('2026-09-09T12:00:00.000Z');
+
+  function baseWith(answer: string): CassettePlayer {
+    const recorder = new CassetteRecorder(RECORDED, 'yandexgpt/latest');
+    recorder.add({
+      key: keyOf({
+        stage: 'extractor',
+        prompt: request().prompt,
+        input: request().input,
+        temperature: 0,
+        schema: SCHEMA,
+        recordedAt: RECORDED,
+      }),
+      stage: 'extractor',
+      input: 'неважно',
+      answer,
+    });
+    recorder.addVector({
+      key: vectorKeyOf('врач', 'query'),
+      text: 'врач',
+      purpose: 'query',
+      vector: [1, 2, 3, 4],
+      model: 'yandex:text-search',
+      tokens: 3,
+    });
+
+    return new CassettePlayer(recorder.toFile());
+  }
+
+  it('совпавший запрос берётся из основы: живая модель не зовётся, ответ ложится в новую запись', async () => {
+    const live = liveLlm('{"units":[{"text":"живой ответ"}]}');
+    const recorder = new CassetteRecorder(LATER, 'yandexgpt/latest');
+    const provider = new RecordingLlmProvider({
+      live,
+      recorder,
+      recordedAt: LATER,
+      base: baseWith('{"units":[{"text":"из основы"}]}'),
+      now: () => LATER,
+    });
+
+    const result = await provider.complete(request({ input: classifierInput(LATER) }));
+
+    expect(result.text).toBe('{"units":[{"text":"из основы"}]}');
+    expect(result.tokensIn).toBe(0);
+    expect(live.calls).toBe(0);
+    // Новая запись полная: по ней потом можно повторять без основы.
+    expect(recorder.size).toBe(1);
+    expect(recorder.toFile().entries[0]?.answer).toBe('{"units":[{"text":"из основы"}]}');
+    expect(provider.reused).toBe(1);
+  });
+
+  it('запроса в основе нет — живая модель, как без основы', async () => {
+    const live = liveLlm('{"units":[{"text":"живой ответ"}]}');
+    const recorder = new CassetteRecorder(LATER, 'yandexgpt/latest');
+    const provider = new RecordingLlmProvider({
+      live,
+      recorder,
+      recordedAt: LATER,
+      base: baseWith('{"units":[]}'),
+      now: () => LATER,
+    });
+
+    const result = await provider.complete(
+      request({ input: `${classifierInput(LATER)}\nещё одна мысль` }),
+    );
+
+    expect(result.text).toBe('{"units":[{"text":"живой ответ"}]}');
+    expect(live.calls).toBe(1);
+    expect(recorder.size).toBe(1);
+    expect(provider.reused).toBe(0);
+  });
+
+  it('вектор из основы тоже не покупается заново', async () => {
+    const live = liveEmbedder();
+    const recorder = new CassetteRecorder(LATER, 'yandexgpt/latest');
+    const provider = new RecordingEmbeddingProvider(live, recorder, baseWith('{}'));
+
+    const found = await provider.embed({ text: 'врач', purpose: 'query' });
+    expect(found.vector).toEqual([1, 2, 3, 4]);
+    expect(live.calls).toBe(0);
+
+    await provider.embed({ text: 'врач', purpose: 'document' });
+    expect(live.calls).toBe(1);
+    expect(recorder.vectorCount).toBe(2);
+  });
+});
+
 describe('ключ запроса', () => {
   it('одинаковые запросы дают один ключ, разные — разные', () => {
     const base = {
