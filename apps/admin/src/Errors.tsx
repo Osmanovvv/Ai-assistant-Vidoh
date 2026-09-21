@@ -57,6 +57,7 @@ const KINDS: Readonly<Record<string, string>> = {
   evening: 'вечернее',
   deadline_eve: 'накануне срока',
   deadline_day: 'в день срока',
+  deadline_hour: 'в указанный час',
   project: 'про шаг проекта',
   period: 'возврат «на неделе / в месяце»',
 };

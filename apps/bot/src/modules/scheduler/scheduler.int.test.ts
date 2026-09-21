@@ -102,7 +102,7 @@ async function setTimeZone(zone: string): Promise<void> {
   await testDb().update(users).set({ timezone: zone }).where(eq(users.id, userId));
 }
 
-async function countReminders(kind?: 'morning' | 'evening'): Promise<number> {
+async function countReminders(kind?: 'morning' | 'evening' | 'deadline_hour'): Promise<number> {
   const [row] = await testDb()
     .select({ count: sql<number>`count(*)::int` })
     .from(reminders)
@@ -581,6 +581,63 @@ describe('сроки (3.16)', () => {
 
     const withDeadline = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
     expect(withDeadline?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+});
+
+describe('напоминание в указанный час (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+  /** «Сходить к стоматологу в 13:00» на 31.08: срок — день, час — 13:00. */
+  async function dentist(time: number | null = 13 * 60): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Сходить к стоматологу в 13:00',
+        type: 'TASK',
+        priority: 'NOW',
+        topic: 'здоровье',
+        deadlineAt: new Date('2026-08-30T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: time,
+      })
+      .returning({ id: items.id });
+
+    return row?.id ?? '';
+  }
+
+  it('за полчаса до часа приходит своё напоминание с часом и двумя кнопками', async () => {
+    await dentist();
+    await planReminders(deps(), { now: new Date('2026-08-31T06:00:00.000Z') }); // 09:00 МСК
+
+    expect(await countReminders('deadline_hour')).toBe(1);
+
+    // В 12:29 рано, в 12:30 — пора.
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T09:29:00.000Z') });
+    expect(outbox.some((one) => one.text.includes('13:00'))).toBe(false);
+
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T09:30:00.000Z') });
+    const hour = outbox.find((one) => one.text.includes('13:00'));
+    expect(hour?.text).toBe('Через 30 минут, в 13:00: Сходить к стоматологу.');
+    expect(hour?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+
+  it('час убрали или перенесли — напоминание про прежний час не приходит', async () => {
+    const id = await dentist();
+    await planReminders(deps(), { now: new Date('2026-08-31T06:00:00.000Z') });
+
+    await testDb()
+      .update(items)
+      .set({ deadlineTime: 15 * 60 })
+      .where(eq(items.id, id));
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T09:30:00.000Z') });
+
+    expect(outbox.some((one) => one.text.includes('13:00'))).toBe(false);
+  });
+
+  it('без часа напоминания в час нет — только утро и вечер накануне', async () => {
+    await dentist(null);
+    await planReminders(deps(), { now: new Date('2026-08-31T06:00:00.000Z') });
+
+    expect(await countReminders('deadline_hour')).toBe(0);
   });
 });
 

@@ -132,6 +132,8 @@ const DECISIONS: readonly {
         'assignee',
         'deadlineAt',
         'deadlineAccuracy',
+        // Час дела — его слова о времени (ТЗ проджекта 17.09.2026, шаг 5).
+        'deadlineTime',
         'isDraft',
         'draftReason',
         'createdAt',

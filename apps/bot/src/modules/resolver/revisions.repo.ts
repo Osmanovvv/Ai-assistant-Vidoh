@@ -40,6 +40,8 @@ export const RESTORABLE_FIELDS = [
   'completedAt',
   'deadlineAt',
   'deadlineAccuracy',
+  // Час внутри дня (ТЗ проджекта 17.09.2026, шаг 5) — откатывается вместе со сроком.
+  'deadlineTime',
   'isProject',
   'assignee',
   'recurrenceRule',

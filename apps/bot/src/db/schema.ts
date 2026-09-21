@@ -756,6 +756,13 @@ export const items = pgTable(
 
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
     deadlineAccuracy: deadlineAccuracy('deadline_accuracy'),
+    /**
+     * Час внутри дня срока — минуты от местной полуночи (ТЗ проджекта
+     * 17.09.2026, шаг 5: напоминание в указанный час). Только у точности
+     * «день»: у «на неделе» часа не бывает. Пусто — час не назван, и
+     * напоминание идёт утром, как раньше.
+     */
+    deadlineTime: integer('deadline_time'),
 
     /**
      * Смысловое представление текста записи (задача 2.9).
@@ -828,6 +835,11 @@ export const items = pgTable(
     check(
       'items_deadline_with_accuracy',
       sql`(${table.deadlineAt} is null) = (${table.deadlineAccuracy} is null)`,
+    ),
+    /** Час — только у точного срока и только в пределах суток. */
+    check(
+      'items_deadline_time_day_only',
+      sql`${table.deadlineTime} is null or (${table.deadlineAccuracy} = 'day' and ${table.deadlineTime} between 0 and 1439)`,
     ),
     // Выдача берёт активные записи пользователя по приоритету (задача 2.10).
     index('items_user_status_priority_idx').on(table.userId, table.status, table.priority),
@@ -1282,6 +1294,11 @@ export const reminderKind = pgEnum('reminder_kind', [
   'deadline_eve',
   /** Утром в день срока (3.16). */
   'deadline_day',
+  /**
+   * За упреждение до названного часа (ТЗ проджекта 17.09.2026, шаг 5):
+   * «к стоматологу в 13:00» — в 12:30, помимо утренней сводки.
+   */
+  'deadline_hour',
   /** Вопрос про ближайший шаг застрявшего проекта (3.13). */
   'project',
   /**

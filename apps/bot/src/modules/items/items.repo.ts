@@ -84,6 +84,8 @@ function toRow(
     isProject: item.isProject,
     deadlineAt: item.deadline?.at ?? null,
     deadlineAccuracy: item.deadline?.accuracy ?? null,
+    // Час — только с точным сроком; страж в базе не пустит иное.
+    deadlineTime: item.deadline?.accuracy === 'day' ? (item.deadline.time ?? null) : null,
     // Задача 2.18а: правило живёт рядом с фразой человека, и фраза
     // сохраняется даже тогда, когда правило не получилось.
     recurrenceRule: item.recurrence?.rule ?? null,

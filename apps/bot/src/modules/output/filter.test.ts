@@ -44,6 +44,7 @@ function item(overrides: Partial<Item> = {}): Item {
     assignee: null,
     deadlineAt: null,
     deadlineAccuracy: null,
+    deadlineTime: null,
     embedding: null,
     isDraft: false,
     draftReason: null,

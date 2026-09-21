@@ -133,6 +133,38 @@ describe('describeChange', () => {
     expect(describeChange(later, defaultTexts, MOSCOW)).toBe(defaultTexts.card.deferred);
   });
 
+  it('перенос со временем называет и день, и час: «на 25.09, 15:00» (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+    const moved: Applied = {
+      ...applied(['deadlineAt', 'deadlineAccuracy', 'deadlineTime']),
+      after: {
+        ...ITEM,
+        deadlineAt: new Date('2026-09-24T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 15 * 60,
+      },
+    };
+
+    expect(describeChange(moved, defaultTexts, MOSCOW, 'перенеси на пятницу в 15:00')).toBe(
+      defaultTexts.resolver.movedDeadline(ITEM.text, '25.09, 15:00'),
+    );
+  });
+
+  it('изменился только час — «Напомню в 10:30»: день не менялся, повторять его незачем', () => {
+    const retimed: Applied = {
+      ...applied(['deadlineTime']),
+      after: {
+        ...ITEM,
+        deadlineAt: new Date('2026-09-24T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 10 * 60 + 30,
+      },
+    };
+
+    expect(describeChange(retimed, defaultTexts, MOSCOW, 'давай в 10:30')).toBe(
+      defaultTexts.resolver.retimed(ITEM.text, '25.09', '10:30'),
+    );
+  });
+
   it('«отложить» называет день, до которого отложено (ревизия этапа 3, C1)', () => {
     const snoozed: Applied = {
       ...applied(['status', 'deadlineAt', 'deadlineAccuracy']),

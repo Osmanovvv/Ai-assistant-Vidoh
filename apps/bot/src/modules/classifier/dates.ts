@@ -30,6 +30,12 @@ export interface ResolvedDeadline {
   /** Начало названного дня в поясе человека. */
   readonly at: Date;
   readonly accuracy: Exclude<DeadlineAccuracy, 'none'>;
+  /**
+   * Час внутри дня — минуты от местной полуночи (ТЗ проджекта
+   * 17.09.2026, шаг 5). Только у точности «день» и только когда час
+   * назван однозначно (`clock-time.ts`); иначе пусто.
+   */
+  readonly time?: number | undefined;
 }
 
 export type DeadlineOutcome =

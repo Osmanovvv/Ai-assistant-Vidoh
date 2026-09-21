@@ -428,6 +428,13 @@
       "when": 1789747752576,
       "tag": "0060_morning_card",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790020033773,
+      "tag": "0061_deadline_time",
+      "breakpoints": true
     }
   ]
 }

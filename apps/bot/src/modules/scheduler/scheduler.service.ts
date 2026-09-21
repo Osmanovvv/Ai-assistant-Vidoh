@@ -39,12 +39,22 @@ import { outputContextOf } from '../users/state.repo.js';
 import {
   deadlineText,
   eveningText,
+  hourText,
   MORNING_ACTIONS_LIMIT,
   morningText,
   projectText,
   reviewRows,
 } from './digest.js';
-import { deadlineKey, HORIZON_HOURS, periodKey, planFor, type PlanDeadline } from './plan.js';
+import {
+  clockOf,
+  deadlineKey,
+  DEFAULT_HOUR_LEAD_MINUTES,
+  HORIZON_HOURS,
+  hourKey,
+  periodKey,
+  planFor,
+  type PlanDeadline,
+} from './plan.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
@@ -237,7 +247,8 @@ export async function planReminders(
     try {
       const planned = planFor({
         timeZone: person.timeZone,
-        settings: person,
+        // Упреждение напоминания в час — из панели (ТЗ проджекта 17.09.2026, шаг 5).
+        settings: { ...person, hourLeadMinutes: await deps.settings?.number('hourLeadMinutes') },
         ignoredStreak: await ignoredStreak(deps.db, {
           userId: person.userId,
           timeZone: person.timeZone,
@@ -270,6 +281,7 @@ async function deadlinesOf(db: Database, userId: string, now: Date): Promise<Pla
       itemId: items.id,
       deadlineAt: items.deadlineAt,
       accuracy: items.deadlineAccuracy,
+      time: items.deadlineTime,
     })
     .from(items)
     .where(
@@ -302,7 +314,14 @@ async function deadlinesOf(db: Database, userId: string, now: Date): Promise<Pla
   return rows.flatMap((row) =>
     row.deadlineAt === null || row.accuracy === null
       ? []
-      : [{ itemId: row.itemId, deadlineAt: row.deadlineAt, accuracy: row.accuracy }],
+      : [
+          {
+            itemId: row.itemId,
+            deadlineAt: row.deadlineAt,
+            accuracy: row.accuracy,
+            time: row.time,
+          },
+        ],
   );
 }
 
@@ -776,6 +795,25 @@ async function composeOne(
 
       return {
         text: deadlineText(texts, { item, onDay: reminder.kind === 'deadline_day' }),
+        buttons: deadlineButtons(item.id, texts),
+      };
+    }
+
+    case 'deadline_hour': {
+      const item = await openItem(deps.db, reminder);
+      if (!item) return 'gone';
+
+      // Час и день сверяются на отправке, как срок у точных: перенесла
+      // на другой час — ключ не сойдётся, и напоминание про прежний не уйдёт.
+      const current =
+        item.deadlineAt !== null && item.deadlineAccuracy === 'day' && item.deadlineTime !== null
+          ? hourKey(item.id, item.deadlineAt, item.deadlineTime, timeZone)
+          : undefined;
+      if (current !== reminder.dedupeKey || item.deadlineTime === null) return 'stale';
+
+      const lead = (await deps.settings?.number('hourLeadMinutes')) ?? DEFAULT_HOUR_LEAD_MINUTES;
+      return {
+        text: hourText(texts, { item, time: clockOf(item.deadlineTime), leadMinutes: lead }),
         buttons: deadlineButtons(item.id, texts),
       };
     }

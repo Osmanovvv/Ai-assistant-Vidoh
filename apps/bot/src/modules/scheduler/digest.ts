@@ -221,6 +221,33 @@ export function deadlineText(
     : texts.reminders.deadlineTomorrow(title);
 }
 
+/**
+ * Напоминание в указанный час (ТЗ проджекта 17.09.2026, шаг 5):
+ * «Через 30 минут, в 13:00: Сходить к стоматологу.» — или «Сейчас, в
+ * 13:00: …», если упреждение ноль. Час из заголовка убирается: реплика
+ * называет его сама, иначе в одной фразе он стоял бы дважды.
+ */
+export function hourText(
+  texts: TextProfile,
+  params: { readonly item: Item; readonly time: string; readonly leadMinutes: number },
+): string {
+  const title = titleWithoutClock(titleWithoutDate(params.item.text));
+
+  return params.leadMinutes > 0
+    ? texts.reminders.deadlineHourSoon(String(params.leadMinutes), params.time, title)
+    : texts.reminders.deadlineHourNow(params.time, title);
+}
+
+/** Заголовок без хвоста «в 13:00» / «в 9 0 0» / «до 6 вечера» на конце. */
+export function titleWithoutClock(title: string): string {
+  return title
+    .replace(
+      /\s*(?:,\s*)?(?:в|к|до|около|после)\s+\d{1,2}(?::\d{2}|\.\d{2}|\s+\d\s+\d|\s+\d{2})?(?:\s+час(?:ов|а)?)?(?:\s+(?:утра|дня|вечера|ночи))?\s*$/u,
+      '',
+    )
+    .trim();
+}
+
 /** Вопрос про застрявший проект (задача 3.13). */
 export function projectText(
   texts: TextProfile,

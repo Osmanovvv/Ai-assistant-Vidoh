@@ -229,6 +229,90 @@ describe('сроки (3.16)', () => {
   });
 });
 
+describe('напоминание в указанный час (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+  /**
+   * «Сходить к стоматологу в 13:00» — час назван, и напоминание приходит
+   * за упреждение до него (настройка, по умолчанию 30 минут), помимо
+   * утренней сводки и вечера накануне. Час человек назвал сам — тишина
+   * его не закрывает, как не закрывает выбранное им утро.
+   */
+  const dentist = {
+    itemId: 'i1',
+    deadlineAt: new Date('2026-08-30T21:00:00.000Z'), // 31.08, полночь МСК
+    accuracy: 'day' as const,
+    time: 13 * 60,
+  };
+
+  it('за 30 минут до названного часа, своим видом и ключом с часом', () => {
+    const plan = planFor(input({ deadlines: [dentist] }));
+
+    const hour = plan.find((one) => one.kind === 'deadline_hour');
+    expect(hour).toBeDefined();
+    expect(shown(hour!.dueAt)).toBe('2026-08-31 12:30');
+    expect(hour!.itemId).toBe('i1');
+    expect(hour!.dedupeKey).toBe('deadline_hour:i1:2026-08-31:13:00');
+    // Вечер накануне и утро в день срока остаются.
+    expect(kindsOf(plan)).toEqual(
+      expect.arrayContaining(['deadline_eve', 'deadline_day', 'deadline_hour']),
+    );
+  });
+
+  it('упреждение — из настроек; ноль — ровно в час', () => {
+    const plan = planFor(
+      input({ settings: { ...settings, hourLeadMinutes: 0 }, deadlines: [dentist] }),
+    );
+
+    expect(shown(plan.find((one) => one.kind === 'deadline_hour')!.dueAt)).toBe('2026-08-31 13:00');
+  });
+
+  it('без часа — как раньше: только вечер накануне и утро', () => {
+    const plan = planFor(input({ deadlines: [{ ...dentist, time: null }] }));
+
+    expect(plan.some((one) => one.kind === 'deadline_hour')).toBe(false);
+  });
+
+  it('час уже прошёл — напоминание в прошлое не ставится', () => {
+    const plan = planFor(
+      input({
+        now: new Date('2026-08-31T11:00:00.000Z'), // 14:00 МСК 31-го
+        deadlines: [dentist],
+      }),
+    );
+
+    expect(plan.some((one) => one.kind === 'deadline_hour')).toBe(false);
+  });
+
+  it('названный человеком час внутри тишины всё равно приходит', () => {
+    // «Сейчас» — вечер накануне, чтобы 22:30 следующего дня легло в горизонт.
+    const plan = planFor(
+      input({
+        now: new Date('2026-08-30T17:00:00.000Z'), // 20:00 МСК
+        deadlines: [{ ...dentist, time: 23 * 60 }],
+      }),
+    );
+
+    // Тишина 22:00–08:00 включена, а 22:30 внутри неё — и всё же ставится.
+    expect(shown(plan.find((one) => one.kind === 'deadline_hour')!.dueAt)).toBe('2026-08-31 22:30');
+  });
+
+  it('час у неточного срока не бывает — план его не читает', () => {
+    const plan = planFor(
+      input({
+        deadlines: [
+          {
+            itemId: 'i2',
+            deadlineAt: new Date('2026-08-30T21:00:00.000Z'),
+            accuracy: 'week',
+            time: 10 * 60,
+          },
+        ],
+      }),
+    );
+
+    expect(plan.some((one) => one.kind === 'deadline_hour')).toBe(false);
+  });
+});
+
 describe('возврат к проекту (3.13)', () => {
   it('ставится в полдень, отдельным сообщением', () => {
     const plan = planFor(input({ staleProjects: ['p1'] }));

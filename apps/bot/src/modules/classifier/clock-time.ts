@@ -150,6 +150,37 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
   return found.sort((left, right) => left.at - right.at).map((one) => one.time);
 }
 
+/**
+ * Час дела — для напоминания в указанный час (ТЗ проджекта 17.09.2026,
+ * шаг 5).
+ *
+ * Первый однозначный час из слов дела; их нет — из своего предложения
+ * речи, если оно одно (извлечение переписало «в 9 0 0 отнести компьютер»
+ * в «Отнести компьютер»). Двусмысленный час — голое «в 9» — не берётся:
+ * напоминание в 08:30 про вечернее дело хуже отсутствия напоминания. У
+ * промежутка берётся начало.
+ */
+export function clockTimeOf(
+  itemText: string,
+  spoken: string,
+  /** Слова соседних записей: предложение, которого касается сосед, — не только моё. */
+  siblings: readonly string[] = [],
+): number | undefined {
+  const own = clockTimesIn(itemText);
+  const sentences = ownSentences(itemText, spoken);
+  const sentence = sentences[0];
+  // Час из предложения — только когда оно принадлежит одному этому делу:
+  // «к стоматологу в 13:00 и погулять с собакой» — час стоматолога.
+  const shared =
+    sentence !== undefined &&
+    siblings.some((other) => ownSentences(other, spoken).includes(sentence));
+  const times =
+    own.length > 0 ? own : sentences.length === 1 && !shared ? clockTimesIn(sentence ?? '') : [];
+  const first = times[0];
+
+  return first?.length === 1 ? first[0] : undefined;
+}
+
 /** Минуты от полуночи по часам человека. */
 function localMinutes(now: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-GB', {
