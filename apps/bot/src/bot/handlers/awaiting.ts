@@ -10,6 +10,7 @@ import {
   setAwaiting,
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
+import { clockTimesIn } from '../../modules/classifier/clock-time.js';
 import { zoneOfCity } from '../../modules/onboarding/cities.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
@@ -369,6 +370,53 @@ export function consumeAwaited(deps: AwaitingDeps) {
     }
 
     // ── Правка записи словами ────────────────────────────────────────────
+    /**
+     * Час словами после «Изменить время» (ТЗ проджекта 17.09.2026, шаг
+     * 5). Читает код, без модели: только однозначный час — «10:30», «6
+     * вечера»; голое «в 9» — просьба повторить, ожидание остаётся (его
+     * снимает «Не менять», любая кнопка или срок ожидания).
+     */
+    if (awaiting.kind === 'retime' && awaiting.itemId !== undefined) {
+      const first = clockTimesIn(text)[0];
+      if (first?.length !== 1) {
+        await ctx.reply(texts.card.retimeNotUnderstood);
+        return true;
+      }
+
+      await setAwaiting(db, userId, null);
+      const context = await outputContextOf(db, userId);
+
+      const outcome = await applyDecision(db, {
+        userId,
+        itemId: awaiting.itemId,
+        action: 'update',
+        mode: 'replace',
+        changes: emptyChanges(),
+        // Час резолвер берёт из слов — тех же, что человек написал.
+        spoken: text,
+        timeZone: context.timeZone,
+        reason: 'час словами по кнопке «Изменить время»',
+        changedBy: 'user',
+      });
+
+      if (outcome.kind !== 'applied') {
+        await ctx.reply(outcome.kind === 'gone' ? texts.card.gone : texts.card.editNotApplied);
+        return true;
+      }
+
+      logger.info({ userId, itemId: awaiting.itemId }, 'Час дела поправлен словами');
+
+      await ctx.reply(describeChange(outcome.applied, texts, context.timeZone), {
+        reply_markup: new InlineKeyboard(
+          undoButtons(outcome.applied.revisionId, texts).map((button) => [
+            { text: button.label, callback_data: button.action },
+          ]),
+        ),
+      });
+
+      return true;
+    }
+
     if (awaiting.kind === 'edit' && awaiting.itemId !== undefined) {
       await setAwaiting(db, userId, null);
 

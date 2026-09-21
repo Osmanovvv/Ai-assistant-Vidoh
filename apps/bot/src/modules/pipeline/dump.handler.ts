@@ -62,6 +62,7 @@ import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
 import { deadlineWords } from '../items/deadline-words.js';
 import { titleUnderDayHeader, withCapital } from '../items/item-text.js';
+import { showFirstReminderCard } from '../scheduler/first-reminder-card.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
@@ -2336,6 +2337,26 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         : presented.reply.text,
       presented.reply.buttons,
     );
+
+    /**
+     * Карточка 04 при первом деле с часом (ТЗ по визуалам 18.09.2026):
+     * после ответа, своим сообщением, один раз на человека. Дальше дела
+     * с часом идут без картинки — визуалы редкие.
+     */
+    const withHour = saved.find((item) => item.deadlineTime !== null);
+    if (withHour !== undefined && deps.cards !== undefined && target !== undefined) {
+      await showFirstReminderCard(
+        { db, cards: deps.cards, logger: deps.logger },
+        {
+          userId: batch.userId,
+          chatId: target.chatId,
+          threadId: target.threadId,
+          itemId: withHour.id,
+          texts,
+          now,
+        },
+      );
+    }
 
     /**
      * Разбор вчерашнего при следующем обращении (запрос на изменение №4,

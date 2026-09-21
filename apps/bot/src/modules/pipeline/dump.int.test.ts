@@ -736,6 +736,82 @@ describe('разбор', () => {
     ]);
   });
 
+  it('первое дело с часом — карточка 04 «Записала. Напомню в нужный момент.» с кнопками; второе — без картинки (визуал 04)', async () => {
+    const prompts = await seedPrompts();
+    const { cards, shown } = recordingCards();
+    const { sender } = recordingSender();
+
+    const dumpWithHour = (text: string) =>
+      echoingLlm({
+        router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+        extractor: () =>
+          JSON.stringify({ units: [{ text, isProject: false, isEmotion: false }] }),
+        classifier: () =>
+          JSON.stringify({
+            items: [
+              {
+                text,
+                type: 'TASK',
+                priority: 'SOON',
+                topic: 'здоровье',
+                isProject: false,
+                deadline: tomorrowIso(),
+                deadlineAccuracy: 'day',
+                deadlineText: 'завтра',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+            ],
+          }),
+      });
+
+    await queuedBatchOf([{ kind: 'text', text: 'Завтра к стоматологу в 13:00', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          cards,
+          llm: dumpWithHour('Завтра к стоматологу в 13:00'),
+        }),
+      },
+      userId,
+    );
+
+    const [first] = await testDb().select().from(items).orderBy(asc(items.createdAt));
+    expect(shown).toEqual([
+      {
+        card: 'reminder',
+        caption: defaultTexts.cards.reminder,
+        buttons: [defaultTexts.card.buttonRetime, defaultTexts.reminders.buttonAll],
+      },
+    ]);
+    expect(first?.deadlineTime).toBe(13 * 60);
+
+    // Второе дело с часом — картинки больше нет: визуалы редкие.
+    await queuedBatchOf([{ kind: 'text', text: 'Завтра к врачу в 15:00', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          cards,
+          llm: dumpWithHour('Завтра к врачу в 15:00'),
+        }),
+      },
+      userId,
+    );
+
+    expect(shown).toHaveLength(1);
+  });
+
   it('эхо самопоправки не становится второй записью: «К врачу лучше в пятницу» (стенд 21.09.2026)', async () => {
     /**
      * Живой набор, `live-14`: извлечение сделало из «хотя нет к врачу

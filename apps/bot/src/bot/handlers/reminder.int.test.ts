@@ -365,3 +365,39 @@ describe('вопрос про застрявший проект', () => {
     expect(edits(calls).at(-1)).toBe(defaultTexts.project.finished);
   });
 });
+
+describe('«Все напоминания» (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+  it('список дел с датой, ближайшие первыми, с часом там, где он есть', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const later = new Date(Date.now() + 3 * DAY);
+    await sow({ text: 'Сдать отчёт', deadlineAt: later });
+    await sow({ text: 'Сходить к стоматологу', deadlineTime: 13 * 60 });
+    // Неточный срок и закрытое дело в список не входят.
+    await sow({ text: 'Разобрать балкон', deadlineAccuracy: 'week' });
+    await sow({ text: 'Оплатить садик', status: 'done' });
+
+    await bot.handleUpdate(callbackUpdate('rl:0'));
+
+    const sent = calls.find((call) => call.method === 'sendMessage');
+    const value = sent?.payload['text'];
+    const text = typeof value === 'string' ? value : '';
+    const lines = text.split('\n');
+
+    expect(lines[0]).toBe(defaultTexts.reminders.listTitle);
+    expect(lines[1]).toMatch(/^— \d{2}\.\d{2}, 13:00 · Сходить к стоматологу$/u);
+    expect(lines[2]).toMatch(/^— \d{2}\.\d{2} · Сдать отчёт$/u);
+    expect(lines).toHaveLength(3);
+  });
+
+  it('без дел с датой — говорит это словами', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    await bot.handleUpdate(callbackUpdate('rl:0'));
+
+    const sent = calls.find((call) => call.method === 'sendMessage');
+    expect(sent?.payload['text']).toBe(defaultTexts.reminders.listEmpty);
+  });
+});

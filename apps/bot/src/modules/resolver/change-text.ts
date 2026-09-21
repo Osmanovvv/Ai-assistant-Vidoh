@@ -1,6 +1,7 @@
 import { CARD_ACTION } from '../items/card-actions.js';
 import { deadlineWords } from '../items/deadline-words.js';
 import { clockOf } from '../scheduler/plan.js';
+import { reminderButtons } from '../scheduler/reminder-actions.js';
 import { startsWithReplacement } from '../router/append.js';
 import { localDateParts } from '../classifier/dates.js';
 import type { Applied } from './patch.js';
@@ -185,7 +186,16 @@ export function changeButtons(
 ): readonly StatusButton[] {
   const undo = undoButtons(applied.revisionId, texts);
 
-  if (!keptTitleAfterReplacement(applied, spoken)) return undo;
+  /**
+   * Час задан или изменён (ТЗ проджекта 17.09.2026, шаг 5) — кнопки из
+   * макета: «Изменить время» к этому делу и «Все напоминания».
+   */
+  const hour =
+    applied.fields.includes('deadlineTime') && applied.after.deadlineTime !== null
+      ? reminderButtons(applied.after.id, texts)
+      : [];
+
+  if (!keptTitleAfterReplacement(applied, spoken)) return [...undo, ...hour];
 
   return [
     ...undo,
@@ -193,6 +203,7 @@ export function changeButtons(
       label: texts.resolver.buttonEditTitle,
       action: `${CARD_ACTION.edit}${toShortId(applied.after.id)}`,
     },
+    ...hour,
   ];
 }
 
