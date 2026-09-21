@@ -39,7 +39,17 @@ const MAX_SENTENCES = 2;
 const OPENING = /^(всё,?\s*забрала|записала|поймала|разложила|поняла,?\s*забрала)/iu;
 /** Совет и понукание — «не заставляет женщину организовывать». */
 const ADVICE =
-  /(?<!\p{L})(попробуй|постарайся|советую|рекомендую|не забудь|не забывай|стоит\s+(сделать|начать|заняться)|надо\s+бы|пора\s+бы)(?!\p{L})/iu;
+  /(?<!\p{L})(попробуй|постарайся|советую|рекомендую|не забудь|не забывай|стоит\s+(сделать|начать|заняться)|надо|нужно|пора|придётся|придется)(?!\p{L})/iu;
+/** «Жду» от себя — давление: ждёт дело, а не бот (второй проход 22.09.2026). */
+const PRESSURE = /(?<!\p{L})(жду|ждём|ждем|ждала|дожидаюсь)(?!\p{L})/iu;
+/** «Помнишь», «знаешь» — говорить за неё; помнит бот (третий проход 22.09.2026). */
+const FOR_HER = /(?<!\p{L})(помнишь|знаешь|видишь|понимаешь|записывалась|записалась)(?!\p{L})/iu;
+/** Канцелярит и язык таск-менеджера — «не таск-менеджер» из её текста. */
+const OFFICE = /(?<!\p{L})(просрочен\p{L}*|выгрузк\p{L}*|статус\p{L}*|категори\p{L}*)(?!\p{L})/iu;
+/** Обещания и планы за неё — «не заставляет организовывать». */
+const PROMISE = /(?<!\p{L})(разбер[её]мся|сделаем|успеем|справимся|займ[её]мся)(?!\p{L})/iu;
+/** Оценка — «не оценивает»: «не забыла», «умница» и прочее сверх FORBIDDEN. */
+const PRAISE = /(?<!\p{L})(не\s+забыла|умница|отлично|здорово|молодчина)(?!\p{L})/iu;
 const YOU_PLURAL = /(?<!\p{L})(вы|вас|вам|вами|ваш|ваша|ваше|ваши|вашу|вашей|вашего)(?!\p{L})/iu;
 const MASCULINE_SELF =
   /(?<!\p{L})(понял|услышал|записал|запомнил|забрал|разложил|поймал|увидел)(?!\p{L})/iu;
@@ -48,6 +58,44 @@ const WEEKDAY =
 const COUNT_OF_ITEMS =
   /\d+\s+(открыт\p{L}*\s+)?(дел[аоь]?|желани\p{L}*|иде[иейя]\p{L}*|запис\p{L}*)(?!\p{L})/iu;
 const NUMBERS = /\d+(?:[:.,]\d+)*/gu;
+
+/**
+ * Числа словами перед единицей времени (прогон 22.09.2026): «три дня»,
+ * «шестой день», «два часа». Модель скопировала «Три дня тишины» из
+ * примера при «5 дней назад» в фактах — цифр не было, страж молчал.
+ * Без единицы времени числительное — не срок: «запись одна», «первый раз».
+ */
+const NUMERAL_STEMS: readonly (readonly [RegExp, number])[] = [
+  [/^(одн|перв)/u, 1],
+  [/^(дв|втор)/u, 2],
+  [/^(тр)/u, 3],
+  [/^(четыр|четвёрт|четверт)/u, 4],
+  [/^(пят)/u, 5],
+  [/^(шест)/u, 6],
+  [/^(сед|сем)/u, 7],
+  [/^(вос)/u, 8],
+  [/^(девят)/u, 9],
+  [/^(десят)/u, 10],
+];
+const NUMERAL_BEFORE_UNIT =
+  /(?<!\p{L})(одн\p{L}*|перв\p{L}*|дв\p{L}*|втор\p{L}*|тр[её]\p{L}*|тр[иь]\p{L}*|четыр\p{L}*|четв[её]рт\p{L}*|пят\p{L}*|шест\p{L}*|сед\p{L}*|сем\p{L}*|вос\p{L}*|девят\p{L}*|десят\p{L}*)\s+(день|дня|дней|недел\p{L}*|час\p{L}*|минут\p{L}*|месяц\p{L}*)(?!\p{L})/giu;
+
+function spelledNumbersBeforeUnits(
+  line: string,
+): { readonly word: string; readonly value: number }[] {
+  const found: { word: string; value: number }[] = [];
+  for (const match of line.matchAll(NUMERAL_BEFORE_UNIT)) {
+    const word = (match[1] ?? '').toLowerCase().replace(/ё/gu, 'е');
+    const stem = NUMERAL_STEMS.find(([pattern]) => pattern.test(word));
+    if (stem !== undefined) found.push({ word: match[1] ?? '', value: stem[1] });
+  }
+  return found;
+}
+
+/** Числа фактов — по цифрам: «6 дней», «5 дней назад», «21:00» → 6, 5, 21, 0. */
+function numbersIn(facts: string): Set<number> {
+  return new Set((facts.match(/\d+/gu) ?? []).map(Number));
+}
 
 function sentencesIn(text: string): number {
   return text.split(/[.!…]+(?:\s+|$)/u).filter((piece) => piece.trim() !== '').length;
@@ -71,6 +119,11 @@ export function checkContextLine(raw: string, facts: string): CheckedLine {
   const forbidden = forbiddenPhraseIn(line);
   if (forbidden !== undefined) return { ok: false, why: `запрет: ${forbidden}` };
   if (ADVICE.test(line)) return { ok: false, why: 'совет' };
+  if (PRESSURE.test(line)) return { ok: false, why: 'давление' };
+  if (FOR_HER.test(line)) return { ok: false, why: 'за неё' };
+  if (OFFICE.test(line)) return { ok: false, why: 'канцелярит' };
+  if (PROMISE.test(line)) return { ok: false, why: 'обещание' };
+  if (PRAISE.test(line)) return { ok: false, why: 'оценка' };
   if (picturesIn(line).length > 0) return { ok: false, why: 'эмодзи' };
   if (OPENING.test(line)) return { ok: false, why: 'повторяет открытие' };
   if (COUNT_OF_ITEMS.test(line)) return { ok: false, why: 'повторяет счёт' };
@@ -79,6 +132,12 @@ export function checkContextLine(raw: string, facts: string): CheckedLine {
 
   for (const number of line.match(NUMBERS) ?? []) {
     if (!facts.includes(number)) return { ok: false, why: `число не из фактов: ${number}` };
+  }
+  const known = numbersIn(facts);
+  for (const spelled of spelledNumbersBeforeUnits(line)) {
+    if (!known.has(spelled.value)) {
+      return { ok: false, why: `число не из фактов: ${spelled.word.toLowerCase()}` };
+    }
   }
   const weekday = WEEKDAY.exec(line);
   if (weekday !== null && !new RegExp(weekday[1] ?? '', 'iu').test(facts)) {
@@ -99,6 +158,8 @@ export interface ContextLineOutcome {
   readonly line?: string | undefined;
   /** Почему строки нет: «пусто» — сказать нечего, остальное — в журнал. */
   readonly why?: string | undefined;
+  /** Что написала модель, когда страж отверг: стенду — для правки промпта. */
+  readonly rejected?: string | undefined;
 }
 
 /** Обращение к модели — подменяется в тестах; в бою `requestStructured`. */
@@ -157,7 +218,9 @@ export async function askContextLine(
           'Живая строка отвергнута стражем',
         );
       }
-      return { why: checked.why };
+      return checked.why === 'пусто'
+        ? { why: checked.why }
+        : { why: checked.why, rejected: outcome.value.line };
     }
 
     return { line: checked.line };

@@ -240,7 +240,7 @@ export function renderContextPack(pack: ContextPack): string {
 
   if (pack.overdue.length > 0) {
     lines.push(
-      `Просрочено: ${pack.overdue.map((item) => `${item.title} — ${counted(item.daysLate, DAYS)}`).join('; ')}`,
+      `Срок прошёл: ${pack.overdue.map((item) => `${item.title} — ${counted(item.daysLate, DAYS)} назад`).join('; ')}`,
     );
   }
   if (pack.today.length > 0) {

@@ -60,10 +60,35 @@ function parseArguments(argv: readonly string[]): {
 
 const { budgetRub, pinned: pinnedVersions, rest } = parseArguments(process.argv.slice(2));
 
-const [directory] = rest;
+/** `--only voice-04,voice-09` — только названные случаи (по началу имени). */
+function parseOnly(argv: readonly string[]): { only: readonly string[]; rest: readonly string[] } {
+  const only: string[] = [];
+  const kept: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index] ?? '';
+    const value =
+      argument === '--only'
+        ? argv[++index]
+        : argument.startsWith('--only=')
+          ? argument.slice('--only='.length)
+          : undefined;
+    if (value === undefined) kept.push(argument);
+    else
+      only.push(
+        ...value
+          .split(',')
+          .map((one) => one.trim())
+          .filter((one) => one !== ''),
+      );
+  }
+  return { only, rest: kept };
+}
+
+const { only, rest: positional } = parseOnly(rest);
+const [directory] = positional;
 if (directory === undefined) {
   process.stderr.write(
-    'Использование: check-voice <папка-набора> --budget <₽> [--use presenter=версия]\n',
+    'Использование: check-voice <папка-набора> --budget <₽> [--use presenter=версия] [--only id,id]\n',
   );
   process.exit(2);
 }
@@ -102,7 +127,8 @@ const casesDir = join(directory, 'cases');
 const files = (await readdir(casesDir)).filter((name) => name.endsWith('.json')).sort();
 const cases: VoiceCase[] = [];
 for (const file of files) {
-  cases.push(JSON.parse(await readFile(join(casesDir, file), 'utf8')) as VoiceCase);
+  const one = JSON.parse(await readFile(join(casesDir, file), 'utf8')) as VoiceCase;
+  if (only.length === 0 || only.some((prefix) => one.id.startsWith(prefix))) cases.push(one);
 }
 
 const prompts = new PromptRegistry(db, 0, pinnedVersions);
@@ -123,6 +149,7 @@ interface Outcome {
   readonly expectEmpty: boolean;
   readonly line: string | undefined;
   readonly why: string | undefined;
+  readonly rejected: string | undefined;
 }
 
 const outcomes: Outcome[] = [];
@@ -138,6 +165,7 @@ for (const one of cases) {
       expectEmpty: one.expectEmpty === true,
       line: asked.line,
       why: asked.why,
+      rejected: asked.rejected,
     };
   } catch (error) {
     stopped = error instanceof Error ? error.message : String(error);
@@ -150,7 +178,8 @@ for (const one of cases) {
       ? `✓ ${outcome.line}`
       : outcome.why === 'пусто'
         ? '— (пусто)'
-        : `✗ отвергнута: ${outcome.why ?? '?'}`;
+        : `✗ отвергнута: ${outcome.why ?? '?'}` +
+          (outcome.rejected === undefined ? '' : ` — «${outcome.rejected}»`);
   const mark = outcome.expectEmpty && outcome.line !== undefined ? '  ← ждали пусто' : '';
   process.stdout.write(
     `${one.id}${one.note === undefined ? '' : ` — ${one.note}`}\n  ${verdict}${mark}\n`,

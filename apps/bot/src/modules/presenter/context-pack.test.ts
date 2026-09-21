@@ -202,7 +202,7 @@ describe('рендер контекста для промпта', () => {
     expect(text).toContain('Прошлая выгрузка: 3 дня назад');
     expect(text).toContain('— записаться к стоматологу (здоровье) — уже было записано раньше');
     expect(text).toContain('— купить хлеб (покупки), срок: завтра');
-    expect(text).toContain('Просрочено: забрать справку — 6 дней');
+    expect(text).toContain('Срок прошёл: забрать справку — 6 дней назад');
     expect(text).toContain('Ещё на сегодня: сдать отчёт в 21:00');
     expect(text).toContain('Большие цели: сделать ремонт в спальне');
     expect(text).toContain('Недавно закрыла: найти няню');
@@ -225,7 +225,7 @@ describe('рендер контекста для промпта', () => {
 
     expect(text).not.toContain('Имя');
     expect(text).toContain('Первая выгрузка');
-    expect(text).not.toContain('Просрочено');
+    expect(text).not.toContain('Срок прошёл');
     expect(text).not.toContain('Ещё на сегодня');
     expect(text).not.toContain('Большие цели');
     expect(text).not.toContain('Недавно закрыла');
