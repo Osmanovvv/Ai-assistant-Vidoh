@@ -1,6 +1,7 @@
 import type { ModelEnv } from '../../../config/env.js';
 import { RecordingLlmProvider, ReplayLlmProvider } from '../cassette/provider.js';
 import { cassetteSession } from '../cassette/session.js';
+import { watchVersions, type ModelVersionWatch } from './versions.js';
 import { MockLlmProvider } from './mock.js';
 import type { LlmProvider } from './types.js';
 import { YandexLlmProvider } from './yandex.js';
@@ -28,6 +29,12 @@ export interface ProviderChoice {
    * модели то, что считала лёгкая.
    */
   readonly light?: boolean;
+  /**
+   * Сторож сборки (22.09.2026): живая модель отвечает версией, и если
+   * она не та, на которой мерили, об этом говорится в журнал. Один на
+   * процесс — он помнит, о чём уже сказал.
+   */
+  readonly versionWatch?: ModelVersionWatch | undefined;
 }
 
 export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): LlmProvider {
@@ -41,11 +48,7 @@ export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): L
           'AI_PROVIDER=yandex, но YANDEX_FOLDER_ID не задан: из него собирается modelUri',
         );
       }
-      return new YandexLlmProvider({
-        apiKey: env.YANDEX_API_KEY,
-        folderId: env.YANDEX_FOLDER_ID,
-        model: choice.light === true ? env.YANDEX_LLM_MODEL_LIGHT : env.YANDEX_LLM_MODEL,
-      });
+      return liveYandex(env, choice);
     }
 
     case 'mock':
@@ -103,9 +106,11 @@ function liveYandex(env: ModelEnv, choice: ProviderChoice): LlmProvider {
     throw new Error('для записи нужны YANDEX_API_KEY и YANDEX_FOLDER_ID');
   }
 
-  return new YandexLlmProvider({
+  const live = new YandexLlmProvider({
     apiKey: env.YANDEX_API_KEY,
     folderId: env.YANDEX_FOLDER_ID,
     model: choice.light === true ? env.YANDEX_LLM_MODEL_LIGHT : env.YANDEX_LLM_MODEL,
   });
+
+  return choice.versionWatch === undefined ? live : watchVersions(live, choice.versionWatch);
 }

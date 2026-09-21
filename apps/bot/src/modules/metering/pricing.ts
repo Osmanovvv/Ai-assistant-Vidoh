@@ -175,6 +175,36 @@ export const PRICING: Readonly<Record<string, ModelPricing>> = {
   },
 
   /**
+   * Те же модели по явным именам (22.09.2026, закрепление модели).
+   *
+   * Yandex перевёл ветки в «доступны до окончания поддержки» и советует
+   * явные URI: `yandexgpt-5-pro` — Pro 5, `yandexgpt-5-lite` — Lite 5,
+   * `yandexgpt-5.1` — Pro 5.1. Ветки они переставляли на новое поколение
+   * дважды, явное имя стоит на месте; бой переводится на него, чтобы
+   * модель менялась только нашим решением после замера. Цены — по прайсу
+   * 22.09.2026, те же, что у веток. Ветки в таблице остаются: под ними
+   * записан весь учёт до перехода и записи стенда.
+   */
+  'yandex:yandexgpt-5-pro': {
+    kind: 'tokens',
+    currency: 'rub',
+    inputPerMillion: 1200,
+    outputPerMillion: 1200,
+  },
+  'yandex:yandexgpt-5.1': {
+    kind: 'tokens',
+    currency: 'rub',
+    inputPerMillion: 800,
+    outputPerMillion: 800,
+  },
+  'yandex:yandexgpt-5-lite': {
+    kind: 'tokens',
+    currency: 'rub',
+    inputPerMillion: 200,
+    outputPerMillion: 200,
+  },
+
+  /**
    * Эмбеддинги: 0,0101 ₽ за 1000 токенов, только входящие — вектор
    * токенами не считается.
    */

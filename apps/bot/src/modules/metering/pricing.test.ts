@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { modelEnvSchema } from '../../config/env.js';
 import {
   callCost,
   formatCost,
@@ -194,6 +195,26 @@ describe('прайс-лист (задача 2.21)', () => {
     expect(callCost('yandex:text-search', { tokensIn: 1000, tokensOut: 256 })?.micros).toBe(10_100);
   });
 
+  it('явные имена стоят столько же, сколько ветки, за которыми те же сборки', () => {
+    // Закрепление модели по имени (22.09.2026): Yandex советует явные
+    // URI вместо веток. За `yandexgpt-5-pro` — та же Pro 5, что за
+    // `latest`, за `yandexgpt-5-lite` — та же Lite, за `yandexgpt-5.1` —
+    // та же 5.1, что за `rc`. Цена — по прайсу 22.09.2026: 1,2 / 0,2 /
+    // 0,8 ₽ за тысячу в обе стороны.
+    const usage = { tokensIn: 1000, tokensOut: 1000 };
+
+    expect(callCost('yandex:yandexgpt-5-pro', usage)?.micros).toBe(
+      callCost('yandex:yandexgpt/latest', usage)?.micros,
+    );
+    expect(callCost('yandex:yandexgpt-5-lite', usage)?.micros).toBe(
+      callCost('yandex:yandexgpt-lite/latest', usage)?.micros,
+    );
+    expect(callCost('yandex:yandexgpt-5.1', usage)?.micros).toBe(
+      callCost('yandex:yandexgpt/rc', usage)?.micros,
+    );
+    expect(callCost('yandex:yandexgpt-5-pro', usage)?.micros).toBe(2_400_000);
+  });
+
   it('у всех моделей, которыми мы работаем, цена есть', () => {
     // Иначе расход уйдёт в «неизвестно», а мягкий лимит ослепнет.
     expect(
@@ -202,8 +223,21 @@ describe('прайс-лист (задача 2.21)', () => {
         'yandex:yandexgpt/latest',
         'yandex:yandexgpt/rc',
         'yandex:yandexgpt-lite/latest',
+        'yandex:yandexgpt-5-pro',
+        'yandex:yandexgpt-5-lite',
+        'yandex:yandexgpt-5.1',
         'yandex:text-search',
       ]),
+    ).toEqual([]);
+  });
+
+  it('модели по умолчанию из окружения — с ценой', () => {
+    // Имя модели приходит из окружения; на бою оно не задано, значит
+    // работает умолчание — и оно обязано быть в прайсе.
+    const env = modelEnvSchema.parse({});
+
+    expect(
+      modelsWithoutPrice([`yandex:${env.YANDEX_LLM_MODEL}`, `yandex:${env.YANDEX_LLM_MODEL_LIGHT}`]),
     ).toEqual([]);
   });
 });

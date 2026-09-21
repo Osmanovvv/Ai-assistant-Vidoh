@@ -97,6 +97,7 @@ import { createSpendGuard } from './modules/metering/spend-guard.js';
 import { downloadTelegramFile, sweepAudioLeftovers } from './modules/speech/audio.service.js';
 import { createSpeechProvider } from './modules/speech/providers/factory.js';
 import { PromptRegistry } from './modules/ai/prompts/registry.js';
+import { ModelVersionWatch } from './modules/ai/providers/versions.js';
 import { createLlmProvider } from './modules/ai/providers/factory.js';
 import { createEmbeddingProvider } from './modules/embedder/providers/factory.js';
 import { createTopicGateway } from './modules/topics/gateway.js';
@@ -276,8 +277,11 @@ async function main(): Promise<void> {
   // Полная модель разбирает смысл, лёгкая различает намерения (§7.1):
   // семь видов намерения проще, чем понять мысль, и полная модель здесь
   // дороже без выигрыша.
-  const llm = createLlmProvider(env);
-  const llmLight = createLlmProvider(env, { light: true });
+  //
+  // Сторож сборки один на обе: он помнит, о каких сборках уже сказал.
+  const versionWatch = new ModelVersionWatch(logger);
+  const llm = createLlmProvider(env, { versionWatch });
+  const llmLight = createLlmProvider(env, { light: true, versionWatch });
   const embedder = createEmbeddingProvider(env);
 
   /**
