@@ -65,6 +65,7 @@ import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
 import { isOwnOutage } from './infra/errors.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
+import { startBalanceWatch } from './modules/cloud/balance-watch.js';
 import {
   createBroadcastQueue,
   createBroadcastWorker,
@@ -354,6 +355,17 @@ async function main(): Promise<void> {
    * отдельный реестр свёл бы кэш к нулю.
    */
   const settings = new SettingsRegistry({ db, logger });
+
+  /**
+   * Сторож баланса Yandex Cloud (проджект, 21.09.2026): плитка в панели
+   * и оповещение ниже порога. Без файла ключа его нет, и это законно.
+   */
+  const balanceWatch = await startBalanceWatch({
+    keyFile: env.YANDEX_SA_KEY_FILE,
+    thresholdRub: async () => await settings.number('yandexBalanceAlertRub'),
+    alert: async (alert) => await monitor.alert(alert),
+    logger,
+  });
 
   /**
    * Реплики из базы поверх реплик из кода (§13.9, задача 4.13).
@@ -1147,6 +1159,7 @@ async function main(): Promise<void> {
           adminSettings: settings,
           adminTexts: texts,
           adminPromptRegistry: prompts,
+          ...(balanceWatch === undefined ? {} : { adminYandexBalance: balanceWatch.watch }),
           adminEnqueueBroadcast: async (broadcastId: string) => {
             await enqueueBroadcast(broadcastQueue, broadcastId);
           },
@@ -1296,6 +1309,7 @@ async function main(): Promise<void> {
     stopRenewals();
     stopRenewalNotices();
     stopInactivity();
+    balanceWatch?.stop();
     // Рассылка дорабатывает идущий проход: отправленное должно быть
     // помечено до закрытия базы (ревизия этапа 3, D7).
     await stopScheduler();

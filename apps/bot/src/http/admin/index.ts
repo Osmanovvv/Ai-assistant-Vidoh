@@ -10,6 +10,7 @@ import type { Executor } from '../../infra/db.js';
 import { aiStage, type AiStage } from '../../db/schema.js';
 import type { EvalRunner } from '../../modules/admin/eval-run.js';
 import { errorsView, restartBatch } from '../../modules/admin/errors.js';
+import type { BalanceStatus } from '../../modules/cloud/yandex-billing.js';
 import { misunderstoodList } from '../../modules/misunderstood/misunderstood.repo.js';
 import { overview, people, personCard } from '../../modules/admin/people.js';
 import {
@@ -194,6 +195,12 @@ export interface AdminDeps {
    * «непонятно когда». Сброс делает включение мгновенным.
    */
   readonly promptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
+  /**
+   * Сторож баланса Yandex Cloud (проджект, 21.09.2026: «сколько на
+   * балансе щас»). Без него путь отвечает «не настроено»: плитка в
+   * панели объясняет пустоту словами, а не молчит.
+   */
+  readonly yandexBalance?: { readonly status: () => Promise<BalanceStatus> } | undefined;
 }
 
 /** Вид нашего кода человека. Не тот вид — не «сбой», а «не найдено». */
@@ -999,6 +1006,35 @@ export function createAdminRouter(deps: AdminDeps): AdminMount {
       },
     );
   }
+
+  /**
+   * Баланс Yandex Cloud (проджект, 21.09.2026). Путь есть всегда: без
+   * ключа сервисного аккаунта он отвечает «не настроено», и плитка в
+   * панели объясняет пустоту словами. Данных человека здесь нет — одно
+   * число со счёта заказчицы.
+   */
+  closed(
+    'get',
+    '/api/yandex-balance',
+    { personal: false, why: 'остаток на счёте облака и порог, без имён и слов человека' },
+    (_req: Request, res: Response) => {
+      const watch = deps.yandexBalance;
+      if (watch === undefined) {
+        res.json({ configured: false });
+        return;
+      }
+
+      void watch.status().then(
+        (status) => {
+          res.json({ configured: true, ...status });
+        },
+        (error: unknown) => {
+          deps.onError?.(error);
+          res.status(500).json({ error: 'не удалось прочитать баланс' });
+        },
+      );
+    },
+  );
 
   if (deps.settings !== undefined && deps.db !== undefined) {
     const settings = deps.settings;

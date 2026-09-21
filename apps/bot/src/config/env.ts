@@ -378,6 +378,14 @@ const modelFields = z.object({
   YANDEX_API_KEY: z.string().min(1).optional(),
   /** Каталог Yandex Cloud. Понадобится языковым моделям на этапе 2. */
   YANDEX_FOLDER_ID: z.string().min(1).optional(),
+  /**
+   * Файл ключа сервисного аккаунта для чтения баланса Yandex Cloud
+   * (проджект, 21.09.2026). Не в `.env`, потому что это многострочный
+   * PEM; на сервере — `secrets/yandex-sa-key.json`, смонтированный
+   * только на чтение. Не задан — плитки баланса в панели нет, и это
+   * законно: бот от неё не зависит.
+   */
+  YANDEX_SA_KEY_FILE: z.string().min(1).optional(),
   YANDEX_SPEECH_MODEL: z.string().min(1).default('general'),
 
   OPENAI_API_KEY: z.string().min(1).optional(),

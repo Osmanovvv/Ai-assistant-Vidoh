@@ -4,6 +4,7 @@ import type { TextsRegistry } from '../texts/registry.js';
 import { createAdminRouter, type AdminAuthConfig } from './admin/index.js';
 import type { AiStage } from '../db/schema.js';
 import type { EvalRunner } from '../modules/admin/eval-run.js';
+import type { BalanceStatus } from '../modules/cloud/yandex-billing.js';
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -69,6 +70,8 @@ export interface ServerDeps {
   readonly adminEnqueueUser?: ((userId: string) => Promise<void>) | undefined;
   /** Кэш промптов бота: включение версии сбрасывает его (§15). */
   readonly adminPromptRegistry?: { readonly forget: (stage?: AiStage) => void } | undefined;
+  /** Сторож баланса Yandex Cloud для плитки в панели (проджект, 21.09.2026). */
+  readonly adminYandexBalance?: { readonly status: () => Promise<BalanceStatus> } | undefined;
   /**
    * Куда сообщать о сбоях **разделов панели** (ревизия этапа 4).
    *
@@ -227,6 +230,9 @@ export function createServer(deps: ServerDeps): Express {
         ...(deps.adminPromptRegistry === undefined
           ? {}
           : { promptRegistry: deps.adminPromptRegistry }),
+        ...(deps.adminYandexBalance === undefined
+          ? {}
+          : { yandexBalance: deps.adminYandexBalance }),
         /**
          * Панели — **свой** приёмник сбоев (ревизия этапа 4).
          *

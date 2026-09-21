@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { BalanceTile } from './Balance.js';
 import {
   misunderstoodList,
   overview,
@@ -482,6 +483,12 @@ export function OverviewPanel(): React.ReactElement {
             </span>
           )}
         </div>
+        {/*
+          Сколько осталось — рядом с тем, сколько потратили (проджект,
+          21.09.2026: «сколько на балансе щас»). Своим запросом: облако
+          отвечает дольше базы, и обзор его не ждёт.
+        */}
+        <BalanceTile />
       </Block>
 
       {/*

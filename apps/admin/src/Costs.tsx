@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { costs, type CostRow, type Costs as CostsReport, type Money } from './api.js';
+import { BalanceTile } from './Balance.js';
 
 /**
  * Расходы (§15 ТЗ, §21 п.14; задача 4.7).
@@ -285,6 +286,8 @@ export function Costs(): React.ReactElement {
           <span className="итог__имя">На человека</span>
           <span className="итог__число">{money(report.perUser)}</span>
         </div>
+        {/* Сколько осталось на счёте облака — рядом с тем, сколько ушло. */}
+        <BalanceTile />
       </section>
 
       <Table title="По этапам" head="Этап" rows={report.byStage} />
