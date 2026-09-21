@@ -10,6 +10,8 @@ coverage/
 !.env.example
 *.pem
 *.key
+# ключ сервисного аккаунта Yandex Cloud для баланса в панели (21.09.2026)
+secrets/
 
 *.log
 npm-debug.log*

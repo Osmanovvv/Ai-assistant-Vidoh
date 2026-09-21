@@ -27,6 +27,8 @@ import {
   users,
 } from '../db/schema.js';
 import { createEvalRunner } from '../modules/admin/eval-run.js';
+import { startBalanceWatch } from '../modules/cloud/balance-watch.js';
+import { createLogger } from '../infra/logger.js';
 import { markTrialSpent } from '../modules/billing/subscription.service.js';
 import { sendChunk, type BroadcastSender } from '../modules/broadcast/broadcast.service.js';
 import { CLASSIFIER_SCHEMA_NAME, PRESENTER_SCHEMA_NAME } from '../modules/ai/schemas/index.js';
@@ -774,9 +776,51 @@ const standSender: BroadcastSender = {
   },
 };
 
+/**
+ * Плитка баланса Yandex Cloud (проджект, 21.09.2026): на стенде —
+ * подменённый сторож с заданным числом, чтобы видеть плитку глазами без
+ * ключа и без сети. `ADMIN_E2E_BALANCE_RUB` не задан — плитка говорит
+ * «не настроено», как на бою без ключа.
+ */
+const balanceRub = process.env['ADMIN_E2E_BALANCE_RUB'];
+const balanceKeyFile = process.env['YANDEX_SA_KEY_FILE'];
+const standLogger = createLogger({ level: 'info' });
+// Настоящий ключ задан — настоящий сторож: посмотреть глазами живое число.
+const liveBalance =
+  balanceKeyFile === undefined
+    ? undefined
+    : await startBalanceWatch({
+        keyFile: balanceKeyFile,
+        thresholdRub: () => Promise.resolve(300),
+        alert: (alert) => {
+          standLogger.warn({ alert }, 'Оповещение стенда');
+          return Promise.resolve(true);
+        },
+        logger: standLogger,
+      });
+const balanceStub =
+  liveBalance !== undefined
+    ? liveBalance.watch
+    : balanceRub === undefined
+      ? undefined
+      : {
+          status: () =>
+            Promise.resolve({
+              ok: true as const,
+              balanceRub: Number(balanceRub),
+              currency: 'RUB',
+              accountName: 'стенд',
+              thresholdRub: 300,
+              low: Number(balanceRub) < 300,
+              fetchedAt: new Date().toISOString(),
+              stale: false,
+            }),
+        };
+
 const app = createServer({
   healthChecks: [],
   adminStaticDir: dist,
+  ...(balanceStub === undefined ? {} : { adminYandexBalance: balanceStub }),
   ...(seeded === undefined
     ? {}
     : {

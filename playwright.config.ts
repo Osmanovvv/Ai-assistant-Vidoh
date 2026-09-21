@@ -77,6 +77,9 @@ export default defineConfig({
       ADMIN_E2E_DATABASE_URL:
         process.env['ADMIN_E2E_DATABASE_URL'] ??
         'postgres://vydoh:vydoh@localhost:5434/vydoh_admin_e2e',
+      // Плитка баланса Yandex Cloud на стенде — подменённое число, ниже
+      // порога в 300 ₽: так видна и тревожная плитка (21.09.2026).
+      ADMIN_E2E_BALANCE_RUB: process.env['ADMIN_E2E_BALANCE_RUB'] ?? '120.5',
     },
     url: 'http://127.0.0.1:3100/admin/',
     reuseExistingServer: !process.env['CI'],

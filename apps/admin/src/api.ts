@@ -213,6 +213,38 @@ export function costs(days: number): Promise<Costs> {
   return call<Costs>(`/costs?days=${String(days)}`);
 }
 
+// ── Баланс Yandex Cloud (проджект, 21.09.2026) ────────────────────────
+
+/**
+ * Остаток на счёте облака: сколько **осталось**, а не сколько потратили.
+ * `configured: false` — ключа сервисного аккаунта нет, и плитка говорит
+ * это словами. `stale` — облако не ответило, число прошлое.
+ */
+export type YandexBalance =
+  | { readonly configured: false }
+  | {
+      readonly configured: true;
+      readonly ok: true;
+      readonly balanceRub: number;
+      readonly currency: string;
+      readonly accountName: string;
+      readonly thresholdRub: number;
+      readonly low: boolean;
+      readonly fetchedAt: string;
+      readonly stale: boolean;
+      readonly why?: string;
+    }
+  | {
+      readonly configured: true;
+      readonly ok: false;
+      readonly why: string;
+      readonly thresholdRub: number;
+    };
+
+export function yandexBalance(): Promise<YandexBalance> {
+  return call<YandexBalance>('/yandex-balance');
+}
+
 // ── Обзор, люди, карточка (§15, задача 4.6) ──────────────────────────
 
 export interface Overview {
