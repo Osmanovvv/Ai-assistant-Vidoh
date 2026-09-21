@@ -1204,6 +1204,47 @@ describe('названное время уже прошло — срок зав�
       undefined,
     ]);
     expect(result.corrections.deadline).toBe(1);
+    /**
+     * Час дела едет со сроком (ТЗ проджекта 17.09.2026, шаг 5): у
+     * стоматолога 13:00, у компьютера 9:00 — из своих слов; у прогулки
+     * часа нет. Это не правка срока, а его часть — в счёт поправок не идёт.
+     */
+    expect(result.items.map((item) => item.deadline?.time)).toEqual([13 * 60, 9 * 60, undefined]);
+  });
+
+  it('двусмысленное «в 9» часа не даёт, час без срока — тоже', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Позвонить маме в 9',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в 9',
+          },
+          { text: 'Созвон в 15:00', deadline: '', deadlineAccuracy: 'none' },
+          {
+            text: 'Сдать отчёт в 15:00',
+            deadline: '2026-09-07',
+            deadlineAccuracy: 'week',
+            deadlineText: 'на неделе',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Позвонить маме в 9', 'Созвон в 15:00', 'Сдать отчёт в 15:00'),
+      speech: 'Сегодня позвонить маме в 9. Созвон в 15:00. На неделе сдать отчёт в 15:00.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items.map((item) => item.deadline?.time)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });
 

@@ -5,6 +5,7 @@ import { appSettings } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { STARS_MAX_SUBSCRIPTION } from '../billing/providers/stars.js';
 import { MAX_BATCH_AGE_MS } from '../buffer/batch-age.js';
+import { DEFAULT_HOUR_LEAD_MINUTES } from '../scheduler/plan.js';
 import type { BufferLimits } from '../buffer/buffer.service.js';
 
 /**
@@ -312,6 +313,23 @@ export const SETTINGS = {
     min: 0,
     max: 1_000_000,
     readBy: 'сторож баланса Yandex Cloud: порог оповещения и плитка в панели',
+  },
+
+  /**
+   * Упреждение напоминания в указанный час, минуты (ТЗ проджекта
+   * 17.09.2026, шаг 5). «К стоматологу в 13:00» — напоминание в 12:30.
+   * Ноль — ровно в час. Умолчание — то же число, что в планировщике
+   * (`DEFAULT_HOUR_LEAD_MINUTES`), страж связки следит, чтобы они не
+   * разошлись.
+   */
+  hourLeadMinutes: {
+    key: 'reminders.hour_lead_minutes',
+    fallback: DEFAULT_HOUR_LEAD_MINUTES,
+    measured: false,
+    min: 0,
+    // Три часа — уже не «перед делом», а «утром»; для этого есть сводка.
+    max: 180,
+    readBy: 'планировщик напоминаний: раскладка и текст напоминания в указанный час',
   },
 } as const;
 

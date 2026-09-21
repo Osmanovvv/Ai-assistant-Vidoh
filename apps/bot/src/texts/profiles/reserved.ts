@@ -224,6 +224,7 @@ export const reserved: TextProfile = {
 
   resolver: {
     movedDeadline: (title, date) => `Перенесла «${title}» на ${date}.`,
+    retimed: (title, date, time) => `Напомню про «${title}» ${date} в ${time}.`,
     noted: (title) => `Добавила подробность к «${title}».`,
     notedTitleKept: (title) =>
       `Записала это как подробность. Сам заголовок не меняла — там по-прежнему «${title}».`,
@@ -488,6 +489,8 @@ export const reserved: TextProfile = {
       `Ты хотела в этом месяце: ${text}. Если нужен конкретный день — просто скажи.`,
     deadlineTomorrow: (text) => `Завтра срок: ${text}`,
     deadlineToday: (text) => `Сегодня срок: ${text}`,
+    deadlineHourSoon: (minutes, time, text) => `Через ${minutes} минут, в ${time}: ${text}.`,
+    deadlineHourNow: (time, text) => `Сейчас, в ${time}: ${text}.`,
     buttonDone: 'Сделано',
     buttonPostpone: 'Перенести',
     done: 'Отметила.',

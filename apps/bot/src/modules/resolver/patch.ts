@@ -10,6 +10,7 @@ import {
   saysDistantWeek,
   startOfDayAfter,
 } from '../classifier/dates.js';
+import { clockTimesIn } from '../classifier/clock-time.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
@@ -49,6 +50,8 @@ export const PATCHABLE_FIELDS = [
   'completedAt',
   'deadlineAt',
   'deadlineAccuracy',
+  // Час внутри дня (ТЗ проджекта 17.09.2026, шаг 5): «перенеси на 15:00».
+  'deadlineTime',
   // Запрос №4: «Позже» снимает важность и ставит отметку. Резолвер
   // словами этих полей не меняет — только действие с кнопки.
   'priority',
@@ -227,6 +230,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
       if (item.deadlineAt !== null) {
         next.deadlineAt = null;
         next.deadlineAccuracy = null;
+        if (item.deadlineTime !== null) next.deadlineTime = null;
       }
       return { next };
     }
@@ -255,6 +259,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     if (item.priority !== 'LATER') next.priority = 'LATER';
     if (item.deadlineAt !== null) next.deadlineAt = null;
     if (item.deadlineAccuracy !== null) next.deadlineAccuracy = null;
+    if (item.deadlineTime !== null) next.deadlineTime = null;
     if (item.deferredAt === null) next.deferredAt = now;
 
     return { next };
@@ -382,10 +387,32 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
         next.deadlineAt = at;
         next.deadlineAccuracy = outcome.deadline.accuracy;
       }
+      // Неточный срок часа не держит — страж в базе иного не пустит.
+      if (outcome.deadline.accuracy !== 'day' && item.deadlineTime !== null) {
+        next.deadlineTime = null;
+      }
     } else if (!outcome.ok) {
       // Причина отказа шла в никуда — ни в журнал, ни человеку (A3).
       refused = outcome.reason;
     }
+  }
+
+  /**
+   * Час из слов правки (ТЗ проджекта 17.09.2026, шаг 5): «перенеси на
+   * пятницу в 15:00», «давай в 10:30». Модель час не отдаёт — схема
+   * знает только дату; читает код, тем же правилом, что при разборе
+   * выгрузки: только однозначный час (`clock-time.ts`), голое «в 9» —
+   * нет. Только при точном сроке — своём или только что поставленном.
+   */
+  const accuracyAfter = next.deadlineAccuracy ?? item.deadlineAccuracy;
+  const spokenTime = spokenClockTime(params.spoken ?? '');
+  if (
+    spokenTime !== undefined &&
+    accuracyAfter === 'day' &&
+    (next.deadlineAt ?? item.deadlineAt) !== null &&
+    item.deadlineTime !== spokenTime
+  ) {
+    next.deadlineTime = spokenTime;
   }
 
   /**
@@ -496,6 +523,12 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
  * Исход размечен: «применено», «менять нечего», «отвергнуто с причиной»,
  * «записи нет» — см. `ApplyOutcome`.
  */
+/** Первый однозначный час в словах правки; двусмысленный — ничего. */
+function spokenClockTime(spoken: string): number | undefined {
+  const first = clockTimesIn(spoken)[0];
+  return first?.length === 1 ? first[0] : undefined;
+}
+
 export async function applyDecision(db: Executor, params: ApplyParams): Promise<ApplyOutcome> {
   const now = params.now ?? new Date();
 

@@ -11,7 +11,7 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { withoutDayQuestions } from '../router/day-question.js';
-import { dayAfterPassedClock } from './clock-time.js';
+import { clockTimeOf, dayAfterPassedClock } from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
@@ -587,6 +587,18 @@ export function correctItems(
         corrections.deadline++;
         logger?.info({ promptVersion }, 'Названное время уже прошло: срок перенесён на завтра');
       }
+    }
+
+    /**
+     * Час дела — к сроку (ТЗ проджекта 17.09.2026, шаг 5): по нему
+     * планировщик ставит напоминание в указанный час. Только у дел с
+     * точностью «день» и только однозначный час (`clock-time.ts`); в счёт
+     * поправок не идёт — это не спор с моделью, а часть срока, которой
+     * модель не отдаёт.
+     */
+    if (isActionable(type) && heard !== undefined && deadline?.accuracy === 'day') {
+      const time = clockTimeOf(item.text, heard, siblingsOf(index));
+      if (time !== undefined) deadline = { ...deadline, time };
     }
 
     /**

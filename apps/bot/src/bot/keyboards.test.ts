@@ -68,6 +68,7 @@ function itemFixture(): Item {
     reviewedAt: null,
     assignee: null,
     deadlineAt: new Date('2026-09-04T00:00:00.000Z'),
+    deadlineTime: null,
     deadlineAccuracy: 'day',
     embedding: null,
     isDraft: false,

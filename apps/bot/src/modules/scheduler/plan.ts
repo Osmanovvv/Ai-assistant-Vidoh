@@ -42,12 +42,23 @@ export interface PlanSettings {
   readonly quietHoursOn: boolean;
   readonly quietFrom: string;
   readonly quietTo: string;
+  /**
+   * За сколько минут до названного часа напоминать (ТЗ проджекта
+   * 17.09.2026, шаг 5). Не задано — `DEFAULT_HOUR_LEAD_MINUTES`; ноль —
+   * ровно в час. Настройка панели `reminders.hour_lead_minutes`.
+   */
+  readonly hourLeadMinutes?: number | undefined;
 }
+
+/** Упреждение по умолчанию: полчаса — успеть собраться, а не вспомнить задним числом. */
+export const DEFAULT_HOUR_LEAD_MINUTES = 30;
 
 export interface PlanDeadline {
   readonly itemId: string;
   readonly deadlineAt: Date;
   readonly accuracy: DeadlineAccuracyValue;
+  /** Час внутри дня, минуты от местной полуночи; пусто — не назван. */
+  readonly time?: number | null | undefined;
 }
 
 export interface PlanInput {
@@ -141,6 +152,22 @@ export function deadlineKey(
   return `${kind}:${itemId}:${localDateKey(deadlineAt, timeZone)}`;
 }
 
+/** «13:00» из минут от полуночи. */
+export function clockOf(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
+/**
+ * Ключ напоминания в указанный час: с датой и часом. Перенесла на другой
+ * час — ключ не сойдётся, и старое напоминание не уйдёт (сверяется на
+ * отправке, как у срока).
+ */
+export function hourKey(itemId: string, deadlineAt: Date, time: number, timeZone: string): string {
+  return `deadline_hour:${itemId}:${localDateKey(deadlineAt, timeZone)}:${clockOf(time)}`;
+}
+
 export function planFor(input: PlanInput): PlannedReminder[] {
   // Выключатель напоминаний — первый и безусловный (§11).
   if (!input.settings.notificationsOn) return [];
@@ -163,7 +190,17 @@ export function planFor(input: PlanInput): PlannedReminder[] {
       })
     : undefined;
 
-  const add = (kind: ReminderKindValue, dueAt: Date, key: string, itemId?: string): void => {
+  const add = (
+    kind: ReminderKindValue,
+    dueAt: Date,
+    key: string,
+    itemId?: string,
+    /**
+     * Час, названный человеком, тишина не закрывает — как выбранное им
+     * утро (ТЗ проджекта 17.09.2026, шаг 5): «в 23:00» он сказал сам.
+     */
+    chosenByPerson = false,
+  ): void => {
     if (dueAt.getTime() > horizon) return;
 
     /**
@@ -173,7 +210,13 @@ export function planFor(input: PlanInput): PlannedReminder[] {
      * бы пачка ночных напоминаний — тот самый раздражитель, от которого
      * §11 велит уходить. Вечерний итог, отправленный назавтра, уже не итог.
      */
-    if (silence !== undefined && inQuietHours(localMinutesAt(dueAt, timeZone), silence)) return;
+    if (
+      !chosenByPerson &&
+      silence !== undefined &&
+      inQuietHours(localMinutesAt(dueAt, timeZone), silence)
+    ) {
+      return;
+    }
 
     planned.push({ kind, dueAt, dedupeKey: key, ...(itemId === undefined ? {} : { itemId }) });
   };
@@ -237,6 +280,23 @@ export function planFor(input: PlanInput): PlannedReminder[] {
     const morningOf = localTimeToUtc(day, settings.morningTime, timeZone);
     if (morningOf.getTime() > now.getTime()) {
       add('deadline_day', morningOf, keyOf('deadline_day'), deadline.itemId);
+    }
+
+    // --- В указанный час (ТЗ проджекта 17.09.2026, шаг 5) ---
+    if (deadline.time !== undefined && deadline.time !== null) {
+      const lead = settings.hourLeadMinutes ?? DEFAULT_HOUR_LEAD_MINUTES;
+      const at = new Date(
+        localTimeToUtc(day, clockOf(deadline.time), timeZone).getTime() - lead * 60_000,
+      );
+      if (at.getTime() > now.getTime()) {
+        add(
+          'deadline_hour',
+          at,
+          hourKey(deadline.itemId, deadline.deadlineAt, deadline.time, timeZone),
+          deadline.itemId,
+          true,
+        );
+      }
     }
   }
 

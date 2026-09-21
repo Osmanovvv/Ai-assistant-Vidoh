@@ -1,4 +1,6 @@
 import { CARD_ACTION } from '../items/card-actions.js';
+import { deadlineWords } from '../items/deadline-words.js';
+import { clockOf } from '../scheduler/plan.js';
 import { startsWithReplacement } from '../router/append.js';
 import { localDateParts } from '../classifier/dates.js';
 import type { Applied } from './patch.js';
@@ -131,7 +133,17 @@ export function describeChange(
   if (fields.includes('deadlineAt') && after.deadlineAt !== null) {
     return resolver.movedDeadline(
       titleWithoutDate(after.text),
+      deadlineWords({ ...after, deadlineAt: after.deadlineAt }, timeZone, texts),
+    );
+  }
+
+  // Изменился только час (шаг 5 ТЗ проджекта 17.09.2026): день не
+  // менялся, и «перенесла» было бы неправдой — «напомню в 10:30».
+  if (fields.includes('deadlineTime') && after.deadlineAt !== null && after.deadlineTime !== null) {
+    return resolver.retimed(
+      titleWithoutDate(after.text),
       shortDate(after.deadlineAt, timeZone),
+      clockOf(after.deadlineTime),
     );
   }
 

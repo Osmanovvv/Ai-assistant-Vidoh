@@ -41,6 +41,7 @@ function item(text: string, createdAt = '2026-08-31T08:07:00.000Z'): Item {
     assignee: null,
     deadlineAt: null,
     deadlineAccuracy: null,
+    deadlineTime: null,
     embedding: null,
     isDraft: false,
     draftReason: null,

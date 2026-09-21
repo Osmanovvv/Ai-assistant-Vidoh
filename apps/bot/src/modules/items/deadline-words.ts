@@ -36,18 +36,39 @@ export function monthNameIn(at: Date, timeZone: string): string {
   return MONTHS_IN[localDateParts(at, timeZone).month - 1] ?? '';
 }
 
-export function deadlineWords(
-  item: { readonly deadlineAt: Date; readonly deadlineAccuracy: string | null },
-  timeZone: string,
-  texts: TextProfile,
-): string {
+/** Запись со сроком — и, возможно, часом внутри дня (шаг 5 ТЗ проджекта 17.09.2026). */
+interface Dated {
+  readonly deadlineAt: Date;
+  readonly deadlineAccuracy: string | null;
+  /** Минуты от местной полуночи; пусто — час не назван. */
+  readonly deadlineTime?: number | null | undefined;
+}
+
+/** «13:00» из минут от полуночи — тем же видом, что в напоминании. */
+function clockWords(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+/** Час — только у точного срока: у недели и месяца его не бывает. */
+function hourOf(item: Dated): string | undefined {
+  return item.deadlineAccuracy === 'day' &&
+    item.deadlineTime !== null &&
+    item.deadlineTime !== undefined
+    ? clockWords(item.deadlineTime)
+    : undefined;
+}
+
+export function deadlineWords(item: Dated, timeZone: string, texts: TextProfile): string {
   const date = shortDate(item.deadlineAt, timeZone);
+  const hour = hourOf(item);
 
   return item.deadlineAccuracy === 'week'
     ? texts.card.deadlineWeek(date)
     : item.deadlineAccuracy === 'month'
       ? texts.card.deadlineMonth(monthNameIn(item.deadlineAt, timeZone))
-      : date;
+      : hour === undefined
+        ? date
+        : `${date}, ${hour}`;
 }
 
 /**
@@ -59,13 +80,15 @@ export function deadlineWords(
  * — словами карточки. Просроченное — числом: видно, что день прошёл.
  */
 export function dueWords(
-  item: { readonly deadlineAt: Date; readonly deadlineAccuracy: string | null },
+  item: Dated,
   context: { readonly now: Date; readonly timeZone: string },
   texts: TextProfile,
 ): string | undefined {
   if (item.deadlineAccuracy === 'week' || item.deadlineAccuracy === 'month') {
     return deadlineWords(item, context.timeZone, texts);
   }
+
+  const hour = hourOf(item);
 
   const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
   const target = startOfDayInZone(
@@ -74,8 +97,10 @@ export function dueWords(
   );
   const days = Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60_000));
 
-  if (days === 0) return undefined;
-  if (days === 1) return 'завтра';
+  // Сегодня — только час, если он есть: день под таким заголовком лишний.
+  if (days === 0) return hour;
+  if (days === 1) return hour === undefined ? 'завтра' : `завтра, ${hour}`;
 
-  return shortDate(item.deadlineAt, context.timeZone);
+  const date = shortDate(item.deadlineAt, context.timeZone);
+  return hour === undefined ? date : `${date}, ${hour}`;
 }

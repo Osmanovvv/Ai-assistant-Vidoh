@@ -307,6 +307,12 @@ describe('умолчания не набраны дважды', () => {
     expect(DEFAULT_THRESHOLDS.similarity).toBe(SETTINGS.resolverSimilarity.fallback / 100);
   });
 
+  it('упреждение напоминания в час берёт значение из настроек', async () => {
+    const { DEFAULT_HOUR_LEAD_MINUTES } = await import('../scheduler/plan.js');
+
+    expect(DEFAULT_HOUR_LEAD_MINUTES).toBe(SETTINGS.hourLeadMinutes.fallback);
+  });
+
   it('предел числа тем берёт значение из настроек', async () => {
     const { MAX_TOPICS } = await import('../topics/topics.repo.js');
 

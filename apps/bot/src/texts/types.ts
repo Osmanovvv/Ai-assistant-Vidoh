@@ -341,7 +341,10 @@ export interface TextProfile {
    * не может, а непроверяемое обещание доверия не создаёт.
    */
   readonly resolver: {
+    /** Дата — «25.09» или с часом «25.09, 15:00» (шаг 5 ТЗ проджекта 17.09.2026). */
     readonly movedDeadline: (title: string, date: string) => string;
+    /** Изменился только час: «Напомню про «…» 25.09 в 10:30.» */
+    readonly retimed: (title: string, date: string, time: string) => string;
     /** §7.4: подробность дописана, само дело не тронуто. */
     readonly noted: (title: string) => string;
     /**
@@ -782,6 +785,13 @@ export interface TextProfile {
     readonly deadlineTomorrow: (text: string) => string;
     /** Утром в день срока. */
     readonly deadlineToday: (text: string) => string;
+    /**
+     * В указанный час (ТЗ проджекта 17.09.2026, шаг 5): за упреждение до
+     * часа — «Через 30 минут, в 13:00: …», при нулевом упреждении —
+     * «Сейчас, в 13:00: …».
+     */
+    readonly deadlineHourSoon: (minutes: string, time: string, text: string) => string;
+    readonly deadlineHourNow: (time: string, text: string) => string;
     readonly buttonDone: string;
     readonly buttonPostpone: string;
     readonly done: string;

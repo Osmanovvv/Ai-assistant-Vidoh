@@ -85,6 +85,19 @@ const pricing = { mock: { kind: 'audio', currency: 'usd', perMinute: 0.006 } } a
 const T0 = new Date('2026-08-24T10:00:00.000Z');
 const at = (ms: number) => new Date(T0.getTime() + ms);
 
+/** Завтра по Москве от часов теста — ГГГГ-ММ-ДД, как отвечает модель. */
+function tomorrowIso(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at(24 * 60 * 60_000));
+  const value = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
 /**
  * Список по «Выбрать главное» для последней выгрузки человека (решение
  * заказчицы 15.09.2026): дел под признанием больше нет, и что бот
@@ -654,6 +667,73 @@ describe('разбор', () => {
     expect(drafts[0]?.text).toBe('хотя нет, в пятницу');
     expect(drafts[0]?.draftReason).toContain('поздняя мысль');
     expect(all.at(-1)).toContain(defaultTexts.answer.savedUnparsed);
+  });
+
+  it('час из слов дела ложится в запись — для напоминания в указанный час (ТЗ проджекта 17.09.2026, шаг 5)', async () => {
+    const prompts = await seedPrompts();
+    const speech = 'Завтра надо сходить к стоматологу в 13 0 0 и погулять с собакой.';
+    await queuedBatchOf([{ kind: 'text', text: speech, offsetMs: 0 }]);
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: speech }] }),
+      extractor: () =>
+        JSON.stringify({
+          units: [
+            { text: 'Сходить к стоматологу в 13:00', isProject: false, isEmotion: false },
+            { text: 'Погулять с собакой', isProject: false, isEmotion: false },
+          ],
+        }),
+      classifier: (request) =>
+        JSON.stringify({
+          items: request.input.includes('стоматолог')
+            ? [
+                {
+                  text: 'Сходить к стоматологу в 13:00',
+                  type: 'TASK',
+                  priority: 'SOON',
+                  topic: 'здоровье',
+                  isProject: false,
+                  deadline: '{{tomorrow}}',
+                  deadlineAccuracy: 'day',
+                  deadlineText: 'завтра',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+                {
+                  text: 'Погулять с собакой',
+                  type: 'TASK',
+                  priority: 'SOON',
+                  topic: 'личное',
+                  isProject: false,
+                  deadline: '{{tomorrow}}',
+                  deadlineAccuracy: 'day',
+                  deadlineText: 'завтра',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+              ]
+            : [],
+        }).replaceAll('{{tomorrow}}', tomorrowIso()),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).orderBy(asc(items.sourceOrder));
+
+    expect(saved.map((item) => [item.text, item.deadlineAccuracy, item.deadlineTime])).toEqual([
+      ['Сходить к стоматологу в 13:00', 'day', 13 * 60],
+      ['Погулять с собакой', 'day', null],
+    ]);
   });
 
   it('эхо самопоправки не становится второй записью: «К врачу лучше в пятницу» (стенд 21.09.2026)', async () => {
@@ -3861,6 +3941,54 @@ describe('правка доходит до резолвера (§7, задача
     // Черновика при этом не появилось: правка разобрана, а не отложена.
     const drafts = await testDb().select().from(items).where(eq(items.isDraft, true));
     expect(drafts).toEqual([]);
+  });
+
+  it('«перенеси на пятницу в 15:00» — день от модели, час из слов, ответ называет оба (ТЗ проджекта 17.09.2026, шаг 5)', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси врача на пятницу в 15:00', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'перенеси врача на пятницу в 15:00' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: '',
+          deadline: soon(),
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка срока',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAccuracy).toBe('day');
+    expect(after?.deadlineTime).toBe(15 * 60);
+
+    // Ответ называет и день, и час — «на 25.09, 15:00».
+    const reply = all.find((text) => text.includes('Перенесла'));
+    expect(reply).toMatch(/на \d{2}\.\d{2}, 15:00\./u);
   });
 
   it('средняя уверенность задаёт один вопрос с двумя кнопками', async () => {

@@ -191,6 +191,116 @@ describe('применение оставляет ревизию', () => {
   });
 });
 
+describe('час в правке словами (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+  /** «Перенеси на пятницу в 15:00» — модель даёт дату, час читает код из слов. */
+  const changes = (deadline: string, accuracy: 'day' | 'week' | 'none' = 'day') => ({
+    note: '',
+    text: '',
+    deadline,
+    deadlineAccuracy: accuracy,
+    recurrenceKind: 'none' as const,
+    recurrenceInterval: 0,
+    recurrenceText: '',
+  });
+
+  it('день и час из одной правки: «перенеси на пятницу в 15:00»', async () => {
+    const item = await sow();
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('2026-09-04'),
+        spoken: 'перенеси на пятницу в 15:00',
+        timeZone: MOSCOW,
+        now: NOW,
+        reason: 'проверка',
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy', 'deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+    expect(after.deadlineTime).toBe(15 * 60);
+  });
+
+  it('только час, день остаётся: «давай в 10:30»', async () => {
+    const item = await sow();
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: 'давай в 10:30',
+        timeZone: MOSCOW,
+        now: NOW,
+        reason: 'проверка',
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.deadlineTime).toBe(10 * 60 + 30);
+  });
+
+  it('двусмысленное «в 9» час не ставит', async () => {
+    const item = await sow();
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('2026-09-04'),
+      spoken: 'перенеси на пятницу в 9',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    expect(appliedOf(outcome)?.fields).toEqual(['deadlineAt', 'deadlineAccuracy']);
+    expect((await reread(item.id)).deadlineTime).toBeNull();
+  });
+
+  it('перенос на неделю снимает час: у «на неделе» часа не бывает', async () => {
+    const item = await sow({ deadlineTime: 13 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('2026-09-07', 'week'),
+      spoken: 'давай на следующей неделе',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAccuracy).toBe('week');
+    expect(after.deadlineTime).toBeNull();
+  });
+
+  it('«Позже» и «сделано» час тоже снимают вместе со сроком', async () => {
+    const item = await sow({ deadlineTime: 13 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'later',
+      changes: NO_CHANGES,
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBeNull();
+  });
+});
+
 describe('«Позже» — снять срок, оставить дело (запрос на изменение №4)', () => {
   /**
    * Решение заказчицы 13.09.2026: «Позже» снимает дату и убирает дело из

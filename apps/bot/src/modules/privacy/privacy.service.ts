@@ -90,6 +90,8 @@ export interface ExportedData {
     readonly assignee: string | null;
     readonly deadlineAt: string | null;
     readonly deadlineAccuracy: string | null;
+    /** Час внутри дня, минуты от местной полуночи (шаг 5 ТЗ проджекта 17.09.2026). */
+    readonly deadlineTime: number | null;
     readonly isDraft: boolean;
     readonly draftReason: string | null;
     /**
@@ -303,6 +305,7 @@ export async function exportUserData(db: Database, userId: string): Promise<Expo
       assignee: item.assignee,
       deadlineAt: iso(item.deadlineAt),
       deadlineAccuracy: item.deadlineAccuracy,
+      deadlineTime: item.deadlineTime,
       isDraft: item.isDraft,
       draftReason: item.draftReason,
       recurrenceText: item.recurrenceText,
