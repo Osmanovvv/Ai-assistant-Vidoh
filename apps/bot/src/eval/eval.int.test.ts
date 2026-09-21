@@ -116,13 +116,23 @@ function goodModel(): MockLlmProvider {
  * обработка кончается раньше извлечения, и человек не получает ни одной
  * записи. Стенд обязан показать ту же потерю.
  */
+/**
+ * Маршрутизатор увёл всю выгрузку из `DUMP` — отметкой «сделано».
+ *
+ * Прежде фикстура отдавала `PATCH`. С 21.09.2026 правка без кандидатов,
+ * но со словом долга или глаголом дела, разбирается как мысль
+ * (`segment.ts`, живой набор `live-08`), и «надо продукты купить…»
+ * правкой больше не теряется. Отметка без записи — по-прежнему ничего:
+ * «такого дела не было», слова в черновик, дальше маршрутизатора денег
+ * не тратится (прогон 15.09.2026, находка 5).
+ */
 function routerLosesEverything(): MockLlmProvider {
   return new MockLlmProvider({
     respond: (request) =>
       stageOf(request) === 'router'
         ? JSON.stringify({
             crisis: false,
-            segments: [{ intent: 'PATCH', text: request.input }],
+            segments: [{ intent: 'COMPLETE', text: request.input }],
           })
         : answerCorrectly(request),
   });
@@ -468,7 +478,7 @@ describe('след прогона', () => {
     const cases = (await loadDataset(SYNTHETIC)).filter((item) => item.id === 'synthetic-known');
 
     const [lost] = await runDataset(deps(routerLosesEverything(), registry), cases);
-    expect(lost?.routed).toEqual([{ intent: 'PATCH', text: cases[0]?.text }]);
+    expect(lost?.routed).toEqual([{ intent: 'COMPLETE', text: cases[0]?.text }]);
 
     const [parsed] = await runDataset(deps(goodModel(), registry), cases);
     expect(parsed?.routed).toEqual([{ intent: 'DUMP', text: cases[0]?.text }]);

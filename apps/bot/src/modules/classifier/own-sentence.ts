@@ -599,6 +599,11 @@ function opensWithRetraction(words: readonly string[]): boolean {
   return RETRACTION.some((opener) => opener.every((word, at) => words[at] === word));
 }
 
+/** Предложения речи, начинающиеся словами отмены (см. `dayAfterRetraction`). */
+export function retractingSentences(speech: string): readonly string[] {
+  return sentencesOf(speech).filter((sentence) => opensWithRetraction(tokens(sentence)));
+}
+
 /** Служебные слова: общими они ничего не доказывают. */
 export const FUNCTION_WORDS = new Set([
   'надо',

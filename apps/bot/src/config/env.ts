@@ -410,6 +410,13 @@ const modelFields = z.object({
    */
   CASSETTE_PATH: z.string().min(1).optional(),
   CASSETTE_MODE: z.enum(['record', 'replay']).default('replay'),
+  /**
+   * Прежняя запись в основе новой (21.09.2026): при `record` совпавшие
+   * запросы берутся из неё бесплатно, живьём идёт только то, чего в ней
+   * нет. Так правка кода, меняющая вход одного вызова, меряется за цену
+   * этого вызова, а не всего набора.
+   */
+  CASSETTE_BASE: z.string().min(1).optional(),
   YANDEX_LLM_MODEL: z.string().min(1).default('yandexgpt/latest'),
 
   /**

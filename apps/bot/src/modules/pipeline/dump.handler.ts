@@ -13,6 +13,7 @@ import { decideDegradation, type SpendLimit } from '../metering/limits.js';
 import type { ClassifiedItems } from '../ai/schemas/classifier.js';
 import type { ExtractedUnits } from '../ai/schemas/extractor.js';
 import { classifyUnits, type ClassifiedItem } from '../classifier/classifier.service.js';
+import { retractionEchoes } from '../classifier/retraction-echo.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
@@ -1824,15 +1825,35 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * «если не уверен — лучше без новой сферы» (её слова). В общем чате
      * контекста нет, и названное моделью — единственное указание.
      */
+    /**
+     * Эхо самопоправки — не запись (стенд 21.09.2026, `live-14`): из
+     * «хотя нет к врачу лучше в пятницу» извлечение делает отдельную
+     * единицу, а день у «отвезти дочку к врачу» уже перенесён. Условия —
+     * в `retraction-echo.ts`; считается по текстам единиц после
+     * классификации, вход модели не меняется.
+     */
+    const echoes = retractionEchoes(
+      classified.items.map((item) => item.text),
+      combined,
+    );
+    const kept = classified.items.filter((_, index) => !echoes.has(index));
+
+    if (echoes.size > 0) {
+      deps.logger?.info(
+        { batchId: batch.id, count: echoes.size },
+        'Эхо самопоправки среди единиц: записью не становится',
+      );
+    }
+
     const adopted =
       threadTopic === undefined
         ? await adoptWantedTopics(db, {
             userId: batch.userId,
-            units: classified.items,
+            units: kept,
             maxTopics: await deps.settings?.number('maxTopics'),
             logger: deps.logger,
           })
-        : { units: classified.items };
+        : { units: kept };
 
     /**
      * §8.1: тема ветки — умолчание, а не приказ.

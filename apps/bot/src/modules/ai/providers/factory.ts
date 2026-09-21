@@ -69,11 +69,26 @@ export function createLlmProvider(env: ModelEnv, choice: ProviderChoice = {}): L
 
       if (session.recorder === undefined) throw new Error('запись открыта без копилки');
 
-      return new RecordingLlmProvider({
+      const recording = new RecordingLlmProvider({
         live: liveYandex(env, choice),
         recorder: session.recorder,
         recordedAt: new Date(),
+        ...(session.base === undefined ? {} : { base: session.base }),
       });
+      // Взятое из основы считается в итог прогона: сколько не куплено.
+      const reused = session.reused;
+      if (reused !== undefined) {
+        return {
+          name: recording.name,
+          complete: async (request) => {
+            const before = recording.reused;
+            const result = await recording.complete(request);
+            reused.llm += recording.reused - before;
+            return result;
+          },
+        };
+      }
+      return recording;
     }
   }
 }

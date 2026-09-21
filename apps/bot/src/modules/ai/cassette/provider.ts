@@ -36,6 +36,15 @@ export interface RecordingDeps {
   readonly recordedAt: Date;
   /** Версия промпта: входит в ключ, иначе запись переживёт правку промпта. */
   readonly promptVersionOf?: ((prompt: string) => string | undefined) | undefined;
+  /**
+   * Прежняя запись в основе (21.09.2026): совпавший запрос берётся из
+   * неё бесплатно и ложится в новую запись, живьём идёт только то, чего в
+   * основе нет. Правка кода меняет вход одного-двух вызовов, а живой
+   * режим прогонял случай целиком — 12,69 ₽ за два случая при названных
+   * десяти, и один не дошёл до конца.
+   */
+  readonly base?: CassettePlayer | undefined;
+  readonly now?: (() => Date) | undefined;
 }
 
 /**
@@ -46,13 +55,37 @@ export interface RecordingDeps {
  */
 export class RecordingLlmProvider implements LlmProvider {
   readonly name: string;
+  /** Сколько ответов взято из основы, а не куплено. */
+  reused = 0;
 
   constructor(private readonly deps: RecordingDeps) {
     this.name = deps.live.name;
   }
 
+  /** Ответ из основы, если он там есть. Ключ считается от её даты записи. */
+  private fromBase(request: CompletionRequest): CompletionResult | undefined {
+    const base = this.deps.base;
+    if (base === undefined) return undefined;
+
+    const found = base.answerFor(
+      keyOf({ ...requestParts(request), recordedAt: base.recordedAt }),
+      (this.deps.now ?? (() => new Date()))(),
+    );
+    if (found === undefined) return undefined;
+
+    this.reused++;
+    return {
+      text: found.answer,
+      model: CASSETTE_LLM_MODEL,
+      // Денег не потрачено — и в учёт уходит ноль, как при воспроизведении.
+      tokensIn: 0,
+      tokensOut: 0,
+      ...(found.modelVersion === undefined ? {} : { modelVersion: found.modelVersion }),
+    };
+  }
+
   async complete(request: CompletionRequest): Promise<CompletionResult> {
-    const result = await this.deps.live.complete(request);
+    const result = this.fromBase(request) ?? (await this.deps.live.complete(request));
 
     this.deps.recorder.add({
       key: keyOf({ ...requestParts(request), recordedAt: this.deps.recordedAt }),
@@ -112,16 +145,26 @@ export class RecordingEmbeddingProvider implements EmbeddingProvider {
   readonly name: string;
   readonly dimensions: number;
 
+  /** Сколько векторов взято из основы, а не куплено. */
+  reused = 0;
+
   constructor(
     private readonly live: EmbeddingProvider,
     private readonly recorder: CassetteRecorder,
+    /** Прежняя запись в основе: см. `RecordingDeps.base`. */
+    private readonly base?: CassettePlayer | undefined,
   ) {
     this.name = live.name;
     this.dimensions = live.dimensions;
   }
 
   async embed(request: EmbedRequest): Promise<EmbedResult> {
-    const result = await this.live.embed(request);
+    const known = this.base?.vectorFor(vectorKeyOf(request.text, request.purpose));
+    if (known !== undefined) this.reused++;
+    const result: EmbedResult =
+      known === undefined
+        ? await this.live.embed(request)
+        : { vector: known.vector, model: known.model, tokens: 0 };
 
     this.recorder.addVector({
       key: vectorKeyOf(request.text, request.purpose),
