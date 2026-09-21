@@ -11,6 +11,7 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { withoutDayQuestions } from '../router/day-question.js';
+import { dayAfterPassedClock } from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
@@ -510,6 +511,81 @@ export function correctItems(
           { promptVersion, точность: inherited.accuracy },
           'День взят у слова о дне перед словом о времени суток',
         );
+      }
+    }
+
+    /**
+     * День без слова о дне уступает своему предложению речи (заказчица,
+     * бой 21.09.2026).
+     *
+     * Третье место, где день модели перебивается. «Записаться на Хайдру
+     * на среду, так? Так завтра. С 9 до 10 не забыть позвонить Елене
+     * Михайловне» — звонку модель дала среду с цитатой «с 9 до 10»:
+     * часы, не день; среду она взяла у соседа. Страж пропустил дату —
+     * цифры считаются словом о времени. Когда ни в словах дела, ни в
+     * подтверждённой цитате дня нет (`dayNamed`), день модели — догадка
+     * по контексту, и своё предложение речи, где день назван один раз,
+     * сильнее. Условия — те же, что у запасного пути (`own-sentence.ts`):
+     * дословность, единственность предложения и дня; чужие обозначения
+     * — соседям. Только у дел, только при точности «день» и только
+     * пока срок ещё модельный, а не перебитый правилами выше.
+     */
+    if (
+      isActionable(type) &&
+      heard !== undefined &&
+      resolved.ok &&
+      resolved.deadline !== undefined &&
+      resolved.dayNamed === false &&
+      deadline?.accuracy === 'day' &&
+      deadline.at.getTime() === resolved.deadline.at.getTime()
+    ) {
+      const own = dayFromOwnSentence({
+        itemText: item.text,
+        spoken: heard,
+        now,
+        timeZone: ctx.timeZone,
+        siblings: siblingsOf(index),
+      });
+
+      if (own?.accuracy === 'day' && own.at.getTime() !== deadline.at.getTime()) {
+        deadline = { at: own.at, accuracy: 'day' };
+        corrections.deadline++;
+        logger?.info(
+          { promptVersion },
+          'День взят из своего предложения речи: у модели дня в словах человека не было',
+        );
+      }
+    }
+
+    /**
+     * Названное время уже прошло — срок завтра (проджект, бой
+     * 21.09.2026).
+     *
+     * Четвёртое место, где день модели перебивается. «В 9 0 0 мне надо
+     * отнести компьютер», сказанное в 15:01, получило сегодня: который
+     * час, модель не знает — в промпте только дата. Условия — в
+     * `clock-time.ts`: час назван в словах дела, своего дня у него нет,
+     * в его предложении речи нет «сегодня», час позади по часам
+     * человека. Только у дел и только при сроке «сегодня» с точностью
+     * до дня: с другим сроком спорить не о чем.
+     */
+    if (
+      isActionable(type) &&
+      heard !== undefined &&
+      deadline?.accuracy === 'day' &&
+      isoDateIn(deadline.at, ctx.timeZone) === isoDateIn(now, ctx.timeZone)
+    ) {
+      const later = dayAfterPassedClock({
+        itemText: item.text,
+        spoken: heard,
+        now,
+        timeZone: ctx.timeZone,
+      });
+
+      if (later) {
+        deadline = { at: later.at, accuracy: later.accuracy };
+        corrections.deadline++;
+        logger?.info({ promptVersion }, 'Названное время уже прошло: срок перенесён на завтра');
       }
     }
 

@@ -141,7 +141,7 @@ export const reserved: TextProfile = {
     keptAsIs: 'Оставляю как есть. Всё у меня.',
     nothingToPick: 'Выбирать пока не из чего — всё записано, вернёмся, когда появится.',
 
-    added: 'Поймала. Разберём, когда дойдём.',
+    added: (topic, title) => `Записала в «${topic}»: ${title}.`,
     buttonDoNow: 'Сделать сейчас',
     buttonShowAll: 'Разобрать всё',
     buttonLater: 'Оставить на потом',

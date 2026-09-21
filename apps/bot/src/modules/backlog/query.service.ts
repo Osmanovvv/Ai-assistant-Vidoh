@@ -18,7 +18,7 @@ import { openItemsFor, openItemsWhere } from '../items/items.repo.js';
 import { withCapital } from '../items/item-text.js';
 import { listTopics, normalizeTopicName } from '../topics/topics.repo.js';
 import { outputContextOf } from '../users/state.repo.js';
-import { askedList, type ListQuestion } from './list-questions.js';
+import { askedList, asksAboutEverything, type ListQuestion } from './list-questions.js';
 import { askedDay, type AskedPeriod, doneWindow, periodLabel, periodWindow } from './periods.js';
 import { FRAME_WORDS, normalizeText, wordsOf } from './question-words.js';
 
@@ -153,25 +153,8 @@ const MAX_SHOWN = 5;
 /** Близость, при которой запись считается ответом на вопрос. */
 const RELEVANT = 0.35;
 
-/**
- * Вопрос обо всём сразу: ни дня, ни предмета — одна рамка (заказчица,
- * 16.09.2026, панель п. 3).
- *
- * На бою 16.09.2026 «Покажи все мои задачи» уходило в поиск по смыслу, где
- * на «все задачи» ничего похожего не находилось, — и при шести делах
- * человек читал «Про это у меня ничего не записано». То же правило, что у
- * дня (F2), с обратным знаком: там слово о времени без предмета, здесь —
- * ни того, ни другого.
- */
-export function asksAboutEverything(text: string): boolean {
-  const words = wordsOf(text);
-  if (words.length === 0) return false;
-  if (askedDay(text) !== undefined) return false;
-
-  const frame = new Set(FRAME_WORDS.map((word) => word.replace(/ё/gu, 'е')));
-
-  return words.every((word) => frame.has(word));
-}
+/** Вопрос обо всём сразу — в `question-words.ts`, рядом с рамкой. */
+export { asksAboutEverything };
 
 /**
  * Дела со сроком в отрезке (F2): окно — `periodWindow`. Только сроки,

@@ -641,11 +641,22 @@ describe('presentDump — ответ на выгрузку целиком', () =
     expect(heavy.reply.buttons).toHaveLength(2);
   });
 
-  it('быстрое добавление — «Записала», без кнопок', () => {
-    expect(presentDump({ ...params, quickAdd: true }).reply).toEqual({
-      text: texts.answer.added,
+  it('быстрое добавление — «Записала в «сфера»: дело.», без кнопок', () => {
+    /**
+     * Проджект, бой 21.09.2026: «Поймала. Разберём, когда дойдём» не
+     * показывало, что записано. Реплика называет сферу и дело.
+     */
+    const result = presentDump({
+      ...params,
+      quickAdd: { topic: 'Покупки', title: 'Составить список продуктов на неделю' },
+    });
+
+    expect(result.reply).toEqual({
+      text: texts.answer.added('Покупки', 'Составить список продуктов на неделю'),
       buttons: [],
     });
+    expect(result.reply.text).toBe('Записала в «Покупки»: Составить список продуктов на неделю.');
+    expect(countQuestions(result.reply.text)).toBe(0);
   });
 
   it('неизвестный профиль берёт словарь по умолчанию', () => {

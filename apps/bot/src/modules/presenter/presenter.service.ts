@@ -388,8 +388,12 @@ export interface PresentParams {
    * Человек вспомнил одно дело на ходу. Ответ — одна строка, без выдачи
    * действий и без вопроса: предлагать ему в этот момент три дела на
    * сегодня значит превратить полсекунды в разговор.
+   *
+   * Строка называет записанное (проджект, бой 21.09.2026): «Поймала.
+   * Разберём, когда дойдём» не показывало, что именно записано, а
+   * «когда дойдём» читалось как «потом». Сфера и дело — в реплике.
    */
-  readonly quickAdd?: boolean | undefined;
+  readonly quickAdd?: { readonly topic: string; readonly title: string } | undefined;
 }
 
 export interface PresentResult {
@@ -412,9 +416,12 @@ export function presentDump(params: PresentParams): PresentResult {
    * означало бы риск получить вместо одной строки разбор — ровно то,
    * чего §13.3 просит не делать.
    */
-  if (params.quickAdd === true) {
+  if (params.quickAdd !== undefined) {
     return {
-      reply: { text: texts.answer.added, buttons: [] },
+      reply: {
+        text: texts.answer.added(params.quickAdd.topic, params.quickAdd.title),
+        buttons: [],
+      },
       reason: 'быстрое добавление',
     };
   }

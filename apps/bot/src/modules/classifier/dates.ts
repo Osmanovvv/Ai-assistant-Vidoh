@@ -1,5 +1,6 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
 import {
+  dayWordsIn,
   hasTimeWord,
   monthsIn,
   quoteClaimedBy,
@@ -40,6 +41,14 @@ export type DeadlineOutcome =
        * совпал с названным человеком, и дата пересчитана кодом.
        */
       readonly corrected?: 'weekday' | 'relative' | 'weekend' | 'month' | undefined;
+      /**
+       * День назван словами человека — в словах дела или в подтверждённой
+       * цитате (заказчица, бой 21.09.2026). `false` — срок держится только
+       * на словах о времени: цифрах, часах; день модель взяла из контекста,
+       * и своё предложение речи вправе его перебить. Без слов человека
+       * (проверка не работала) — считается названным: перебивать нечем.
+       */
+      readonly dayNamed?: boolean | undefined;
     }
   | { readonly ok: false; readonly reason: string }
   /** Срока просто нет — это не ошибка. */
@@ -455,6 +464,8 @@ export function resolveDeadline(
     return { ok: false, reason: `срок «${text}» слишком далеко` };
   }
 
+  let dayInWords = true;
+
   /**
    * Срок без слов о времени в речи человека — выдуманный (задача 2.7).
    *
@@ -481,6 +492,25 @@ export function resolveDeadline(
     // Цитата, которую содержат слова соседней записи, — её, не эта.
     const claimed = inSpeech && quoteClaimedBy(quoted, context.siblings ?? [], spoken);
     const quote = inSpeech && !claimed ? quoted.trim() : '';
+
+    /**
+     * Чужая цитата, с которой дата совпадает, — чужая дата (заказчица,
+     * бой 21.09.2026).
+     *
+     * «Записаться на Хайдру на среду, так? Так завтра. С 9 до 10 не
+     * забыть позвонить Елене Михайловне» — звонку модель дала среду с
+     * цитатой «на среду», словами соседа. Цитата снималась, но цифры
+     * «с 9 до 10» пускали дату и без неё: цифра — слово о времени.
+     * Часы дня не называют; дата, совпадающая с чужой цитатой, взята из
+     * неё, и держаться ей не на чем. Дата, с цитатой не совпадающая,
+     * держится на своих словах, как прежде.
+     */
+    if (claimed && dateAgreesWith(quoted, at, context)) {
+      return {
+        ok: false,
+        reason: `срок «${text}» опирается на цитату «${quoted.trim()}», которая относится к другой записи`,
+      };
+    }
 
     if (!hasTimeWord(context.said) && quote === '') {
       /**
@@ -512,6 +542,7 @@ export function resolveDeadline(
      */
     const words = quote === '' ? context.said : `${context.said} ${quote}`;
     const named = weekdaysIn(words);
+    dayInWords = dayWordsIn(words).length > 0;
 
     /**
      * Назван день недели — это день, даже если модель сказала «неделя»
@@ -658,7 +689,26 @@ export function resolveDeadline(
     }
   }
 
-  return { ok: true, deadline: { at: settled(at), accuracy } };
+  return { ok: true, deadline: { at: settled(at), accuracy }, dayNamed: dayInWords };
+}
+
+/** Дата следует из цитаты: тот же день недели, «завтра» или тот же месяц. */
+function dateAgreesWith(
+  quote: string,
+  at: Date,
+  context: { readonly now: Date; readonly timeZone: string },
+): boolean {
+  if (weekdaysIn(quote).includes(weekdayOf(at, context.timeZone))) return true;
+
+  const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
+  const sameDay = relativeDaysIn(quote).some((shift) => {
+    const wanted = new Date(today.getTime() + shift * 24 * 60 * 60_000);
+    return startOfDayInZone(localDateParts(wanted, context.timeZone), context.timeZone).getTime() ===
+      at.getTime();
+  });
+  if (sameDay) return true;
+
+  return monthsIn(quote).includes(localDateParts(at, context.timeZone).month);
 }
 
 /**

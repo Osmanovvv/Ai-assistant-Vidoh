@@ -182,9 +182,12 @@ export interface TextProfile {
      * Быстрое добавление (§13.3, задача 3.9).
      *
      * Одна строка и всё: ни выдачи действий, ни вопроса. Человек
-     * вспомнил на ходу, и разговор ему сейчас не нужен.
+     * вспомнил на ходу, и разговор ему сейчас не нужен. Строка называет
+     * сферу и записанное дело (проджект, бой 21.09.2026): без них
+     * «Поймала. Разберём, когда дойдём» читалось как «потом» и не
+     * показывало, что записано.
      */
-    readonly added: string;
+    readonly added: (topic: string, title: string) => string;
     readonly buttonDoNow: string;
     readonly buttonShowAll: string;
     readonly buttonLater: string;

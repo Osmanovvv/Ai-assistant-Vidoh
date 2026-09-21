@@ -1,4 +1,4 @@
-import { askedList } from '../backlog/list-questions.js';
+import { askedList, asksAboutEverything } from '../backlog/list-questions.js';
 import { askedDay } from '../backlog/periods.js';
 import type { Segment } from './router.service.js';
 
@@ -27,9 +27,12 @@ import type { Segment } from './router.service.js';
 /** Чьи сегменты разбираются: мысль и вопрос. Правки и ответы — нет. */
 const SPLITTABLE = new Set<Segment['intent']>(['DUMP', 'QUERY']);
 
-/** Слова, которыми спрашивают. */
+/**
+ * Слова, которыми спрашивают. «Напиши», «скинь», «пришли», «дай»,
+ * «отправь» — просьбы показать (заказчица, бой 21.09.2026).
+ */
 const ASK_WORD =
-  /(?<!\p{L})(?:что|чего|какие|какой|какая|кто|покажи|напомни|скажи|расскажи|перечисли|выведи)(?!\p{L})/iu;
+  /(?<!\p{L})(?:что|чего|какие|какой|какая|кто|покажи|напомни|скажи|расскажи|перечисли|выведи|напиши|выпиши|скинь|пришли|дай|выдай|отправь)(?!\p{L})/iu;
 
 /**
  * Граница предложений — по знаку конца и пробелу после него; и запятая
@@ -52,9 +55,19 @@ const INFINITIVE = /\p{L}+(?:ть|ться|чь|чься)(?!\p{L})/u;
  */
 const ASK_WORD_MORE = /(?<!\p{L})(?:сколько|много\s+ли)(?!\p{L})/iu;
 
+/**
+ * Вопрос обо всём — тоже (заказчица, бой 21.09.2026): «Напиши мне все,
+ * что накопилось» модель отдала мыслью, извлечение ничего не нашло, и
+ * человек прочёл «Я здесь. Расскажешь, что в голове?». Слова о «всём»
+ * код знает (`asksAboutEverything`); здесь они применяются там же, где
+ * вопрос о дне.
+ */
 function isDayQuestion(text: string): boolean {
   const asks = ASK_WORD.test(text) || ASK_WORD_MORE.test(text) || text.trim().endsWith('?');
-  return asks && (askedDay(text) !== undefined || askedList(text) !== undefined);
+  return (
+    asks &&
+    (askedDay(text) !== undefined || askedList(text) !== undefined || asksAboutEverything(text))
+  );
 }
 
 /** Части предложения: вопрос о дне и приклеенная к нему мысль. */

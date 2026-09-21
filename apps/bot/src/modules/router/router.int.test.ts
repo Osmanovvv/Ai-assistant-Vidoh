@@ -165,6 +165,92 @@ describe('явное дополнение поверх ответа модели
   });
 });
 
+describe('разговор с делами внутри — мысль (бой 21.09.2026, выгрузка Никиты)', () => {
+  it('хвост перечисления, названный моделью разговором, уходит в разбор мыслью', async () => {
+    /**
+     * Восемь дел одним голосовым; модель отдала хвост «потом надо будет
+     * позвонить маме… вот в общем вроде всё» разговором, и четыре дела
+     * пропали молча: разговор конвейер не разбирает.
+     */
+    const prompts = await prepare();
+    const head = 'Мне сегодня надо будет сходить к стоматологу в 13 0 0.';
+    const tail =
+      'Потом надо будет позвонить маме сегодня либо завтра. Вот также сходить купить еды, продукты, вот в общем вроде все.';
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          crisis: false,
+          segments: [
+            { intent: 'DUMP', text: head },
+            { intent: 'SMALLTALK', text: tail },
+          ],
+        }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input: `${head} ${tail}` });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['DUMP', 'DUMP']);
+    expect(result.segments[1]?.text).toBe(tail);
+  });
+
+  it('разговор без дел разговором и остаётся', async () => {
+    const prompts = await prepare();
+    const input = 'Надо купить хлеб. Вот в общем вроде все, спасибо.';
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          crisis: false,
+          segments: [
+            { intent: 'DUMP', text: 'Надо купить хлеб.' },
+            { intent: 'SMALLTALK', text: 'Вот в общем вроде все, спасибо.' },
+          ],
+        }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['DUMP', 'SMALLTALK']);
+  });
+});
+
+describe('обрезанный ответ модели (бой 21.09.2026, выгрузка Никиты)', () => {
+  it('хвост текста, которого нет ни в одном отрезке, возвращается в разбор мыслью', async () => {
+    /**
+     * Стенд 21.09 на его расшифровке: три отрезка `DUMP`, третий оборван
+     * на «Её в клинику ветеринарную,» — четыре дела в хвосте пропали.
+     */
+    const prompts = await prepare();
+    const head =
+      'В общем, смотри, мне сегодня надо будет сходить к стоматологу в 13 0 0 вот также. Потом надо будет погулять с собакой, также завтра вечером надо будет отвезти. Ее в клинику ветеринарную,';
+    const tail =
+      'потом надо будет позвонить маме сегодня либо завтра. Вот также сходить купить еды, продукты, вот в общем вроде все.';
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          crisis: false,
+          segments: [
+            {
+              intent: 'DUMP',
+              text: 'В общем, смотри, мне сегодня надо будет сходить к стоматологу в 13 0 0 вот также.',
+            },
+            {
+              intent: 'DUMP',
+              text: 'Потом надо будет погулять с собакой, также завтра вечером надо будет отвезти. Её в клинику ветеринарную,',
+            },
+          ],
+        }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input: `${head} ${tail}` });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['DUMP', 'DUMP', 'DUMP']);
+    expect(result.segments[2]?.text).toBe(tail);
+  });
+});
+
 describe('вопрос о дне внутри мысли (серия голосовых 18.09.2026, голос 3)', () => {
   it('модель оставила всё мыслью — вопрос выделяется кодом, «и ещё …» после него остаётся мыслью', async () => {
     const prompts = await prepare();
