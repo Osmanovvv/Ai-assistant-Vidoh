@@ -37,6 +37,8 @@ export const AWAITING = {
   promo: 'promo',
   /** `edit:6f1e…` — правка текста записи словами. */
   editPrefix: 'edit:',
+  /** Ждём час для дела (ТЗ проджекта 17.09.2026, шаг 5). */
+  retimePrefix: 'retime:',
 
   /**
    * То же словами, но **из настроек**, а не из опроса (§12.1).
@@ -72,6 +74,11 @@ export function parseAwaiting(value: string | null): Awaiting | undefined {
   if (value.startsWith(AWAITING.editPrefix)) {
     const itemId = value.slice(AWAITING.editPrefix.length);
     return itemId === '' ? undefined : { kind: 'edit', itemId };
+  }
+
+  if (value.startsWith(AWAITING.retimePrefix)) {
+    const itemId = value.slice(AWAITING.retimePrefix.length);
+    return itemId === '' ? undefined : { kind: 'retime', itemId };
   }
 
   const known: readonly string[] = [

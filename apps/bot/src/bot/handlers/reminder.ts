@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, gte, isNull } from 'drizzle-orm';
 import { type Bot } from 'grammy';
 import type { Logger } from 'pino';
 
@@ -10,7 +10,10 @@ import {
   startOfDayAfter,
   startOfDayInZone,
 } from '../../modules/classifier/dates.js';
+import { deadlineWords } from '../../modules/items/deadline-words.js';
+import { openItemsWhere } from '../../modules/items/items.repo.js';
 import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
+import { titleWithoutDate } from '../../modules/resolver/title-date.js';
 import { POSTPONE_DAYS, REMINDER_ACTION } from '../../modules/scheduler/reminder-actions.js';
 import { fromShortId } from '../../modules/shared/short-id.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
@@ -254,7 +257,61 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
      */
     await ctx.editMessageText(active.texts.reminders.projectLater);
   });
+
+  // ── «Все напоминания» (ТЗ проджекта 17.09.2026, шаг 5) ────────────────
+  /**
+   * Открытые дела с точным сроком от сегодняшнего дня, ближайшие первыми;
+   * час — там, где назван. Своим сообщением, а не правкой того, под
+   * которым нажали: кнопка стоит под ответом про дело, и он должен
+   * остаться на экране.
+   */
+  bot.callbackQuery(new RegExp(`^${REMINDER_ACTION.list}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const now = new Date();
+    const today = startOfDayInZone(localDateParts(now, active.timeZone), active.timeZone);
+    const rows = await db
+      .select()
+      .from(items)
+      .where(
+        and(
+          openItemsWhere(active.userId),
+          eq(items.deadlineAccuracy, 'day'),
+          gte(items.deadlineAt, today),
+        ),
+      )
+      .orderBy(asc(items.deadlineAt), asc(items.deadlineTime))
+      .limit(REMINDERS_LIST_LIMIT);
+
+    if (rows.length === 0) {
+      await ctx.reply(active.texts.reminders.listEmpty);
+      return;
+    }
+
+    const lines = rows.flatMap((item) =>
+      item.deadlineAt === null
+        ? []
+        : [
+            active.texts.reminders.listLine(
+              deadlineWords(
+                { ...item, deadlineAt: item.deadlineAt },
+                active.timeZone,
+                active.texts,
+              ),
+              titleWithoutDate(item.text),
+            ),
+          ],
+    );
+
+    await ctx.reply([active.texts.reminders.listTitle, ...lines].join(String.fromCharCode(10)));
+  });
 }
+
+/** Сколько строк в «Все напоминания»: §13.9 просит коротких сообщений. */
+const REMINDERS_LIST_LIMIT = 20;
 
 /** «завтра» или «2 сентября» — то, что человек прочитает в ответе. */
 function dayInWords(at: Date, timeZone: string): string {

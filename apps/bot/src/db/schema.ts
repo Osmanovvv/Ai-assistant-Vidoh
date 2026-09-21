@@ -171,6 +171,11 @@ export const userSettings = pgTable('user_settings', {
    * удавшейся отправки, чтобы сорвавшаяся попробовалась завтра.
    */
   morningCardAt: timestamp('morning_card_at', { withTimezone: true }),
+  /**
+   * Карточка 04 «Записала. Напомню в нужный момент.» показана (ТЗ по
+   * визуалам 18.09.2026): при первом деле с часом; дальше без картинки.
+   */
+  reminderCardAt: timestamp('reminder_card_at', { withTimezone: true }),
 
   /**
    * Чего бот ждёт от человека **словами** (задача 3.61).

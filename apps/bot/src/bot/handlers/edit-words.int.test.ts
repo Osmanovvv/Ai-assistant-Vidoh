@@ -385,3 +385,94 @@ describe('окно ожидания', () => {
     expect(await wentToDump('Позвонить бабушке')).toBe(true);
   });
 });
+
+describe('«Изменить время» — час словами (ТЗ проджекта 17.09.2026, шаг 5)', () => {
+  async function datedItem(time: number | null): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Сходить к стоматологу',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        sourceOrder: 0,
+        deadlineAt: new Date('2026-09-24T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: time,
+      })
+      .returning({ id: items.id });
+
+    return row!.id;
+  }
+
+  async function timeOfItem(id: string): Promise<number | null | undefined> {
+    const [row] = await testDb()
+      .select({ time: items.deadlineTime })
+      .from(items)
+      .where(eq(items.id, id));
+    return row?.time;
+  }
+
+  it('нажал, написал «10:30» — час записан, ответ называет его, есть чем отменить', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(13 * 60);
+
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+    expect(await awaitingOfUser()).toBe(`retime:${itemId}`);
+    const hint = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(hint)).toBe(defaultTexts.card.retimeHint);
+
+    await bot.handleUpdate(textUpdate('10:30'));
+
+    expect(await timeOfItem(itemId)).toBe(10 * 60 + 30);
+    expect(await awaitingOfUser()).toBeNull();
+    const last = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(last)).toBe(
+      defaultTexts.resolver.retimed('Сходить к стоматологу', '25.09', '10:30'),
+    );
+    expect(keyboardOf(last).map((button) => button.text)).toContain(
+      defaultTexts.resolver.buttonUndo,
+    );
+    // Текст в разбор не ушёл: это ответ на вопрос о времени.
+    expect(await wentToDump('10:30')).toBe(false);
+  });
+
+  it('«в 9» — не понято, ожидание остаётся; «9 утра» — понято', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(null);
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+
+    await bot.handleUpdate(textUpdate('в 9'));
+    expect(await timeOfItem(itemId)).toBeNull();
+    expect(await awaitingOfUser()).toBe(`retime:${itemId}`);
+    expect(textOf(calls.filter((call) => call.method === 'sendMessage').at(-1))).toBe(
+      defaultTexts.card.retimeNotUnderstood,
+    );
+
+    await bot.handleUpdate(textUpdate('9 утра'));
+    expect(await timeOfItem(itemId)).toBe(9 * 60);
+    expect(await awaitingOfUser()).toBeNull();
+  });
+
+  it('«Не менять» под подсказкой снимает ожидание', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(13 * 60);
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+    const hint = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    const keep = keyboardOf(hint).find(
+      (button) => button.text === defaultTexts.card.buttonKeepTime,
+    );
+    expect(keep?.callback_data).toBe(`i:tmx:${toShortId(itemId)}`);
+
+    await bot.handleUpdate(callbackUpdate(keep?.callback_data ?? ''));
+    expect(await awaitingOfUser()).toBeNull();
+    expect(await timeOfItem(itemId)).toBe(13 * 60);
+  });
+});

@@ -113,7 +113,10 @@ export interface CardDeps {
 /** Снимает ожидание нового заголовка, если оно есть; другие ожидания не трогает. */
 async function dropPendingEdit(db: Database, userId: string): Promise<void> {
   const state = await awaitingOf(db, userId);
-  if (state.expired || state.awaiting?.kind !== 'edit') return;
+  // Ожидание заголовка и ожидание часа — одной породы: любая кнопка снимает.
+  if (state.expired || (state.awaiting?.kind !== 'edit' && state.awaiting?.kind !== 'retime')) {
+    return;
+  }
 
   await setAwaiting(db, userId, null);
 }
@@ -344,6 +347,49 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         ],
       ]),
     });
+  });
+
+  /**
+   * «Изменить время» (ТЗ проджекта 17.09.2026, шаг 5): просит час словами,
+   * как «Изменить» просит заголовок. Час читает код (`clock-time.ts`), без
+   * модели; «Не менять» — выход для передумавшего.
+   */
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.retime}`, 'u'), async (ctx) => {
+    const active = await ownItem(
+      ctx.from.id,
+      ctx.callbackQuery.data.slice(CARD_ACTION.retime.length),
+    );
+
+    await ctx.answerCallbackQuery();
+    if (!active) {
+      await ctx.reply(textsFor(null).card.gone);
+      return;
+    }
+
+    await setAwaiting(db, active.userId, `${AWAITING.retimePrefix}${active.item.id}`);
+    await ctx.reply(active.texts.card.retimeHint, {
+      reply_markup: fitKeyboard([
+        [
+          {
+            label: active.texts.card.buttonKeepTime,
+            action: `${CARD_ACTION.retimeCancel}${toShortId(active.item.id)}`,
+          },
+        ],
+      ]),
+    });
+  });
+
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.retimeCancel}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const user = await findByTgId(db, ctx.from.id);
+    if (user) await dropPendingEdit(db, user.id);
+    const profile = user ? (await outputContextOf(db, user.id)).textProfile : null;
+
+    try {
+      await ctx.editMessageText(textsFor(profile).card.retimeKept);
+    } catch (error) {
+      logger.debug({ err: error }, 'Подсказку «Изменить время» не удалось заменить');
+    }
   });
 
   bot.callbackQuery(new RegExp(`^${CARD_ACTION.editCancel}`, 'u'), async (ctx) => {

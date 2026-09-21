@@ -213,6 +213,11 @@ export const reserved: TextProfile = {
     editNotApplied: 'Оставила как было.',
     buttonKeepTitle: 'Не менять',
     editKept: 'Хорошо, оставила как было.',
+    buttonRetime: 'Изменить время',
+    retimeHint: 'Во сколько напомнить? Напиши время — например, 10:30 или 6 вечера.',
+    retimeNotUnderstood: 'Не поняла время. Напиши, например, 10:30 или 6 вечера.',
+    buttonKeepTime: 'Не менять',
+    retimeKept: 'Хорошо, время оставила как было.',
     moveWhere: 'В какую сферу переложить?',
     moveNoTopics: 'Других сфер пока нет.',
     moved: (topic) => `Переложила в «${topic}».`,
@@ -432,6 +437,7 @@ export const reserved: TextProfile = {
     evening: 'На сегодня всё 🤍',
     all: (count) => `Собрала всё, что сейчас есть — ${count}.`,
     buttonMyTasks: 'Мои дела',
+    reminder: 'Записала. Напомню в нужный момент.',
   },
 
   returning: {
@@ -493,6 +499,10 @@ export const reserved: TextProfile = {
     deadlineHourNow: (time, text) => `Сейчас, в ${time}: ${text}.`,
     buttonDone: 'Сделано',
     buttonPostpone: 'Перенести',
+    buttonAll: 'Все напоминания',
+    listTitle: 'Напоминания:',
+    listEmpty: 'Дел с датой пока нет — назови день, и я напомню.',
+    listLine: (when, title) => `— ${when} · ${title}`,
     done: 'Отметила.',
     postponed: (title, when) => `Перенесла «${title}» на ${when}.`,
 

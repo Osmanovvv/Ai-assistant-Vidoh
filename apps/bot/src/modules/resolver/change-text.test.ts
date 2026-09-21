@@ -165,6 +165,28 @@ describe('describeChange', () => {
     );
   });
 
+  it('под ответом про дело с часом — «Изменить время» и «Все напоминания» после «Отменить» (шаг 5)', () => {
+    const retimed: Applied = {
+      ...applied(['deadlineTime']),
+      after: {
+        ...ITEM,
+        deadlineAt: new Date('2026-09-24T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 10 * 60 + 30,
+      },
+    };
+
+    expect(changeButtons(retimed, defaultTexts).map((button) => button.label)).toEqual([
+      defaultTexts.resolver.buttonUndo,
+      defaultTexts.card.buttonRetime,
+      defaultTexts.reminders.buttonAll,
+    ]);
+    // Без часа кнопок про время нет — как раньше.
+    expect(
+      changeButtons(applied(['deadlineAt']), defaultTexts).map((button) => button.label),
+    ).toEqual([defaultTexts.resolver.buttonUndo]);
+  });
+
   it('«отложить» называет день, до которого отложено (ревизия этапа 3, C1)', () => {
     const snoozed: Applied = {
       ...applied(['status', 'deadlineAt', 'deadlineAccuracy']),

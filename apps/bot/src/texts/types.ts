@@ -322,6 +322,16 @@ export interface TextProfile {
      */
     readonly buttonKeepTitle: string;
     readonly editKept: string;
+    /**
+     * «Изменить время» (ТЗ проджекта 17.09.2026, шаг 5): кнопка под
+     * ответом про дело с часом; подсказка просит час словами; непонятый
+     * час — просьба повторить, ожидание остаётся; «Не менять» — выход.
+     */
+    readonly buttonRetime: string;
+    readonly retimeHint: string;
+    readonly retimeNotUnderstood: string;
+    readonly buttonKeepTime: string;
+    readonly retimeKept: string;
     /** Выбор сферы и три исхода переноса (§8.2: обновляются обе ветки). */
     readonly moveWhere: string;
     readonly moveNoTopics: string;
@@ -706,6 +716,8 @@ export interface TextProfile {
     /** 05 — «покажи всё» при 15+ делах; `count` уже со склонением. */
     readonly all: (count: string) => string;
     readonly buttonMyTasks: string;
+    /** 04 — первое напоминание в указанный час; дальше без картинки. */
+    readonly reminder: string;
   };
 
   readonly returning: {
@@ -794,6 +806,14 @@ export interface TextProfile {
     readonly deadlineHourNow: (time: string, text: string) => string;
     readonly buttonDone: string;
     readonly buttonPostpone: string;
+    /**
+     * «Все напоминания» (ТЗ проджекта 17.09.2026, шаг 5): дела с датой,
+     * ближайшие первыми; строка — «— 25.09, 15:00 · Сходить к стоматологу».
+     */
+    readonly buttonAll: string;
+    readonly listTitle: string;
+    readonly listEmpty: string;
+    readonly listLine: (when: string, title: string) => string;
     readonly done: string;
     /** «Перенесла «Оплатить квитанцию» на завтра.» — с названием дела (находка 22). */
     readonly postponed: (title: string, when: string) => string;
