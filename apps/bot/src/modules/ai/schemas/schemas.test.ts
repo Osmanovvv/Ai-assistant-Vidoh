@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   EXTRACTOR_SCHEMA_NAME,
   INTENTS,
+  PRESENTER_SCHEMA_NAME,
+  PRESENTER_V2_SCHEMA_NAME,
+  presenterSchema,
+  presenterV2Schema,
   ROUTER_SCHEMA_NAME,
   SCHEMAS,
   SCHEMA_BY_STAGE,
@@ -207,6 +211,32 @@ describe('схема маршрутизатора', () => {
     const segments = Array.from({ length: 20 }, () => ({ intent: 'DUMP', text: 'дело' }));
 
     expect(routerSchema.safeParse({ crisis: false, segments }).success).toBe(true);
+  });
+});
+
+describe('схема контекстной строки (presenter.v2)', () => {
+  /**
+   * Живые ответы с контекстом (22.09.2026): модель пишет одну-две фразы
+   * поверх ответа, собранного кодом. Пустая строка — законный ответ:
+   * «сказать нечего» лучше натянутой фразы (её текст о характере: «не в
+   * каждом ответе, не натянуто»).
+   */
+  it('принимает строку и пустую строку', () => {
+    expect(presenterV2Schema.safeParse({ line: 'Про стоматолога помню.' }).success).toBe(true);
+    expect(presenterV2Schema.safeParse({ line: '' }).success).toBe(true);
+  });
+
+  it('отвергает длинную строку и ответ без поля', () => {
+    expect(presenterV2Schema.safeParse({ line: 'а'.repeat(400) }).success).toBe(false);
+    expect(presenterV2Schema.safeParse({ acknowledgement: 'Я тебя услышала.' }).success).toBe(
+      false,
+    );
+  });
+
+  it('новые промпты презентера заливаются со второй схемой, первая остаётся для отката', () => {
+    expect(SCHEMA_BY_STAGE.presenter).toBe(PRESENTER_V2_SCHEMA_NAME);
+    expect(findSchema(PRESENTER_SCHEMA_NAME)).toBe(presenterSchema);
+    expect(findSchema(PRESENTER_V2_SCHEMA_NAME)).toBe(presenterV2Schema);
   });
 });
 

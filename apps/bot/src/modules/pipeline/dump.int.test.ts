@@ -39,6 +39,7 @@ import {
   CLASSIFIER_SCHEMA_NAME,
   EXTRACTOR_SCHEMA_NAME,
   PRESENTER_SCHEMA_NAME,
+  PRESENTER_V2_SCHEMA_NAME,
   RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
@@ -744,8 +745,7 @@ describe('разбор', () => {
     const dumpWithHour = (text: string) =>
       echoingLlm({
         router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
-        extractor: () =>
-          JSON.stringify({ units: [{ text, isProject: false, isEmotion: false }] }),
+        extractor: () => JSON.stringify({ units: [{ text, isProject: false, isEmotion: false }] }),
         classifier: () =>
           JSON.stringify({
             items: [
@@ -6662,5 +6662,122 @@ describe('слова к самому боту: помощь и отмена по
     const { all } = await say('отмени последнее');
 
     expect(all.at(-1)).toBe(defaultTexts.resolver.nothingToUndo);
+  });
+});
+
+describe('живая строка поверх ответа (слой A, 22.09.2026)', () => {
+  /**
+   * Заказчица 21.09.2026: «бот не живой, шаблонный… чтобы помнил из
+   * контекста, что это за женщина». Ответ по-прежнему собирает код; модель
+   * пишет одну-две фразы поверх — из фактов, которые ей дал код. Здесь
+   * проверяется связка: факты доходят, строка встаёт второй, выключатель
+   * и страж работают, отказ модели ответа не ломает.
+   */
+  async function livePrompts(): Promise<PromptRegistry> {
+    const prompts = await seedPrompts();
+    // Вторая версия презентера — со своей схемой; первая осталась в базе.
+    await seedPrompt(testDb(), {
+      stage: 'presenter',
+      version: 'presenter@live',
+      prompt: MARKERS.presenter,
+      schemaName: PRESENTER_V2_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'presenter', 'presenter@live');
+    return prompts;
+  }
+
+  async function dumpWith(
+    llm: MockLlmProvider,
+    prompts: PromptRegistry,
+  ): Promise<{ reply: string; presenterInputs: string[] }> {
+    await queuedBatchOf([
+      { kind: 'text', text: 'записаться к стоматологу', offsetMs: 0 },
+      { kind: 'text', text: 'купить хлеб', offsetMs: 1_000 },
+    ]);
+    const { sender, all } = recordingSender();
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    return {
+      reply: all.at(-1) ?? '',
+      presenterInputs: llm.requests
+        .filter((request) => stageOf(request) === 'presenter')
+        .map((request) => request.input),
+    };
+  }
+
+  it('факты о ней уходят модели, строка встаёт второй под признанием', async () => {
+    const prompts = await livePrompts();
+    const llm = echoingLlm({
+      presenter: JSON.stringify({ line: 'Стоматолога помню — запись одна, срок обновила.' }),
+    });
+
+    const { reply, presenterInputs } = await dumpWith(llm, prompts);
+
+    expect(reply.split(String.fromCharCode(10)).slice(0, 2)).toEqual([
+      'Всё, забрала. Записала 2 дела и разложила по местам.',
+      'Стоматолога помню — запись одна, срок обновила.',
+    ]);
+    expect(presenterInputs).toHaveLength(1);
+    expect(presenterInputs[0]).toContain('Имя: Аня');
+    expect(presenterInputs[0]).toContain('Записано сейчас:');
+    expect(presenterInputs[0]).toContain('— записаться к стоматологу (личное)');
+    expect(presenterInputs[0]).toContain('Первая выгрузка');
+  });
+
+  it('выключатель в панели: 0 — модель не зовётся, ответ как прежде', async () => {
+    const prompts = await livePrompts();
+    await putSetting(testDb(), { name: 'contextLine', value: '0' });
+    const llm = echoingLlm({ presenter: JSON.stringify({ line: 'Стоматолога помню.' }) });
+
+    const { reply, presenterInputs } = await dumpWith(llm, prompts);
+
+    expect(presenterInputs).toHaveLength(0);
+    expect(reply.split(String.fromCharCode(10))[1]).toBe('');
+  });
+
+  it('строка не прошла стража — ответ как прежде, без неё', async () => {
+    const prompts = await livePrompts();
+    const llm = echoingLlm({
+      presenter: JSON.stringify({ line: 'Не переживай, всё будет хорошо.' }),
+    });
+
+    const { reply, presenterInputs } = await dumpWith(llm, prompts);
+
+    expect(presenterInputs).toHaveLength(1);
+    expect(reply).not.toContain('Не переживай');
+    expect(reply.split(String.fromCharCode(10))[1]).toBe('');
+  });
+
+  it('модель не ответила — разбор и ответ целы', async () => {
+    const prompts = await livePrompts();
+    const llm = echoingLlm({
+      presenter: () => {
+        throw new Error('модель недоступна');
+      },
+    });
+
+    const { reply } = await dumpWith(llm, prompts);
+
+    expect(reply).toContain('Записала 2 дела');
+    expect(reply).toContain(defaultTexts.answer.keepOrPick);
+  });
+
+  it('активен презентер первой версии — модель за строкой не зовётся', async () => {
+    // Между выкладкой кода и заливкой промпта: платить за чужую схему нельзя.
+    const prompts = await seedPrompts();
+    const llm = echoingLlm({ presenter: JSON.stringify({ line: 'Стоматолога помню.' }) });
+
+    const { reply, presenterInputs } = await dumpWith(llm, prompts);
+
+    expect(presenterInputs).toHaveLength(0);
+    expect(reply).toContain('Записала 2 дела');
   });
 });

@@ -113,6 +113,12 @@ export interface BuildReplyParams {
   /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
   readonly summary?: DumpSummary | undefined;
   /**
+   * Живая строка (слой A, 22.09.2026): одна-две фразы от модели о том,
+   * что бот помнит, — уже проверенные стражем (`context-line.ts`).
+   * Стоит сразу под признанием. Нет — ответ как прежде.
+   */
+  readonly contextLine?: string | undefined;
+  /**
    * В выгрузке одни чувства, новых дел нет (правка заказчицы
    * 14.09.2026, п. 1.5). Ответ — одно признание: без вопроса и кнопок.
    */
@@ -180,6 +186,10 @@ export function buildReply(params: BuildReplyParams): Reply {
    * один вопрос на обмен.
    */
   const lines: string[] = [params.acknowledgement];
+  // Живая строка — продолжением признания, своей строкой без пустой.
+  if (params.contextLine !== undefined && params.contextLine !== '') {
+    lines.push(params.contextLine);
+  }
 
   const spheres = (params.summary?.spheres ?? []).map((sphere) => {
     const name = sphere.name.charAt(0).toUpperCase() + sphere.name.slice(1);
@@ -378,6 +388,8 @@ export interface PresentParams {
   /** См. `BuildReplyParams.omitQuestion`. */
   /** Раскладка по сферам и сроки на сегодня/завтра (п. 3, 16.09.2026). */
   readonly summary?: DumpSummary | undefined;
+  /** См. `BuildReplyParams.contextLine`. */
+  readonly contextLine?: string | undefined;
   /** См. `BuildReplyParams.feelingsOnly`. */
   readonly feelingsOnly?: boolean | undefined;
   /** См. `BuildReplyParams.mood`. */
@@ -435,6 +447,7 @@ export function presentDump(params: PresentParams): PresentResult {
       feelingsOnly: params.feelingsOnly,
       mood: params.mood,
       summary: params.summary,
+      contextLine: params.contextLine,
     }),
   };
 }

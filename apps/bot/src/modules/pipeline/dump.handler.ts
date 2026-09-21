@@ -57,6 +57,9 @@ import {
   feelingsOnlyReply,
   presentDump,
 } from '../presenter/presenter.service.js';
+import { askContextLine } from '../presenter/context-line.js';
+import { packContext } from '../presenter/context-pack.js';
+import { loadContextFacts } from '../presenter/context-pack.repo.js';
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
@@ -2276,9 +2279,46 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const actions = (await withNextSteps(db, selection.shown)).map((item) => item.text);
 
+    /**
+     * Живая строка (слой A, 22.09.2026): одна-две фразы от модели о том,
+     * что бот помнит, — поверх ответа, который собирает код. Факты ей
+     * даёт код закрытым списком (`context-pack.ts`), строку проверяет
+     * страж (`context-line.ts`); не прошла или модель молчит — ответ как
+     * прежде. Не зовётся: при одних чувствах (там её слова из словаря),
+     * при быстром добавлении (одна строка по §13.3), без дел и желаний
+     * (не о чем), и при выключателе в панели — тогда и расхода нет.
+     */
+    const hasRecorded = units.some((unit) => unit.type === 'TASK' || unit.type === 'DESIRE');
+    const wantsLine =
+      hasRecorded &&
+      !feelingsOnly &&
+      quickAdded === undefined &&
+      ((await deps.settings?.number('contextLine')) ?? 1) !== 0;
+    const contextLine = wantsLine
+      ? (
+          await askContextLine(ai, {
+            userId: batch.userId,
+            batchId: batch.id,
+            pack: packContext({
+              now,
+              timeZone: context.timeZone,
+              texts,
+              batchId: batch.id,
+              units,
+              known: [...split.known, ...late.known].map((item) => item.text),
+              // Открытые дела — прочитанные до вставки: своё новое не «прежнее».
+              openItems: before,
+              mood,
+              ...(await loadContextFacts(db, { userId: batch.userId, batchId: batch.id, now })),
+            }),
+          })
+        ).line
+      : undefined;
+
     const presented = presentDump({
       composition,
       actions,
+      contextLine,
       // «Сделать сейчас» ведёт к первому из показанных (E2).
       firstItemId: selection.shown[0]?.id,
       hidden: selection.hidden,

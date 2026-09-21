@@ -91,6 +91,42 @@ describe('buildReply', () => {
     ]);
   });
 
+  it('живая строка — второй строкой после признания, до раскладки (слой A, 22.09.2026)', () => {
+    /**
+     * Модель пишет одну-две фразы о том, что бот помнит; они стоят сразу
+     * под признанием, своей строкой без пустой — как продолжение мысли,
+     * а не отдельный блок. Пустая — ответ как прежде.
+     */
+    const withLine = buildReply({
+      texts,
+      acknowledgement: acknowledgementOf({ ...NOTHING, tasks: 2 }, texts),
+      batchId,
+      contextLine: 'Стоматолога ты уже записывала — оставила одну запись, срок обновила.',
+      summary: { spheres: [{ name: 'здоровье', icon: '🩺', count: 2 }], today: [], tomorrow: [] },
+    });
+
+    expect(withLine.text).toBe(
+      [
+        'Всё, забрала. Записала 2 дела и разложила по местам.',
+        'Стоматолога ты уже записывала — оставила одну запись, срок обновила.',
+        '',
+        '🩺 Здоровье — 2',
+        '',
+        'Оставить как есть или выбрать главное?',
+      ].join(String.fromCharCode(10)),
+    );
+    expect(countQuestions(withLine.text)).toBe(1);
+
+    const without = buildReply({
+      texts,
+      acknowledgement: acknowledgementOf({ ...NOTHING, tasks: 2 }, texts),
+      batchId,
+      contextLine: undefined,
+      summary: { spheres: [{ name: 'здоровье', icon: '🩺', count: 2 }], today: [], tomorrow: [] },
+    });
+    expect(without.text.split(String.fromCharCode(10))[1]).toBe('');
+  });
+
   it('сегодня и завтра — своими строками; сфера без иконки — без иконки; без итога — только признание и вопрос', () => {
     const both = buildReply({
       texts,
