@@ -34,3 +34,25 @@ export const presenterSchema = z.object({
 });
 
 export type PresenterAcknowledgement = z.infer<typeof presenterSchema>;
+
+/**
+ * Вторая версия — контекстная строка (живые ответы, 22.09.2026).
+ *
+ * Модель больше не пишет признание: его собирает код по образцу
+ * заказчицы («Всё, забрала. Записала 6 дел…»). Она пишет одну-две фразы
+ * **поверх** — то, что показывает: бот помнит, кто эта женщина и что у
+ * неё есть, и уже что-то сделал за неё. Пустая строка — законный ответ:
+ * «сказать нечего» лучше натянутой фразы. Правила §13 (без вопроса, без
+ * запрещённых фраз, только то, что есть в контексте) проверяются кодом
+ * в `presenter/context-line.ts`: схема их выразить не может.
+ */
+export const PRESENTER_V2_SCHEMA_NAME = 'presenter.v2';
+
+/** Две короткие фразы; длиннее — уже абзац, а не строка. */
+const MAX_LINE = 240;
+
+export const presenterV2Schema = z.object({
+  line: z.string().max(MAX_LINE),
+});
+
+export type PresenterLine = z.infer<typeof presenterV2Schema>;
