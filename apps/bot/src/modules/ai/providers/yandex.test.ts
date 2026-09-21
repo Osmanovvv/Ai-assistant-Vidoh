@@ -61,7 +61,7 @@ describe('успешный вызов', () => {
     // посчитается по строке и даст ноль.
     expect(result.tokensIn).toBe(247);
     expect(result.tokensOut).toBe(582);
-    expect(result.model).toBe('yandexgpt/latest');
+    expect(result.model).toBe('yandexgpt-5-pro');
   });
 
   it('просит Yandex не сохранять содержание запроса (x-data-logging-enabled: false)', async () => {
@@ -163,7 +163,7 @@ describe('успешный вызов', () => {
   });
 
   it('название модели попадает в имя провайдера: модели стоят по-разному', () => {
-    expect(new YandexLlmProvider(options).name).toBe('yandex:yandexgpt/latest');
+    expect(new YandexLlmProvider(options).name).toBe('yandex:yandexgpt-5-pro');
     expect(new YandexLlmProvider({ ...options, model: 'yandexgpt-lite/latest' }).name).toBe(
       'yandex:yandexgpt-lite/latest',
     );

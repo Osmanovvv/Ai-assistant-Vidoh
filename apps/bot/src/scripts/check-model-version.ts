@@ -125,4 +125,6 @@ for (const name of names) {
 
 process.stdout.write(`\n${await guard.costReport()}\n`);
 await closeDb();
-process.exit(mismatched === 0 ? 0 : 1);
+// Без process.exit: на Windows он обрывает закрытие пула базы и роняет
+// процесс проверкой libuv уже после напечатанного итога.
+process.exitCode = mismatched === 0 ? 0 : 1;

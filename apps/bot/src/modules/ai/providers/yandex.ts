@@ -39,7 +39,7 @@ export interface YandexLlmOptions {
 }
 
 const DEFAULT_BASE_URL = 'https://llm.api.cloud.yandex.net';
-const DEFAULT_MODEL = 'yandexgpt/latest';
+const DEFAULT_MODEL = 'yandexgpt-5-pro';
 const DEFAULT_TEMPERATURE = 0.1;
 const DEFAULT_MAX_TOKENS = 4_000;
 
@@ -204,8 +204,10 @@ export class YandexLlmProvider implements LlmProvider {
       model: this.model,
       tokensIn: toCount(usage?.['inputTextTokens']),
       tokensOut: toCount(usage?.['completionTokens']),
-      // Версия приходит датой сборки: у ветки latest это 09.02.2025
-      // (YandexGPT Pro 5), у rc — yagpt-5.1-2025-08. Проверено 27.08.2026.
+      // Версия приходит датой сборки: у Pro 5 (`yandexgpt-5-pro`, прежде
+      // ветка latest) это 09.02.2025, у Lite 5 — 25.03.2025, у ветки rc —
+      // yagpt-5.1-2025-08. Проверено 27.08.2026 и пробой 22.09.2026.
+      // Ожидаемые сборки и сторож — `providers/versions.ts`.
       ...(typeof version === 'string' && version !== '' ? { modelVersion: version } : {}),
     };
   }

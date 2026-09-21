@@ -437,6 +437,23 @@ describe('провайдер расшифровки', () => {
  * вчерашние, — и человек получил бы разбор чужой выгрузки, ничего не
  * заподозрив.
  */
+describe('модели по умолчанию', () => {
+  /**
+   * Закрепление модели по имени (22.09.2026). Ветки `latest`/`rc`
+   * Yandex переставляет на новое поколение сам; явное имя стоит на
+   * месте. Проба 22.09: за `yandexgpt-5-pro` та же сборка 09.02.2025,
+   * что за `latest`, за `yandexgpt-5-lite` — та же 25.03.2025.
+   */
+  it('умолчания — явные имена моделей, а не ветки', () => {
+    const env = parseEnv(valid);
+
+    expect(env.YANDEX_LLM_MODEL).toBe('yandexgpt-5-pro');
+    expect(env.YANDEX_LLM_MODEL_LIGHT).toBe('yandexgpt-5-lite');
+    expect(env.YANDEX_LLM_MODEL).not.toMatch(/\/(latest|rc|deprecated)$/u);
+    expect(env.YANDEX_LLM_MODEL_LIGHT).not.toMatch(/\/(latest|rc|deprecated)$/u);
+  });
+});
+
 describe('запись ответов модели', () => {
   it('без файла записи не настраивается', () => {
     // Воспроизводить нечего, а тихо работать в этом состоянии нельзя.

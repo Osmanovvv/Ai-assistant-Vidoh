@@ -237,7 +237,10 @@ describe('прайс-лист (задача 2.21)', () => {
     const env = modelEnvSchema.parse({});
 
     expect(
-      modelsWithoutPrice([`yandex:${env.YANDEX_LLM_MODEL}`, `yandex:${env.YANDEX_LLM_MODEL_LIGHT}`]),
+      modelsWithoutPrice([
+        `yandex:${env.YANDEX_LLM_MODEL}`,
+        `yandex:${env.YANDEX_LLM_MODEL_LIGHT}`,
+      ]),
     ).toEqual([]);
   });
 });

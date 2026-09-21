@@ -417,7 +417,18 @@ const modelFields = z.object({
    * этого вызова, а не всего набора.
    */
   CASSETTE_BASE: z.string().min(1).optional(),
-  YANDEX_LLM_MODEL: z.string().min(1).default('yandexgpt/latest'),
+  /**
+   * Полная модель — явным именем, а не веткой (закрепление 22.09.2026).
+   *
+   * `yandexgpt/latest` — указатель: Yandex дважды переставлял его на
+   * новое поколение и советует явные URI. За `yandexgpt-5-pro` стоит та
+   * же сборка 09.02.2025, на которой мерился порог качества (проба
+   * 22.09.2026, `scripts/check-model-version.ts`); теперь модель
+   * меняется только нашим решением после замера. Сборку сторожит
+   * `providers/versions.ts`. Когда Yandex объявит конец поддержки Pro 5,
+   * имя надо будет переключить руками — после прогона набора.
+   */
+  YANDEX_LLM_MODEL: z.string().min(1).default('yandexgpt-5-pro'),
 
   /**
    * Лёгкая модель. Ею работает маршрутизатор намерений (§7.1, задача 2.4):
@@ -427,7 +438,7 @@ const modelFields = z.object({
    * На задаче 2.22 на неё же переключаются остальные этапы при превышении
    * мягкого лимита расхода.
    */
-  YANDEX_LLM_MODEL_LIGHT: z.string().min(1).default('yandexgpt-lite/latest'),
+  YANDEX_LLM_MODEL_LIGHT: z.string().min(1).default('yandexgpt-5-lite'),
 });
 
 export type ModelEnv = z.infer<typeof modelFields>;

@@ -29,7 +29,8 @@ describe('createLlmProvider', () => {
     );
 
     expect(mock.name).toBe('mock-llm');
-    expect(yandex.name).toBe('yandex:yandexgpt/latest');
+    // Умолчание — явное имя модели, не ветка (закрепление 22.09.2026).
+    expect(yandex.name).toBe('yandex:yandexgpt-5-pro');
   });
 
   it('по умолчанию заглушка: разработка не зависит от чужого счёта', () => {
