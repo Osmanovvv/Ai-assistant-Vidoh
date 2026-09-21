@@ -60,7 +60,7 @@ import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
 import { deadlineWords } from '../items/deadline-words.js';
-import { titleUnderDayHeader } from '../items/item-text.js';
+import { titleUnderDayHeader, withCapital } from '../items/item-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
 import { returningAfterPause } from '../returning/returning.service.js';
@@ -2183,6 +2183,23 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     });
 
     /**
+     * Реплика быстрого добавления называет записанное (проджект, бой
+     * 21.09.2026): «Поймала. Разберём, когда дойдём» не показывало, что
+     * именно записано. Запись при быстром добавлении одна — считается
+     * выше, — и она берётся из тех же трёх источников, что и счёт.
+     */
+    const added = quickAdd ? [...saved, ...split.known, ...late.known][0] : undefined;
+    const quickAdded =
+      added === undefined
+        ? undefined
+        : {
+            // Тема у записи всегда есть — без своей она ложится в тему по
+            // умолчанию; пустота здесь только на бумаге схемы.
+            topic: withCapital(added.topic ?? topics.defaultName),
+            title: withCapital(added.text),
+          };
+
+    /**
      * Пробный период тратит разобранная выгрузка (§14, задача 4.3).
      *
      * **Здесь, а не в конвейере при статусе «done».** До этой строки
@@ -2257,7 +2274,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       feelingsOnly,
       mood,
-      quickAdd,
+      quickAdd: quickAdded,
       // Раскладка по сферам и «на сегодня / на завтра» — по разобранным
       // единицам этой выгрузки (заказчица, 16.09.2026, п. 3).
       summary: summarizeDump(units, { now, timeZone: context.timeZone }),

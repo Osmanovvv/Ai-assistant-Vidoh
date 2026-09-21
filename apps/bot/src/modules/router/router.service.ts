@@ -2,8 +2,10 @@ import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
 import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
 import { splitClosings } from './closing.js';
+import { restoreUncovered } from './coverage.js';
 import { splitDayQuestions } from './day-question.js';
 import { splitPatchTails } from './patch-tail.js';
+import { looksLikeThought } from './thought-words.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -172,7 +174,26 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     };
   }
 
-  const { segments, reordered } = orderByText(params.input, outcome.value.segments);
+  const ordered = orderByText(params.input, outcome.value.segments);
+  const { reordered } = ordered;
+
+  /**
+   * Обрезанный ответ модели (бой 21.09.2026, выгрузка Никиты): третий
+   * отрезок оборван на полуслове, хвоста с четырьмя делами в ответе нет.
+   * Непокрытый отрезками кусок с делами возвращается в разбор мыслью
+   * на своём месте — см. `coverage.ts`.
+   */
+  const segments = restoreUncovered(params.input, ordered.segments);
+
+  if (segments.length !== ordered.segments.length) {
+    deps.logger?.warn(
+      {
+        promptVersion: outcome.promptVersion,
+        restored: segments.length - ordered.segments.length,
+      },
+      'Модель вернула не весь текст, непокрытый кусок с делами возвращён в разбор мыслью',
+    );
+  }
 
   /**
    * Дополнение к сказанному — правкой, а не новой мыслью (§7.4).
@@ -213,6 +234,30 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  /**
+   * Разговор с делами внутри — мысль (бой 21.09.2026, выгрузка Никиты).
+   *
+   * Хвост перечисления «потом надо будет позвонить маме… вот в общем
+   * вроде всё» модель назвала разговором, и четыре дела пропали молча:
+   * разговор конвейер не разбирает и в черновик не кладёт. Слово долга
+   * или глагол дела в таком отрезке — признак мысли; списки закрытые,
+   * см. `thought-words.ts`.
+   */
+  const thoughts = marked.map((segment) =>
+    segment.intent === 'SMALLTALK' && looksLikeThought(segment.text)
+      ? { ...segment, intent: 'DUMP' as const }
+      : segment,
+  );
+
+  const rescued = thoughts.filter((one, index) => one.intent !== marked[index]?.intent).length;
+
+  if (rescued > 0) {
+    deps.logger?.info(
+      { promptVersion: outcome.promptVersion, count: rescued },
+      'Разговор с делами внутри разбираем как мысль',
+    );
+  }
+
   if (reordered) {
     deps.logger?.warn(
       { promptVersion: outcome.promptVersion, count: segments.length },
@@ -226,11 +271,11 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * мыслями, и модель то делает из вопроса дело, то теряет мысль в
    * вопросе. См. `day-question.ts`.
    */
-  const withQuestions = splitDayQuestions(marked);
+  const withQuestions = splitDayQuestions(thoughts);
 
-  if (withQuestions.length !== marked.length) {
+  if (withQuestions.length !== thoughts.length) {
     deps.logger?.info(
-      { promptVersion: outcome.promptVersion, before: marked.length, after: withQuestions.length },
+      { promptVersion: outcome.promptVersion, before: thoughts.length, after: withQuestions.length },
       'Вопрос о дне внутри мысли выделен кодом',
     );
   }

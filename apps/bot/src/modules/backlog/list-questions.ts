@@ -70,6 +70,30 @@ function without(text: string, ...markers: readonly RegExp[]): string {
   return rest;
 }
 
+/**
+ * Вопрос обо всём сразу: ни дня, ни предмета — одна рамка (заказчица,
+ * 16.09.2026, панель п. 3).
+ *
+ * На бою 16.09.2026 «Покажи все мои задачи» уходило в поиск по смыслу, где
+ * на «все задачи» ничего похожего не находилось, — и при шести делах
+ * человек читал «Про это у меня ничего не записано». То же правило, что у
+ * дня (F2), с обратным знаком: там слово о времени без предмета, здесь —
+ * ни того, ни другого.
+ *
+ * Живёт здесь, а не в службе ответов: тем же правилом маршрутизатор
+ * узнаёт вопрос внутри мысли (`router/day-question.ts`), а служба
+ * ответов тянет базу, и звать её из маршрутизатора нельзя.
+ */
+export function asksAboutEverything(text: string): boolean {
+  const words = wordsOf(text);
+  if (words.length === 0) return false;
+  if (askedDay(text) !== undefined) return false;
+
+  const frame = new Set(FRAME_WORDS.map((word) => word.replace(/ё/gu, 'е')));
+
+  return words.every((word) => frame.has(word));
+}
+
 function typeOf(marker: string): 'DESIRE' | 'IDEA' | 'goal' {
   if (marker.startsWith('иде')) return 'IDEA';
   if (marker.startsWith('цел') || marker.startsWith('проект')) return 'goal';

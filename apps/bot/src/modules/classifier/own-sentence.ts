@@ -152,10 +152,90 @@ function tokens(text: string): readonly string[] {
  * Отмена остаётся первым словом отрезка: дальше её узнают по началу.
  */
 export function sentencesOf(speech: string): readonly string[] {
-  return speech
+  const split = speech
     .split(/[.!?\n]+|,?\s+(?=хотя\s+(?:нет|давай)(?!\p{L}))/iu)
     .map((one) => one.trim())
     .filter((one) => one.length > 0);
+
+  return glueDayFragments(split);
+}
+
+/**
+ * Слова-заполнители: обрывок из них и одного дня — не предложение.
+ * Список закрытый; предмет («хлеб», «маме») в него не входит.
+ */
+const FILLERS = [
+  'так',
+  'ну',
+  'вот',
+  'и',
+  'а',
+  'потом',
+  'еще',
+  'также',
+  'значит',
+  'дальше',
+  'теперь',
+  'да',
+  'ага',
+  'короче',
+  'итак',
+  'ладно',
+  'хорошо',
+  'окей',
+  'ок',
+  'все',
+];
+
+/**
+ * Обрывок «Так завтра.» — начало следующего предложения (заказчица, бой
+ * 21.09.2026).
+ *
+ * Расшифровка: «…на Хайдру на среду, так? Так завтра. С 9 до 10 не
+ * забыть позвонить. Елене Михайловне в бухгалтерию.» — точка после
+ * «завтра» отрезала день от дела, и звонок остался без него. Человек
+ * так и говорит: «так, завтра — позвонить». Обрывок приклеивается
+ * только когда он целиком из заполнителей и ровно одного определённого
+ * дня: «так завтра или в среду» — два дня, «купить хлеб завтра» —
+ * предмет, оба остаются как есть.
+ */
+function glueDayFragments(sentences: readonly string[]): readonly string[] {
+  const glued: string[] = [];
+  let carry = '';
+
+  for (const sentence of sentences) {
+    const withCarry = carry === '' ? sentence : `${carry} ${sentence}`;
+    carry = '';
+
+    const words = tokens(withCarry);
+    const marks = marksIn(withCarry);
+    const only = marks[0];
+    const onlyDay =
+      marks.length === 1 &&
+      only !== undefined &&
+      isDefinite(only) &&
+      words.every((word) => FILLERS.includes(word) || markAt([word], 0) !== undefined);
+
+    if (onlyDay) carry = withCarry;
+    else glued.push(withCarry);
+  }
+
+  if (carry !== '') glued.push(carry);
+
+  return glued;
+}
+
+/** В тексте названо хоть одно обозначение дня — включая расплывчатое. */
+export function namesDay(text: string): boolean {
+  return marksIn(text).length > 0;
+}
+
+/** Предложения речи, которых запись касается дословно (см. `touchedSentences`). */
+export function ownSentences(itemText: string, spoken: string): readonly string[] {
+  const item = tokens(itemText);
+  if (item.length < 2) return [];
+
+  return touchedSentences(item, sentencesOf(spoken));
 }
 
 /**

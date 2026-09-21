@@ -1156,3 +1156,125 @@ describe('слово о времени суток берёт день у сло�
     expect(result.corrections.deadline).toBe(1);
   });
 });
+
+describe('названное время уже прошло — срок завтра (проджект, бой 21.09.2026)', () => {
+  it('«в 9:00» в 15:01 без «сегодня» — завтра; «сегодня … в 13:00» — сегодня', async () => {
+    /**
+     * Выгрузка Никиты, 15:01 по Омску. Модель дала обоим делам сегодня:
+     * который час, она не знает — в промпте только дата. Проджект:
+     * «как он на 9:00 записал на сегодня, если уже это время прошло???».
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Сходить к стоматологу в 13:00',
+            deadline: '2026-09-21',
+            deadlineAccuracy: 'day',
+            deadlineText: 'сегодня',
+          },
+          {
+            text: 'Отнести компьютер на чистку, замена термопасты в 9:00',
+            deadline: '2026-09-21',
+            deadlineAccuracy: 'day',
+            deadlineText: 'В 9 0 0',
+          },
+          { text: 'Погулять с собакой' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(
+        'Сходить к стоматологу в 13:00',
+        'Отнести компьютер на чистку, замена термопасты в 9:00',
+        'Погулять с собакой',
+      ),
+      timeZone: 'Asia/Omsk',
+      now: new Date('2026-09-21T09:01:00.000Z'),
+      speech:
+        'В общем, смотри, мне сегодня надо будет сходить к стоматологу в 13 0 0 вот также. В 9 0 0 мне надо отнести компьютер на чистку, замена термопасты. Потом надо будет погулять с собакой.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items.map((item) => item.deadline?.at.toISOString())).toEqual([
+      '2026-09-20T18:00:00.000Z',
+      '2026-09-21T18:00:00.000Z',
+      undefined,
+    ]);
+    expect(result.corrections.deadline).toBe(1);
+  });
+});
+
+describe('день без слова о дне уступает своему предложению речи (заказчица, бой 21.09.2026)', () => {
+  it('«Так завтра. С 9 до 10 не забыть позвонить…» — завтра, а не среда соседа', async () => {
+    /**
+     * Стенд 21.09 на её расшифровке: звонку модель дала 23.09 с цитатой
+     * «с 9 до 10» — часы, не день; среду она взяла у соседа «на Хайдру на
+     * среду». Цифры пускали дату без слова о дне. Хайдре модель дала
+     * «завтра» — код вернул её на среду по названному дню недели.
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'записаться в Краснодаре на Хайдру на среду',
+            deadline: '2026-09-22',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+          },
+          {
+            text: 'с 9 до 10 не забыть позвонить Елене Михайловне в бухгалтерию',
+            deadline: '2026-09-23',
+            deadlineAccuracy: 'day',
+            deadlineText: 'с 9 до 10',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(
+        'записаться в Краснодаре на Хайдру на среду',
+        'с 9 до 10 не забыть позвонить Елене Михайловне в бухгалтерию',
+      ),
+      now: new Date('2026-09-21T06:46:52.000Z'),
+      speech:
+        'Записаться в Краснодаре на Хайдру на среду, так? Так завтра. С 9 до 10 не забыть позвонить. Елене Михайловне в бухгалтерию. Вроде бы пока все из срочного.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items.map((item) => item.deadline?.at.toISOString())).toEqual([
+      '2026-09-22T21:00:00.000Z',
+      '2026-09-21T21:00:00.000Z',
+    ]);
+    expect(result.corrections.deadline).toBe(2);
+  });
+
+  it('без дня в своём предложении дата модели остаётся', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'позвонить в банк в 15:00',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в 15:00',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('позвонить в банк в 15:00'),
+      speech: 'Надо позвонить в банк в 15:00 и купить хлеб.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.deadline?.at.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+    expect(result.corrections.deadline).toBe(0);
+  });
+});

@@ -28,6 +28,7 @@ import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
 import type { CardSender } from '../cards/cards.js';
+import { withCapital } from '../items/item-text.js';
 import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
 import { QUESTION_ACTION } from '../resolver/change-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
@@ -4885,14 +4886,20 @@ describe('быстрое добавление (§13.3, задача 3.9)', () =>
       userId,
     );
 
-    expect(all.at(-1)).toBe(defaultTexts.answer.added);
-    // Ни списка действий, ни вопроса «с чего начнём».
-    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(false);
-    expect(all.some((text) => text.includes('С чего начнём'))).toBe(false);
-
     // Запись при этом создана: короткий ответ не значит «ничего не делал».
     const saved = await testDb().select().from(items).where(eq(items.userId, userId));
     expect(saved).toHaveLength(2);
+
+    // Реплика называет сферу и записанное дело (проджект, бой 21.09.2026).
+    const vitamins = saved.find((item) => item.text !== 'Сверить кассу');
+    if (vitamins === undefined) throw new Error('ожидалась запись про витамины');
+    expect(all.at(-1)).toBe(
+      defaultTexts.answer.added(withCapital(vitamins.topic ?? ''), withCapital(vitamins.text)),
+    );
+    expect(all.at(-1)).toMatch(/^Записала в «[^»]+»: .+\.$/u);
+    // Ни списка действий, ни вопроса «с чего начнём».
+    expect(all.some((text) => text.includes('Сверить кассу'))).toBe(false);
+    expect(all.some((text) => text.includes('С чего начнём'))).toBe(false);
   });
 
   it('обычная выгрузка режим не включает', async () => {
@@ -4912,7 +4919,7 @@ describe('быстрое добавление (§13.3, задача 3.9)', () =>
       userId,
     );
 
-    expect(all.at(-1)).not.toBe(defaultTexts.answer.added);
+    expect(all.at(-1)).not.toMatch(/^Записала в «/u);
   });
 });
 
@@ -4990,7 +4997,7 @@ describe('пробный период тратит только разобран
 
     // Сперва убедимся, что режим действительно включился: иначе
     // проверка прошла бы на обычной выгрузке и ничего не значила.
-    expect(all.at(-1)).toBe(defaultTexts.answer.added);
+    expect(all.at(-1)).toMatch(/^Записала в «[^»]+»: .+\.$/u);
     expect((await trialMarks())[0]).not.toBeNull();
   });
 
