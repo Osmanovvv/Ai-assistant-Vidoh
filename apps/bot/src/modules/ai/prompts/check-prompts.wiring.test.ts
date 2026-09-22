@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { UnknownSchemaError } from '../schemas/index.js';
+import { OPTIONAL_STAGES, UnknownSchemaError } from '../schemas/index.js';
 import { promptFailureAdvice, PromptNotFoundError, SchemaMismatchError } from './registry.js';
 
 /**
@@ -84,6 +84,21 @@ describe('связка: сторож печатает причину и сове
     const guarded = code.slice(code.indexOf('for (const stage of stages)'));
 
     expect(/catch\s*\{/u.test(guarded.slice(0, 400)), 'причина снова глотается').toBe(false);
+  });
+
+  it('этапы живого голоса названы необязательными — без них бот не падает (22.09.2026)', () => {
+    /**
+     * `presenter` (живая строка) и `answerer` (ответ на вопрос) при
+     * отсутствии промпта модель не зовут вовсе и отвечают словарём.
+     * Печатать про них «разбор работать не будет, бот упадёт на первой
+     * выгрузке» — неправда, а неправду в выкладке читать перестанут
+     * вместе с настоящими отказами.
+     */
+    expect(OPTIONAL_STAGES).toEqual(new Set(['presenter', 'answerer']));
+    expect(script, 'необязательные этапы не отделены от обязательных').toContain('OPTIONAL_STAGES');
+    expect(script, 'необязательный этап не должен ронять выкладку').toMatch(
+      /missing|необязательн/u,
+    );
   });
 
   it('выкладка не советует заливку поверх чужого разбора', () => {

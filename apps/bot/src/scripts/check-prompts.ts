@@ -1,6 +1,6 @@
 import { closeDb, getDb } from '../infra/db.js';
 import { loadActivePrompt, promptFailureAdvice } from '../modules/ai/prompts/registry.js';
-import { SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
+import { OPTIONAL_STAGES, SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
 import type { AiStage } from '../db/schema.js';
 
 /**
@@ -32,6 +32,8 @@ interface Broken {
 }
 
 const broken: Broken[] = [];
+/** Необязательные этапы: без них бот отвечает словарём, а не падает. */
+const missing: Broken[] = [];
 const found: string[] = [];
 
 for (const stage of stages) {
@@ -48,17 +50,34 @@ for (const stage of stages) {
      * `catch {}` и печатались одной строкой с одним советом — а бот к
      * этому моменту уже поднят и хоронит выгрузки.
      */
-    broken.push({
+    const failure = {
       stage,
       why: error instanceof Error ? error.message : String(error),
       advice: promptFailureAdvice(error),
-    });
+    };
+    // Живой голос без промпта молчит, а не роняет разбор (22.09.2026).
+    if (OPTIONAL_STAGES.has(stage)) missing.push(failure);
+    else broken.push(failure);
   }
 }
 
 await closeDb();
 
 for (const line of found) process.stdout.write(`  ${line}\n`);
+
+if (missing.length > 0) {
+  /**
+   * Предупреждение, а не отказ: живой голос без промпта просто молчит,
+   * и бот отвечает словарём, как до 22.09.2026. Печатать про него «бот
+   * упадёт на первой выгрузке» — неправда, а неправду в выкладке
+   * перестанут читать вместе с настоящими отказами.
+   */
+  process.stdout.write('\nБез промпта — отвечает словарём, это не отказ:\n');
+  for (const item of missing) process.stdout.write(`  ${item.stage}: ${item.why}\n`);
+  for (const advice of new Set(missing.map((item) => item.advice))) {
+    process.stdout.write(`\n  ${advice}\n`);
+  }
+}
 
 if (broken.length > 0) {
   process.stderr.write('\nРазбор работать не будет:\n');
@@ -80,4 +99,6 @@ if (broken.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write(`\nВсе ${String(stages.length)} этапов разбора обеспечены промптами.\n`);
+process.stdout.write(
+  `\nВсе ${String(stages.length - missing.length)} обязательных этапов разбора обеспечены промптами.\n`,
+);
