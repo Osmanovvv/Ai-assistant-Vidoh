@@ -49,6 +49,11 @@ const REPROACH =
   /(?<!\p{L})(так и не|до сих пор не|опять не|снова не|всё ещё не сделал\p{L}*)(?!\p{L})/iu;
 /** «Помнишь», «знаешь» — говорить за неё; помнит бот (третий проход 22.09.2026). */
 const FOR_HER = /(?<!\p{L})(помнишь|знаешь|видишь|понимаешь|записывалась|записалась)(?!\p{L})/iu;
+/**
+ * Просьба к ней сделать работу бота (бой 22.09.2026): «Если есть что-то
+ * срочное — напомни». Помнит бот, а не она; «напомню» о себе — можно.
+ */
+const ASKS_HER = /(?<!\p{L})(напомни|подскажи|сообщи|уточни|перечисли)(?!\p{L})/iu;
 /** Канцелярит и язык таск-менеджера — «не таск-менеджер» из её текста. */
 const OFFICE = /(?<!\p{L})(просрочен|выгрузк|статус|категори|задач)\p{L}*(?!\p{L})/giu;
 /** Обещания и планы за неё — «не заставляет организовывать». */
@@ -197,6 +202,7 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   if (limits.allowMust !== true && MUST.test(line)) return { ok: false, why: 'совет' };
   if (PRESSURE.test(line)) return { ok: false, why: 'давление' };
   if (FOR_HER.test(line)) return { ok: false, why: 'за неё' };
+  if (ASKS_HER.test(line)) return { ok: false, why: 'просит её' };
   if (REPROACH.test(line)) return { ok: false, why: 'упрёк' };
   // Канцелярит — кроме слова из её же записи: «сдать задачу по математике».
   for (const match of line.matchAll(OFFICE)) {
