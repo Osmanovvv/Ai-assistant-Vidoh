@@ -111,9 +111,21 @@ export class RecordingLlmProvider implements LlmProvider {
 export class ReplayLlmProvider implements LlmProvider {
   readonly name = CASSETTE_LLM_MODEL;
 
+  /**
+   * День, к которому разворачиваются даты ответов, — **день записи**
+   * (22.09.2026).
+   *
+   * Ключ запроса считается от него же: вход следующей стадии собирается
+   * из дат предыдущего ответа, и разворот к сегодняшнему дню ломал
+   * совпадение ключей через сутки после записи. Прогон набора 22.09 по
+   * записи от 21.09 показал «точность срока −4,7 п.п.» и потерю единиц
+   * на коде, где про сроки ничего не менялось: числа набора обязаны
+   * зависеть от кода, а не от дня прогона. Свой день можно задать — это
+   * нужно тестам.
+   */
   constructor(
     private readonly player: CassettePlayer,
-    private readonly now: () => Date = () => new Date(),
+    private readonly now: () => Date = () => player.recordedAt,
   ) {}
 
   complete(request: CompletionRequest): Promise<CompletionResult> {
