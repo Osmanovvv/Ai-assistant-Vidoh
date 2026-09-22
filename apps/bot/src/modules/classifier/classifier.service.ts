@@ -13,6 +13,7 @@ import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurr
 import { withoutDayQuestions } from '../router/day-question.js';
 import { clockTimeOf, dayAfterPassedClock } from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
+import { looksLikeSomedayTask } from './someday-task.js';
 import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
@@ -338,6 +339,26 @@ export function correctItems(
       if (priority === 'NONE') priority = 'LATER';
       corrections.type++;
       logger?.info({ promptVersion }, 'Желание с рамкой срока записано делом');
+    }
+
+    /**
+     * «Когда-нибудь разобрать фотографии» — дело на потом, а не желание
+     * (известный промах 17.09.2026, починен 22.09.2026).
+     *
+     * Названо конкретное действие, отложенное словами, и ни одного слова
+     * желания: место такому в «⏳ Позже», а не в желаниях, куда списки
+     * дел не заглядывают. Правило узкое (`someday-task.ts`), важность —
+     * «позже»: «когда-нибудь» — это не «сейчас».
+     */
+    if (
+      type === 'DESIRE' &&
+      looksLikeSomedayTask(saidOf[index] ?? item.text) &&
+      !looksLikeDatedWish(saidOf[index] ?? item.text, ctx.speech ?? ctx.spoken)
+    ) {
+      type = 'TASK';
+      if (priority === 'NONE') priority = 'LATER';
+      corrections.type++;
+      logger?.info({ promptVersion }, 'Отложенное словами дело записано делом, не желанием');
     }
 
     // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не
