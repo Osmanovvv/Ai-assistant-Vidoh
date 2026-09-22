@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clockTimeOf, clockTimesIn, dayAfterPassedClock } from './clock-time.js';
+import { clockTimeOf, clockTimesIn, dateEchoesClock, dayAfterPassedClock } from './clock-time.js';
 
 /**
  * Названное время уже прошло — срок не сегодня (проджект, бой 21.09.2026).
@@ -233,5 +233,38 @@ describe('час после «на» (живой прогон Никиты 23.09
   it('«в полдень» — 12:00, одно чтение', () => {
     expect(clockTimesIn('перенеси на полдень')).toEqual([[12 * 60]]);
     expect(clockTimesIn('созвон в полдень')).toEqual([[12 * 60]]);
+  });
+});
+
+describe('дата от модели — эхо часа (живой прогон Никиты 23.09.2026)', () => {
+  /**
+   * «Перенеси посылку на пол 1» — модель вернула срок 2026-10-01: увидела
+   * «на 1» и сделала из него первое число. Единственное число в словах —
+   * час, дня в словах нет вовсе, а день срока совпал с этим числом. Такой
+   * срок — не срок, и применять его нельзя.
+   */
+  it('единственное число — час, дня в словах нет, день срока равен этому числу', () => {
+    expect(dateEchoesClock('Перенеси посылку на пол 1.', '2026-10-01')).toBe(true);
+    expect(dateEchoesClock('перенеси на 12 часов', '2026-09-12')).toBe(true);
+    expect(dateEchoesClock('давай в 9 30', '2026-10-09')).toBe(true);
+  });
+
+  it('число названо и вне часа — срок настоящий', () => {
+    expect(dateEchoesClock('перенеси на 1 сентября на пол 1', '2026-09-01')).toBe(false);
+    expect(dateEchoesClock('на 12 число в 12 часов', '2026-10-12')).toBe(false);
+  });
+
+  it('день назван словом — срок настоящий, даже если число совпало', () => {
+    expect(dateEchoesClock('перенеси на завтра на пол 1', '2026-10-01')).toBe(false);
+    expect(dateEchoesClock('в пятницу в 9 30', '2026-10-09')).toBe(false);
+  });
+
+  it('часа в словах нет — правило молчит: «на 12» может быть и числом', () => {
+    expect(dateEchoesClock('перенеси на 12', '2026-10-12')).toBe(false);
+    expect(dateEchoesClock('перенеси на пятницу', '2026-09-25')).toBe(false);
+  });
+
+  it('день срока не совпал с числом часа — срок настоящий', () => {
+    expect(dateEchoesClock('перенеси на пол 1', '2026-09-24')).toBe(false);
   });
 });
