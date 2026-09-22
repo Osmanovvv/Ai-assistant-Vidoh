@@ -231,8 +231,11 @@ test.describe('промпты (§15; задача 4.8)', () => {
 
     const ok = page.getByTestId('freshness-ok');
 
-    await expect(ok).toContainText('Набор не мерит: Ответ человеку');
+    // Имена стадий человеческие: «Живая строка в ответе» (с 22.09.2026
+    // презентер пишет строку поверх ответа), ключей базы на экране нет.
+    await expect(ok).toContainText('Набор не мерит: Живая строка в ответе');
     await expect(ok).not.toContainText('presenter');
+    await expect(ok).not.toContainText('answerer');
   });
 
   test('цикл целиком: создать, прогнать, включить, откатить', async ({ page }) => {
