@@ -128,8 +128,19 @@ export function questionFacts(params: QuestionFactsParams): string {
   ];
 
   if (answer.kind === 'about' || answer.kind === 'aboutClosed') {
+    /**
+     * Состояние в факты не идёт (бой 22.09.2026): на «Как мне всё
+     * успеть?» поиск нашёл запись «устала за эту неделю», модель её
+     * процитировала и добавила «береги силы». §13.7 — бот не разбирает
+     * состояние и не советует; да и спрашивали не о нём.
+     */
+    const found = answer.items.filter((item) => item.type !== 'EMOTION');
+    if (found.length === 0) {
+      lines.push('По вопросу ничего не найдено');
+      return lines.join('\n');
+    }
     lines.push('Найдено по вопросу:');
-    for (const item of answer.items.slice(0, MAX_FOUND)) lines.push(foundLine(item, context));
+    for (const item of found.slice(0, MAX_FOUND)) lines.push(foundLine(item, context));
     return lines.join('\n');
   }
 

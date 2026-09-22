@@ -109,6 +109,49 @@ describe('факты для ответа', () => {
     );
   });
 
+  it('состояние в факты не идёт: «устала за неделю» — не дело, и цитировать его нельзя (бой 22.09.2026)', () => {
+    /**
+     * На бою «Как мне всё успеть?» получило ответ «Помню, что ты устала
+     * за эту неделю — береги силы»: запись-состояние попала в найденное,
+     * модель её процитировала и дала совет. §13.7: бот не анализирует
+     * состояние и не советует.
+     */
+    const facts = questionFacts({
+      question: 'как мне всё успеть',
+      now,
+      timeZone: MOSCOW,
+      texts: defaultTexts,
+      answer: {
+        kind: 'about',
+        items: [
+          item('Устала за эту неделю, нет сил ни на что', { type: 'EMOTION', topic: 'личное' }),
+          item('Купить хлеб', { topic: 'покупки', deadlineAt: day(1), deadlineAccuracy: 'day' }),
+        ],
+      },
+    });
+
+    expect(facts).not.toContain('Устала');
+    expect(facts).toContain('— Купить хлеб');
+  });
+
+  it('состояние не идёт и в обзор', () => {
+    const facts = questionFacts({
+      question: 'что горит',
+      now,
+      timeZone: MOSCOW,
+      texts: defaultTexts,
+      answer: { kind: 'nothing' },
+      overview: [
+        item('Я на нуле совсем', { type: 'EMOTION' }),
+        item('Сдать отчёт', { deadlineAt: day(0), deadlineAccuracy: 'day' }),
+      ],
+    });
+
+    expect(facts).not.toContain('нуле');
+    expect(facts).toContain('Сдать отчёт');
+    expect(facts).toContain('Открытых дел всего: 1');
+  });
+
   it('закрытое — с состоянием: сделано или отменено', () => {
     const facts = questionFacts({
       question: 'что там с няней',

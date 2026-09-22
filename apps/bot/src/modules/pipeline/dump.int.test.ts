@@ -6845,6 +6845,7 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     question: string,
     llm: MockLlmProvider,
     prompts: PromptRegistry,
+    embedder: MockEmbeddingProvider = new MockEmbeddingProvider(),
   ): Promise<{ replies: string[]; answererInputs: string[] }> {
     await queuedBatchOf([{ kind: 'text', text: question, offsetMs: 0 }]);
     const { sender, all } = recordingSender();
@@ -6857,7 +6858,7 @@ describe('живой ответ на вопрос о делах (слой B, 22.
           prompts,
           llm,
           sender,
-          embedder: new MockEmbeddingProvider(),
+          embedder,
         }),
       },
       userId,
@@ -6869,6 +6870,9 @@ describe('живой ответ на вопрос о делах (слой B, 22.
         .map((request) => request.input),
     };
   }
+
+  /** Один и тот же вектор на любой текст: похожесть 1, поиск находит. */
+  const oneVector = Array.from({ length: 256 }, (_, index) => (index === 0 ? 1 : 0));
 
   const routerQuery = (text: string): string =>
     JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text }] });
@@ -6900,6 +6904,31 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     expect(answererInputs[0]).toContain('Вопрос: как всё успеть');
     expect(answererInputs[0]).toContain('На сегодня: Сдать отчёт в 21:00');
     expect(replies.at(-1)).toBe('На сегодня у тебя один отчёт к 21:00 — остальное подождёт.');
+  });
+
+  it('проза про одну-две записи идёт без списка под ней (бой 22.09.2026)', async () => {
+    // На бою «Что там со стоматологом?» получило прозу и следом строку
+    // «— Записаться к стоматологу»: то же самое дважды.
+    const prompts = await answeringPrompts();
+    const classified = { type: 'TASK', priority: 'SOON', topic: 'здоровье' } as const;
+    // С вектором: поиск по смыслу ищет по нему, а не по словам.
+    await testDb()
+      .insert(items)
+      .values({ userId, ...classified, text: 'Записаться к стоматологу', embedding: oneVector });
+    const llm = echoingLlm({
+      router: routerQuery('что там со стоматологом'),
+      answerer: JSON.stringify({
+        answer: 'Ты хотела записаться к стоматологу — запись всё ещё открыта.',
+      }),
+    });
+
+    // Один вектор на всё: поиск по смыслу находит запись, и ветка — «about».
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies, answererInputs } = await ask('что там со стоматологом', llm, prompts, same);
+
+    // Ветка именно «нашлось»: иначе проверка мерила бы другой путь.
+    expect(answererInputs[0]).toContain('Найдено по вопросу:');
+    expect(replies.at(-1)).toBe('Ты хотела записаться к стоматологу — запись всё ещё открыта.');
   });
 
   it('ответ не прошёл стража или пуст — словарный ответ, как раньше', async () => {
