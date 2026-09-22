@@ -282,6 +282,22 @@ describe('напоминание в указанный час (ТЗ продже
     expect(plan.some((one) => one.kind === 'deadline_hour')).toBe(false);
   });
 
+  it('до часа меньше упреждения — напоминание ровно в час, а не никогда (бой 22.09.2026)', () => {
+    // «Сегодня в 3:10 позвонить сестре», сказано в 2:39: 2:40 уже позади,
+    // и напоминания не было вовсе. Час ещё впереди — значит в час.
+    const plan = planFor(
+      input({
+        now: new Date('2026-08-31T09:45:00.000Z'), // 12:45 МСК 31-го
+        deadlines: [dentist],
+      }),
+    );
+
+    const hour = plan.find((one) => one.kind === 'deadline_hour');
+    expect(hour).toBeDefined();
+    expect(shown(hour!.dueAt)).toBe('2026-08-31 13:00');
+    expect(hour!.dedupeKey).toBe('deadline_hour:i1:2026-08-31:13:00');
+  });
+
   it('названный человеком час внутри тишины всё равно приходит', () => {
     // «Сейчас» — вечер накануне, чтобы 22:30 следующего дня легло в горизонт.
     const plan = planFor(

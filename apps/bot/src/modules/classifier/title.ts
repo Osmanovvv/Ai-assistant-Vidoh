@@ -1,4 +1,5 @@
 import type { ItemType } from '../ai/schemas/classifier.js';
+import { withoutClockPhrase } from './clock-time.js';
 
 /**
  * Заголовок дела — чистое повеление (видео заказчицы 15.09.2026).
@@ -52,7 +53,13 @@ const ONLY_TIME = new RegExp(
 
 export function cleanTitle(
   text: string,
-  item: { readonly type: ItemType; readonly hasDeadline: boolean; readonly hasRule?: boolean },
+  item: {
+    readonly type: ItemType;
+    readonly hasDeadline: boolean;
+    readonly hasRule?: boolean;
+    /** Час стал сроком (`deadline.time`): в заголовке он дубль карточки. */
+    readonly hasHour?: boolean;
+  },
 ): string {
   if (item.type !== 'TASK') return text;
 
@@ -62,6 +69,8 @@ export function cleanTitle(
    * модальное. Круг ограничен: каждое правило снимает только начало.
    */
   let rest = text.trim();
+  // Час — где угодно во фразе, с предлогом: «Позвонить сестре в 3:10 сегодня».
+  if (item.hasHour === true) rest = withoutClockPhrase(rest);
   for (let round = 0; round < 4; round += 1) {
     const before = rest;
     rest = rest.replace(LEADING_MODAL, '');

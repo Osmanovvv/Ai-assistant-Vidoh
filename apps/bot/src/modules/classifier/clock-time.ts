@@ -151,6 +151,75 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
 }
 
 /**
+ * Фраза о часе во всём тексте — где она стоит (бой 22.09.2026).
+ *
+ * Нужна, чтобы срезать час из заголовка, когда он стал сроком: «Позвонить
+ * сестре в 3:10 сегодня» уходило в список как есть, а рядом стоял «Срок:
+ * 03:10». Те же формы, что читает `clockTimesIn`, и те же исключения
+ * («в 3 магазина» — не час); предлог перед числом входит в фразу.
+ */
+function clockPhraseSpan(
+  text: string,
+): { readonly start: number; readonly end: number } | undefined {
+  const normalized = normalize(text);
+  let best: { start: number; end: number } | undefined;
+  const offer = (match: RegExpExecArray, time: ClockTime | undefined): void => {
+    if (time === undefined) return;
+    const start = match.index;
+    const end = match.index + match[0].length;
+    if (best === undefined || start < best.start) best = { start, end };
+  };
+
+  for (const match of normalized.matchAll(DAYPART)) {
+    const before = normalized.slice(0, match.index);
+    if (match[2] === 'дня' && !TIME_PREPOSITION.test(before)) continue;
+    offer(match, withDaypart(Number(match[1]), match[2] ?? ''));
+  }
+  for (const match of normalized.matchAll(COLON)) {
+    offer(match, single(minutesOf(Number(match[1]), Number(match[2]))));
+  }
+  for (const match of normalized.matchAll(DOT)) {
+    const minute = Number(match[2]);
+    if (minute === 0 || minute > NOON) offer(match, single(minutesOf(Number(match[1]), minute)));
+  }
+  for (const match of normalized.matchAll(SPOKEN)) {
+    const minute = (match[2] ?? '').replace(/\s+/gu, '');
+    offer(match, single(minutesOf(Number(match[1]), Number(minute))));
+  }
+  for (const match of normalized.matchAll(RANGE)) {
+    if (Number(match[1]) < Number(match[2])) offer(match, bareHour(Number(match[1])));
+  }
+  for (const match of normalized.matchAll(BARE)) {
+    const rest = normalized.slice(match.index + match[0].length);
+    if (NOT_AN_HOUR.test(rest)) continue;
+    offer(match, bareHour(Number(match[1])));
+  }
+  if (best === undefined) return undefined;
+
+  // Предлог и запятая перед числом — часть фразы; «часов» и часть суток после — тоже.
+  const head = normalized.slice(0, best.start);
+  const lead = /(?:,\s*)?(?:(?<!\p{L})(?:в|к|до|около|после)\s+)?$/u.exec(head);
+  const start = lead === null ? best.start : best.start - lead[0].length;
+  const tail = /^(?:\s+час(?:ов|а)?)?(?:\s+(?:утра|дня|вечера|ночи))?/u.exec(
+    normalized.slice(best.end),
+  );
+  const end = best.end + (tail?.[0].length ?? 0);
+  return { start, end };
+}
+
+/** Текст без первой фразы о часе; нет её — как есть. */
+export function withoutClockPhrase(text: string): string {
+  const span = clockPhraseSpan(text);
+  if (span === undefined) return text;
+
+  const cut = `${text.slice(0, span.start)} ${text.slice(span.end)}`
+    .replace(/\s+/gu, ' ')
+    .replace(/\s+,/gu, ',')
+    .replace(/^[\s,]+|[\s,]+$/gu, '');
+  return cut;
+}
+
+/**
  * Час дела — для напоминания в указанный час (ТЗ проджекта 17.09.2026,
  * шаг 5).
  *

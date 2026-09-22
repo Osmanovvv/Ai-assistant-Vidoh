@@ -91,9 +91,35 @@ describe('cleanTitle', () => {
     );
   });
 
+  it('час срезается, когда стал сроком: он в карточке и в напоминании, в заголовке — дубль (бой 22.09.2026)', () => {
+    // «Позвонить сестре в 3:10 сегодня» ушло в список как есть, а рядом
+    // стоял «Срок: 03:10». Час — где угодно во фразе, с предлогом.
+    const timed = { type: 'TASK', hasDeadline: true, hasHour: true } as const;
+
+    expect(cleanTitle('Позвонить сестре в 3:10 сегодня', timed)).toBe('Позвонить сестре сегодня');
+    expect(cleanTitle('Сходить к стоматологу в 13:00', timed)).toBe('Сходить к стоматологу');
+    expect(cleanTitle('В 9 0 0 отнести компьютер', timed)).toBe('Отнести компьютер');
+    expect(cleanTitle('Отнести компьютер на чистку, замена термопасты в 9:00', timed)).toBe(
+      'Отнести компьютер на чистку, замена термопасты',
+    );
+    expect(cleanTitle('До 6 вечера забрать заказ', timed)).toBe('Забрать заказ');
+    expect(cleanTitle('Позвонить маме в 15 часов', timed)).toBe('Позвонить маме');
+    expect(cleanTitle('Встреча с 9 до 10', timed)).toBe('Встреча');
+  });
+
+  it('без часа в сроке цифры во фразе не трогаются', () => {
+    expect(cleanTitle('Зайти в 3 магазина', dated)).toBe('Зайти в 3 магазина');
+    expect(cleanTitle('Сходить к стоматологу в 13:00', dated)).toBe(
+      'Сходить к стоматологу в 13:00',
+    );
+  });
+
   it('если после среза не остаётся дела — оставляет как было', () => {
     expect(cleanTitle('Надо', task)).toBe('Надо');
     expect(cleanTitle('Хочу завтра', dated)).toBe('Хочу завтра');
     expect(cleanTitle('  надо  ', task)).toBe('  надо  ');
+    expect(cleanTitle('В 13:00', { type: 'TASK', hasDeadline: true, hasHour: true })).toBe(
+      'В 13:00',
+    );
   });
 });

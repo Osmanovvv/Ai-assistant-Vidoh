@@ -620,6 +620,22 @@ describe('напоминание в указанный час (ТЗ продже
     expect(hour?.buttons).toEqual(['Сделано', 'Перенести']);
   });
 
+  it('названо меньше чем за полчаса — напоминание ровно в час и словами «Сейчас» (бой 22.09.2026)', async () => {
+    // «В 3:10 позвонить сестре», сказано в 2:39: до часа 31 минута минус
+    // секунды — упреждение уже позади. Раньше напоминания не было вовсе.
+    await dentist();
+    await planReminders(deps(), { now: new Date('2026-08-31T09:45:00.000Z') }); // 12:45 МСК
+
+    expect(await countReminders('deadline_hour')).toBe(1);
+
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T09:59:00.000Z') });
+    expect(outbox.some((one) => one.text.includes('13:00'))).toBe(false);
+
+    await dispatchReminders(deps(), { now: new Date('2026-08-31T10:00:00.000Z') });
+    const hour = outbox.find((one) => one.text.includes('13:00'));
+    expect(hour?.text).toBe('Сейчас, в 13:00: Сходить к стоматологу.');
+  });
+
   it('час убрали или перенесли — напоминание про прежний час не приходит', async () => {
     const id = await dentist();
     await planReminders(deps(), { now: new Date('2026-08-31T06:00:00.000Z') });
