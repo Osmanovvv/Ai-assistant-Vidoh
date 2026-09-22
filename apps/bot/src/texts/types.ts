@@ -428,6 +428,16 @@ export interface TextProfile {
     readonly buttonSeparate: string;
     readonly separated: string;
     /**
+     * Тот же вопрос §7.3, когда сказан приказ о переносе (живой прогон
+     * Никиты 23.09.2026). «Или отдельная история?» у приказа не бывает:
+     * неизвестно только, какое дело переносить, — про это и вопрос.
+     */
+    readonly questionMove: (title: string) => string;
+    readonly buttonMove: string;
+    readonly buttonNotThis: string;
+    /** «Нет, другое»: приказ записью не становится, слова — в черновик. */
+    readonly notMoved: string;
+    /**
      * В ответе на вопрос были слова сверх ответа — сохранены черновиком
      * (§9.1, задача 3.44). Одна строка после подтверждения правки.
      */

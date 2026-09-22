@@ -101,7 +101,14 @@ export type SegmentResult =
   /** Изменение применено, есть что отменять. */
   | { readonly kind: 'applied'; readonly applied: Applied }
   /** Задан уточняющий вопрос: его надо показать человеку. */
-  | { readonly kind: 'asked'; readonly questionId: string; readonly itemTitle: string }
+  | {
+      readonly kind: 'asked';
+      readonly questionId: string;
+      readonly itemTitle: string;
+      /** Отложенное действие и новый срок — по ним выбирается текст вопроса. */
+      readonly action: string;
+      readonly deadline: string;
+    }
   /** Сказанное — новая мысль: пусть идёт в обычный разбор. */
   | { readonly kind: 'newThought' }
   /** Ни то, ни другое: сохранить черновиком, чтобы не потерять. */
@@ -347,7 +354,13 @@ export async function resolvePatchSegment(
       now,
     });
 
-    return { kind: 'asked', questionId: question.id, itemTitle: candidate.text };
+    return {
+      kind: 'asked',
+      questionId: question.id,
+      itemTitle: candidate.text,
+      action: decision.action,
+      deadline: (resolved.changes ?? emptyChanges()).deadline,
+    };
   }
 
   /**

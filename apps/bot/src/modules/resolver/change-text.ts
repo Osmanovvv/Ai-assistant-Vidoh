@@ -2,7 +2,7 @@ import { CARD_ACTION } from '../items/card-actions.js';
 import { deadlineWords } from '../items/deadline-words.js';
 import { clockOf } from '../scheduler/plan.js';
 import { reminderButtons } from '../scheduler/reminder-actions.js';
-import { startsWithReplacement } from '../router/append.js';
+import { isRecordCommand, startsWithReplacement } from '../router/append.js';
 import { localDateParts } from '../classifier/dates.js';
 import type { Applied } from './patch.js';
 import type { StatusButton } from '../presenter/status.service.js';
@@ -219,11 +219,79 @@ export const QUESTION_ACTION = {
   separate: 'q:s:',
 } as const;
 
-export function questionButtons(questionId: string, texts: TextProfile): readonly StatusButton[] {
+/** О чём вопрос: найденная запись и отложенная правка к ней. */
+export interface QuestionAbout {
+  readonly title: string;
+  /** Сказанное человеком. */
+  readonly segment: string;
+  readonly action: string;
+  readonly changes: { readonly deadline: string };
+}
+
+/** То же из открытого вопроса в базе: правка там лежит как есть, JSON. */
+export function aboutPending(
+  row: { readonly segment: string; readonly action: string; readonly changes: unknown },
+  title: string,
+): QuestionAbout {
+  const deadline =
+    typeof row.changes === 'object' && row.changes !== null && 'deadline' in row.changes
+      ? row.changes.deadline
+      : undefined;
+
+  return {
+    title,
+    segment: row.segment,
+    action: row.action,
+    changes: { deadline: typeof deadline === 'string' ? deadline : '' },
+  };
+}
+
+/**
+ * Вопрос о переносе, а не «или отдельная история?» (живой прогон Никиты
+ * 23.09.2026).
+ *
+ * «Перенеси посылку на пятницу на 11 утра» при двух записях про посылку
+ * получило вопрос §7.3 дословно: «Это про «В пол забрать посылку.» или
+ * отдельная история?» с кнопками «Добавить к прошлой» / «Это новое». У
+ * приказа отдельной истории не бывает: сказано «перенеси», новый срок у
+ * модели есть, неизвестно одно — какое дело. Про это и спрашиваем.
+ *
+ * Приказ — тот же закрытый список, что у развилки «цель не нашлась»
+ * (задача 3.67), и где угодно в реплике: «то дело с собакой… перенеси на
+ * пятницу» — тоже приказ. Без нового срока переносить некуда — вопрос
+ * остаётся словами §7.3.
+ */
+export function isMoveQuestion(about: Omit<QuestionAbout, 'title'>): boolean {
+  return (
+    about.action === 'update' && about.changes.deadline.length > 0 && isRecordCommand(about.segment)
+  );
+}
+
+export function questionText(about: QuestionAbout, texts: TextProfile): string {
+  const title = titleWithoutDate(about.title);
+
+  return isMoveQuestion(about)
+    ? texts.resolver.questionMove(title)
+    : texts.resolver.question(title);
+}
+
+export function questionButtons(
+  questionId: string,
+  texts: TextProfile,
+  /** Без него — кнопки §7.3, как у вопросов до 23.09.2026. */
+  about?: Omit<QuestionAbout, 'title'>,
+): readonly StatusButton[] {
   const code = toShortId(questionId);
+  const move = about !== undefined && isMoveQuestion(about);
 
   return [
-    { label: texts.resolver.buttonAttach, action: `${QUESTION_ACTION.attach}${code}` },
-    { label: texts.resolver.buttonSeparate, action: `${QUESTION_ACTION.separate}${code}` },
+    {
+      label: move ? texts.resolver.buttonMove : texts.resolver.buttonAttach,
+      action: `${QUESTION_ACTION.attach}${code}`,
+    },
+    {
+      label: move ? texts.resolver.buttonNotThis : texts.resolver.buttonSeparate,
+      action: `${QUESTION_ACTION.separate}${code}`,
+    },
   ];
 }

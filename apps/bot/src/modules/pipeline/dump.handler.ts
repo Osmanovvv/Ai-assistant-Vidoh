@@ -32,9 +32,11 @@ import { contextOf, withNextSteps, type ProjectContext } from '../projects/proje
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
 import {
+  aboutPending,
   changeButtons,
   describeChange,
   questionButtons,
+  questionText,
   undoButtons,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
@@ -891,7 +893,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       batchId: batch.id,
       ...(askedAbout === undefined
         ? {}
-        : { openQuestion: texts.resolver.question(titleWithoutDate(askedAbout)) }),
+        : pending === undefined
+          ? {}
+          : { openQuestion: questionText(aboutPending(pending, askedAbout), texts) }),
     });
 
     deps.observe?.({ kind: 'routed', segments: routed.segments });
@@ -1239,11 +1243,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         happened.asked = true;
         happened.said = true;
         // §7.3: один короткий вопрос с двумя кнопками и заголовком
-        // найденной записи в тексте.
-        await tell(
-          texts.resolver.question(titleWithoutDate(outcome.itemTitle)),
-          questionButtons(outcome.questionId, texts),
-        );
+        // найденной записи в тексте; у приказа о переносе — вопрос о
+        // переносе (живой прогон Никиты 23.09.2026).
+        const about = {
+          title: outcome.itemTitle,
+          segment: segment.text,
+          action: outcome.action,
+          changes: { deadline: outcome.deadline },
+        };
+        await tell(questionText(about, texts), questionButtons(outcome.questionId, texts, about));
         return;
       }
 

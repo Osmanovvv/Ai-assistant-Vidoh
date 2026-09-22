@@ -8,6 +8,8 @@ import {
   changeButtons,
   describeChange,
   keptTitleAfterReplacement,
+  questionButtons,
+  questionText,
   UNDO_PREFIX,
   undoButtons,
 } from './change-text.js';
@@ -257,5 +259,55 @@ describe('changeButtons', () => {
     const buttons = changeButtons(applied(['body']), defaultTexts, 'нет, в 9 30');
 
     expect(buttons[1]?.action).toBe(`${CARD_ACTION.edit}${toShortId(ITEM.id)}`);
+  });
+});
+
+describe('вопрос о переносе (живой прогон Никиты 23.09.2026)', () => {
+  /**
+   * «Перенеси посылку на пятницу на 11 утра» — две записи про посылку, и
+   * бот спросил словами §7.3: «Это про «В пол забрать посылку.» или
+   * отдельная история?» с кнопками «Добавить к прошлой» / «Это новое».
+   * Для приказа это бессмыслица: отдельной истории у приказа не бывает, а
+   * «Это новое» заводило бы запись из самой команды. Вопрос о переносе
+   * спрашивает ровно то, чего бот не знает, — какое дело.
+   */
+  const move = {
+    title: 'Забрать посылку',
+    segment: 'Перенеси посылку на пятницу на 11 утра.',
+    action: 'update',
+    changes: { deadline: '2026-09-25' },
+  } as const;
+
+  it('приказ о переносе спрашивает про перенос', () => {
+    expect(questionText(move, defaultTexts)).toBe('Перенести «Забрать посылку»?');
+    expect(
+      questionButtons('11111111-1111-4111-8111-111111111111', defaultTexts, move).map(
+        (b) => b.label,
+      ),
+    ).toEqual(['Да, перенести', 'Нет, другое']);
+  });
+
+  it('приказ не в начале — тоже перенос: «то дело с собакой… перенеси на пятницу»', () => {
+    const inside = { ...move, segment: 'А то дело с собакой, что на завтра, перенеси на пятницу' };
+    expect(questionText(inside, defaultTexts)).toBe('Перенести «Забрать посылку»?');
+  });
+
+  it('без приказа — вопрос §7.3, как был', () => {
+    const plain = { ...move, segment: 'нет, в пятницу' };
+    expect(questionText(plain, defaultTexts)).toBe(
+      'Это про «Забрать посылку» или отдельная история?',
+    );
+    expect(
+      questionButtons('11111111-1111-4111-8111-111111111111', defaultTexts, plain).map(
+        (b) => b.label,
+      ),
+    ).toEqual(['Добавить к прошлой', 'Это новое']);
+  });
+
+  it('приказ без нового срока — вопрос §7.3: переносить некуда', () => {
+    const still = { ...move, segment: 'оставь как было', changes: { deadline: '' } };
+    expect(questionText(still, defaultTexts)).toBe(
+      'Это про «Забрать посылку» или отдельная история?',
+    );
   });
 });
