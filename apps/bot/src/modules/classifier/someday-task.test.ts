@@ -51,6 +51,22 @@ describe('дело на «когда-нибудь»', () => {
     expect(looksLikeSomedayTask('на досуге разложить документы по папкам')).toBe(true);
   });
 
+  it('живые слова тоже считаются делом: разгрести, доделать, сходить, съездить к, дойти (22.09.2026)', () => {
+    expect(looksLikeSomedayTask('как-то потом разгрести фотки')).toBe(true);
+    expect(looksLikeSomedayTask('когда-нибудь доделать альбом')).toBe(true);
+    expect(looksLikeSomedayTask('при случае сходить в химчистку')).toBe(true);
+    expect(looksLikeSomedayTask('когда-нибудь дойти до нотариуса')).toBe(true);
+    expect(looksLikeSomedayTask('на досуге доразобрать коробки')).toBe(true);
+    expect(looksLikeSomedayTask('как-нибудь свозить кота к ветеринару')).toBe(true);
+  });
+
+  it('и после расширения намерения остаются желаниями', () => {
+    expect(looksLikeSomedayTask('когда-нибудь научиться рисовать')).toBe(false);
+    expect(looksLikeSomedayTask('как-то потом заняться собой')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь съездить на море')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь начать новую жизнь')).toBe(false);
+  });
+
   it('без «когда-нибудь» или без действия правило молчит', () => {
     expect(looksLikeSomedayTask('разобрать фотографии на телефоне')).toBe(false);
     expect(looksLikeSomedayTask('когда-нибудь на море')).toBe(false);
