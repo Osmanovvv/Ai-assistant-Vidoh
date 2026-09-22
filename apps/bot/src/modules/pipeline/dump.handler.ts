@@ -1744,14 +1744,47 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         // Вопрос уже открыт (опрос или уточнение) — второго не задаём:
         // «Я здесь.» без «?» (находка 19).
         const questionOpen = onboardingOpen || happened.asked;
+
+        /**
+         * Последняя попытка — моделью (22.09.2026, экран заказчицы
+         * 21.09): «Напиши мне все, что накопилось» → «Я здесь.
+         * Расскажешь, что в голове?». Слово добавили в рамку вопроса в
+         * тот же вечер, но так чинится по одной фразе, а женщина
+         * формулирует как придётся. Общий слой: сказать нечего — даём
+         * модели её слова и обзор открытых дел (тот же путь, что у
+         * ответа на вопрос). Не про дела — пустая строка, и реплика
+         * словаря остаётся.
+         *
+         * Не зовётся, когда ответ и так есть: «спасибо», состояние,
+         * пустой список дел.
+         */
+        const lastTry = !thanked && mood === undefined && (await openItemsFor(db, batch.userId));
+        const spokenHere = combined.trim();
+        const rescue =
+          lastTry !== false && lastTry.length > 0 && spokenHere !== ''
+            ? (
+                await askLiveAnswer(ai, {
+                  facts: questionFacts({
+                    question: spokenHere,
+                    now,
+                    timeZone: context.timeZone,
+                    texts,
+                    answer: { kind: 'nothing' },
+                    overview: lastTry,
+                  }),
+                  userId: batch.userId,
+                  batchId: batch.id,
+                })
+              ).line
+            : undefined;
+
         await answer(
           thanked
             ? texts.answer.thanks
             : mood !== undefined
               ? feelingsOnlyReply(texts, mood)
-              : questionOpen
-                ? texts.answer.nothingToParseQuiet
-                : texts.answer.nothingToParse,
+              : (rescue ??
+                (questionOpen ? texts.answer.nothingToParseQuiet : texts.answer.nothingToParse)),
         );
       }
 
