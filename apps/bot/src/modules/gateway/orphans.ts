@@ -1,7 +1,8 @@
 import { and, asc, count, eq, exists, isNull, lt, not, sql } from 'drizzle-orm';
 
 import { messagesRaw, users } from '../../db/schema.js';
-import type { Executor } from '../../infra/db.js';
+import type { Database, Executor } from '../../infra/db.js';
+import { attachMessageToBatch } from '../buffer/buffer.service.js';
 
 /**
  * Сообщение сохранено, а к выгрузке не привязано (ревизия этапов 1–2).
@@ -38,6 +39,9 @@ import type { Executor } from '../../infra/db.js';
  */
 export const ORPHAN_AFTER_MS = 60 * 60_000;
 
+/** Сколько сирот подбирается за проход: уборщик не должен пахать час. */
+const ADOPT_LIMIT = 20;
+
 /**
  * Намеренно оставшиеся без выгрузки: команда и служебное сообщение.
  *
@@ -46,9 +50,19 @@ export const ORPHAN_AFTER_MS = 60 * 60_000;
  * текста, и расшифровки.
  */
 function deliberate(): ReturnType<typeof sql> {
+  /**
+   * `coalesce` — не украшение: у голосового текста нет, а `null like …`
+   * даёт `null`, и всё «или» становилось `null`. `not null` — тоже
+   * `null`, и строка молча выпадала из счёта сирот. Так голосовое, на
+   * котором сорвалось распознавание, не попадало даже в предупреждение
+   * (бой 18.09.2026, найдено 22.09).
+   */
   return sql`(
-    ${messagesRaw.text} like '/%'
-    or (${messagesRaw.text} is null and ${messagesRaw.transcript} is null)
+    coalesce(${messagesRaw.text}, '') like '/%'
+    -- Голос без расшифровки — потерянное слово, а не «нарочно без
+    -- выгрузки» (бой 18.09.2026, найдено 22.09): именно так выглядит
+    -- сорвавшееся распознавание, и такие сообщения надо подбирать.
+    or (${messagesRaw.kind} <> 'voice' and ${messagesRaw.text} is null and ${messagesRaw.transcript} is null)
     -- Съеденное как ответ на вопрос бота — обработано, не сирота
     -- (найдено на бою 12.09.2026: «7:30» из опроса считалось неделю).
     or ${messagesRaw.consumedAt} is not null
@@ -156,4 +170,46 @@ export async function heldMessagesOf(
  */
 export function orphanedOnly(userId: string): ReturnType<typeof and> {
   return and(eq(messagesRaw.userId, userId), isNull(messagesRaw.batchId), not(deliberate()));
+}
+
+/**
+ * Подобрать сирот: завести им выгрузку, чтобы разбор случился сам
+ * (22.09.2026).
+ *
+ * Прежде уборщик их только считал и писал в журнал — журнал никто не
+ * читает, и голосовое, на котором сорвался SpeechKit, пропадало молча.
+ * Теперь сообщение возвращается в обычный путь: выгрузка, очередь,
+ * ответ человеку. Повторно подобранное не подбирается — выгрузка у него
+ * уже есть; сорвётся и она — за ней придёт восстановление зависших.
+ */
+export async function adoptOrphanedMessages(
+  db: Database,
+  params: { readonly now?: Date; readonly olderThanMs?: number; readonly limit?: number } = {},
+): Promise<{ readonly messages: number; readonly users: readonly string[] }> {
+  const now = params.now ?? new Date();
+  const older = new Date(now.getTime() - (params.olderThanMs ?? ORPHAN_AFTER_MS));
+
+  const rows = await db
+    .select({ id: messagesRaw.id, userId: messagesRaw.userId })
+    .from(messagesRaw)
+    .where(
+      and(
+        isNull(messagesRaw.batchId),
+        lt(messagesRaw.receivedAt, older),
+        not(deliberate()),
+        consentConfirmed(),
+      ),
+    )
+    .orderBy(asc(messagesRaw.receivedAt))
+    .limit(params.limit ?? ADOPT_LIMIT);
+
+  const users = new Set<string>();
+  let adopted = 0;
+  for (const row of rows) {
+    await attachMessageToBatch(db, { userId: row.userId, messageId: row.id, now });
+    users.add(row.userId);
+    adopted += 1;
+  }
+
+  return { messages: adopted, users: [...users] };
 }

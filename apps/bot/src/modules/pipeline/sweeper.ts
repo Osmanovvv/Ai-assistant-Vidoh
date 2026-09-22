@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
 import type { BufferLimits } from '../buffer/buffer.service.js';
-import { countOrphanedMessages } from '../gateway/orphans.js';
+import { adoptOrphanedMessages, countOrphanedMessages } from '../gateway/orphans.js';
 import { pruneUpdates, UPDATE_LOG_RETENTION_MS } from '../gateway/updates.repo.js';
 import { expireQuestions } from '../resolver/questions.repo.js';
 import { recoverStuckBatches, usersAwaitingWork } from './recovery.js';
@@ -164,10 +164,28 @@ async function tidyUp(
     orphanedMessages = await countOrphanedMessages(deps.db, { now });
 
     if (orphanedMessages > 0) {
+      /**
+       * Подбираем, а не только считаем (22.09.2026). Прежде уборщик
+       * писал предупреждение в журнал — журнал никто не читает, и
+       * голосовое, на котором сорвался SpeechKit, пропадало молча:
+       * женщина не получила ни разбора, ни слова (бой 18.09.2026).
+       * Теперь сообщение возвращается в обычный путь — выгрузка,
+       * очередь, ответ.
+       */
+      const adopted = await adoptOrphanedMessages(deps.db, { now });
+
       deps.logger.warn(
-        { orphanedMessages },
-        'Есть сообщения без выгрузки: слова сохранены, но разобрать их некому',
+        { orphanedMessages, adopted: adopted.messages },
+        'Сообщения без выгрузки подобраны и отправлены в разбор',
       );
+
+      for (const userId of adopted.users) {
+        try {
+          await deps.process(userId);
+        } catch (error) {
+          deps.logger.error({ err: error, userId }, 'Подобранное сообщение не удалось разобрать');
+        }
+      }
     }
   } catch (error) {
     deps.logger.error({ err: error }, 'Не удалось посчитать сообщения без выгрузки');
