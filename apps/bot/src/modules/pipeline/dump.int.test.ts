@@ -731,8 +731,10 @@ describe('разбор', () => {
 
     const saved = await testDb().select().from(items).orderBy(asc(items.sourceOrder));
 
+    // Час ушёл в срок — из заголовка срезан (бой 22.09.2026): иначе в
+    // списке «Сходить к стоматологу в 13:00» и рядом «Срок: 13:00».
     expect(saved.map((item) => [item.text, item.deadlineAccuracy, item.deadlineTime])).toEqual([
-      ['Сходить к стоматологу в 13:00', 'day', 13 * 60],
+      ['Сходить к стоматологу', 'day', 13 * 60],
       ['Погулять с собакой', 'day', null],
     ]);
   });

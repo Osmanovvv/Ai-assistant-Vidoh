@@ -285,9 +285,15 @@ export function planFor(input: PlanInput): PlannedReminder[] {
     // --- В указанный час (ТЗ проджекта 17.09.2026, шаг 5) ---
     if (deadline.time !== undefined && deadline.time !== null) {
       const lead = settings.hourLeadMinutes ?? DEFAULT_HOUR_LEAD_MINUTES;
-      const at = new Date(
-        localTimeToUtc(day, clockOf(deadline.time), timeZone).getTime() - lead * 60_000,
-      );
+      const moment = localTimeToUtc(day, clockOf(deadline.time), timeZone);
+      const early = new Date(moment.getTime() - lead * 60_000);
+      /**
+       * Момент упреждения уже позади, а час ещё впереди — напоминание
+       * ровно в час (бой 22.09.2026: «сегодня в 3:10», сказано в 2:39 —
+       * 2:40 прошло, и напоминания не было вовсе). Ключ тот же: это то
+       * же напоминание, просто без запаса.
+       */
+      const at = early.getTime() > now.getTime() ? early : moment;
       if (at.getTime() > now.getTime()) {
         add(
           'deadline_hour',

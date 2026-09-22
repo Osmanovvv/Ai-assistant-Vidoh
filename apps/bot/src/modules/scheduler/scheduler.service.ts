@@ -48,7 +48,6 @@ import {
 import {
   clockOf,
   deadlineKey,
-  DEFAULT_HOUR_LEAD_MINUTES,
   HORIZON_HOURS,
   hourKey,
   periodKey,
@@ -56,6 +55,7 @@ import {
   type PlanDeadline,
 } from './plan.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
+import { localTimeToUtc } from './time.js';
 import { deadlineButtons, projectButtons } from './reminder-actions.js';
 import {
   countAttempt,
@@ -809,9 +809,26 @@ async function composeOne(
         item.deadlineAt !== null && item.deadlineAccuracy === 'day' && item.deadlineTime !== null
           ? hourKey(item.id, item.deadlineAt, item.deadlineTime, timeZone)
           : undefined;
-      if (current !== reminder.dedupeKey || item.deadlineTime === null) return 'stale';
+      if (
+        current !== reminder.dedupeKey ||
+        item.deadlineTime === null ||
+        item.deadlineAt === null
+      ) {
+        return 'stale';
+      }
 
-      const lead = (await deps.settings?.number('hourLeadMinutes')) ?? DEFAULT_HOUR_LEAD_MINUTES;
+      /**
+       * Упреждение — по разнице между часом и моментом напоминания, а не
+       * из настройки: когда час назвали меньше чем за упреждение, план
+       * ставит напоминание ровно в час (бой 22.09.2026), и «Через 30
+       * минут» в 13:00 было бы неправдой.
+       */
+      const moment = localTimeToUtc(
+        localDateParts(item.deadlineAt, timeZone),
+        clockOf(item.deadlineTime),
+        timeZone,
+      );
+      const lead = Math.max(0, Math.round((moment.getTime() - reminder.dueAt.getTime()) / 60_000));
       return {
         text: hourText(texts, { item, time: clockOf(item.deadlineTime), leadMinutes: lead }),
         buttons: deadlineButtons(item.id, texts),

@@ -772,6 +772,8 @@ export function correctItems(
         hasDeadline: withRule !== undefined,
         // «Каждый вторник…» в заголовке — дубль правила повторения.
         hasRule: recurrence?.rule !== undefined,
+        // «…в 3:10» в заголовке — дубль срока с часом (бой 22.09.2026).
+        hasHour: withRule?.time !== undefined,
       }),
       type,
       priority: withUrgency,
