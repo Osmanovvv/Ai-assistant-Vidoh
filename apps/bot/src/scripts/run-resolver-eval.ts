@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { BadBudgetError, isLiveRun, parseBudget, withRunBudget } from '../eval/budget.js';
 import { loadResolverCases } from '../eval/resolver-dataset.js';
 import { parsePins } from '../eval/pins.js';
 import {
@@ -39,20 +40,49 @@ import { PRICING } from '../modules/metering/pricing.js';
  * `--use resolver=resolver@8` меряет версию до её включения — без
  * этого §15 и §10.3 запирают друг друга (см. `eval/pins.ts`).
  */
-const { pinned, rest } = parsePins(process.argv.slice(2));
-const [datasetArg, outArg] = rest;
-
-if (datasetArg === undefined) {
+function usage(problem?: string): never {
   process.stderr.write(
-    'Использование: run-resolver-eval <набор> [отчёты] [--use resolver=версия]\n',
+    (problem === undefined ? '' : `${problem}\n\n`) +
+      'Использование: run-resolver-eval <набор> [отчёты] --budget <₽> [--use resolver=версия]\n' +
+      '  --budget — потолок этого прогона в рублях; обязателен для живой модели.\n',
   );
   process.exit(2);
 }
+
+let pinned: ReturnType<typeof parsePins>['pinned'];
+let budgetRub: number | undefined;
+let rest: readonly string[];
+
+try {
+  const pins = parsePins(process.argv.slice(2));
+  const budget = parseBudget(pins.rest);
+  pinned = pins.pinned;
+  budgetRub = budget.budgetRub;
+  rest = budget.rest;
+} catch (error) {
+  if (error instanceof BadBudgetError) usage(error.message);
+  throw error;
+}
+
+const [datasetArg, outArg] = rest;
+
+if (datasetArg === undefined) usage();
 
 const dataset: string = datasetArg;
 const runs = outArg ?? join(dataset, 'runs');
 
 const env = modelEnvSchema.parse(process.env);
+
+/**
+ * Живой прогон — только с названным потолком (правило 20.09.2026, см.
+ * `eval/budget.ts`). Стенд выгрузок получил его тогда же, этот — 23.09,
+ * когда понадобился первый живой прогон резолвера после того правила.
+ * Цена прошлого прогона в отчётах не хранится — сумму по журналу
+ * называет тот, кто запускает, из `ai_calls` стенда.
+ */
+if (isLiveRun(env) && budgetRub === undefined) {
+  usage('Живой прогон без --budget не начинается: назовите потолок в рублях.');
+}
 
 /** Перевод строки константой: в исходнике его легко потерять правкой. */
 const NEWLINE = String.fromCharCode(10);
@@ -106,7 +136,12 @@ try {
       prompts,
       pricing: PRICING,
       logger,
-      spendGuard: guard.spendGuard,
+      // Потолок прогона — поверх потолков счёта: первый про эти деньги,
+      // вторые про все.
+      spendGuard:
+        budgetRub === undefined
+          ? guard.spendGuard
+          : withRunBudget(guard.spendGuard, { db, startedAt, budgetRub }),
     },
     cases,
     (outcome) => {

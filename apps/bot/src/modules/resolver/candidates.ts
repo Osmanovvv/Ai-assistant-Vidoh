@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { items, type ItemStatusValue } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { findSimilarItems, SEARCHABLE_STATUSES } from '../embedder/embedder.service.js';
+import { startsWithRecordCommand } from '../router/append.js';
 import type { Period } from './period.js';
 
 /**
@@ -224,6 +225,18 @@ export async function collectCandidates(db: Executor, params: CollectParams): Pr
     source: CandidateSource,
     similarity: number | null,
   ): void => {
+    /**
+     * Запись-эхо — не кандидат (бой 23.09.2026, живой прогон Никиты).
+     *
+     * Заголовок, начинающийся с приказа о записи («Перенести посылку на
+     * пятницу на .»), — не дело, а след прежнего сбоя разбора. По смыслу
+     * он ближе всех к новой правке, потому что почти дословно её
+     * повторяет, и резолвер второй раз подряд правил его, а не дело. Из
+     * какого бы источника такая запись ни пришла и какой бы свежей ни
+     * была — целью правки ей не быть.
+     */
+    if (startsWithRecordCommand(row.text)) return;
+
     const seen = merged.get(row.id);
 
     if (seen === undefined) {
