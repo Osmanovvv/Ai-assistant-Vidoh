@@ -66,6 +66,8 @@ import { createLogger, withRequestId } from './infra/logger.js';
 import { isOwnOutage } from './infra/errors.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import { startBalanceWatch } from './modules/cloud/balance-watch.js';
+import { startMisunderstoodDigest } from './modules/misunderstood/digest.js';
+import { misunderstoodList } from './modules/misunderstood/misunderstood.repo.js';
 import {
   createBroadcastQueue,
   createBroadcastWorker,
@@ -367,6 +369,18 @@ async function main(): Promise<void> {
   const balanceWatch = await startBalanceWatch({
     keyFile: env.YANDEX_SA_KEY_FILE,
     thresholdRub: async () => await settings.number('yandexBalanceAlertRub'),
+    alert: async (alert) => await monitor.alert(alert),
+    logger,
+  });
+
+  /**
+   * Суточная сводка непонятого (22.09.2026). Журнал 16.09 смотрели
+   * руками — то есть не смотрели: про «Напиши мне все, что накопилось»
+   * узнали скриншотом на следующий день. Теперь он сам приходит в чат
+   * мониторинга: разбор в тот же день, а не по жалобе.
+   */
+  const misunderstoodDigestWatch = startMisunderstoodDigest({
+    list: async () => await misunderstoodList(db, { days: 1, limit: 50 }),
     alert: async (alert) => await monitor.alert(alert),
     logger,
   });
@@ -1314,6 +1328,7 @@ async function main(): Promise<void> {
     stopRenewalNotices();
     stopInactivity();
     balanceWatch?.stop();
+    misunderstoodDigestWatch.stop();
     // Рассылка дорабатывает идущий проход: отправленное должно быть
     // помечено до закрытия базы (ревизия этапа 3, D7).
     await stopScheduler();

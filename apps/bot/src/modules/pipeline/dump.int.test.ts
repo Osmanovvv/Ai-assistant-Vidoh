@@ -6941,3 +6941,130 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
   });
 });
+
+describe('сказать нечего — последняя попытка моделью (22.09.2026)', () => {
+  /**
+   * Заказчица 21.09: «Напиши мне все, что накопилось» → «Я здесь.
+   * Расскажешь, что в голове?». Слово добавили в рамку вопроса в тот же
+   * вечер, но так чинится по одной фразе. Общий слой: когда разбирать
+   * нечего и отвечать нечем, спрашиваем модель по обзору дел — она же
+   * отвечает на вопросы (слой B). Не про дела — пустая строка, и реплика
+   * словаря остаётся.
+   */
+  async function answeringPrompts(): Promise<PromptRegistry> {
+    const prompts = await seedPrompts();
+    await seedPrompt(testDb(), {
+      stage: 'answerer',
+      version: 'answerer@test',
+      prompt: MARKERS.answerer,
+      schemaName: ANSWERER_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'answerer', 'answerer@test');
+    return prompts;
+  }
+
+  async function say(
+    text: string,
+    llm: MockLlmProvider,
+    prompts: PromptRegistry,
+  ): Promise<{ replies: string[]; inputs: string[] }> {
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+    return {
+      replies: all,
+      inputs: llm.requests
+        .filter((request) => stageOf(request) === 'answerer')
+        .map((request) => request.input),
+    };
+  }
+
+  const smalltalk = (text: string): string =>
+    JSON.stringify({ crisis: false, segments: [{ intent: 'SMALLTALK', text }] });
+
+  async function withOpenItem(): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        text: 'Пересадить цветы',
+        deadlineAt: at(60_000),
+        deadlineAccuracy: 'day',
+      });
+  }
+
+  it('«напиши мне всё, что накопилось» — ответ по делам вместо «Я здесь»', async () => {
+    const prompts = await answeringPrompts();
+    await withOpenItem();
+    const llm = echoingLlm({
+      router: smalltalk('Напиши мне все, что накопилось'),
+      extractor: JSON.stringify({ units: [] }),
+      answerer: JSON.stringify({ answer: 'На сегодня у тебя одно дело: пересадить цветы.' }),
+    });
+
+    const { replies, inputs } = await say('Напиши мне все, что накопилось', llm, prompts);
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toContain('Вопрос: Напиши мне все, что накопилось');
+    expect(replies.at(-1)).toBe('На сегодня у тебя одно дело: пересадить цветы.');
+  });
+
+  it('модель молчит (не про дела) — прежняя реплика словаря', async () => {
+    const prompts = await answeringPrompts();
+    await withOpenItem();
+    const llm = echoingLlm({
+      router: smalltalk('ну вот'),
+      extractor: JSON.stringify({ units: [] }),
+      answerer: JSON.stringify({ answer: '' }),
+    });
+
+    const { replies } = await say('ну вот', llm, prompts);
+
+    expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+
+  it('«спасибо» и состояние моделью не переспрашиваются', async () => {
+    const prompts = await answeringPrompts();
+    await withOpenItem();
+    const llm = echoingLlm({
+      router: smalltalk('спасибо'),
+      extractor: JSON.stringify({ units: [] }),
+      answerer: JSON.stringify({ answer: 'что-то про дела' }),
+    });
+
+    const { replies, inputs } = await say('спасибо', llm, prompts);
+
+    expect(inputs).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.answer.thanks);
+  });
+
+  it('без открытых дел модель не зовётся: отвечать нечем', async () => {
+    const prompts = await answeringPrompts();
+    const llm = echoingLlm({
+      router: smalltalk('напиши всё'),
+      extractor: JSON.stringify({ units: [] }),
+      answerer: JSON.stringify({ answer: 'что-то' }),
+    });
+
+    const { replies, inputs } = await say('напиши всё', llm, prompts);
+
+    expect(inputs).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+});
