@@ -103,11 +103,21 @@ const MINUTE_WORDS: readonly (readonly [RegExp, number])[] = [
 ];
 
 // Длинные формы первыми: иначе «пол» съедает начало «половине».
-const HALF = /(?<!\p{L})(?:в\s+)?(?:половин[аеу]|пол)\s*(\p{L}+)/giu;
+const HALF = /(?<!\p{L})(?:в\s+)?(?:половин[аеу]|пол)\s*(\p{L}+|\d{1,2})/giu;
 // До трёх слов: «без пятнадцати семь», «без двадцати пяти восемь».
-const WITHOUT = /(?<!\p{L})без\s+(\p{L}+)\s+(\p{L}+)(?:\s+(\p{L}+))?/giu;
+const WITHOUT = /(?<!\p{L})без\s+(\p{L}+)\s+(\p{L}+|\d{1,2})(?:\s+(\p{L}+))?/giu;
 
+/**
+ * Число словом или цифрой: «в половине десятого» и «в пол 11» — одно и
+ * то же (живой прогон 22.09.2026: цифру правило не понимало).
+ */
 function valueOf(word: string, table: readonly (readonly [RegExp, number])[]): number | undefined {
+  const digits = /^\d{1,2}$/u.exec(word.trim());
+  if (digits !== null) {
+    const value = Number(digits[0]);
+    return value >= 1 && value <= HOURS_IN_DAY ? value : undefined;
+  }
+
   const normalized = word.toLowerCase().replace(/ё/gu, 'е');
   return table.find(([pattern]) => pattern.test(normalized))?.[1];
 }
@@ -179,7 +189,7 @@ function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[]
     const hour = previousHour(next);
     const daypart = daypartAfter(normalized, match.index + match[0].length);
     found.push({
-      at: match.index,
+      at: match.index + match[0].indexOf(match[1] ?? ''),
       time: readingsOf(hour, MINUTES_IN_HOUR / 2, daypart),
     });
   }
@@ -201,7 +211,7 @@ function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[]
     const after = normalized.indexOf(hourWord, match.index) + hourWord.length;
     const daypart = daypartAfter(normalized, after);
     found.push({
-      at: match.index,
+      at: normalized.indexOf(hourWord, match.index),
       time: readingsOf(previousHour(next), MINUTES_IN_HOUR - minutes, daypart),
     });
   }
@@ -238,6 +248,13 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
     if (time !== undefined && !found.some((one) => one.at === at)) found.push({ at, time });
   };
 
+  /**
+   * Разговорные формы — первыми (живой прогон 22.09.2026): иначе «в пол
+   * 11 вечера» достаётся разбору «11 вечера» и читается как 23:00.
+   * Одно число — одно время, и решает форма, узнавшая его первой.
+   */
+  for (const spoken of spokenClockTimes(normalized)) add(spoken.at, spoken.time);
+
   for (const match of normalized.matchAll(DAYPART)) {
     // «На 3 дня», «через 2 дня» — дни, а не «3 часа дня»: «дня» читается
     // часом только после предлога времени.
@@ -272,8 +289,6 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
     if (NOT_AN_HOUR.test(rest)) continue;
     add(numberAt(match, 1), bareHour(Number(match[1])));
   }
-  for (const spoken of spokenClockTimes(normalized)) add(spoken.at, spoken.time);
-
   return found.sort((left, right) => left.at - right.at).map((one) => one.time);
 }
 
