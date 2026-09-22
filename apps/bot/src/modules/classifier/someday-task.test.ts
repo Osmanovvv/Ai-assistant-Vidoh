@@ -18,7 +18,7 @@ describe('дело на «когда-нибудь»', () => {
   it('«когда-нибудь разобрать фотографии на телефоне» — дело', () => {
     expect(looksLikeSomedayTask('когда-нибудь разобрать фотографии на телефоне')).toBe(true);
     expect(looksLikeSomedayTask('как-нибудь разобрать балкон')).toBe(true);
-    expect(looksLikeSomedayTask('на досуге пересмотреть документы')).toBe(true);
+    expect(looksLikeSomedayTask('на досуге разобрать балкон')).toBe(true);
   });
 
   it('слово желания рядом — остаётся желанием: её правило «желание не становится задачей»', () => {
@@ -26,6 +26,29 @@ describe('дело на «когда-нибудь»', () => {
     expect(looksLikeSomedayTask('давно хочется когда-нибудь научиться рисовать')).toBe(false);
     expect(looksLikeSomedayTask('мечтаю когда-нибудь пройти этот курс')).toBe(false);
     expect(looksLikeSomedayTask('было бы здорово когда-нибудь освоить гитару')).toBe(false);
+  });
+
+  it('намерение жить иначе — желание, даже без слова «хочу» (проба 22.09.2026)', () => {
+    /**
+     * Первый заход правила ловил любой глагол в неопределённой форме и
+     * превращал в дела «когда-нибудь научиться рисовать», «заняться
+     * спортом», «съездить на море» — а это желания по её же
+     * определению: намерение без обязательства. Список дел закрыт и
+     * бытовой: разобрать, постирать, забрать, позвонить.
+     */
+    expect(looksLikeSomedayTask('когда-нибудь научиться рисовать')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь заняться спортом')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь похудеть')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь освоить гитару')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь съездить на море')).toBe(false);
+    expect(looksLikeSomedayTask('когда-нибудь начать бегать по утрам')).toBe(false);
+  });
+
+  it('бытовые дела — дела: разобрать, постирать, забрать, позвонить', () => {
+    expect(looksLikeSomedayTask('как-нибудь постирать шторы')).toBe(true);
+    expect(looksLikeSomedayTask('когда-нибудь забрать вещи от родителей')).toBe(true);
+    expect(looksLikeSomedayTask('при случае позвонить в поликлинику')).toBe(true);
+    expect(looksLikeSomedayTask('на досуге разложить документы по папкам')).toBe(true);
   });
 
   it('без «когда-нибудь» или без действия правило молчит', () => {
