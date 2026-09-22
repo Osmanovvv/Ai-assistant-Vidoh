@@ -1604,12 +1604,23 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         continue;
       }
 
+      /**
+       * Проза про одну-две записи идёт без списка под ней (бой
+       * 22.09.2026): «Что там со стоматологом?» → «Ты хотела записаться
+       * к стоматологу…» и следом строка «— Записаться к стоматологу» —
+       * то же самое дважды. От трёх записей список полезен: проза
+       * называет главное, список — остальное.
+       */
+      const proseCoversAll =
+        aboutProse !== undefined && answer.kind !== 'today' && answer.kind !== 'period';
       const listed =
         answer.kind === 'today' ||
         answer.kind === 'about' ||
         answer.kind === 'period' ||
         answer.kind === 'aboutClosed'
-          ? answer.items
+          ? proseCoversAll && answer.items.length <= 2
+            ? []
+            : answer.items
           : [];
       const shownItems = listed.slice(0, SPOKEN_LIST_LIMIT);
       const rest = listed.length - shownItems.length;
