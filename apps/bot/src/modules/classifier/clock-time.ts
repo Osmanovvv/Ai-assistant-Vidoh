@@ -55,6 +55,68 @@ const BARE = /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})(?:\s+ч
 const RANGE = /(?<!\p{L})с\s+(\d{1,2})\s+до\s+(\d{1,2})(?![\d:.]|\s+\d)/gu;
 
 /** Предлог времени перед числом: «в 3 дня», «до 5 дня». */
+/**
+ * Разговорные формы часа (22.09.2026, по слову Никиты): «в половине
+ * десятого», «в пол шестого», «без пятнадцати семь», «без двадцати
+ * восемь». Вслух так говорят чаще, чем «в 21:30».
+ *
+ * Половина и «без стольких-то» — всегда про **следующий** час:
+ * «половина десятого» — 9:30, «без пятнадцати семь» — 6:45. Утро это
+ * или вечер, из слов не видно — как у голого «в 9», поэтому чтений два.
+ */
+const ORDINALS: readonly (readonly [RegExp, number])[] = [
+  [/^перв/u, 1],
+  [/^втор/u, 2],
+  [/^трет/u, 3],
+  [/^четв[её]рт/u, 4],
+  [/^пят/u, 5],
+  [/^шест/u, 6],
+  [/^седьм/u, 7],
+  [/^восьм/u, 8],
+  [/^девят/u, 9],
+  [/^десят/u, 10],
+  [/^одиннадцат/u, 11],
+  [/^двенадцат/u, 12],
+];
+
+const CARDINALS: readonly (readonly [RegExp, number])[] = [
+  [/^час(?!ов|а)/u, 1],
+  [/^дв[ае](?!надцат)/u, 2],
+  [/^три|^тр[её]х/u, 3],
+  [/^четыр/u, 4],
+  [/^пят[ьи]/u, 5],
+  [/^шест[ьи]/u, 6],
+  [/^сем[ьи]/u, 7],
+  [/^восем|^восьм/u, 8],
+  [/^девят[ьи]/u, 9],
+  [/^десят[ьи]/u, 10],
+  [/^одиннадцат/u, 11],
+  [/^двенадцат/u, 12],
+];
+
+const MINUTE_WORDS: readonly (readonly [RegExp, number])[] = [
+  [/^пят(?:ь|и)(?!надцат|десят)/u, 5],
+  [/^десят/u, 10],
+  [/^пятнадцат|^четверт/u, 15],
+  [/^двадцат(?:ь|и)(?!\s*пят)/u, 20],
+  [/^двадцат(?:ь|и)\s*пят/u, 25],
+];
+
+// Длинные формы первыми: иначе «пол» съедает начало «половине».
+const HALF = /(?<!\p{L})(?:в\s+)?(?:половин[аеу]|пол)\s*(\p{L}+)/giu;
+// До трёх слов: «без пятнадцати семь», «без двадцати пяти восемь».
+const WITHOUT = /(?<!\p{L})без\s+(\p{L}+)\s+(\p{L}+)(?:\s+(\p{L}+))?/giu;
+
+function valueOf(word: string, table: readonly (readonly [RegExp, number])[]): number | undefined {
+  const normalized = word.toLowerCase().replace(/ё/gu, 'е');
+  return table.find(([pattern]) => pattern.test(normalized))?.[1];
+}
+
+/** Час по названному следующему: «половина десятого» — девятый час. */
+function previousHour(next: number): number {
+  return next === 1 ? 0 : next - 1;
+}
+
 const TIME_PREPOSITION = /(?:^|[^\p{L}])(?:в|к|до|около|после)\s+$/u;
 
 /**
@@ -103,6 +165,70 @@ function numberAt(match: RegExpExecArray, group: number): number {
   return match.index + match[0].indexOf(digits);
 }
 
+/**
+ * Разговорные формы: «в половине десятого» (9:30), «в пол шестого»
+ * (17:30 или 5:30), «без пятнадцати семь» (6:45). Часть суток рядом
+ * снимает двусмысленность — её ловит общий разбор ниже.
+ */
+function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[] {
+  const found: { at: number; time: ClockTime }[] = [];
+
+  for (const match of normalized.matchAll(HALF)) {
+    const next = valueOf(match[1] ?? '', ORDINALS);
+    if (next === undefined) continue;
+    const hour = previousHour(next);
+    const daypart = daypartAfter(normalized, match.index + match[0].length);
+    found.push({
+      at: match.index,
+      time: readingsOf(hour, MINUTES_IN_HOUR / 2, daypart),
+    });
+  }
+
+  for (const match of normalized.matchAll(WITHOUT)) {
+    const [first, second, third] = [match[1] ?? '', match[2] ?? '', match[3] ?? ''];
+
+    // «без пятнадцати семь» — минуты одним словом; «без двадцати пяти
+    // восемь» — двумя. Пробуем короткое чтение, потом длинное.
+    let minutes = valueOf(first, MINUTE_WORDS);
+    let hourWord = second;
+    if (minutes === undefined || valueOf(hourWord, CARDINALS) === undefined) {
+      minutes = valueOf(`${first} ${second}`, MINUTE_WORDS);
+      hourWord = third;
+    }
+    const next = valueOf(hourWord, CARDINALS);
+    if (minutes === undefined || next === undefined) continue;
+
+    const after = normalized.indexOf(hourWord, match.index) + hourWord.length;
+    const daypart = daypartAfter(normalized, after);
+    found.push({
+      at: match.index,
+      time: readingsOf(previousHour(next), MINUTES_IN_HOUR - minutes, daypart),
+    });
+  }
+
+  return found;
+}
+
+/** Часть суток сразу за формой: «в половине десятого вечера». */
+function daypartAfter(normalized: string, from: number): string | undefined {
+  return /^\s*(утра|дня|вечера|ночи)(?!\p{L})/u.exec(normalized.slice(from))?.[1];
+}
+
+/**
+ * Чтения часа с минутами: без части суток их два (утро и вечер), как у
+ * голого «в 9»; с частью суток — одно.
+ */
+function readingsOf(hour: number, minute: number, daypart: string | undefined): ClockTime {
+  const morning = minutesOf(hour, minute);
+  const evening = minutesOf((hour + NOON) % HOURS_IN_DAY, minute);
+  if (morning === undefined || evening === undefined) return [];
+
+  if (daypart === 'утра' || daypart === 'ночи') return [morning];
+  if (daypart === 'дня' || daypart === 'вечера') return [hour >= NOON ? morning : evening];
+
+  return [morning, evening];
+}
+
 /** Часы, названные в тексте, по чтениям; порядок — по тексту. */
 export function clockTimesIn(text: string): readonly ClockTime[] {
   const normalized = normalize(text);
@@ -146,6 +272,7 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
     if (NOT_AN_HOUR.test(rest)) continue;
     add(numberAt(match, 1), bareHour(Number(match[1])));
   }
+  for (const spoken of spokenClockTimes(normalized)) add(spoken.at, spoken.time);
 
   return found.sort((left, right) => left.at - right.at).map((one) => one.time);
 }
