@@ -180,16 +180,28 @@ function numberAt(match: RegExpExecArray, group: number): number {
  * (17:30 или 5:30), «без пятнадцати семь» (6:45). Часть суток рядом
  * снимает двусмысленность — её ловит общий разбор ниже.
  */
-function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[] {
-  const found: { at: number; time: ClockTime }[] = [];
+interface SpokenClock {
+  /** Где стоит число: по нему совпадения разных форм сверяются. */
+  readonly at: number;
+  /** Вся фраза — от предлога до части суток: её срезает заголовок. */
+  readonly start: number;
+  readonly end: number;
+  readonly time: ClockTime;
+}
+
+function spokenClockTimes(normalized: string): SpokenClock[] {
+  const found: SpokenClock[] = [];
 
   for (const match of normalized.matchAll(HALF)) {
     const next = valueOf(match[1] ?? '', ORDINALS);
     if (next === undefined) continue;
     const hour = previousHour(next);
-    const daypart = daypartAfter(normalized, match.index + match[0].length);
+    const end = match.index + match[0].length;
+    const daypart = daypartAfter(normalized, end);
     found.push({
       at: match.index + match[0].indexOf(match[1] ?? ''),
+      start: match.index,
+      end: end + daypartLength(normalized, end),
       time: readingsOf(hour, MINUTES_IN_HOUR / 2, daypart),
     });
   }
@@ -208,10 +220,13 @@ function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[]
     const next = valueOf(hourWord, CARDINALS);
     if (minutes === undefined || next === undefined) continue;
 
-    const after = normalized.indexOf(hourWord, match.index) + hourWord.length;
+    const at = normalized.indexOf(hourWord, match.index);
+    const after = at + hourWord.length;
     const daypart = daypartAfter(normalized, after);
     found.push({
-      at: normalized.indexOf(hourWord, match.index),
+      at,
+      start: match.index,
+      end: after + daypartLength(normalized, after),
       time: readingsOf(previousHour(next), MINUTES_IN_HOUR - minutes, daypart),
     });
   }
@@ -222,6 +237,11 @@ function spokenClockTimes(normalized: string): { at: number; time: ClockTime }[]
 /** Часть суток сразу за формой: «в половине десятого вечера». */
 function daypartAfter(normalized: string, from: number): string | undefined {
   return /^\s*(утра|дня|вечера|ночи)(?!\p{L})/u.exec(normalized.slice(from))?.[1];
+}
+
+/** Сколько знаков занимает часть суток за формой — чтобы срезать её вместе с часом. */
+function daypartLength(normalized: string, from: number): number {
+  return /^\s*(?:утра|дня|вечера|ночи)(?!\p{L})/u.exec(normalized.slice(from))?.[0].length ?? 0;
 }
 
 /**
@@ -312,6 +332,17 @@ function clockPhraseSpan(
     if (best === undefined || start < best.start) best = { start, end };
   };
 
+  /**
+   * Разговорные формы — первыми и целиком (живой прогон 22.09.2026):
+   * «в пол 11 вечера забрать посылку» иначе теряло только «11 вечера»
+   * и оставляло «В пол забрать посылку».
+   */
+  for (const spoken of spokenClockTimes(normalized)) {
+    if (best === undefined || spoken.start < best.start) {
+      best = { start: spoken.start, end: spoken.end };
+    }
+  }
+
   for (const match of normalized.matchAll(DAYPART)) {
     const before = normalized.slice(0, match.index);
     if (match[2] === 'дня' && !TIME_PREPOSITION.test(before)) continue;
@@ -338,9 +369,14 @@ function clockPhraseSpan(
   }
   if (best === undefined) return undefined;
 
-  // Предлог и запятая перед числом — часть фразы; «часов» и часть суток после — тоже.
+  // Предлог, запятая и слово о дне перед часом — часть фразы: день и час
+  // уже в сроке, в заголовке им делать нечего («сегодня без четверти 11»).
+  // «Часов» и часть суток после — тоже.
   const head = normalized.slice(0, best.start);
-  const lead = /(?:,\s*)?(?:(?<!\p{L})(?:в|к|до|около|после)\s+)?$/u.exec(head);
+  const lead =
+    /(?:(?<!\p{L})(?:сегодня|завтра|послезавтра)\s+)?(?:,\s*)?(?:(?<!\p{L})(?:в|к|до|около|после)\s+)?$/u.exec(
+      head,
+    );
   const start = lead === null ? best.start : best.start - lead[0].length;
   const tail = /^(?:\s+час(?:ов|а)?)?(?:\s+(?:утра|дня|вечера|ночи))?/u.exec(
     normalized.slice(best.end),
