@@ -39,13 +39,18 @@ const MAX_SENTENCES = 2;
 const OPENING = /^(всё,?\s*забрала|записала|поймала|разложила|поняла,?\s*забрала)/iu;
 /** Совет и понукание — «не заставляет женщину организовывать». */
 const ADVICE =
-  /(?<!\p{L})(попробуй|постарайся|советую|рекомендую|не забудь|не забывай|стоит\s+(сделать|начать|заняться)|надо|нужно|пора|придётся|придется)(?!\p{L})/iu;
+  /(?<!\p{L})(попробуй|постарайся|советую|рекомендую|не забудь|не забывай|стоит\s+(сделать|начать|заняться)|пора|придётся|придется)(?!\p{L})/iu;
+/** «Надо/нужно» — понукание в строке без вопроса; в ответе на вопрос — её же слова. */
+const MUST = /(?<!\p{L})(надо|нужно)(?!\p{L})/iu;
 /** «Жду» от себя — давление: ждёт дело, а не бот (второй проход 22.09.2026). */
 const PRESSURE = /(?<!\p{L})(жду|ждём|ждем|ждала|дожидаюсь)(?!\p{L})/iu;
+/** Упрёк — «так и не», «до сих пор не», «опять не»: её правило «без упрёка». */
+const REPROACH =
+  /(?<!\p{L})(так и не|до сих пор не|опять не|снова не|всё ещё не сделал\p{L}*)(?!\p{L})/iu;
 /** «Помнишь», «знаешь» — говорить за неё; помнит бот (третий проход 22.09.2026). */
 const FOR_HER = /(?<!\p{L})(помнишь|знаешь|видишь|понимаешь|записывалась|записалась)(?!\p{L})/iu;
 /** Канцелярит и язык таск-менеджера — «не таск-менеджер» из её текста. */
-const OFFICE = /(?<!\p{L})(просрочен\p{L}*|выгрузк\p{L}*|статус\p{L}*|категори\p{L}*)(?!\p{L})/iu;
+const OFFICE = /(?<!\p{L})(просрочен|выгрузк|статус|категори|задач)\p{L}*(?!\p{L})/giu;
 /** Обещания и планы за неё — «не заставляет организовывать». */
 const PROMISE = /(?<!\p{L})(разбер[её]мся|сделаем|успеем|справимся|займ[её]мся)(?!\p{L})/iu;
 /** Оценка — «не оценивает»: «не забыла», «умница» и прочее сверх FORBIDDEN. */
@@ -143,6 +148,8 @@ export interface VoiceLimits {
   readonly maxQuestions: number;
   /** Слова открытия ответа — повтор; у ответа на вопрос открытия нет. */
   readonly forbidOpening: boolean;
+  /** «Надо/нужно» допустимы: в ответе на вопрос это её слова, не понукание. */
+  readonly allowMust?: boolean | undefined;
 }
 
 const LINE_LIMITS: VoiceLimits = {
@@ -187,9 +194,17 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   const forbidden = forbiddenPhraseIn(line);
   if (forbidden !== undefined) return { ok: false, why: `запрет: ${forbidden}` };
   if (ADVICE.test(line)) return { ok: false, why: 'совет' };
+  if (limits.allowMust !== true && MUST.test(line)) return { ok: false, why: 'совет' };
   if (PRESSURE.test(line)) return { ok: false, why: 'давление' };
   if (FOR_HER.test(line)) return { ok: false, why: 'за неё' };
-  if (OFFICE.test(line)) return { ok: false, why: 'канцелярит' };
+  if (REPROACH.test(line)) return { ok: false, why: 'упрёк' };
+  // Канцелярит — кроме слова из её же записи: «сдать задачу по математике».
+  for (const match of line.matchAll(OFFICE)) {
+    const stem = (match[1] ?? '').toLowerCase().replace(/ё/gu, 'е');
+    if (!facts.toLowerCase().replace(/ё/gu, 'е').includes(stem)) {
+      return { ok: false, why: 'канцелярит' };
+    }
+  }
   if (PROMISE.test(line)) return { ok: false, why: 'обещание' };
   if (PRAISE.test(line)) return { ok: false, why: 'оценка' };
   if (picturesIn(line).length > 0) return { ok: false, why: 'эмодзи' };

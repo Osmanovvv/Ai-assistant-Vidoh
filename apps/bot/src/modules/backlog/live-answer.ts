@@ -59,11 +59,26 @@ function clock(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
+function daysBetween(from: Date, to: Date, timeZone: string): number {
+  const start = startOfDayInZone(localDateParts(from, timeZone), timeZone);
+  const end = startOfDayInZone(localDateParts(to, timeZone), timeZone);
+  return Math.round((end.getTime() - start.getTime()) / DAY_MS);
+}
+
 function dueOf(
   item: Item,
   context: { readonly now: Date; readonly timeZone: string; readonly texts: TextProfile },
 ): string {
   if (item.deadlineAt === null) return 'без срока';
+  // Прошедший день — назван прошедшим: «срок: 10.09» модель читала как
+  // будущее и отвечала «определишься 10 сентября» про давно прошедшее.
+  if (
+    item.deadlineAccuracy === 'day' &&
+    isoDateIn(item.deadlineAt, context.timeZone) < isoDateIn(context.now, context.timeZone)
+  ) {
+    const late = daysBetween(item.deadlineAt, context.now, context.timeZone);
+    return `срок прошёл: ${shortDate(item.deadlineAt, context.timeZone)}, ${counted(late, ['день', 'дня', 'дней'])} назад`;
+  }
   const words = dueWords(
     {
       deadlineAt: item.deadlineAt,
@@ -101,12 +116,6 @@ function foundLine(
   const base = `— ${title(item)} (${item.topic ?? 'без сферы'}${kind})`;
   if (state !== undefined) return `${base} — ${state}`;
   return `${base}, ${dueOf(item, context)}`;
-}
-
-function daysBetween(from: Date, to: Date, timeZone: string): number {
-  const start = startOfDayInZone(localDateParts(from, timeZone), timeZone);
-  const end = startOfDayInZone(localDateParts(to, timeZone), timeZone);
-  return Math.round((end.getTime() - start.getTime()) / DAY_MS);
 }
 
 /** Текст фактов для модели — и словарь для стража: числа и люди только отсюда. */
@@ -200,6 +209,9 @@ const ANSWER_LIMITS: VoiceLimits = {
   maxSentences: 3,
   maxQuestions: 1,
   forbidOpening: false,
+  // «Сегодня надо купить молоко» на «мне надо что-то купить?» — ответ её
+  // словами, не понукание; «попробуй», «пора», «не забудь» остаются советом.
+  allowMust: true,
 };
 
 export function checkLiveAnswer(raw: string, facts: string): CheckedLine {
