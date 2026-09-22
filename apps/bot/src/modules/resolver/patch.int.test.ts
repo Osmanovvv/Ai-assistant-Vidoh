@@ -132,6 +132,49 @@ describe('применение оставляет ревизию', () => {
     expect((await reread(item.id)).text).toBe('Записать сына к стоматологу');
   });
 
+  it('распоряжение о записи в заголовок не пишется: «перенеси …» двигает срок, а не переименовывает (бой 23.09.2026)', async () => {
+    /**
+     * Живой прогон Никиты, 00:34. «Перенеси посылку на пятницу на 10 утра»
+     * дошло до резолвера правкой — и модель отдала в `changes.text` саму
+     * команду. Код записал её заголовком: «Поправила: теперь это
+     * «Перенести посылку на пятницу на 10 утра.»». В списке дел снова
+     * стояла реплика человека, только теперь вместо дела, которое он
+     * переносил.
+     *
+     * Заголовок, начинающийся с приказа о записи, — не заголовок, а эхо
+     * сказанного. Список приказов закрытый и тот же, что у развилки «цель
+     * не нашлась» (задача 3.67). Срок и час из той же правки применяются.
+     */
+    const item = await sow({ text: 'Забрать посылку' });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          note: '',
+          text: 'Перенести посылку на пятницу на 10 утра.',
+          deadline: '2026-09-04',
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        spoken: 'Перенеси посылку на пятницу на 10 утра.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).not.toContain('text');
+    expect(applied?.fields).toContain('deadlineAt');
+    const after = await reread(item.id);
+    expect(after.text).toBe('Забрать посылку');
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+    expect(after.deadlineTime).toBe(600);
+  });
+
   it('дело сделано', async () => {
     const item = await sow();
 

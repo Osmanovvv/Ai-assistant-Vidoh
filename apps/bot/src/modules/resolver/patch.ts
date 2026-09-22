@@ -11,6 +11,7 @@ import {
   startOfDayAfter,
 } from '../classifier/dates.js';
 import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
+import { startsWithRecordCommand } from '../router/append.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
@@ -332,7 +333,16 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
   // Правило то же, что при сохранении: заголовок не должен менять
   // регистр от того, каким путём он пришёл (задача 3.25).
   const rewritten = withCapital(text);
-  if (rewritten.length > 0 && rewritten !== item.text) next.text = rewritten;
+  /**
+   * Заголовок, начинающийся с приказа о записи, — не заголовок, а эхо
+   * сказанного (бой 23.09.2026, живой прогон Никиты): на «Перенеси
+   * посылку на пятницу на 10 утра» модель отдала новым текстом саму
+   * команду, и в списке дел вместо дела встала реплика человека. Такой
+   * текст не применяется; срок и час из той же правки — применяются.
+   */
+  if (rewritten.length > 0 && rewritten !== item.text && !startsWithRecordCommand(rewritten)) {
+    next.text = rewritten;
+  }
 
   if (deadline.length > 0) {
     /**
