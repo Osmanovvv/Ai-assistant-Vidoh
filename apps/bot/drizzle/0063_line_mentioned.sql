@@ -1,0 +1,1 @@
+ALTER TABLE "items" ADD COLUMN "line_mentioned_at" timestamp with time zone;

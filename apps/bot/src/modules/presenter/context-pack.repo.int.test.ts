@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { batches, items, userSettings } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
-import { loadContextFacts } from './context-pack.repo.js';
+import { loadContextFacts, markLineMentions } from './context-pack.repo.js';
 
 /**
  * Факты для живой строки из базы (22.09.2026): как женщину зовут, когда
@@ -103,6 +103,37 @@ describe('факты из базы', () => {
       'найти няню',
       'купить обои',
     ]);
+  });
+
+  it('отметка упоминания — только своим записям и только названным', async () => {
+    const current = await batch(now);
+    const classified = { type: 'TASK', priority: 'SOON', topic: 'дом' } as const;
+    const [mine] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        ...classified,
+        text: 'сдать отчёт',
+        status: 'done',
+        completedAt: daysAgo(1),
+      })
+      .returning({ id: items.id });
+    const [other] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        ...classified,
+        text: 'найти няню',
+        status: 'done',
+        completedAt: daysAgo(1),
+      })
+      .returning({ id: items.id });
+
+    await markLineMentions(testDb(), { userId, itemIds: [mine?.id ?? ''], now });
+
+    const facts = await loadContextFacts(testDb(), { userId, batchId: current, now });
+    expect(facts.doneItems.find((one) => one.id === mine?.id)?.lineMentionedAt).toEqual(now);
+    expect(facts.doneItems.find((one) => one.id === other?.id)?.lineMentionedAt).toBeNull();
   });
 
   it('чужие записи и выгрузки не видны', async () => {
