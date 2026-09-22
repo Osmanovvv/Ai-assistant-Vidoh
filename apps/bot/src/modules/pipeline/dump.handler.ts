@@ -23,11 +23,12 @@ import {
   listHeader,
   periodLabel,
 } from '../backlog/query.service.js';
+import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
-import { contextOf, withNextSteps } from '../projects/projects.service.js';
+import { contextOf, withNextSteps, type ProjectContext } from '../projects/projects.service.js';
 import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
 import {
@@ -1415,8 +1416,36 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       });
     }
 
-    for (const { answer } of questions) {
+    for (const { text: asked, answer } of questions) {
       happened.said = true;
+
+      /**
+       * Живой ответ на вопрос (слой B, 22.09.2026; §13.4 ТЗ — прозой, не
+       * списком). Записи нашёл код выше; модель говорит о найденном по
+       * закрытому списку фактов (`questionFacts`) под стражем
+       * (`askLiveAnswer`). Не прошёл, пусто или выключено в панели —
+       * словарный ответ, как раньше. Списки по дню и сферам — всегда код.
+       */
+      const liveKind =
+        answer.kind === 'about' ||
+        answer.kind === 'aboutClosed' ||
+        answer.kind === 'project' ||
+        answer.kind === 'nothing';
+      const wantsLive = liveKind && ((await deps.settings?.number('liveAnswers')) ?? 1) !== 0;
+      const liveAnswer = async (project?: ProjectContext): Promise<string | undefined> => {
+        if (!wantsLive) return undefined;
+        const facts = questionFacts({
+          question: asked,
+          now,
+          timeZone: context.timeZone,
+          texts,
+          answer,
+          project,
+          // Ничего не нашлось — обзор открытых дел: «как всё успеть».
+          overview: answer.kind === 'nothing' ? await openItemsFor(db, batch.userId) : undefined,
+        });
+        return (await askLiveAnswer(ai, { facts, userId: batch.userId, batchId: batch.id })).line;
+      };
 
       /**
        * Про большую цель отвечаем контекстом, а не строкой списка (3.13).
@@ -1439,10 +1468,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * показать «что уже решено», а закрыть шаг было нечем: раздел
          * «Сделано» не мог наполниться никогда.
          */
-        await tell(describeProject(answer.item, context, texts), stepButtons(context.next, texts));
+        const prose = await liveAnswer(context);
+        await tell(
+          prose ?? describeProject(answer.item, context, texts),
+          stepButtons(context.next, texts),
+        );
 
         continue;
       }
+
+      if (answer.kind === 'nothing') {
+        const prose = await liveAnswer();
+        if (prose !== undefined) {
+          await tell(prose);
+          continue;
+        }
+      }
+      const aboutProse =
+        answer.kind === 'about' || answer.kind === 'aboutClosed' ? await liveAnswer() : undefined;
 
       /**
        * «С чего начать» словами — тот же выбор главного, что у кнопки
@@ -1511,13 +1554,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
               : answer.kind === 'periodEmpty'
                 ? texts.backlog.periodEmpty(periodLabel(answer.period, texts.backlog))
                 : answer.kind === 'about'
-                  ? texts.backlog.about
+                  ? (aboutProse ?? texts.backlog.about)
                   : answer.kind === 'all'
                     ? texts.backlog.all
                     : answer.kind === 'allEmpty'
                       ? texts.backlog.allEmpty
                       : answer.kind === 'aboutClosed'
-                        ? texts.backlog.aboutClosed
+                        ? (aboutProse ?? texts.backlog.aboutClosed)
                         : answer.kind === 'unavailable'
                           ? texts.backlog.unavailable
                           : texts.backlog.nothing;

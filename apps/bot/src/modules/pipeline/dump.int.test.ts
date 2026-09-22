@@ -38,6 +38,7 @@ import type { CompletionRequest } from '../ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
   EXTRACTOR_SCHEMA_NAME,
+  ANSWERER_SCHEMA_NAME,
   PRESENTER_SCHEMA_NAME,
   PRESENTER_V2_SCHEMA_NAME,
   RESOLVER_SCHEMA_NAME,
@@ -137,6 +138,7 @@ const MARKERS = {
   classifier: 'КЛАССЫ',
   presenter: 'ПРИЗНАНИЕ',
   resolver: 'РЕШЕНИЕ',
+  answerer: 'ОТВЕТ',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -249,6 +251,9 @@ function echoingLlm(
           });
         case 'presenter':
           return JSON.stringify({ acknowledgement: 'Я тебя услышала.' });
+        case 'answerer':
+          // Пусто — «сказать нечего»: ответ словарный, как без модели.
+          return JSON.stringify({ answer: '' });
       }
     },
   });
@@ -6816,5 +6821,123 @@ describe('живая строка поверх ответа (слой A, 22.09.2
 
     expect(presenterInputs).toHaveLength(0);
     expect(reply).toContain('Записала 2 дела');
+  });
+});
+
+describe('живой ответ на вопрос о делах (слой B, 22.09.2026)', () => {
+  /**
+   * §13.4 ТЗ: на «что там с…» — прозой, не списком. Записи находит код,
+   * модель говорит о найденном; страж и выключатель — как у строки.
+   */
+  async function answeringPrompts(): Promise<PromptRegistry> {
+    const prompts = await seedPrompts();
+    await seedPrompt(testDb(), {
+      stage: 'answerer',
+      version: 'answerer@test',
+      prompt: MARKERS.answerer,
+      schemaName: ANSWERER_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'answerer', 'answerer@test');
+    return prompts;
+  }
+
+  async function ask(
+    question: string,
+    llm: MockLlmProvider,
+    prompts: PromptRegistry,
+  ): Promise<{ replies: string[]; answererInputs: string[] }> {
+    await queuedBatchOf([{ kind: 'text', text: question, offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+    return {
+      replies: all,
+      answererInputs: llm.requests
+        .filter((request) => stageOf(request) === 'answerer')
+        .map((request) => request.input),
+    };
+  }
+
+  const routerQuery = (text: string): string =>
+    JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text }] });
+
+  it('ничего не найдено — модель отвечает по обзору дел, а не «ничего не записано»', async () => {
+    const prompts = await answeringPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'работа',
+        text: 'Сдать отчёт',
+        deadlineAt: at(60_000),
+        deadlineAccuracy: 'day',
+        deadlineTime: 21 * 60,
+      });
+    const llm = echoingLlm({
+      router: routerQuery('как всё успеть'),
+      answerer: JSON.stringify({
+        answer: 'На сегодня у тебя один отчёт к 21:00 — остальное подождёт.',
+      }),
+    });
+
+    const { replies, answererInputs } = await ask('как всё успеть', llm, prompts);
+
+    expect(answererInputs).toHaveLength(1);
+    expect(answererInputs[0]).toContain('Вопрос: как всё успеть');
+    expect(answererInputs[0]).toContain('На сегодня: Сдать отчёт в 21:00');
+    expect(replies.at(-1)).toBe('На сегодня у тебя один отчёт к 21:00 — остальное подождёт.');
+  });
+
+  it('ответ не прошёл стража или пуст — словарный ответ, как раньше', async () => {
+    const prompts = await answeringPrompts();
+    const llm = echoingLlm({
+      router: routerQuery('что там с котом'),
+      answerer: JSON.stringify({ answer: 'Не переживай, всё будет хорошо.' }),
+    });
+
+    const { replies } = await ask('что там с котом', llm, prompts);
+
+    expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
+  });
+
+  it('выключатель в панели: 0 — модель не зовётся', async () => {
+    const prompts = await answeringPrompts();
+    await putSetting(testDb(), { name: 'liveAnswers', value: '0' });
+    const llm = echoingLlm({
+      router: routerQuery('что там с котом'),
+      answerer: JSON.stringify({ answer: 'Про кота у тебя ничего нет.' }),
+    });
+
+    const { replies, answererInputs } = await ask('что там с котом', llm, prompts);
+
+    expect(answererInputs).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
+  });
+
+  it('без промпта ответа (первая выкладка кода) — модель не зовётся, ответ словарный', async () => {
+    const prompts = await seedPrompts();
+    const llm = echoingLlm({
+      router: routerQuery('что там с котом'),
+      answerer: JSON.stringify({ answer: 'что-то' }),
+    });
+
+    const { replies, answererInputs } = await ask('что там с котом', llm, prompts);
+
+    expect(answererInputs).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
   });
 });

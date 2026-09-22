@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ANSWERER_SCHEMA_NAME,
+  answererSchema,
   EXTRACTOR_SCHEMA_NAME,
   INTENTS,
   PRESENTER_SCHEMA_NAME,
@@ -237,6 +239,16 @@ describe('схема контекстной строки (presenter.v2)', () => 
     expect(SCHEMA_BY_STAGE.presenter).toBe(PRESENTER_V2_SCHEMA_NAME);
     expect(findSchema(PRESENTER_SCHEMA_NAME)).toBe(presenterSchema);
     expect(findSchema(PRESENTER_V2_SCHEMA_NAME)).toBe(presenterV2Schema);
+  });
+});
+
+describe('схема живого ответа (answerer.v1)', () => {
+  it('принимает ответ и пустую строку; этап отвечает по ней', () => {
+    expect(answererSchema.safeParse({ answer: 'Ты хотела сделать альбом.' }).success).toBe(true);
+    expect(answererSchema.safeParse({ answer: '' }).success).toBe(true);
+    expect(answererSchema.safeParse({ line: 'нет' }).success).toBe(false);
+    expect(SCHEMA_BY_STAGE.answerer).toBe(ANSWERER_SCHEMA_NAME);
+    expect(findSchema(ANSWERER_SCHEMA_NAME)).toBe(answererSchema);
   });
 });
 

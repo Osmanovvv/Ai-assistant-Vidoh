@@ -135,20 +135,54 @@ function sentencesIn(text: string): number {
   return text.split(/[.!…]+(?:\s+|$)/u).filter((piece) => piece.trim() !== '').length;
 }
 
+/** Пределы текста от модели: у строки одни, у ответа на вопрос другие. */
+export interface VoiceLimits {
+  readonly maxLength: number;
+  readonly maxSentences: number;
+  /** Сколько знаков вопроса допустимо: у строки ноль, у ответа один (§13.9). */
+  readonly maxQuestions: number;
+  /** Слова открытия ответа — повтор; у ответа на вопрос открытия нет. */
+  readonly forbidOpening: boolean;
+}
+
+const LINE_LIMITS: VoiceLimits = {
+  maxLength: MAX_LINE,
+  maxSentences: MAX_SENTENCES,
+  maxQuestions: 0,
+  forbidOpening: true,
+};
+
 /**
  * Проверка строки кодом. `facts` — тот же текст, что ушёл модели: числа и
  * дни недели в строке обязаны в нём быть.
  */
 export function checkContextLine(raw: string, facts: string): CheckedLine {
+  return checkVoice(raw, facts, LINE_LIMITS);
+}
+
+/**
+ * Общие правила голоса бота для всего, что пишет модель (её текст о
+ * характере, §13.7, §13.9, сверка с фактами). Живая строка и живой ответ
+ * на вопрос (слой B) проверяются одним стражем с разными пределами.
+ */
+export function checkVoice(raw: string, facts: string, limits: VoiceLimits): CheckedLine {
   const line = raw
     .replace(/\s*\n+\s*/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
   if (line === '') return { ok: false, why: 'пусто' };
-  if (line.length > MAX_LINE) return { ok: false, why: 'длинно' };
-  if (line.includes('?')) return { ok: false, why: 'вопрос' };
+  if (line.length > limits.maxLength) return { ok: false, why: 'длинно' };
+  const questions = (line.match(/\?/gu) ?? []).length;
+  if (questions > limits.maxQuestions) {
+    return { ok: false, why: limits.maxQuestions === 0 ? 'вопрос' : 'два вопроса' };
+  }
   if (/!{2,}/u.test(line)) return { ok: false, why: 'восклицания' };
-  if (sentencesIn(line) > MAX_SENTENCES) return { ok: false, why: 'больше двух предложений' };
+  if (sentencesIn(line) > limits.maxSentences) {
+    return {
+      ok: false,
+      why: limits.maxSentences === 2 ? 'больше двух предложений' : 'больше трёх предложений',
+    };
+  }
 
   const forbidden = forbiddenPhraseIn(line);
   if (forbidden !== undefined) return { ok: false, why: `запрет: ${forbidden}` };
@@ -159,7 +193,7 @@ export function checkContextLine(raw: string, facts: string): CheckedLine {
   if (PROMISE.test(line)) return { ok: false, why: 'обещание' };
   if (PRAISE.test(line)) return { ok: false, why: 'оценка' };
   if (picturesIn(line).length > 0) return { ok: false, why: 'эмодзи' };
-  if (OPENING.test(line)) return { ok: false, why: 'повторяет открытие' };
+  if (limits.forbidOpening && OPENING.test(line)) return { ok: false, why: 'повторяет открытие' };
   if (COUNT_OF_ITEMS.test(line)) return { ok: false, why: 'повторяет счёт' };
   if (YOU_PLURAL.test(line)) return { ok: false, why: 'на вы' };
   if (MASCULINE_SELF.test(line)) return { ok: false, why: 'мужской род' };

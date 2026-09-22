@@ -34,6 +34,8 @@ const BY_STAGE: Readonly<Partial<Record<AiStage, number>>> = {
   resolver: STRUCTURAL,
   decomposer: STRUCTURAL,
   presenter: PRESENTER,
+  // Живой ответ на вопрос — та же лёгкая свобода слова, что у строки.
+  answerer: PRESENTER,
 };
 
 /**

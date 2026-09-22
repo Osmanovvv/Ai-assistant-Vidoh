@@ -44,8 +44,9 @@ const STAGES: Record<string, string> = {
   extractor: 'Извлечение',
   classifier: 'Классификация',
   resolver: 'Резолвер',
-  presenter: 'Ответ человеку',
+  presenter: 'Живая строка в ответе',
   decomposer: 'Разбиение проекта',
+  answerer: 'Ответ на вопрос о делах',
   speech: 'Речь',
   embedder: 'Векторы',
 };
