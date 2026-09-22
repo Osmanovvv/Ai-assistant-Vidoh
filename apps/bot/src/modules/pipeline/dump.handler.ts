@@ -37,6 +37,7 @@ import {
   describeChange,
   questionButtons,
   questionText,
+  unchangedText,
   undoButtons,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
@@ -637,11 +638,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const sayParked = (line: string): void => {
       if (!parkedWords.includes(line)) parkedWords.push(line);
     };
-    const parkedLine = (said: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined): string =>
+    const parkedLine = (
+      said: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined,
+      timeUnclear?: readonly [number, number],
+    ): string =>
       said === 'refused'
         ? texts.resolver.deadlineRefused
         : said === 'unchanged'
-          ? texts.resolver.unchanged
+          ? unchangedText({ timeUnclear }, texts)
           : said === 'gone'
             ? texts.card.gone
             : said === 'absent'
@@ -1160,7 +1164,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           ? texts.resolver.deadlineRefused
           : settled.why === 'gone'
             ? texts.card.gone
-            : texts.resolver.unchanged,
+            : unchangedText(settled, texts),
       );
     } else if (settled.kind === 'unclear') {
       happened.said = true;
@@ -1320,7 +1324,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.parked = true;
       // Модель резолвера молчала — это сбой, а не непонятая правка (п. 4).
       if (outcome.fault !== undefined) happened.fault = outcome.fault;
-      sayParked(parkedLine(outcome.said));
+      sayParked(parkedLine(outcome.said, outcome.timeUnclear));
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,

@@ -219,6 +219,22 @@ export const QUESTION_ACTION = {
   separate: 'q:s:',
 } as const;
 
+/**
+ * «Менять нечего» — или «не поняла, 11:30 или 23:30?», если человек
+ * назвал час с двумя чтениями, а записи не на что опереться (живой прогон
+ * Никиты 23.09.2026). Одна функция на все три пути: голос, кнопка, ответ
+ * на вопрос — иначе разойдутся, как уже расходились.
+ */
+export function unchangedText(
+  outcome: { readonly timeUnclear?: readonly [number, number] | undefined },
+  texts: TextProfile,
+): string {
+  const readings = outcome.timeUnclear;
+  return readings === undefined
+    ? texts.resolver.unchanged
+    : texts.resolver.timeUnclear(clockOf(readings[0]), clockOf(readings[1]));
+}
+
 /** О чём вопрос: найденная запись и отложенная правка к ней. */
 export interface QuestionAbout {
   readonly title: string;

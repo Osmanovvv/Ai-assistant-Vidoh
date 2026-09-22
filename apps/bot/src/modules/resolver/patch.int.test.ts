@@ -290,6 +290,88 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(10 * 60 + 30);
   });
 
+  /**
+   * Живой прогон Никиты, ночь 23.09.2026, две реплики подряд про одно дело
+   * с часом 11:00: «Перенеси посылку на завтра на 12 часов» → «на 24.09,
+   * 11:00» (час после «на» не читался), затем «Перенеси посылку на пол
+   * 12» → «Там уже так — менять нечего» (у «пол 12» два чтения, 11:30 и
+   * 23:30, и код молча взял ни одно).
+   */
+  it('«на 12 часов» — час после «на» читается (бой 23.09.2026)', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('2026-09-03'),
+        spoken: 'Перенеси посылку на завтра на 12 часов.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toContain('deadlineTime');
+    expect((await reread(item.id)).deadlineTime).toBe(12 * 60);
+  });
+
+  it('«на пол 12» у дела с часом 11:00 — 11:30: два чтения, берём то, что в той же половине суток', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: 'Перенеси посылку на пол 12.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    expect((await reread(item.id)).deadlineTime).toBe(11 * 60 + 30);
+  });
+
+  it('«на пол 12» у дела с часом 22:30 — 23:30', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 22 * 60 + 30 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку на пол 12.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(23 * 60 + 30);
+  });
+
+  it('«на пол 12» у дела без часа — не угадываем: час не ставится, а исход называет оба чтения', async () => {
+    const item = await sow({ text: 'Забрать посылку' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку на пол 12.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('unchanged');
+    expect(outcome.kind === 'unchanged' ? outcome.timeUnclear : undefined).toEqual([
+      11 * 60 + 30,
+      23 * 60 + 30,
+    ]);
+    expect((await reread(item.id)).deadlineTime).toBeNull();
+  });
+
   it('новый час — старый час из заголовка уходит: «Позвонить сестре в 3:10» → «Позвонить сестре» (бой 22.09.2026)', async () => {
     // Запись до починки заголовков хранила час в тексте; после «Изменить
     // время» → 03:45 реплика говорила «Напомню про «Позвонить сестре в

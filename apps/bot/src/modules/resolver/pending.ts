@@ -54,6 +54,8 @@ export interface PendingResult {
    * слово — раньше на всё отвечал «Добавила к прошлой».
    */
   readonly why?: 'unchanged' | 'refused' | 'gone' | undefined;
+  /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
+  readonly timeUnclear?: readonly [number, number] | undefined;
   /**
    * Сказанное, которое надо разобрать вместе с этой выгрузкой.
    *
@@ -303,5 +305,12 @@ export async function settlePendingQuestion(
 
   return applying.kind === 'applied'
     ? { kind: 'applied', applied: applying.applied, leftoverSaved }
-    : { kind: 'nothingToApply', why: applying.kind, leftoverSaved };
+    : {
+        kind: 'nothingToApply',
+        why: applying.kind,
+        leftoverSaved,
+        ...(applying.kind === 'unchanged' && applying.timeUnclear !== undefined
+          ? { timeUnclear: applying.timeUnclear }
+          : {}),
+      };
 }

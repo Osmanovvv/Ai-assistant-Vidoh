@@ -122,6 +122,8 @@ export type SegmentResult =
        */
       /** `absent` — сказано как о сделанном или отменённом, а записи нет. */
       readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined;
+      /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
+      readonly timeUnclear?: readonly [number, number] | undefined;
       /**
        * Цель не нашлась потому, что модель не ответила (панель, п. 4):
        * человеку — та же реплика, а в журнале это сбой, не непонимание.
@@ -418,6 +420,9 @@ export async function resolvePatchSegment(
             ? `правка отвергнута: ${outcome.reason}`
             : 'запись исчезла между поиском и правкой',
       said: outcome.kind,
+      ...(outcome.kind === 'unchanged' && outcome.timeUnclear !== undefined
+        ? { timeUnclear: outcome.timeUnclear }
+        : {}),
     };
   }
 

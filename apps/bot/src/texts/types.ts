@@ -397,6 +397,12 @@ export interface TextProfile {
     readonly buttonEnough: string;
     /** Запись уже в этом состоянии — менять нечего (ревизия этапа 3, A3). */
     readonly unchanged: string;
+    /**
+     * Час назван, но у него два чтения — утро и вечер, — а опереться не
+     * на что (живой прогон Никиты 23.09.2026: «на пол 12» у дела без
+     * часа). Не угадываем и не молчим «менять нечего»: называем оба.
+     */
+    readonly timeUnclear: (morning: string, evening: string) => string;
     /** Срок отвергнут — в прошлом или не существует (A3). */
     readonly deadlineRefused: string;
     /** Правило не легло: не на что опереться (A3). */

@@ -247,6 +247,7 @@ export const reserved: TextProfile = {
     buttonGoOn: 'Продолжаем',
     buttonEnough: 'На сегодня хватит',
     unchanged: 'Там уже так — менять нечего.',
+    timeUnclear: (morning, evening) => `Не поняла, ${morning} или ${evening}? Скажи — и перенесу.`,
     deadlineRefused: 'Срок не подошёл — не поменяла. Назови дату ещё раз.',
     rememberFailed:
       'Правило не легло: не на что опереться. Скажи словами, как часто и с какого дня.',
