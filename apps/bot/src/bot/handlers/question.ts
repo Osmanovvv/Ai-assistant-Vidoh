@@ -20,6 +20,7 @@ import {
   describeChange,
   QUESTION_ACTION,
   questionButtons,
+  unchangedText,
 } from '../../modules/resolver/change-text.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { isRecordCommand } from '../../modules/router/append.js';
@@ -207,7 +208,7 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
          */
         await ctx.editMessageText(
           applying.kind === 'unchanged'
-            ? active.texts.resolver.unchanged
+            ? unchangedText(applying, active.texts)
             : applying.kind === 'refused'
               ? active.texts.resolver.deadlineRefused
               : active.texts.card.gone,

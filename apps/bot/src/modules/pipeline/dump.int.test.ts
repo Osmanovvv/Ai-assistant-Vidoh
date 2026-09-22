@@ -4074,6 +4074,54 @@ describe('правка доходит до резолвера (§7, задача
     expect(reply).toMatch(/на \d{2}\.\d{2}, 15:00\./u);
   });
 
+  it('«перенеси врача на пол 12» у дела без часа — «не поняла, 11:30 или 23:30?», а не «менять нечего» (живой прогон Никиты 23.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси врача на пол 12', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'перенеси врача на пол 12' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка часа',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Час не угадан: у дела своего часа нет, а у «пол 12» два чтения.
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineTime).toBeNull();
+
+    // И об этом сказано словами, а не «менять нечего».
+    expect(all.some((text) => text.includes('Не поняла, 11:30 или 23:30?'))).toBe(true);
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
   it('средняя уверенность задаёт один вопрос с двумя кнопками', async () => {
     const prompts = await seedPrompts();
     const itemId = await existingItem(null);

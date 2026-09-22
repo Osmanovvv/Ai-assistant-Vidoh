@@ -48,9 +48,18 @@ const DAYPART = /(?<!\d)(\d{1,2})\s*(?:час(?:ов|а)?\s*)?(утра|дня|�
 const COLON = /(?<!\d)(\d{1,2}):(\d{2})(?!\d)/gu;
 const DOT = /(?<!\d)(\d{1,2})\.(\d{2})(?!\d)/gu;
 /** Расшифровка: «в 13 0 0», «в 9 30» — после предлога. */
-const SPOKEN = /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})\s+(0\s+0|\d{2})(?!\d)/gu;
+const SPOKEN = /(?<!\p{L})(?:в|на|к|до|около|после)\s+(\d{1,2})\s+(0\s+0|\d{2})(?!\d)/gu;
 /** «в 15 часов», «в 15», «в 9» — час без минут, после предлога времени. */
 const BARE = /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})(?:\s+час(?:ов|а)?)?(?![\d:.]|\s+\d)/gu;
+/**
+ * «На 12 часов», «на 15 часов» — час после «на» (живой прогон Никиты
+ * 23.09.2026: «перенеси посылку на завтра на 12 часов» час не читался).
+ * Только со словом «часов»: голое «перенеси на 12» — это ещё и
+ * двенадцатое число, и угадывать нельзя.
+ */
+const AFTER_NA = /(?<!\p{L})на\s+(\d{1,2})\s+час(?:ов|а)?(?![\d:.]|\s+\d)/gu;
+/** «В полдень», «на полдень» — 12:00, одно чтение. */
+const NOON_WORD = /(?<!\p{L})полдень(?!\p{L})/gu;
 /** «с 9 до 10» — промежуток: оба числа часы. */
 const RANGE = /(?<!\p{L})с\s+(\d{1,2})\s+до\s+(\d{1,2})(?![\d:.]|\s+\d)/gu;
 
@@ -296,6 +305,12 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
     const minute = (match[2] ?? '').replace(/\s+/gu, '');
     add(numberAt(match, 1), single(minutesOf(Number(match[1]), Number(minute))));
   }
+  for (const match of normalized.matchAll(AFTER_NA)) {
+    add(numberAt(match, 1), bareHour(Number(match[1])));
+  }
+  for (const match of normalized.matchAll(NOON_WORD)) {
+    add(match.index, single(NOON * MINUTES_IN_HOUR));
+  }
   for (const match of normalized.matchAll(RANGE)) {
     const from = Number(match[1]);
     const to = Number(match[2]);
@@ -358,6 +373,12 @@ function clockPhraseSpan(
   for (const match of normalized.matchAll(SPOKEN)) {
     const minute = (match[2] ?? '').replace(/\s+/gu, '');
     offer(match, single(minutesOf(Number(match[1]), Number(minute))));
+  }
+  for (const match of normalized.matchAll(AFTER_NA)) {
+    offer(match, bareHour(Number(match[1])));
+  }
+  for (const match of normalized.matchAll(NOON_WORD)) {
+    offer(match, single(NOON * MINUTES_IN_HOUR));
   }
   for (const match of normalized.matchAll(RANGE)) {
     if (Number(match[1]) < Number(match[2])) offer(match, bareHour(Number(match[1])));

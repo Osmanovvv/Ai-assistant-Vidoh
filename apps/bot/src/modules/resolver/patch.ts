@@ -166,11 +166,14 @@ function snoozeUntil(now: Date, timeZone: string): Date {
 interface Plan {
   readonly next: ItemPatch;
   readonly refused?: string | undefined;
+  /** Час назван с двумя чтениями, и выбрать было не по чему. */
+  readonly timeUnclear?: readonly [number, number] | undefined;
 }
 
 function plan(item: Item, params: ApplyParams, now: Date): Plan {
   const next: ItemPatch = {};
   let refused: string | undefined;
+  let timeUnclear: readonly [number, number] | undefined;
 
   if (params.action === 'complete') {
     /**
@@ -415,7 +418,9 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * нет. Только при точном сроке — своём или только что поставленном.
    */
   const accuracyAfter = next.deadlineAccuracy ?? item.deadlineAccuracy;
-  const spokenTime = spokenClockTime(params.spoken ?? '');
+  const heard = spokenClockTime(params.spoken ?? '', item.deadlineTime);
+  const spokenTime = heard.time;
+  if (heard.unclear !== undefined && accuracyAfter === 'day') timeUnclear = heard.unclear;
   if (
     spokenTime !== undefined &&
     accuracyAfter === 'day' &&
@@ -509,7 +514,11 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     }
   }
 
-  return refused === undefined ? { next } : { next, refused };
+  return {
+    next,
+    ...(refused === undefined ? {} : { refused }),
+    ...(timeUnclear === undefined ? {} : { timeUnclear }),
+  };
 }
 
 /**
@@ -524,8 +533,15 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
 export type ApplyOutcome =
   /** Изменение применено, есть что отменять. */
   | { readonly kind: 'applied'; readonly applied: Applied }
-  /** Запись уже в этом состоянии — менять нечего; это не ошибка. */
-  | { readonly kind: 'unchanged' }
+  /**
+   * Запись уже в этом состоянии — менять нечего; это не ошибка.
+   *
+   * `timeUnclear` — час назван, но чтений два (утро и вечер), и
+   * опереться не на что: у записи своего часа нет (живой прогон Никиты
+   * 23.09.2026, «на пол 12»). Реплика тогда называет оба чтения, а не
+   * «менять нечего».
+   */
+  | { readonly kind: 'unchanged'; readonly timeUnclear?: readonly [number, number] | undefined }
   /** Правка отвергнута по существу; причина — словами для журнала. */
   | { readonly kind: 'refused'; readonly reason: string }
   /** Записи нет: чужая, удалённая или выдуманный код. */
@@ -543,9 +559,31 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
  * «записи нет» — см. `ApplyOutcome`.
  */
 /** Первый однозначный час в словах правки; двусмысленный — ничего. */
-function spokenClockTime(spoken: string): number | undefined {
+/**
+ * Час из сказанного — с опорой на час записи (живой прогон Никиты
+ * 23.09.2026). «Перенеси посылку на пол 12» у дела на 11:00: чтений два,
+ * 11:30 и 23:30, и человек, двигающий утреннее дело, говорит об утре —
+ * берём чтение в той же половине суток, что час записи. Часа у записи
+ * нет — опереться не на что: не угадываем, а возвращаем оба чтения,
+ * чтобы реплика их назвала, вместо «менять нечего».
+ */
+function spokenClockTime(
+  spoken: string,
+  current: number | null,
+): {
+  readonly time?: number | undefined;
+  readonly unclear?: readonly [number, number] | undefined;
+} {
   const first = clockTimesIn(spoken)[0];
-  return first?.length === 1 ? first[0] : undefined;
+  if (first === undefined) return {};
+  if (first.length === 1) return { time: first[0] };
+
+  const [morning, evening] = first;
+  if (morning === undefined || evening === undefined) return {};
+  if (current === null) return { unclear: [morning, evening] };
+
+  const noon = 12 * 60;
+  return { time: current < noon ? morning : evening };
 }
 
 export async function applyDecision(db: Executor, params: ApplyParams): Promise<ApplyOutcome> {
@@ -574,7 +612,10 @@ export async function applyDecision(db: Executor, params: ApplyParams): Promise<
 
     if (fields.length === 0) {
       return planned.refused === undefined
-        ? { kind: 'unchanged' }
+        ? {
+            kind: 'unchanged',
+            ...(planned.timeUnclear === undefined ? {} : { timeUnclear: planned.timeUnclear }),
+          }
         : { kind: 'refused', reason: planned.refused };
     }
 
