@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, ne } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm';
 
 import { batches, items, users, userSettings } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -12,6 +12,8 @@ export interface ContextFacts {
   readonly name: string | undefined;
   readonly previousBatchAt: Date | undefined;
   readonly doneItems: readonly {
+    readonly id: string;
+    readonly lineMentionedAt: Date | null;
     readonly text: string;
     readonly deadlineAt: Date | null;
     readonly deadlineAccuracy: 'day' | 'week' | 'month' | null;
@@ -47,6 +49,8 @@ export async function loadContextFacts(
   const since = new Date(params.now.getTime() - DONE_WINDOW_DAYS * 24 * 60 * 60_000);
   const done = await db
     .select({
+      id: items.id,
+      lineMentionedAt: items.lineMentionedAt,
       text: items.text,
       deadlineAt: items.deadlineAt,
       deadlineAccuracy: items.deadlineAccuracy,
@@ -68,4 +72,19 @@ export async function loadContextFacts(
     previousBatchAt: previous?.at,
     doneItems: done,
   };
+}
+
+/**
+ * Отметить записи, о которых сказала живая строка: три дня они в поводы
+ * не идут (`MENTION_COOLDOWN_DAYS`). Пусто — нечего отмечать.
+ */
+export async function markLineMentions(
+  db: Executor,
+  params: { readonly userId: string; readonly itemIds: readonly string[]; readonly now: Date },
+): Promise<void> {
+  if (params.itemIds.length === 0) return;
+  await db
+    .update(items)
+    .set({ lineMentionedAt: params.now })
+    .where(and(eq(items.userId, params.userId), inArray(items.id, [...params.itemIds])));
 }

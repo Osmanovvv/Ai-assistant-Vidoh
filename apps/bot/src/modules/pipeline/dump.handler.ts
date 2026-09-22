@@ -58,8 +58,8 @@ import {
   presentDump,
 } from '../presenter/presenter.service.js';
 import { askContextLine } from '../presenter/context-line.js';
-import { packContext } from '../presenter/context-pack.js';
-import { loadContextFacts } from '../presenter/context-pack.repo.js';
+import { mentionedIn, packContext } from '../presenter/context-pack.js';
+import { loadContextFacts, markLineMentions } from '../presenter/context-pack.repo.js';
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
@@ -2294,26 +2294,32 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       !feelingsOnly &&
       quickAdded === undefined &&
       ((await deps.settings?.number('contextLine')) ?? 1) !== 0;
-    const contextLine = wantsLine
-      ? (
-          await askContextLine(ai, {
-            userId: batch.userId,
-            batchId: batch.id,
-            pack: packContext({
-              now,
-              timeZone: context.timeZone,
-              texts,
-              batchId: batch.id,
-              units,
-              known: [...split.known, ...late.known].map((item) => item.text),
-              // Открытые дела — прочитанные до вставки: своё новое не «прежнее».
-              openItems: before,
-              mood,
-              ...(await loadContextFacts(db, { userId: batch.userId, batchId: batch.id, now })),
-            }),
-          })
-        ).line
-      : undefined;
+    let contextLine: string | undefined;
+    if (wantsLine) {
+      const pack = packContext({
+        now,
+        timeZone: context.timeZone,
+        texts,
+        batchId: batch.id,
+        units,
+        known: [...split.known, ...late.known].map((item) => item.text),
+        // Открытые дела — прочитанные до вставки: своё новое не «прежнее».
+        openItems: before,
+        mood,
+        ...(await loadContextFacts(db, { userId: batch.userId, batchId: batch.id, now })),
+      });
+      contextLine = (await askContextLine(ai, { userId: batch.userId, batchId: batch.id, pack }))
+        .line;
+      // О ком сказала — три дня не повод: один и тот же «про отчёт помню»
+      // в каждой выгрузке подряд снова читался бы шаблоном.
+      if (contextLine !== undefined) {
+        await markLineMentions(db, {
+          userId: batch.userId,
+          itemIds: mentionedIn(contextLine, pack.candidates ?? []),
+          now,
+        });
+      }
+    }
 
     const presented = presentDump({
       composition,

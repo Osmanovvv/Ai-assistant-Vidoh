@@ -6772,6 +6772,41 @@ describe('живая строка поверх ответа (слой A, 22.09.2
     expect(reply).toContain(defaultTexts.answer.keepOrPick);
   });
 
+  it('о ком сказала строка — три дня не повод: во второй выгрузке подряд факты без него (хвост слоя A)', async () => {
+    const prompts = await livePrompts();
+    // Прежнее дело с прошедшим сроком — повод для строки.
+    const classified = { type: 'TASK', priority: 'SOON', topic: 'работа' } as const;
+    const [report] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        ...classified,
+        text: 'Сдать отчёт',
+        deadlineAt: new Date(at(60_000).getTime() - 5 * 24 * 60 * 60_000),
+        deadlineAccuracy: 'day',
+      })
+      .returning({ id: items.id });
+    const llm = echoingLlm({
+      presenter: JSON.stringify({ line: 'Про отчёт помню — запись никуда не делась.' }),
+    });
+
+    const first = await dumpWith(llm, prompts);
+    expect(first.presenterInputs[0]).toContain('Срок прошёл: Сдать отчёт');
+    expect(first.reply).toContain('Про отчёт помню');
+
+    const [marked] = await testDb()
+      .select({ at: items.lineMentionedAt })
+      .from(items)
+      .where(eq(items.id, report?.id ?? ''));
+    expect(marked?.at).not.toBeNull();
+
+    const second = await dumpWith(llm, prompts);
+    // Запросы копятся в одной заглушке: второй выгрузке — последний.
+    expect(second.presenterInputs).toHaveLength(2);
+    expect(second.presenterInputs.at(-1)).toContain('Прошлая выгрузка: сегодня');
+    expect(second.presenterInputs.at(-1)).not.toContain('Сдать отчёт');
+  });
+
   it('активен презентер первой версии — модель за строкой не зовётся', async () => {
     // Между выкладкой кода и заливкой промпта: платить за чужую схему нельзя.
     const prompts = await seedPrompts();

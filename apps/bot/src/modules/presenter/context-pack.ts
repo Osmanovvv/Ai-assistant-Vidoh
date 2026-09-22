@@ -40,18 +40,34 @@ export interface ContextPack {
   readonly recorded: readonly RecordedItem[];
   /** Из записанного — то, что совпало с прежней записью. */
   readonly alreadyKnown: readonly string[];
-  readonly overdue: readonly { readonly title: string; readonly daysLate: number }[];
+  readonly overdue: readonly {
+    readonly id?: string | undefined;
+    readonly title: string;
+    readonly daysLate: number;
+  }[];
   /** Прежние дела на сегодня — не из этой выгрузки. */
-  readonly today: readonly { readonly title: string; readonly time?: string | undefined }[];
+  readonly today: readonly {
+    readonly id?: string | undefined;
+    readonly title: string;
+    readonly time?: string | undefined;
+  }[];
   readonly projects: readonly string[];
   readonly doneRecently: readonly string[];
+  /**
+   * Поводы с идентификаторами — чтобы после ответа отметить, о ком
+   * сказала строка (`mentionedIn`), и три дня к ним не возвращаться.
+   */
+  readonly candidates?: readonly { readonly id: string; readonly title: string }[] | undefined;
   /** Открытых дел до этой выгрузки. */
   readonly openTotal: number;
   readonly mood?: Mood | undefined;
 }
 
 interface ItemLike {
+  readonly id?: string | undefined;
   readonly text: string;
+  /** Когда живая строка уже говорила об этой записи. */
+  readonly lineMentionedAt?: Date | null | undefined;
   readonly deadlineAt: Date | null;
   readonly deadlineAccuracy: 'day' | 'week' | 'month' | null;
   readonly deadlineTime?: number | null | undefined;
@@ -90,6 +106,8 @@ const MAX_DONE = 3;
 const DONE_WINDOW_DAYS = 3;
 const MAX_TITLE = 80;
 const DAY_MS = 24 * 60 * 60_000;
+/** Три дня после упоминания запись в поводы не идёт: один повод подряд — шаблон. */
+export const MENTION_COOLDOWN_DAYS = 3;
 
 function shortTitle(text: string): string {
   const title = titleWithoutDate(text);
@@ -136,8 +154,21 @@ export function packContext(input: PackContextInput): ContextPack {
   const alreadyKnown = input.known.map(shortTitle);
 
   const previous = input.openItems.filter((item) => item.sourceBatchId !== input.batchId);
+  const cooldownSince = now.getTime() - MENTION_COOLDOWN_DAYS * DAY_MS;
+  const fresh = (item: ItemLike): boolean =>
+    item.lineMentionedAt === null ||
+    item.lineMentionedAt === undefined ||
+    item.lineMentionedAt.getTime() < cooldownSince;
+  const candidates: { id: string; title: string }[] = [];
+  const remember = <T extends { readonly id?: string | undefined; readonly title: string }>(
+    hook: T,
+  ): T => {
+    if (hook.id !== undefined) candidates.push({ id: hook.id, title: hook.title });
+    return hook;
+  };
 
   const overdue = previous
+    .filter(fresh)
     .filter(
       (item) =>
         item.deadlineAt !== null &&
@@ -145,13 +176,16 @@ export function packContext(input: PackContextInput): ContextPack {
         isoDateIn(item.deadlineAt, timeZone) < todayKey,
     )
     .map((item) => ({
+      id: item.id,
       title: shortTitle(item.text),
       daysLate: daysBetween(item.deadlineAt ?? now, now, timeZone),
     }))
     .sort((left, right) => right.daysLate - left.daysLate)
-    .slice(0, MAX_OVERDUE);
+    .slice(0, MAX_OVERDUE)
+    .map(remember);
 
   const today = previous
+    .filter(fresh)
     .filter(
       (item) =>
         item.deadlineAt !== null &&
@@ -161,19 +195,23 @@ export function packContext(input: PackContextInput): ContextPack {
     .sort((left, right) => (left.deadlineTime ?? 1440) - (right.deadlineTime ?? 1440))
     .slice(0, MAX_TODAY)
     .map((item) => ({
+      id: item.id,
       title: shortTitle(item.text),
       time:
         item.deadlineTime === null || item.deadlineTime === undefined
           ? undefined
           : clock(item.deadlineTime),
-    }));
+    }))
+    .map(remember);
 
   const projects = previous
+    .filter(fresh)
     .filter((item) => item.isProject)
     .slice(0, MAX_PROJECTS)
-    .map((item) => shortTitle(item.text));
+    .map((item) => remember({ id: item.id, title: shortTitle(item.text) }).title);
 
   const doneRecently = input.doneItems
+    .filter(fresh)
     .filter(
       (item) =>
         item.completedAt !== null &&
@@ -182,7 +220,7 @@ export function packContext(input: PackContextInput): ContextPack {
     )
     .sort((left, right) => (right.completedAt?.getTime() ?? 0) - (left.completedAt?.getTime() ?? 0))
     .slice(0, MAX_DONE)
-    .map((item) => shortTitle(item.text));
+    .map((item) => remember({ id: item.id, title: shortTitle(item.text) }).title);
 
   return {
     name: input.name,
@@ -199,7 +237,77 @@ export function packContext(input: PackContextInput): ContextPack {
     doneRecently,
     openTotal: previous.length,
     mood: input.mood,
+    candidates,
   };
+}
+
+/** Слова строки, которые есть в любой строке: по ним запись не узнать. */
+const LINE_NOISE = new Set([
+  'помню',
+  'запись',
+  'записи',
+  'место',
+  'месте',
+  'никуда',
+  'делась',
+  'делось',
+  'прошёл',
+  'прошел',
+  'срок',
+  'дней',
+  'день',
+  'дня',
+  'закрыт',
+  'закрыта',
+  'вопрос',
+  'тишины',
+  'теперь',
+  'здесь',
+  'первый',
+  'дальше',
+  'можно',
+  'просто',
+  'скидывать',
+  'сюда',
+  'голову',
+  'голова',
+  'занята',
+  'другим',
+  'записывала',
+  'вторую',
+  'завела',
+  'одна',
+  'всего',
+  'который',
+  'которая',
+  'которую',
+]);
+
+function stemsOf(text: string): Set<string> {
+  const stems = new Set<string>();
+  for (const word of text
+    .toLowerCase()
+    .replace(/ё/gu, 'е')
+    .match(/\p{L}+/gu) ?? []) {
+    if (word.length < 4 || LINE_NOISE.has(word)) continue;
+    stems.add(word.length > 5 ? word.slice(0, 5) : word);
+  }
+  return stems;
+}
+
+/**
+ * О каких записях говорит строка — по общей основе значимого слова с
+ * заголовком повода. Модель идентификаторов не отдаёт; слова — то, что
+ * есть. Порядок — как у поводов.
+ */
+export function mentionedIn(
+  line: string,
+  candidates: readonly { readonly id: string; readonly title: string }[],
+): string[] {
+  const said = stemsOf(line);
+  return candidates
+    .filter((one) => [...stemsOf(one.title)].some((stem) => said.has(stem)))
+    .map((one) => one.id);
 }
 
 const MOOD_WORDS: Readonly<Record<Mood, string>> = {
