@@ -10,7 +10,7 @@ import {
   saysDistantWeek,
   startOfDayAfter,
 } from '../classifier/dates.js';
-import { clockTimesIn } from '../classifier/clock-time.js';
+import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
@@ -413,6 +413,15 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     item.deadlineTime !== spokenTime
   ) {
     next.deadlineTime = spokenTime;
+    /**
+     * Прежний час в заголовке — теперь неправда (бой 22.09.2026: «Напомню
+     * про «Позвонить сестре в 3:10» … в 03:45»). Записи до починки
+     * заголовков хранили час в тексте; новый час его снимает. Если
+     * формулировку в этой же правке уже переписали — её и чистим.
+     */
+    const title = next.text ?? item.text;
+    const cleaned = withoutClockPhrase(title);
+    if (cleaned !== title && /\p{L}{2,}/u.test(cleaned)) next.text = cleaned;
   }
 
   /**

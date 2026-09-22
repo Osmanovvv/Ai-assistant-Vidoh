@@ -247,6 +247,31 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(10 * 60 + 30);
   });
 
+  it('новый час — старый час из заголовка уходит: «Позвонить сестре в 3:10» → «Позвонить сестре» (бой 22.09.2026)', async () => {
+    // Запись до починки заголовков хранила час в тексте; после «Изменить
+    // время» → 03:45 реплика говорила «Напомню про «Позвонить сестре в
+    // 3:10» … в 03:45».
+    const item = await sow({ text: 'Позвонить сестре в 3:10 сегодня', deadlineTime: 3 * 60 + 10 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: '3:45',
+        timeZone: MOSCOW,
+        now: NOW,
+        reason: 'проверка',
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime', 'text']);
+    const after = await reread(item.id);
+    expect(after.text).toBe('Позвонить сестре сегодня');
+    expect(after.deadlineTime).toBe(3 * 60 + 45);
+  });
+
   it('двусмысленное «в 9» час не ставит', async () => {
     const item = await sow();
 
