@@ -374,7 +374,7 @@ function clockPhraseSpan(
   // «Часов» и часть суток после — тоже.
   const head = normalized.slice(0, best.start);
   const lead =
-    /(?:(?<!\p{L})(?:сегодня|завтра|послезавтра)\s+)?(?:,\s*)?(?:(?<!\p{L})(?:в|к|до|около|после)\s+)?$/u.exec(
+    /(?:(?<!\p{L})(?:сегодня|завтра|послезавтра)\s+)?(?:,\s*)?(?:(?<!\p{L})(?:в|на|к|до|около|после)\s+)?$/u.exec(
       head,
     );
   const start = lead === null ? best.start : best.start - lead[0].length;

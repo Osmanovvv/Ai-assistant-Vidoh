@@ -1,6 +1,11 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { Intent, RoutedSegments } from '../ai/schemas/index.js';
-import { looksLikeAppend, looksLikeCorrection, looksLikeExplicitAppend } from './append.js';
+import {
+  looksLikeAppend,
+  looksLikeCorrection,
+  looksLikeExplicitAppend,
+  startsWithReplacement,
+} from './append.js';
 import { splitClosings } from './closing.js';
 import { restoreUncovered } from './coverage.js';
 import { splitDayQuestions } from './day-question.js';
@@ -213,10 +218,25 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * ложился черновиком, а здесь обещалось «запись всё равно появится».
    * Поэтому признак требует двух примет сразу, а не одной: каждая ошибка
    * стоит вызовов модели.
+   *
+   * **Исключение — закрытый список §7.1.** Признаки замены («нет»,
+   * «перенеси», «вместо», «лучше», «поменяй») названы спецификацией
+   * прямо, и одной приметы там достаточно: список составляло ТЗ, а не
+   * наш вкус. Требуется только место — начало реплики: «надо перенести
+   * цветы на балкон» это дело, а «перенеси посылку на пятницу» — приказ.
+   *
+   * **Найдено живым прогоном Никиты 22.09.2026.** «Перенеси посылку на
+   * пятницу на 10 утра» маршрутизатор назвал мыслью, и рядом с записью
+   * про посылку встала третья — «Перенести посылку на пятницу на .».
+   * `startsWithReplacement` к тому дню уже существовала, но её читал
+   * только резолвер: то есть лишь тогда, когда модель **сама** назвала
+   * отрезок правкой. На разметку признак не влиял вовсе.
    */
   const marked = segments.map((segment) =>
     (segment.intent === 'DUMP' &&
-      (looksLikeAppend(segment.text) || looksLikeCorrection(segment.text))) ||
+      (looksLikeAppend(segment.text) ||
+        looksLikeCorrection(segment.text) ||
+        startsWithReplacement(segment.text))) ||
     // «К банку добавь: …» — и мыслью, и вопросом (прогон 17.09.2026):
     // человек назвал и запись, и действие, спорить с этим модели нечем.
     ((segment.intent === 'DUMP' || segment.intent === 'QUERY') &&
@@ -275,7 +295,11 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
 
   if (withQuestions.length !== thoughts.length) {
     deps.logger?.info(
-      { promptVersion: outcome.promptVersion, before: thoughts.length, after: withQuestions.length },
+      {
+        promptVersion: outcome.promptVersion,
+        before: thoughts.length,
+        after: withQuestions.length,
+      },
       'Вопрос о дне внутри мысли выделен кодом',
     );
   }

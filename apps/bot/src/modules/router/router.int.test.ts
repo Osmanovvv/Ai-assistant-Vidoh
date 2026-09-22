@@ -165,6 +165,60 @@ describe('явное дополнение поверх ответа модели
   });
 });
 
+describe('приказ о замене — правка, а не мысль (живой прогон Никиты 22.09.2026)', () => {
+  /**
+   * Бой 22.09.2026, 23:34. «Перенеси посылку на пятницу на 10 утра»
+   * маршрутизатор назвал мыслью — и рядом с записью про посылку встала
+   * третья запись «Перенести посылку на пятницу на .», а перенос не
+   * случился.
+   *
+   * Признаки замены §7.1 перечисляет закрытым списком, и «перенеси» в
+   * нём есть: `startsWithReplacement` уже живёт в коде, но её читал
+   * только резолвер — то есть лишь тогда, когда модель **сама** назвала
+   * отрезок правкой. На разметку маршрутизатора признак не влиял вовсе.
+   *
+   * Цена ошибки та же, что у остальных правил разметки: если отрезок всё
+   * же новая мысль, резолвер цели не найдёт и вернёт его в обычный
+   * разбор — запись появится, потеряется один вызов модели.
+   */
+  it('«Перенеси посылку на пятницу…», названное моделью мыслью, становится правкой', async () => {
+    const prompts = await prepare();
+    const input = 'Перенеси посылку на пятницу на 10 утра.';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['PATCH']);
+  });
+
+  it('«Вместо вторника давай в среду» — тоже правка', async () => {
+    const prompts = await prepare();
+    const input = 'Вместо вторника давай в среду.';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['PATCH']);
+  });
+
+  it('дело со словом замены не в начале мыслью и остаётся', async () => {
+    // «Перенести» здесь не приказ о записи, а само дело.
+    const prompts = await prepare();
+    const input = 'Надо перенести цветы на балкон.';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['DUMP']);
+  });
+});
+
 describe('разговор с делами внутри — мысль (бой 21.09.2026, выгрузка Никиты)', () => {
   it('хвост перечисления, названный моделью разговором, уходит в разбор мыслью', async () => {
     /**
