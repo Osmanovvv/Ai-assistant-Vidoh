@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import type { AiStage } from '../../../db/schema.js';
 
+import { answererSchema, ANSWERER_SCHEMA_NAME } from './answerer.js';
+
 import {
   classifierSchema,
   classifierV2Schema,
@@ -58,6 +60,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   // базе ссылается на неё, откат должен оставаться возможным.
   [PRESENTER_SCHEMA_NAME]: presenterSchema,
   [PRESENTER_V2_SCHEMA_NAME]: presenterV2Schema,
+  [ANSWERER_SCHEMA_NAME]: answererSchema,
   [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
@@ -83,6 +86,7 @@ export const SCHEMA_BY_STAGE: Readonly<Partial<Record<AiStage, string>>> = {
   presenter: PRESENTER_V2_SCHEMA_NAME,
   resolver: RESOLVER_SCHEMA_NAME,
   decomposer: DECOMPOSER_SCHEMA_NAME,
+  answerer: ANSWERER_SCHEMA_NAME,
 };
 
 export class UnknownSchemaError extends Error {
@@ -154,3 +158,5 @@ export type { Intent, RoutedSegments } from './router.js';
 export type { ClassifiedItems, DeadlineAccuracy, ItemType, Priority } from './classifier.js';
 export type { PresenterAcknowledgement, PresenterLine } from './presenter.js';
 export type { ResolverAction, ResolverAnswer, ResolverMode } from './resolver.js';
+export { answererSchema, ANSWERER_SCHEMA_NAME };
+export type { LiveAnswer } from './answerer.js';

@@ -513,6 +513,8 @@ export const aiStage = pgEnum('ai_stage', [
   'presenter',
   'decomposer',
   'embedder',
+  // Живой ответ на вопрос о своих делах (слой B, 22.09.2026).
+  'answerer',
 ]);
 
 /**
