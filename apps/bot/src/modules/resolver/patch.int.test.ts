@@ -351,6 +351,92 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect((await reread(item.id)).deadlineTime).toBe(23 * 60 + 30);
   });
 
+  /**
+   * Живой прогон Никиты, 02:28 23.09.2026: «Перенеси посылку на пол 1» у
+   * дела на 24.09 11:00 → «Перенесла на 01.10, 00:30». Две ошибки разом:
+   * модель сделала из «на 1» первое октября, а код взял из двух чтений
+   * «пол первого» ночное — правило «та же половина суток» ломается на
+   * границе полудня. Верно: ближайшее чтение по кругу суток (12:30), а
+   * дата, у которой день равен числу-часу при отсутствии дня в словах, —
+   * эхо, и её не применяем.
+   */
+  it('«на пол 1» у дела 11:00 — 12:30, а не 00:30: ближайшее чтение, не половина суток', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: 'Перенеси посылку на пол 1.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    expect((await reread(item.id)).deadlineTime).toBe(12 * 60 + 30);
+  });
+
+  it('«на пол 1» у дела 23:00 — 00:30: по кругу суток ближе ночное', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 23 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку на пол 1.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(30);
+  });
+
+  it('дата от модели — эхо часа («на пол 1» → 01.10): день не трогаем, час ставим', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('2026-10-01'),
+        spoken: 'Перенеси посылку на пол 1.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.deadlineTime).toBe(12 * 60 + 30);
+  });
+
+  it('день назван словами — дата настоящая, и час рядом тоже: «на первое сентября на пол 1»', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('2026-09-01'),
+        spoken: 'Перенеси посылку на первое сентября на пол 1.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toContain('deadlineAt');
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-31T21:00:00.000Z');
+    expect(after.deadlineTime).toBe(12 * 60 + 30);
+  });
+
   it('«на пол 12» у дела без часа — не угадываем: час не ставится, а исход называет оба чтения', async () => {
     const item = await sow({ text: 'Забрать посылку' });
 

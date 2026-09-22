@@ -10,7 +10,7 @@ import {
   saysDistantWeek,
   startOfDayAfter,
 } from '../classifier/dates.js';
-import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
+import { clockTimesIn, dateEchoesClock, withoutClockPhrase } from '../classifier/clock-time.js';
 import { startsWithRecordCommand } from '../router/append.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
@@ -347,7 +347,14 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     next.text = rewritten;
   }
 
-  if (deadline.length > 0) {
+  /**
+   * Срок от модели, у которого день — число из часа при отсутствии дня в
+   * словах, не сказан человеком, а услышан моделью в «на пол 1» (живой
+   * прогон Никиты 23.09.2026: 24.09 → 01.10). Не применяется; час из
+   * тех же слов — применяется, ниже.
+   */
+  const deadlineSaid = deadline.length > 0 && !dateEchoesClock(params.spoken ?? '', deadline);
+  if (deadlineSaid) {
     /**
      * Срок проверяется тем же кодом, что и при разборе выгрузки:
      * привязка к поясу человека, отказ от прошлого и от дат дальше пяти
@@ -562,8 +569,9 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
 /**
  * Час из сказанного — с опорой на час записи (живой прогон Никиты
  * 23.09.2026). «Перенеси посылку на пол 12» у дела на 11:00: чтений два,
- * 11:30 и 23:30, и человек, двигающий утреннее дело, говорит об утре —
- * берём чтение в той же половине суток, что час записи. Часа у записи
+ * 11:30 и 23:30, и человек, двигающий утреннее дело, сдвигает его
+ * ненамного — берём чтение, ближайшее к часу записи по кругу суток.
+ * Часа у записи
  * нет — опереться не на что: не угадываем, а возвращаем оба чтения,
  * чтобы реплика их назвала, вместо «менять нечего».
  */
@@ -582,8 +590,15 @@ function spokenClockTime(
   if (morning === undefined || evening === undefined) return {};
   if (current === null) return { unclear: [morning, evening] };
 
-  const noon = 12 * 60;
-  return { time: current < noon ? morning : evening };
+  // Ближайшее чтение по кругу суток, а не «та же половина»: у дела на
+  // 11:00 «пол первого» — 12:30, а не 00:30 (бой 23.09.2026, 02:28);
+  // у дела на 23:00 — наоборот, 00:30.
+  const day = 24 * 60;
+  const around = (reading: number): number => {
+    const straight = Math.abs(reading - current);
+    return Math.min(straight, day - straight);
+  };
+  return { time: around(morning) <= around(evening) ? morning : evening };
 }
 
 export async function applyDecision(db: Executor, params: ApplyParams): Promise<ApplyOutcome> {
