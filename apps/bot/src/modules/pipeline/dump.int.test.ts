@@ -4117,7 +4117,10 @@ describe('правка доходит до резолвера (§7, задача
     const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
     expect(after?.deadlineAt).toBeNull();
 
-    expect(all.some((text) => text.includes('отдельная история'))).toBe(true);
+    // Приказ о переносе спрашивает про перенос, а не «или отдельная
+    // история?» (живой прогон Никиты 23.09.2026).
+    expect(all.some((text) => text.startsWith('Перенести «'))).toBe(true);
+    expect(all.some((text) => text.includes('отдельная история'))).toBe(false);
 
     // Сказанное лежит в открытом вопросе и не потеряно.
     const [open] = await testDb()
@@ -4292,7 +4295,7 @@ describe('правка доходит до резолвера (§7, задача
     const open = questions.filter((row) => row.outcome === null);
 
     // Ровно один вопрос показан, ровно один открыт — и это один и тот же.
-    const shown = said.filter((one) => one.text.includes('отдельная история'));
+    const shown = said.filter((one) => one.text.startsWith('Перенести «'));
     expect(shown).toHaveLength(1);
     expect(open).toHaveLength(1);
     expect(open[0]?.segment).toBe('перенеси на пятницу');

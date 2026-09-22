@@ -701,6 +701,51 @@ describe('«Это новое»', () => {
   });
 });
 
+describe('«Нет, другое» на вопрос о переносе (живой прогон Никиты 23.09.2026)', () => {
+  /**
+   * Приказ записью не становится ни на каком пути (задача 3.67). Раньше
+   * «Это новое» под вопросом о «перенеси посылку…» отдавало команду в
+   * разбор, и в списке дел вставала запись «Перенести посылку на
+   * пятницу». Теперь слова — в черновик (§16, ничего не теряется), дело
+   * не тронуто, человеку — попросить назвать нужное.
+   */
+  it('приказ в запись не превращается: слова в черновик, найденное дело цело', async () => {
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'Перенеси посылку на пятницу на 11 утра.',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: tomorrowInMoscow(),
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const { bot, calls } = createTestBot(classifierSaying('Перенести посылку на пятницу'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.separate}${toShortId(question.id)}`));
+
+    expect(edits(calls)).toEqual([defaultTexts.resolver.notMoved]);
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual([
+      'Записать сына к врачу в четверг',
+    ]);
+    expect(rows.filter((row) => row.isDraft).map((row) => row.text)).toEqual([
+      'Перенеси посылку на пятницу на 11 утра.',
+    ]);
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, item.id));
+    expect(after?.deadlineAt).toBeNull();
+  });
+});
+
 describe('кнопка «это новое» не платит за того, кому гейт отказывает (ревизия этапа)', () => {
   /**
    * Нажатие ведёт к настоящему разбору — классификатору, то есть к

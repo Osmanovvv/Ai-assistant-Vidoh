@@ -22,6 +22,7 @@ import {
   questionButtons,
 } from '../../modules/resolver/change-text.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
+import { isRecordCommand } from '../../modules/router/append.js';
 import { undoKeyboard } from './undo.js';
 import { titleWithoutDate } from '../../modules/resolver/title-date.js';
 import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
@@ -258,6 +259,24 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
 
       if (outcome.kind === 'stale') {
         await ctx.editMessageText(active.texts.resolver.questionStale);
+        return;
+      }
+
+      /**
+       * Приказ записью не становится и здесь (живой прогон Никиты
+       * 23.09.2026; задача 3.67 — тот же закон на пути правок). «Нет,
+       * другое» под «Перенести «Забрать посылку»?» отдавало команду в
+       * разбор, и в списке дел вставала запись «Перенести посылку на
+       * пятницу». Слова — в черновик (§16), человеку — назвать нужное.
+       */
+      if (isRecordCommand(outcome.question.segment)) {
+        await saveDraft(db, {
+          userId: active.userId,
+          batchId: outcome.question.batchId,
+          text: outcome.question.segment,
+          reason: 'распоряжение о записи, но найдена не та',
+        });
+        await ctx.editMessageText(active.texts.resolver.notMoved);
         return;
       }
 
