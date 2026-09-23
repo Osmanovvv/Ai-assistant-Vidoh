@@ -16,6 +16,7 @@ import {
   pendingQuestions,
   projectSteps,
   promptVersions,
+  reminders,
   topics,
   users,
   userSettings,
@@ -4320,6 +4321,94 @@ describe('правка доходит до резолвера (§7, задача
       .from(pendingQuestions)
       .where(eq(pendingQuestions.userId, userId));
     expect(questions).toEqual([]);
+  });
+
+  /**
+   * Шаг 0 плана docs/26 (23.09.2026): напоминание — тоже разговор о деле.
+   * «Через 30 минут: …» и в ответ «перенеси дело на пол 3» — человек
+   * говорит о деле из напоминания, а бот спрашивал «Какое дело?»: след
+   * последнего разговора брался только из выгрузок и правок записей.
+   */
+  async function sentReminder(itemId: string, sentAgoMs: number): Promise<void> {
+    await testDb()
+      .insert(reminders)
+      .values({
+        userId,
+        itemId,
+        kind: 'deadline_hour',
+        dueAt: at(-sentAgoMs),
+        dedupeKey: `deadline_hour:${itemId}:test:${String(sentAgoMs)}`,
+        sentAt: at(-sentAgoMs),
+      });
+  }
+
+  it('«Перенеси дело на пол 3» сразу после напоминания — предлагает дело из напоминания', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    await testDb()
+      .update(items)
+      .set({ updatedAt: at(-40 * 60_000) })
+      .where(eq(items.id, itemId));
+    await sentReminder(itemId, 3 * 60_000);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Перенеси дело на пол 3', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'Перенеси дело на пол 3' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('Перенести «Записать сына к врачу'))).toBe(true);
+    expect(all.some((text) => text.includes('Какое дело?'))).toBe(false);
+    const [open] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(open?.itemId).toBe(itemId);
+  });
+
+  it('напоминание старше четверти часа — уже не разговор: «Какое дело?»', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    await testDb()
+      .update(items)
+      .set({ updatedAt: at(-40 * 60_000) })
+      .where(eq(items.id, itemId));
+    await sentReminder(itemId, 20 * 60_000);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Перенеси дело на пол 3', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'Перенеси дело на пол 3' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('Какое дело? Назови его — и сделаю.'))).toBe(true);
+    expect(all.some((text) => text.startsWith('Перенести «'))).toBe(false);
   });
 
   /**

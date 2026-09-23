@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 
-import { batches, items } from '../../db/schema.js';
+import { batches, items, reminders } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { SEARCHABLE_STATUSES } from '../embedder/embedder.service.js';
 import { startsWithRecordCommand } from '../router/append.js';
@@ -15,15 +15,21 @@ import type { Candidate } from './candidates.js';
  * изменениям записи, а «менять нечего» запись не меняет. Для человека же
  * разговор был про посылку.
  *
- * Два следа последнего разговора, и берётся более поздний:
+ * Три следа последнего разговора, и берётся более поздний:
  *
  * 1. **Выгрузка** — дела, о которых бот говорил в ответе
  *    (`batches.mentioned_item_ids`): правка, «менять нечего», новые записи.
  * 2. **Правка записи** — кнопкой под напоминанием, в карточке: выгрузки у
  *    неё нет, есть только отметка времени изменения.
+ * 3. **Напоминание о деле** (шаг 0 плана docs/26, 23.09.2026): «Через 30
+ *    минут: …» — бот сам назвал дело, и «перенеси его на час» в ответ —
+ *    про него. Без этого следа бот спрашивал «Какое дело?». Сводки без
+ *    своего дела (`item_id` пуст) следом не считаются.
  *
- * Если оба следа об одном разговоре (в пределах минуты), дела
- * объединяются. Дел больше одного — «это» неоднозначно, и решать не нам.
+ * Если выгрузка и правка об одном разговоре (в пределах минуты), дела
+ * объединяются. Напоминание берётся, только если оно позже обоих следов
+ * больше чем на минуту: ответ кнопкой под ним — уже правка того же дела.
+ * Дел больше одного — «это» неоднозначно, и решать не нам.
  */
 
 /** Разница, в пределах которой выгрузка и правка — один разговор. */
@@ -76,6 +82,20 @@ export async function lastDiscussed(
   const recentTouches = (from: number): string[] =>
     touched.filter((one) => one.updatedAt.getTime() >= from - SAME_TALK_MS).map((one) => one.id);
 
+  const reminded = await db
+    .select({ id: reminders.itemId, sentAt: reminders.sentAt })
+    .from(reminders)
+    .where(
+      and(
+        eq(reminders.userId, params.userId),
+        isNotNull(reminders.itemId),
+        isNotNull(reminders.sentAt),
+        gte(reminders.sentAt, since),
+      ),
+    )
+    .orderBy(desc(reminders.sentAt))
+    .limit(10);
+
   let ids: readonly string[];
   if (talkTime === undefined) {
     ids = latestTouch === undefined ? [] : recentTouches(latestTouch);
@@ -83,6 +103,14 @@ export async function lastDiscussed(
     ids = talk?.ids ?? [];
   } else {
     ids = recentTouches(latestTouch);
+  }
+
+  const latestRemind = reminded[0]?.sentAt?.getTime();
+  const latestOther = Math.max(talkTime ?? -Infinity, latestTouch ?? -Infinity);
+  if (latestRemind !== undefined && latestRemind > latestOther + SAME_TALK_MS) {
+    ids = reminded
+      .filter((one) => (one.sentAt?.getTime() ?? 0) >= latestRemind - SAME_TALK_MS)
+      .flatMap((one) => (one.id === null ? [] : [one.id]));
   }
 
   if (ids.length === 0) return [];
