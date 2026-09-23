@@ -642,11 +642,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const parkedLine = (
       said: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined,
       timeUnclear?: readonly [number, number],
+      noTimeToShift?: boolean,
     ): string =>
       said === 'refused'
         ? texts.resolver.deadlineRefused
         : said === 'unchanged'
-          ? unchangedText({ timeUnclear }, texts)
+          ? unchangedText({ timeUnclear, noTimeToShift }, texts)
           : said === 'which'
             ? texts.resolver.whichRecord
             : said === 'gone'
@@ -1368,7 +1369,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       if (outcome.itemId !== undefined) mentioned.add(outcome.itemId);
       // Модель резолвера молчала — это сбой, а не непонятая правка (п. 4).
       if (outcome.fault !== undefined) happened.fault = outcome.fault;
-      sayParked(parkedLine(outcome.said, outcome.timeUnclear));
+      sayParked(parkedLine(outcome.said, outcome.timeUnclear, outcome.noTimeToShift));
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,

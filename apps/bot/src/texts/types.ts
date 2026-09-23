@@ -408,6 +408,8 @@ export interface TextProfile {
      * часа). Не угадываем и не молчим «менять нечего»: называем оба.
      */
     readonly timeUnclear: (morning: string, evening: string) => string;
+    /** Сказан сдвиг («на час позже»), а у дела нет часа (23.09.2026). */
+    readonly noTimeToShift: string;
     /** Срок отвергнут — в прошлом или не существует (A3). */
     readonly deadlineRefused: string;
     /** Правило не легло: не на что опереться (A3). */

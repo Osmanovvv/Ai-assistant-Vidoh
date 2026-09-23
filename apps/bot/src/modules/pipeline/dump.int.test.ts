@@ -4527,6 +4527,82 @@ describe('правка доходит до резолвера (§7, задача
     expect(all.some((text) => text.includes('отдельная история'))).toBe(false);
   });
 
+  /**
+   * Живой прогон Никиты, 14:15 23.09.2026: посылку только что поставили на
+   * 16:30, следом голосом «а лучше в без пятнадцати шесть» — распознавание
+   * записало «А лучше без 15 6», и бот ответил «Там уже так — менять
+   * нечего»: минуты цифрой он не читал.
+   */
+  it('«А лучше без 15 6», затем «а лучше на час позже» — 17:45, потом 18:45', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date(`${soon()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 16 * 60 + 30,
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const say = async (text: string, offsetMs: number): Promise<void> => {
+      await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at(offsetMs + 60_000),
+            llm: echoingLlm({
+              router: JSON.stringify({ crisis: false, segments: [{ intent: 'PATCH', text }] }),
+              // Модель подставляет «сегодня» — как на бою в 04:26.
+              resolver: JSON.stringify({
+                action: 'update',
+                mode: 'replace',
+                itemId: '1',
+                confidence: 1,
+                changes: {
+                  note: '',
+                  text: '',
+                  deadline: soon(),
+                  deadlineAccuracy: 'day',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+                reason: 'посылка',
+              }),
+            }),
+          }),
+        },
+        userId,
+      );
+    };
+    const timeOf = async (): Promise<number | null | undefined> =>
+      (
+        await testDb()
+          .select()
+          .from(items)
+          .where(eq(items.id, parcel?.id ?? ''))
+      )[0]?.deadlineTime;
+
+    await say('А лучше без 15 6.', 0);
+    expect(await timeOf()).toBe(17 * 60 + 45);
+    expect(all.some((text) => text.includes('17:45'))).toBe(true);
+
+    await say('А лучше на час позже.', 2 * 60_000);
+    expect(await timeOf()).toBe(18 * 60 + 45);
+    expect(all.some((text) => text.includes('18:45'))).toBe(true);
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
   it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {
     // «Записала 1 дело… Посылку ты уже записывала — вторую не завела»:
     // одна строка противоречила другой. Счёт — только заведённое сейчас.

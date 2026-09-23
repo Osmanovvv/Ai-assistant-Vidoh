@@ -227,9 +227,13 @@ export const QUESTION_ACTION = {
  * на вопрос — иначе разойдутся, как уже расходились.
  */
 export function unchangedText(
-  outcome: { readonly timeUnclear?: readonly [number, number] | undefined },
+  outcome: {
+    readonly timeUnclear?: readonly [number, number] | undefined;
+    readonly noTimeToShift?: boolean | undefined;
+  },
   texts: TextProfile,
 ): string {
+  if (outcome.noTimeToShift === true) return texts.resolver.noTimeToShift;
   const readings = outcome.timeUnclear;
   return readings === undefined
     ? texts.resolver.unchanged
