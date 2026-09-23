@@ -140,6 +140,20 @@ describe('cleanTitle', () => {
     expect(cleanTitle('Забрать заказ на 18:00', timed)).toBe('Забрать заказ');
   });
 
+  it('новые формы часа срезаются из заголовка целиком (23.09.2026)', () => {
+    const timed = { type: 'TASK', hasDeadline: true, hasHour: true } as const;
+
+    expect(cleanTitle('Без 15 6 вечера забрать посылку', timed)).toBe('Забрать посылку');
+    expect(cleanTitle('Позвонить маме в пять вечера', timed)).toBe('Позвонить маме');
+    expect(cleanTitle('Забрать посылку в четверть седьмого', timed)).toBe('Забрать посылку');
+    expect(cleanTitle('Созвон в 6 часов 15 минут', timed)).toBe('Созвон');
+    expect(cleanTitle('Выключить стиральную машину в полночь', timed)).toBe(
+      'Выключить стиральную машину',
+    );
+    expect(cleanTitle('Через полчаса позвонить маме', timed)).toBe('Позвонить маме');
+    expect(cleanTitle('Выключить духовку через 2 часа', timed)).toBe('Выключить духовку');
+  });
+
   it('без часа в сроке цифры во фразе не трогаются', () => {
     expect(cleanTitle('Зайти в 3 магазина', dated)).toBe('Зайти в 3 магазина');
     expect(cleanTitle('Сходить к стоматологу в 13:00', dated)).toBe(

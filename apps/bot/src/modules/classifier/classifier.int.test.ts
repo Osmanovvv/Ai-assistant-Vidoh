@@ -1248,6 +1248,39 @@ describe('названное время уже прошло — срок зав�
   });
 });
 
+describe('«через час» у нового дела — день и час от сейчас (23.09.2026)', () => {
+  it('«Через полчаса позвонить маме» в 15:00 по Москве — сегодня, 15:30; без «через» — как было', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          // Модель не знает, который час: срока от неё нет или «сегодня».
+          { text: 'Позвонить маме', deadline: '', deadlineAccuracy: 'none' },
+          { text: 'Выключить духовку', deadline: '2026-09-23', deadlineAccuracy: 'day' },
+          { text: 'Погулять с собакой' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Позвонить маме', 'Выключить духовку', 'Погулять с собакой'),
+      timeZone: 'Europe/Moscow',
+      now: new Date('2026-09-23T12:00:00.000Z'),
+      speech:
+        'Через полчаса позвонить маме. Через 10 часов выключить духовку. Потом погулять с собакой.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items.map((item) => item.deadline?.at.toISOString())).toEqual([
+      '2026-09-22T21:00:00.000Z',
+      // 15:00 + 10 часов — уже завтра, в 01:00.
+      '2026-09-23T21:00:00.000Z',
+      undefined,
+    ]);
+    expect(result.items.map((item) => item.deadline?.time)).toEqual([15 * 60 + 30, 60, undefined]);
+  });
+});
+
 describe('день без слова о дне уступает своему предложению речи (заказчица, бой 21.09.2026)', () => {
   it('«Так завтра. С 9 до 10 не забыть позвонить…» — завтра, а не среда соседа', async () => {
     /**

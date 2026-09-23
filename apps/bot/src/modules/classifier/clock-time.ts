@@ -57,9 +57,12 @@ const BARE = /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})(?:\s+ч
  * Только со словом «часов»: голое «перенеси на 12» — это ещё и
  * двенадцатое число, и угадывать нельзя.
  */
-const AFTER_NA = /(?<!\p{L})на\s+(\d{1,2})\s+час(?:ов|а)?(?![\d:.]|\s+\d)/gu;
+const AFTER_NA =
+  /(?<!\p{L})на\s+(\d{1,2})(?![\d:.])\s+час(?:ов|а)?(?!\p{L})(?!\s+\d|\s+(?:позже|раньше|вперед|вперёд|назад))/gu;
 /** «В полдень», «на полдень» — 12:00, одно чтение. */
 const NOON_WORD = /(?<!\p{L})полдень(?!\p{L})/gu;
+/** «В полночь» — 00:00, одно чтение (23.09.2026). */
+const MIDNIGHT_WORD = /(?<!\p{L})полночь(?!\p{L})/gu;
 /** «с 9 до 10» — промежуток: оба числа часы. */
 const RANGE = /(?<!\p{L})с\s+(\d{1,2})\s+до\s+(\d{1,2})(?![\d:.]|\s+\d)/gu;
 
@@ -90,7 +93,7 @@ const ORDINALS: readonly (readonly [RegExp, number])[] = [
 
 const CARDINALS: readonly (readonly [RegExp, number])[] = [
   [/^час(?!ов|а)/u, 1],
-  [/^дв[ае](?!надцат)/u, 2],
+  [/^дв[ае](?!надцат)|^двух/u, 2],
   [/^три|^тр[её]х/u, 3],
   [/^четыр/u, 4],
   [/^пят[ьи]/u, 5],
@@ -114,7 +117,20 @@ const MINUTE_WORDS: readonly (readonly [RegExp, number])[] = [
 // Длинные формы первыми: иначе «пол» съедает начало «половине».
 const HALF = /(?<!\p{L})(?:в\s+)?(?:половин[аеу]|пол)\s*(\p{L}+|\d{1,2})/giu;
 // До трёх слов: «без пятнадцати семь», «без двадцати пяти восемь».
-const WITHOUT = /(?<!\p{L})без\s+(\p{L}+)\s+(\p{L}+|\d{1,2})(?:\s+(\p{L}+))?/giu;
+// Минуты цифрой («без 15 6» — так пишет распознавание) и «минут» после
+// них («без 15 минут 6») — живой прогон Никиты 23.09.2026.
+const WITHOUT =
+  /(?<!\p{L})без\s+(\p{L}+|\d{1,2})(?:\s+минут\p{L}*)?\s+(\p{L}+|\d{1,2})(?:\s+(\p{L}+))?/giu;
+/** «Четверть седьмого», «в четверть 7» — 6:15. */
+const QUARTER = /(?<!\p{L})(?:в\s+)?четверть\s+(\p{L}+|\d{1,2})/giu;
+/** «15 минут седьмого», «пять минут десятого» — минуты следующего часа. */
+const MINUTES_OF = /(?<!\p{L})(?:в\s+)?(\d{1,2}|\p{L}+)\s+минут\p{L}*\s+(\p{L}+)/giu;
+/** «В 6 часов 15 минут» — часы и минуты словами «часов … минут». */
+const HOURS_MINUTES =
+  /(?<!\p{L})(?:в|на|к|до|около|после)\s+(\d{1,2})\s+час\p{L}*\s+(\d{1,2})\s+минут\p{L}*/giu;
+/** «В пять вечера», «к шести», «в час дня» — час словом. */
+const WORD_HOUR =
+  /(?<!\p{L})(в|к|до|около|после|на)\s+(\p{L}+)(\s+час(?:ов|а)?)?(?:\s+(утра|дня|вечера|ночи))?(?!\p{L})/giu;
 
 /**
  * Число словом или цифрой: «в половине десятого» и «в пол 11» — одно и
@@ -131,6 +147,16 @@ function valueOf(word: string, table: readonly (readonly [RegExp, number])[]): n
   return table.find(([pattern]) => pattern.test(normalized))?.[1];
 }
 
+/** Минуты: цифрой — от 1 до 59, словом — из закрытого списка. */
+function minuteValue(word: string): number | undefined {
+  const digits = /^\d{1,2}$/u.exec(word.trim());
+  if (digits !== null) {
+    const value = Number(digits[0]);
+    return value >= 1 && value < MINUTES_IN_HOUR ? value : undefined;
+  }
+  return valueOf(word, MINUTE_WORDS);
+}
+
 /** Час по названному следующему: «половина десятого» — девятый час. */
 function previousHour(next: number): number {
   return next === 1 ? 0 : next - 1;
@@ -144,7 +170,7 @@ const TIME_PREPOSITION = /(?:^|[^\p{L}])(?:в|к|до|около|после)\s+$
  * читается часом, и без него «зайти в 3 магазина» стало бы временем.
  */
 const NOT_AN_HOUR =
-  /^\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|числ|лет|год|минут|секунд|тысяч|штук|рубл|процент|км|кг|метр|раз|мест|магазин|человек|дет|литр|кило|грамм|стакан|таблет|порци|шаг|этаж|класс|курс|груп|част|комнат|коробк|пакет|точк|подход|захода|заход)/u;
+  /^\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|числ|лет|год|минут|секунд|тысяч|штук|рубл|процент|км|кг|метр|раз|мест|магазин|человек|дет|литр|кило|грамм|стакан|таблет|порци|шаг|этаж|класс|курс|груп|част|комнат|коробк|пакет|точк|подход|захода|заход|недел|месяц|сут)/u;
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/ё/gu, 'е');
@@ -220,7 +246,7 @@ function spokenClockTimes(normalized: string): SpokenClock[] {
 
     // «без пятнадцати семь» — минуты одним словом; «без двадцати пяти
     // восемь» — двумя. Пробуем короткое чтение, потом длинное.
-    let minutes = valueOf(first, MINUTE_WORDS);
+    let minutes = minuteValue(first);
     let hourWord = second;
     if (minutes === undefined || valueOf(hourWord, CARDINALS) === undefined) {
       minutes = valueOf(`${first} ${second}`, MINUTE_WORDS);
@@ -237,6 +263,69 @@ function spokenClockTimes(normalized: string): SpokenClock[] {
       start: match.index,
       end: after + daypartLength(normalized, after),
       time: readingsOf(previousHour(next), MINUTES_IN_HOUR - minutes, daypart),
+    });
+  }
+
+  // «Четверть седьмого» — 6:15.
+  for (const match of normalized.matchAll(QUARTER)) {
+    const next = valueOf(match[1] ?? '', ORDINALS);
+    if (next === undefined) continue;
+    const end = match.index + match[0].length;
+    found.push({
+      at: match.index + match[0].lastIndexOf(match[1] ?? ''),
+      start: match.index,
+      end: end + daypartLength(normalized, end),
+      time: readingsOf(previousHour(next), MINUTES_IN_HOUR / 4, daypartAfter(normalized, end)),
+    });
+  }
+
+  // «15 минут седьмого» — 6:15; час обязан быть порядковым: «15 минут
+  // назад» — не время.
+  for (const match of normalized.matchAll(MINUTES_OF)) {
+    const minutes = minuteValue(match[1] ?? '');
+    const hourWord = match[2] ?? '';
+    const next = /^\d/u.test(hourWord) ? undefined : valueOf(hourWord, ORDINALS);
+    if (minutes === undefined || next === undefined) continue;
+    const end = match.index + match[0].length;
+    found.push({
+      at: match.index + match[0].lastIndexOf(hourWord),
+      start: match.index,
+      end: end + daypartLength(normalized, end),
+      time: readingsOf(previousHour(next), minutes, daypartAfter(normalized, end)),
+    });
+  }
+
+  // «В 6 часов 15 минут» — одно чтение, как «в 6 15».
+  for (const match of normalized.matchAll(HOURS_MINUTES)) {
+    const time = single(minutesOf(Number(match[1]), Number(match[2])));
+    if (time === undefined) continue;
+    found.push({
+      at: match.index + match[0].indexOf(match[1] ?? ''),
+      start: match.index,
+      end: match.index + match[0].length,
+      time,
+    });
+  }
+
+  /**
+   * Час словом: «в пять вечера», «к шести», «в час дня». После «на» —
+   * только с «часов»: «на два дня» — это дни, «на пять человек» — люди.
+   * Дальше те же запреты, что у цифры: «в два раза», «до двух недель».
+   */
+  for (const match of normalized.matchAll(WORD_HOUR)) {
+    const [, preposition, word, hoursWord, daypart] = match;
+    const hour = valueOf(word ?? '', CARDINALS);
+    if (hour === undefined || /^\d/u.test(word ?? '')) continue;
+    if (preposition === 'на' && hoursWord === undefined) continue;
+    const end = match.index + match[0].length;
+    if (daypart === undefined && NOT_AN_HOUR.test(normalized.slice(end))) continue;
+    const time = daypart === undefined ? bareHour(hour) : withDaypart(hour, daypart);
+    if (time === undefined) continue;
+    found.push({
+      at: match.index + match[0].indexOf(word ?? ''),
+      start: match.index,
+      end,
+      time,
     });
   }
 
@@ -311,6 +400,9 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
   for (const match of normalized.matchAll(NOON_WORD)) {
     add(match.index, single(NOON * MINUTES_IN_HOUR));
   }
+  for (const match of normalized.matchAll(MIDNIGHT_WORD)) {
+    add(match.index, single(0));
+  }
   for (const match of normalized.matchAll(RANGE)) {
     const from = Number(match[1]);
     const to = Number(match[2]);
@@ -379,6 +471,13 @@ function clockPhraseSpan(
   }
   for (const match of normalized.matchAll(NOON_WORD)) {
     offer(match, single(NOON * MINUTES_IN_HOUR));
+  }
+  for (const match of normalized.matchAll(MIDNIGHT_WORD)) {
+    offer(match, single(0));
+  }
+  // «Через полчаса» стало часом дела — в заголовке ему делать нечего.
+  for (const match of normalized.matchAll(new RegExp(FROM_NOW.source, 'gu'))) {
+    offer(match, single(0));
   }
   for (const match of normalized.matchAll(RANGE)) {
     if (Number(match[1]) < Number(match[2])) offer(match, bareHour(Number(match[1])));
@@ -508,4 +607,118 @@ export function hourWithoutDay(spoken: string): boolean {
   if (rest === spoken) return false;
   if (/\d/u.test(rest)) return false;
   return !namesDay(spoken);
+}
+
+/**
+ * Сдвиг и «через» (живой прогон Никиты 23.09.2026): «на час позже»,
+ * «на полчаса раньше», «через 45 минут». Это не час на циферблате, а
+ * отрезок времени: от часа дела — сдвиг, от «сейчас» — «через».
+ *
+ * Отрезок — только с единицей: «на час позже» — сдвиг, а «на час» без
+ * «позже» — ещё и «к часу дня», угадывать нельзя.
+ */
+const SPAN_WORDS: Readonly<Record<string, number>> = {
+  один: 1,
+  одну: 1,
+  два: 2,
+  две: 2,
+  три: 3,
+  четыре: 4,
+  пять: 5,
+  десять: 10,
+  пятнадцать: 15,
+  двадцать: 20,
+  тридцать: 30,
+  сорок: 40,
+};
+
+const SPAN =
+  String.raw`(полчаса|пол\s+часа|полтора\s+часа|час|(\d{1,3}|` +
+  Object.keys(SPAN_WORDS).join('|') +
+  String.raw`)(?:\s+(\d{1,2}|пять))?\s+(час|часа|часов|минут|минуты|минуту))`;
+
+/** Длина отрезка в минутах по его словам. */
+function spanMinutes(match: RegExpExecArray, at: number): number | undefined {
+  const whole = (match[at] ?? '').replace(/\s+/gu, ' ');
+  if (whole === 'полчаса' || whole === 'пол часа') return 30;
+  if (whole === 'полтора часа') return 90;
+  if (whole === 'час') return 60;
+
+  const countWord = match[at + 1] ?? '';
+  const count = /^\d/u.test(countWord) ? Number(countWord) : SPAN_WORDS[countWord];
+  if (count === undefined) return undefined;
+  const extra =
+    match[at + 2] === undefined ? 0 : match[at + 2] === 'пять' ? 5 : Number(match[at + 2]);
+  const unit = match[at + 3] ?? '';
+  return unit.startsWith('час') ? count * MINUTES_IN_HOUR : count + extra;
+}
+
+const SHIFT_AFTER = new RegExp(
+  String.raw`(?<!\p{L})на\s+` + SPAN + String.raw`\s+(позже|раньше|вперед|вперёд|назад)(?!\p{L})`,
+  'u',
+);
+const SHIFT_BEFORE = new RegExp(
+  String.raw`(?<!\p{L})(позже|раньше)\s+на\s+` + SPAN + String.raw`(?!\p{L})`,
+  'u',
+);
+const FROM_NOW = new RegExp(String.raw`(?<!\p{L})через\s+` + SPAN + String.raw`(?!\p{L})`, 'u');
+
+/** Сдвиг от часа дела в минутах: «на час позже» — 60, «на полчаса раньше» — −30. */
+export function timeShiftIn(text: string): number | undefined {
+  const normalized = normalize(text);
+
+  const after = SHIFT_AFTER.exec(normalized);
+  if (after !== null) {
+    const minutes = spanMinutes(after, 1);
+    const direction = after[5] ?? '';
+    if (minutes === undefined) return undefined;
+    return direction === 'раньше' || direction === 'назад' ? -minutes : minutes;
+  }
+
+  const before = SHIFT_BEFORE.exec(normalized);
+  if (before !== null) {
+    const minutes = spanMinutes(before, 2);
+    if (minutes === undefined) return undefined;
+    return before[1] === 'раньше' ? -minutes : minutes;
+  }
+
+  return undefined;
+}
+
+/** «Через» от сейчас в минутах: «через час» — 60, «через 45 минут» — 45. */
+export function fromNowIn(text: string): number | undefined {
+  const match = FROM_NOW.exec(normalize(text));
+  return match === null ? undefined : spanMinutes(match, 1);
+}
+
+/**
+ * Сдвиг или «через» без слова о дне: «на час позже», «через полчаса».
+ * Дата от модели при этом не сказана — как у часа без дня (решение Никиты
+ * 23.09.2026): день считает код, от часа дела или от «сейчас».
+ */
+export function relativeWithoutDay(spoken: string): boolean {
+  const relative = timeShiftIn(spoken) !== undefined || fromNowIn(spoken) !== undefined;
+  return relative && !namesDay(spoken);
+}
+
+/**
+ * «Через» у нового дела — из его слов или своего предложения речи, по тому
+ * же правилу, что час (`clockTimeOf`): «через полчаса позвонить маме» —
+ * звонку, а не соседу из общей фразы (23.09.2026).
+ */
+export function fromNowOf(
+  itemText: string,
+  spoken: string,
+  siblings: readonly string[] = [],
+): number | undefined {
+  const own = fromNowIn(itemText);
+  if (own !== undefined) return own;
+
+  const sentences = ownSentences(itemText, spoken);
+  const sentence = sentences[0];
+  const shared =
+    sentence !== undefined &&
+    siblings.some((other) => ownSentences(other, spoken).includes(sentence));
+
+  return sentences.length === 1 && !shared ? fromNowIn(sentence ?? '') : undefined;
 }

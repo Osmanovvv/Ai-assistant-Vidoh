@@ -14,7 +14,10 @@ import {
 } from '../classifier/dates.js';
 import {
   clockTimesIn,
+  fromNowIn,
   hourWithoutDay,
+  relativeWithoutDay,
+  timeShiftIn,
   localMinutes,
   withoutClockPhrase,
 } from '../classifier/clock-time.js';
@@ -175,12 +178,15 @@ interface Plan {
   readonly refused?: string | undefined;
   /** Час назван с двумя чтениями, и выбрать было не по чему. */
   readonly timeUnclear?: readonly [number, number] | undefined;
+  /** Сказан сдвиг («на час позже»), а у дела нет часа — сдвигать не от чего. */
+  readonly noTimeToShift?: boolean | undefined;
 }
 
 function plan(item: Item, params: ApplyParams, now: Date): Plan {
   const next: ItemPatch = {};
   let refused: string | undefined;
   let timeUnclear: readonly [number, number] | undefined;
+  let noTimeToShift = false;
 
   if (params.action === 'complete') {
     /**
@@ -360,7 +366,10 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * днём. Такой срок не применяется; час из тех же слов — применяется,
    * ниже, а у дела без дня или с прошедшим днём код сам ставит ближайший.
    */
-  const deadlineSaid = deadline.length > 0 && !hourWithoutDay(params.spoken ?? '');
+  const deadlineSaid =
+    deadline.length > 0 &&
+    !hourWithoutDay(params.spoken ?? '') &&
+    !relativeWithoutDay(params.spoken ?? '');
   if (deadlineSaid) {
     /**
      * Срок проверяется тем же кодом, что и при разборе выгрузки:
@@ -432,7 +441,39 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * нет. Только при точном сроке — своём или только что поставленном.
    */
   const heard = spokenClockTime(params.spoken ?? '', item.deadlineTime);
-  const spokenTime = heard.time;
+  let spokenTime = heard.time;
+
+  /**
+   * Сдвиг и «через» (живой прогон Никиты 23.09.2026): «на час позже» — от
+   * часа дела, через полночь — на соседний день; «через полчаса» — от
+   * «сейчас», вместе с днём. У дела без часа сдвигать не от чего — это
+   * говорится прямо, а не «менять нечего».
+   */
+  if (spokenTime === undefined && heard.unclear === undefined) {
+    const shift = timeShiftIn(params.spoken ?? '');
+    const later = shift === undefined ? fromNowIn(params.spoken ?? '') : undefined;
+    const day = next.deadlineAt ?? item.deadlineAt;
+
+    if (shift !== undefined) {
+      if (item.deadlineTime === null || day === null) {
+        noTimeToShift = true;
+      } else {
+        const total = item.deadlineTime + shift;
+        const days = Math.floor(total / (24 * 60));
+        spokenTime = total - days * 24 * 60;
+        if (days !== 0) {
+          next.deadlineAt = startOfDayAfter(day, days, params.timeZone);
+          next.deadlineAccuracy = 'day';
+        }
+      }
+    } else if (later !== undefined) {
+      const at = new Date(now.getTime() + later * 60_000);
+      const start = startOfDayInZone(localDateParts(at, params.timeZone), params.timeZone);
+      if (item.deadlineAt?.getTime() !== start.getTime()) next.deadlineAt = start;
+      if (item.deadlineAccuracy !== 'day') next.deadlineAccuracy = 'day';
+      spokenTime = localMinutes(at, params.timeZone);
+    }
+  }
 
   /**
    * Час без дня (решение Никиты 23.09.2026): день остаётся, меняется
@@ -562,6 +603,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     next,
     ...(refused === undefined ? {} : { refused }),
     ...(timeUnclear === undefined ? {} : { timeUnclear }),
+    ...(noTimeToShift ? { noTimeToShift } : {}),
   };
 }
 
@@ -585,7 +627,12 @@ export type ApplyOutcome =
    * 23.09.2026, «на пол 12»). Реплика тогда называет оба чтения, а не
    * «менять нечего».
    */
-  | { readonly kind: 'unchanged'; readonly timeUnclear?: readonly [number, number] | undefined }
+  | {
+      readonly kind: 'unchanged';
+      readonly timeUnclear?: readonly [number, number] | undefined;
+      /** Сказан сдвиг, а у дела нет часа (23.09.2026). */
+      readonly noTimeToShift?: boolean | undefined;
+    }
   /** Правка отвергнута по существу; причина — словами для журнала. */
   | { readonly kind: 'refused'; readonly reason: string }
   /** Записи нет: чужая, удалённая или выдуманный код. */
@@ -667,6 +714,7 @@ export async function applyDecision(db: Executor, params: ApplyParams): Promise<
         ? {
             kind: 'unchanged',
             ...(planned.timeUnclear === undefined ? {} : { timeUnclear: planned.timeUnclear }),
+            ...(planned.noTimeToShift === true ? { noTimeToShift: true } : {}),
           }
         : { kind: 'refused', reason: planned.refused };
     }

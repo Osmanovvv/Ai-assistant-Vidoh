@@ -11,10 +11,17 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { withoutDayQuestions } from '../router/day-question.js';
-import { clockTimeOf, dayAfterPassedClock } from './clock-time.js';
+import { clockTimeOf, dayAfterPassedClock, fromNowOf, localMinutes } from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { looksLikeSomedayTask } from './someday-task.js';
-import { describeToday, resolveDeadline, type ResolvedDeadline, isoDateIn } from './dates.js';
+import {
+  describeToday,
+  resolveDeadline,
+  type ResolvedDeadline,
+  isoDateIn,
+  localDateParts,
+  startOfDayInZone,
+} from './dates.js';
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
@@ -620,6 +627,23 @@ export function correctItems(
     if (isActionable(type) && heard !== undefined && deadline?.accuracy === 'day') {
       const time = clockTimeOf(item.text, heard, siblingsOf(index));
       if (time !== undefined) deadline = { ...deadline, time };
+    }
+
+    /**
+     * «Через полчаса позвонить маме» (23.09.2026): который час, модель не
+     * знает, а «через» считается только от «сейчас». День и час — кодом,
+     * от часов человека; через полночь — завтра.
+     */
+    if (isActionable(type) && heard !== undefined) {
+      const later = fromNowOf(item.text, heard, siblingsOf(index));
+      if (later !== undefined) {
+        const at = new Date(now.getTime() + later * 60_000);
+        deadline = {
+          at: startOfDayInZone(localDateParts(at, ctx.timeZone), ctx.timeZone),
+          accuracy: 'day',
+          time: localMinutes(at, ctx.timeZone),
+        };
+      }
     }
 
     /**

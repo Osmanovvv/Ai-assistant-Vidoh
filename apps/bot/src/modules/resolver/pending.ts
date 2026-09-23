@@ -56,6 +56,8 @@ export interface PendingResult {
   readonly why?: 'unchanged' | 'refused' | 'gone' | undefined;
   /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
   readonly timeUnclear?: readonly [number, number] | undefined;
+  /** При `unchanged`: сказан сдвиг, а у дела нет часа. */
+  readonly noTimeToShift?: boolean | undefined;
   /**
    * Сказанное, которое надо разобрать вместе с этой выгрузкой.
    *
@@ -311,6 +313,9 @@ export async function settlePendingQuestion(
         leftoverSaved,
         ...(applying.kind === 'unchanged' && applying.timeUnclear !== undefined
           ? { timeUnclear: applying.timeUnclear }
+          : {}),
+        ...(applying.kind === 'unchanged' && applying.noTimeToShift === true
+          ? { noTimeToShift: true }
           : {}),
       };
 }

@@ -129,6 +129,8 @@ export type SegmentResult =
       readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined;
       /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
       readonly timeUnclear?: readonly [number, number] | undefined;
+      /** При `unchanged`: сказан сдвиг, а у дела нет часа. */
+      readonly noTimeToShift?: boolean | undefined;
       /**
        * Цель нашлась, но правка не легла («менять нечего», срок не
        * подошёл) — разговор всё равно был о ней, и «удали это» следом
@@ -562,6 +564,9 @@ async function settle(
       ...(outcome.kind === 'gone' ? {} : { itemId }),
       ...(outcome.kind === 'unchanged' && outcome.timeUnclear !== undefined
         ? { timeUnclear: outcome.timeUnclear, clarify: 'time' as const }
+        : {}),
+      ...(outcome.kind === 'unchanged' && outcome.noTimeToShift === true
+        ? { noTimeToShift: true }
         : {}),
     };
   }
