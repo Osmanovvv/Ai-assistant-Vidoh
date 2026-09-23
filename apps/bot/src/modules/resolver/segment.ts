@@ -12,6 +12,7 @@ import { reembedIfRetitled } from '../embedder/reembed.js';
 import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './patch.js';
 import { DEFAULT_THRESHOLDS } from './decision.js';
 import { deicticAction, pointsAtLast } from './deixis.js';
+import { lastDiscussed } from './deixis.repo.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
@@ -127,6 +128,12 @@ export type SegmentResult =
       readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined;
       /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
       readonly timeUnclear?: readonly [number, number] | undefined;
+      /**
+       * Цель нашлась, но правка не легла («менять нечего», срок не
+       * подошёл) — разговор всё равно был о ней, и «удали это» следом
+       * должно её найти (бой 23.09.2026, 03:41 → 03:47).
+       */
+      readonly itemId?: string | undefined;
       /**
        * Цель не нашлась потому, что модель не ответила (панель, п. 4):
        * человеку — та же реплика, а в журнале это сбой, не непонимание.
@@ -246,17 +253,20 @@ export async function resolvePatchSegment(
    */
   let pointed: typeof candidates | undefined;
   if (pointsAtLast(params.text)) {
-    const fresh = candidates.filter(
-      (one) =>
-        one.sources.includes('session') &&
-        now.getTime() - one.updatedAt.getTime() <= DEFAULT_THRESHOLDS.freshMinutes * 60_000,
-    );
-    const target = fresh.length === 1 ? fresh[0] : undefined;
+    // «Это» — дело из последнего разговора, а не только последнее
+    // изменённое (бой 23.09.2026: «менять нечего» запись не меняет).
+    const discussed = await lastDiscussed(deps.db, {
+      userId: params.userId,
+      batchId: params.batchId,
+      now,
+      windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+    });
+    const target = discussed.length === 1 ? discussed[0] : undefined;
 
     if (target === undefined) {
       return {
         kind: 'parked',
-        reason: `сказано «это», а только что тронутых записей ${String(fresh.length)}`,
+        reason: `сказано «это», а дел в последнем разговоре ${String(discussed.length)}`,
         said: 'which',
       };
     }
@@ -285,7 +295,7 @@ export async function resolvePatchSegment(
         reason: 'указано «это» — только что тронутая запись',
         changedBy: 'resolver',
       });
-      return await settle(deps, outcome);
+      return await settle(deps, outcome, target.id);
     }
 
     pointed = [target];
@@ -460,11 +470,16 @@ export async function resolvePatchSegment(
     changedBy: 'resolver',
   });
 
-  return await settle(deps, outcome);
+  return await settle(deps, outcome, candidate.id);
 }
 
 /** Исход применения — в исход отрезка: парковка с причиной или правка. */
-async function settle(deps: ResolveDeps, outcome: ApplyOutcome): Promise<SegmentResult> {
+async function settle(
+  deps: ResolveDeps,
+  outcome: ApplyOutcome,
+  /** О каком деле шла речь: и при «менять нечего» это разговор о нём. */
+  itemId: string,
+): Promise<SegmentResult> {
   /**
    * Не применилось — парковка с настоящей причиной и словом человеку
    * (ревизия этапа 3, A3 и A4).
@@ -484,6 +499,7 @@ async function settle(deps: ResolveDeps, outcome: ApplyOutcome): Promise<Segment
             ? `правка отвергнута: ${outcome.reason}`
             : 'запись исчезла между поиском и правкой',
       said: outcome.kind,
+      ...(outcome.kind === 'gone' ? {} : { itemId }),
       ...(outcome.kind === 'unchanged' && outcome.timeUnclear !== undefined
         ? { timeUnclear: outcome.timeUnclear }
         : {}),

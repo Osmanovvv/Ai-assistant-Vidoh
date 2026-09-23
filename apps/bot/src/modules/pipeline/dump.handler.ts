@@ -1324,6 +1324,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       happened.parked = true;
+      // Разговор был о деле, даже если правка не легла: «удали это»
+      // следом должно найти его (бой 23.09.2026).
+      if (outcome.itemId !== undefined) mentioned.add(outcome.itemId);
       // Модель резолвера молчала — это сбой, а не непонятая правка (п. 4).
       if (outcome.fault !== undefined) happened.fault = outcome.fault;
       sayParked(parkedLine(outcome.said, outcome.timeUnclear));
@@ -1708,6 +1711,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const parkedHere = await parkPending(
         'правка ждала разбора выгрузки, а разбирать было нечего',
       );
+
+      // О каких делах шёл разговор — и в выгрузке из одних правок: иначе
+      // «удали это» следом не найдёт, о чём речь (бой 23.09.2026).
+      if (mentioned.size > 0) await rememberMentioned(db, batch.id, [...mentioned]);
 
       // Правки без новых мыслей тоже меняют ветки — обновить надо здесь,
       // потому что ниже этой ветки обработка уже не идёт.
