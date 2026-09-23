@@ -65,6 +65,33 @@ const OTHER_COMMANDS = new Set([
 
 const NOUNS = new Set(['дело', 'дела', 'задачу', 'задача', 'запись', 'напоминание']);
 
+/** «Нет, в пятницу», «не в пятницу, а в субботу» — отказ от прежнего срока. */
+const NEGATIONS = new Set(['нет', 'не', 'неа']);
+
+/**
+ * Слова, которые называют срок, а не только связывают: день, время суток,
+ * число. Предлоги «на», «в» сами по себе срока не называют.
+ */
+const TIME_CONTENT = new Set([
+  'сегодня',
+  'завтра',
+  'послезавтра',
+  'утра',
+  'дня',
+  'вечера',
+  'ночи',
+  'утром',
+  'днем',
+  'вечером',
+  'ночью',
+  'полдень',
+  'пол',
+  'половине',
+  'половина',
+  'неделю',
+  'неделе',
+]);
+
 const FILLERS = new Set([
   'пожалуйста',
   'вот',
@@ -136,6 +163,7 @@ function known(word: string): boolean {
     OTHER_COMMANDS.has(word) ||
     NOUNS.has(word) ||
     FILLERS.has(word) ||
+    NEGATIONS.has(word) ||
     TIME.has(word) ||
     /^\d{1,4}$/u.test(word) ||
     TIME_STEMS.test(word)
@@ -175,5 +203,31 @@ export function namesNoDeed(text: string): boolean {
       COMPLETE.has(word) ||
       OTHER_COMMANDS.has(word),
   );
-  return aboutRecord && words.every(known);
+  /**
+   * Короткая поправка без дела (решение Никиты 23.09.2026): «а лучше в
+   * 5», «нет, в пятницу» сразу после ответа бота — назван только новый
+   * срок, дело не названо. Самопоправки внутри одной выгрузки сюда не
+   * попадают: их отсекает вызывающий, там дело названо рядом.
+   */
+  const namesTime = words.some(
+    (word) => TIME_CONTENT.has(word) || /^\d{1,4}(?::\d{2})?$/u.test(word) || TIME_STEMS.test(word),
+  );
+  return (aboutRecord || namesTime) && words.every(known);
+}
+
+/**
+ * Приказ о записи без названия дела: «Перенеси дело на пол 3», «удали
+ * это». В отличие от голой поправки («нет, в пятницу»), где назван только
+ * срок, — здесь человек распоряжается записью, и перенос предлагается
+ * вопросом (решение Никиты 23.09.2026).
+ */
+export function commandsRecord(text: string): boolean {
+  return tokens(text).some(
+    (word) =>
+      POINTERS.has(word) ||
+      NOUNS.has(word) ||
+      CANCEL.has(word) ||
+      COMPLETE.has(word) ||
+      OTHER_COMMANDS.has(word),
+  );
 }

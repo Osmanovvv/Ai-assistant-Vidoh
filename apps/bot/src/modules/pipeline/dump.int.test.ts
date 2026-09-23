@@ -4401,19 +4401,143 @@ describe('правка доходит до резолвера (§7, задача
     expect(all.some((text) => text.includes('Записала'))).toBe(false);
   });
 
-  it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {
-    // «Записала 1 дело… Посылку ты уже записывала — вторую не завела»:
-    // одна строка противоречила другой. Счёт — только заведённое сейчас.
+  it('«а лучше в 5» сразу после разговора о деле — предлагает его, а не выбранное наугад (решение Никиты 23.09.2026)', async () => {
     const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    // Обсуждали минуты назад, но не меняли: «менять нечего» запись не трогает.
+    await testDb()
+      .update(items)
+      .set({ updatedAt: at(-40 * 60_000) })
+      .where(eq(items.id, itemId));
+    await testDb()
+      .insert(batches)
+      .values({
+        userId,
+        status: 'done',
+        openedAt: at(-3 * 60_000),
+        closedAt: at(-2 * 60_000),
+        mentionedItemIds: [itemId],
+      });
     await testDb()
       .insert(items)
       .values({
         userId,
-        text: 'Забрать посылку',
+        text: 'Купить хлеб',
         type: 'TASK',
         priority: 'SOON',
         topic: 'покупки',
+        updatedAt: at(-40 * 60_000),
       });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'а лучше в 5', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'а лучше в 5' }],
+            }),
+            // Выбирать модели не из чего: в списке только обсуждённое дело.
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'replace',
+              itemId: '1',
+              confidence: 1,
+              changes: {
+                note: '',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'наугад',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    // Вопрос — словами ТЗ §7.3 (канонический пример «нет, в пятницу»),
+    // но про последнее обсуждённое дело, а не про выбранное наугад.
+    expect(
+      all.some((text) => text.includes('Это про «Записать сына к врачу» или отдельная история?')),
+    ).toBe(true);
+    expect(all.some((text) => text.includes('Купить хлеб'))).toBe(false);
+    const [open] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(open?.itemId).toBe(itemId);
+  });
+
+  it('«нет, в пятницу» через минуту после записи — применяется сразу, без вопроса (§7.2, канонический случай ТЗ)', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'нет, в пятницу', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'нет, в пятницу' }],
+            }),
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'replace',
+              itemId: '1',
+              confidence: 0.9,
+              changes: {
+                note: '',
+                text: '',
+                deadline: soon(),
+                deadlineAccuracy: 'day',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'врач',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).not.toBeNull();
+    expect(all.some((text) => text.includes('Перенесла'))).toBe(true);
+    expect(all.some((text) => text.includes('отдельная история'))).toBe(false);
+  });
+
+  it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {
+    // «Записала 1 дело… Посылку ты уже записывала — вторую не завела»:
+    // одна строка противоречила другой. Счёт — только заведённое сейчас.
+    const prompts = await seedPrompts();
+    await testDb().insert(items).values({
+      userId,
+      text: 'Забрать посылку',
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'покупки',
+    });
     const { sender, all } = recordingSender();
     const text = 'Забрать посылку';
 
