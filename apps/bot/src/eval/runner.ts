@@ -97,6 +97,8 @@ export interface RunnerDeps {
   readonly ai: AiClientDeps;
   /** Лёгкая модель для маршрутизатора, если она отличается (задача 2.4). */
   readonly aiLight?: AiClientDeps | undefined;
+  /** Модель маршрутизатора — как в бою (решение Никиты 23.09.2026). */
+  readonly aiRouter?: AiClientDeps | undefined;
   /** Вектора — как в бою: отсев повторов и кандидаты резолвера. */
   readonly embedder?: EmbeddingProvider | undefined;
   readonly logger?: Logger | undefined;
@@ -319,6 +321,8 @@ export async function runCase(deps: RunnerDeps, item: EvalCase, index = 0): Prom
   const { db: _db, ...ai } = deps.ai;
   const light =
     deps.aiLight === undefined ? undefined : (({ db: _light, ...rest }) => rest)(deps.aiLight);
+  const router =
+    deps.aiRouter === undefined ? undefined : (({ db: _router, ...rest }) => rest)(deps.aiRouter);
 
   const handle = createDumpHandler({
     // Голос стенд не разбирает: случаи — расшифровки, снятые с боя.
@@ -328,6 +332,7 @@ export async function runCase(deps: RunnerDeps, item: EvalCase, index = 0): Prom
     },
     ai,
     ...(light === undefined ? {} : { aiLight: light }),
+    ...(router === undefined ? {} : { aiRouter: router }),
     ...(deps.embedder === undefined ? {} : { embedder: deps.embedder }),
     sender: said.sender,
     settings: new SettingsRegistry({ db, ttlMs: 0 }),

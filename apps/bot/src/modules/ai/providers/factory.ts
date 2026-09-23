@@ -29,6 +29,8 @@ export interface ProviderChoice {
    * модели то, что считала лёгкая.
    */
   readonly light?: boolean;
+  /** Модель маршрутизатора — своя переменная (решение Никиты 23.09.2026). */
+  readonly router?: boolean;
   /**
    * Сторож сборки (22.09.2026): живая модель отвечает версией, и если
    * она не та, на которой мерили, об этом говорится в журнал. Один на
@@ -109,7 +111,12 @@ function liveYandex(env: ModelEnv, choice: ProviderChoice): LlmProvider {
   const live = new YandexLlmProvider({
     apiKey: env.YANDEX_API_KEY,
     folderId: env.YANDEX_FOLDER_ID,
-    model: choice.light === true ? env.YANDEX_LLM_MODEL_LIGHT : env.YANDEX_LLM_MODEL,
+    model:
+      choice.router === true
+        ? env.YANDEX_LLM_MODEL_ROUTER
+        : choice.light === true
+          ? env.YANDEX_LLM_MODEL_LIGHT
+          : env.YANDEX_LLM_MODEL,
   });
 
   return choice.versionWatch === undefined ? live : watchVersions(live, choice.versionWatch);

@@ -284,6 +284,8 @@ async function main(): Promise<void> {
   const versionWatch = new ModelVersionWatch(logger);
   const llm = createLlmProvider(env, { versionWatch });
   const llmLight = createLlmProvider(env, { light: true, versionWatch });
+  // Маршрутизатор — своей моделью (решение Никиты 23.09.2026: Pro).
+  const llmRouter = createLlmProvider(env, { router: true, versionWatch });
   const embedder = createEmbeddingProvider(env);
 
   /**
@@ -345,7 +347,7 @@ async function main(): Promise<void> {
     },
   });
   logger.info(
-    { llm: llm.name, light: llmLight.name, embedder: embedder.name },
+    { llm: llm.name, light: llmLight.name, router: llmRouter.name, embedder: embedder.name },
     'Провайдеры разбора выбраны',
   );
 
@@ -520,6 +522,7 @@ async function main(): Promise<void> {
     // отдельный на каждую выгрузку сводил бы кэш к нулю.
     ai: { provider: llm, prompts, logger, spendGuard },
     aiLight: { provider: llmLight, prompts, logger, spendGuard },
+    aiRouter: { provider: llmRouter, prompts, logger, spendGuard },
     // §10.5: мягкий лимит расхода. Не задан — ограничение выключено.
     spendLimit: limitFromEnv(env.SPEND_LIMIT_RUB),
     // §3.8в: выключено, пока порог «это одно и то же дело» не измерен на

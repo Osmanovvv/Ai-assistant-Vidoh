@@ -262,13 +262,20 @@ try {
   const modelEnv = recordingEnvFor(env, join(runs, `${stamp}.cassette.json`));
   const full = createLlmProvider(modelEnv);
   const light = createLlmProvider(modelEnv, { light: true });
+  // Маршрутизатор — своей моделью, как в бою (решение Никиты 23.09.2026).
+  const routerModel = createLlmProvider(modelEnv, { router: true });
 
   // Вектора — тем же провайдером, что модель: в бою они есть, и без них
   // стенд отсеивал бы повторы и искал цели правок иначе, чем бой.
   const embedder = createEmbeddingProvider(modelEnv);
 
   logger.info(
-    { полная: full.name, лёгкая: light.name, вектора: embedder.name },
+    {
+      полная: full.name,
+      лёгкая: light.name,
+      маршрутизатор: routerModel.name,
+      вектора: embedder.name,
+    },
     'Провайдеры выбраны',
   );
 
@@ -281,6 +288,7 @@ try {
     {
       ai: { db, provider: full, prompts, logger, spendGuard },
       aiLight: { db, provider: light, prompts, logger, spendGuard },
+      aiRouter: { db, provider: routerModel, prompts, logger, spendGuard },
       embedder,
       logger,
     },
