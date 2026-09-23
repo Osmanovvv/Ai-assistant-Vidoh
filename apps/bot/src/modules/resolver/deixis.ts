@@ -61,7 +61,6 @@ const OTHER_COMMANDS = new Set([
   'сдвинуть',
   'поставь',
   'поставить',
-  'давай',
 ]);
 
 const NOUNS = new Set(['дело', 'дела', 'задачу', 'задача', 'запись', 'напоминание']);
@@ -80,6 +79,7 @@ const FILLERS = new Set([
   'просто',
   'все',
   'лучше',
+  'давай',
 ]);
 
 /** День и час: предлоги, слова о дне, части суток, разговорные часы. */
@@ -154,4 +154,26 @@ export function deicticAction(text: string): 'cancel' | 'complete' | undefined {
   if (words.some((word) => CANCEL.has(word))) return 'cancel';
   if (words.some((word) => COMPLETE.has(word))) return 'complete';
   return undefined;
+}
+
+/**
+ * Дело не названо (решение Никиты 23.09.2026): «Перенеси дело на пол 3»,
+ * «перенеси на пол 3», «удали дело». Ни одного слова дела, но есть приказ,
+ * «это» или само слово «дело» — речь о последнем обсуждённом, а не о том,
+ * что покажется модели (на бою она выбрала «Купить хлеб» наугад).
+ *
+ * Самопоправки вроде «давай в 10 30», «нет, в пятницу» сюда не попадают:
+ * приказа о записи в них нет, их разбирает модель по соседям в выгрузке.
+ */
+export function namesNoDeed(text: string): boolean {
+  const words = tokens(text);
+  const aboutRecord = words.some(
+    (word) =>
+      POINTERS.has(word) ||
+      NOUNS.has(word) ||
+      CANCEL.has(word) ||
+      COMPLETE.has(word) ||
+      OTHER_COMMANDS.has(word),
+  );
+  return aboutRecord && words.every(known);
 }

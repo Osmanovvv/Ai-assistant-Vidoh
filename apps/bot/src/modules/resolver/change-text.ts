@@ -3,6 +3,7 @@ import { deadlineWords } from '../items/deadline-words.js';
 import { clockOf } from '../scheduler/plan.js';
 import { reminderButtons } from '../scheduler/reminder-actions.js';
 import { isRecordCommand, startsWithReplacement } from '../router/append.js';
+import { clockTimesIn } from '../classifier/clock-time.js';
 import { localDateParts } from '../classifier/dates.js';
 import type { Applied } from './patch.js';
 import type { StatusButton } from '../presenter/status.service.js';
@@ -278,9 +279,10 @@ export function aboutPending(
  * остаётся словами §7.3.
  */
 export function isMoveQuestion(about: Omit<QuestionAbout, 'title'>): boolean {
-  return (
-    about.action === 'update' && about.changes.deadline.length > 0 && isRecordCommand(about.segment)
-  );
+  // Новый срок — день от модели или час из слов: «Перенеси дело на пол 3»
+  // дня не называет, а перенос есть (23.09.2026).
+  const moves = about.changes.deadline.length > 0 || clockTimesIn(about.segment).length > 0;
+  return about.action === 'update' && moves && isRecordCommand(about.segment);
 }
 
 export function questionText(about: QuestionAbout, texts: TextProfile): string {
