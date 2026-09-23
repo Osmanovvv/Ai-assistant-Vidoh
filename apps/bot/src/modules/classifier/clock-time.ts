@@ -495,35 +495,17 @@ export function dayAfterPassedClock(params: {
 }
 
 /**
- * Дата от модели — эхо часа (живой прогон Никиты 23.09.2026).
+ * Час без дня (решение Никиты 23.09.2026): в словах есть час и нет ни
+ * одного дня — ни словом (`namesDay`), ни числом вне часа.
  *
- * «Перенеси посылку на пол 1» — модель вернула срок 2026-10-01: увидела
- * «на 1» и сделала из него первое число. Признаки все проверяемые: в
- * словах есть час; кроме чисел этого часа других чисел нет; дня словами
- * не названо (`namesDay`); день срока равен числу из часа — самому
- * числу в тексте, часу чтения или следующему за ним («пол первого» —
- * это про первый час). Такой срок применять нельзя: он не сказан.
- * Любой из признаков не сошёлся — правило молчит, срок остаётся за
- * моделью.
+ * Такому сроку от модели верить нельзя: он не сказан. На бою модель
+ * дважды подставила свой день — «на пол 1» стало первым октября (число
+ * из часа), «на пол 3» — сегодняшним днём, и посылка уехала с 24.09 на
+ * 23.09. Правило Никиты: час без дня меняет только час.
  */
-export function dateEchoesClock(spoken: string, deadline: string): boolean {
+export function hourWithoutDay(spoken: string): boolean {
   const rest = withoutClockPhrase(spoken);
   if (rest === spoken) return false;
   if (/\d/u.test(rest)) return false;
-  if (namesDay(spoken)) return false;
-
-  const day = Number(deadline.slice(8, 10));
-  if (!Number.isInteger(day) || day < 1) return false;
-
-  const numbers = new Set<number>();
-  for (const digits of spoken.match(/\d{1,2}/gu) ?? []) numbers.add(Number(digits));
-  for (const reading of clockTimesIn(spoken)) {
-    for (const minutes of reading) {
-      const hour = Math.floor(minutes / MINUTES_IN_HOUR);
-      numbers.add(hour);
-      numbers.add((hour + 1) % HOURS_IN_DAY);
-    }
-  }
-
-  return numbers.has(day);
+  return !namesDay(spoken);
 }

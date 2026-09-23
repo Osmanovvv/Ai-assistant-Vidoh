@@ -14,7 +14,7 @@ import {
 } from '../classifier/dates.js';
 import {
   clockTimesIn,
-  dateEchoesClock,
+  hourWithoutDay,
   localMinutes,
   withoutClockPhrase,
 } from '../classifier/clock-time.js';
@@ -355,12 +355,12 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
   }
 
   /**
-   * Срок от модели, у которого день — число из часа при отсутствии дня в
-   * словах, не сказан человеком, а услышан моделью в «на пол 1» (живой
-   * прогон Никиты 23.09.2026: 24.09 → 01.10). Не применяется; час из
-   * тех же слов — применяется, ниже.
+   * Час без дня — дата от модели не сказана (решение Никиты 23.09.2026):
+   * «на пол 1» модель делала первым октября, «на пол 3» — сегодняшним
+   * днём. Такой срок не применяется; час из тех же слов — применяется,
+   * ниже, а у дела без дня или с прошедшим днём код сам ставит ближайший.
    */
-  const deadlineSaid = deadline.length > 0 && !dateEchoesClock(params.spoken ?? '', deadline);
+  const deadlineSaid = deadline.length > 0 && !hourWithoutDay(params.spoken ?? '');
   if (deadlineSaid) {
     /**
      * Срок проверяется тем же кодом, что и при разборе выгрузки:
