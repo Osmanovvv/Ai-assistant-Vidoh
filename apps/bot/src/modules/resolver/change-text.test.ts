@@ -10,6 +10,7 @@ import {
   keptTitleAfterReplacement,
   questionButtons,
   questionText,
+  isMoveQuestion,
   UNDO_PREFIX,
   undoButtons,
 } from './change-text.js';
@@ -309,5 +310,19 @@ describe('вопрос о переносе (живой прогон Никиты
     expect(questionText(still, defaultTexts)).toBe(
       'Это про «Забрать посылку» или отдельная история?',
     );
+  });
+});
+
+describe('перенос только часом — тоже вопрос о переносе (23.09.2026)', () => {
+  it('«Перенеси дело на пол 3»: нового дня нет, но час есть — «Перенести «…»?»', () => {
+    const about = {
+      title: 'Забрать посылку',
+      segment: 'Перенеси дело на пол 3',
+      action: 'update',
+      changes: { deadline: '' },
+    } as const;
+
+    expect(isMoveQuestion(about)).toBe(true);
+    expect(questionText(about, defaultTexts)).toBe('Перенести «Забрать посылку»?');
   });
 });

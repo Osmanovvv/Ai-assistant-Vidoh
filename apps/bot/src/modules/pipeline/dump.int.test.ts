@@ -4206,6 +4206,111 @@ describe('правка доходит до резолвера (§7, задача
     expect(all.some((text) => text.includes('Какое дело?'))).toBe(false);
   });
 
+  /**
+   * Решение Никиты 23.09.2026: «Перенеси дело на пол 3» — модель выбрала
+   * наугад («Перенести «Купить хлеб»?»). Дело не названо — значит речь о
+   * последнем обсуждённом: недавно говорили — предложить его вопросом;
+   * время прошло — не угадывать, а спросить «Какое дело?».
+   */
+  it('«Перенеси дело на пол 3» — предлагает дело из последнего разговора, а не угаданное', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    const [bread] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Купить хлеб',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        updatedAt: at(-40 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Перенеси дело на пол 3', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'Перенеси дело на пол 3' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 1,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'дело',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    // Предложено последнее обсуждённое, и ничего не тронуто до ответа.
+    expect(all.some((text) => text.includes('Перенести «Записать сына к врачу'))).toBe(true);
+    expect(all.some((text) => text.includes('Купить хлеб'))).toBe(false);
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineTime).toBeNull();
+    const [open] = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(open?.itemId).toBe(itemId);
+    expect(open?.itemId).not.toBe(bread?.id);
+  });
+
+  it('«Перенеси дело на пол 3», когда давно ни о чём не говорили, — «Какое дело?», без угадывания', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    await testDb()
+      .update(items)
+      .set({ updatedAt: at(-40 * 60_000) })
+      .where(eq(items.id, itemId));
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Перенеси дело на пол 3', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'Перенеси дело на пол 3' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.some((text) => text.includes('Какое дело? Назови его — и сделаю.'))).toBe(true);
+    expect(all.some((text) => text.startsWith('Перенести «'))).toBe(false);
+    const questions = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(questions).toEqual([]);
+  });
+
   it('«Удали это дело» при двух только что тронутых — спрашивает какое, ничего не трогая', async () => {
     const prompts = await seedPrompts();
     const first = await existingItem(null);

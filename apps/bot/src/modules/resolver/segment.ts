@@ -11,7 +11,7 @@ import { collectCandidates } from './candidates.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
 import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './patch.js';
 import { DEFAULT_THRESHOLDS } from './decision.js';
-import { deicticAction, pointsAtLast } from './deixis.js';
+import { deicticAction, namesNoDeed } from './deixis.js';
 import { lastDiscussed } from './deixis.repo.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
@@ -251,8 +251,13 @@ export async function resolvePatchSegment(
    * списка. Перенос идёт к модели, но выбирать ей не из чего — только
    * указанная запись.
    */
-  let pointed: typeof candidates | undefined;
-  if (pointsAtLast(params.text)) {
+  /**
+   * Дело не названо (решение Никиты 23.09.2026): «Перенеси дело на пол 3».
+   * Недавно говорили о деле — предложить его; нет — «Какое дело?», без
+   * угадывания. Внутри выгрузки не работает: там «перенеси на завтра»
+   * после мысли — про неё, и это решают соседи (задача 3.24).
+   */
+  if (params.onlyOwnBatch !== true && namesNoDeed(params.text)) {
     // «Это» — дело из последнего разговора, а не только последнее
     // изменённое (бой 23.09.2026: «менять нечего» запись не меняет).
     const discussed = await lastDiscussed(deps.db, {
@@ -298,7 +303,46 @@ export async function resolvePatchSegment(
       return await settle(deps, outcome, target.id);
     }
 
-    pointed = [target];
+    /**
+     * Перенос и прочие правки — предложением, не применением: дело не
+     * названо, и человек подтверждает одним нажатием. Модель зовётся
+     * ради срока, но выбирать ей не из чего — только это дело.
+     */
+    if (params.questionTaken === true) {
+      return {
+        kind: 'parked',
+        reason: 'дело не названо, а вопрос за эту выгрузку уже задан (§13.9)',
+        itemId: target.id,
+      };
+    }
+
+    const offered = await resolveSegment(deps.ai, {
+      segment: params.text,
+      candidates: [target],
+      timeZone: params.timeZone,
+      now,
+      userId: params.userId,
+      batchId: params.batchId,
+    });
+    const changes = offered.changes ?? emptyChanges();
+    const question = await askQuestion(deps.db, {
+      userId: params.userId,
+      itemId: target.id,
+      batchId: params.batchId,
+      segment: params.text,
+      action: 'update',
+      changes,
+      ...(offered.mode === undefined ? {} : { mode: offered.mode }),
+      now,
+    });
+
+    return {
+      kind: 'asked',
+      questionId: question.id,
+      itemTitle: target.text,
+      action: 'update',
+      deadline: changes.deadline,
+    };
   }
 
   /**
@@ -311,7 +355,7 @@ export async function resolvePatchSegment(
 
   const resolved = await resolveSegment(deps.ai, {
     segment: params.text,
-    candidates: pointed ?? candidates,
+    candidates,
     timeZone: params.timeZone,
     now,
     userId: params.userId,
