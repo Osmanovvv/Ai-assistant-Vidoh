@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -4309,6 +4309,220 @@ describe('правка доходит до резолвера (§7, задача
       .from(pendingQuestions)
       .where(eq(pendingQuestions.userId, userId));
     expect(questions).toEqual([]);
+  });
+
+  /**
+   * Живой прогон Никиты, 12:50 23.09.2026: «Перенеси дело на пол 4» —
+   * «Какое дело?» — «Забрать посылку» — и бот ответил «Записала 1 дело…»:
+   * о чём спрашивал, он не помнил. Теперь помнит четверть часа: ответ
+   * называет дело — команда доделывается над ним.
+   */
+  it('«Какое дело?» → «Забрать посылку» — переносит названное, а не заводит новое', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date(`${soon()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 11 * 60,
+        updatedAt: at(-40 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const resolverSays = JSON.stringify({
+      action: 'update',
+      mode: 'replace',
+      itemId: '1',
+      confidence: 1,
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      reason: 'посылка',
+    });
+
+    await queuedBatchOf([{ kind: 'text', text: 'Перенеси дело на пол 4', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'Перенеси дело на пол 4' }],
+            }),
+            resolver: resolverSays,
+          }),
+        }),
+      },
+      userId,
+    );
+    expect(all.some((text) => text.includes('Какое дело?'))).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Забрать посылку', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          // Маршрутизатор на ответ не зовётся: назови он его мыслью — это
+          // и был бы дефект.
+          llm: echoingLlm({ resolver: resolverSays }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows.map((row) => row.text)).toEqual(['Забрать посылку']);
+    expect(rows.find((row) => row.id === parcel?.id)?.deadlineTime).toBe(15 * 60 + 30);
+    expect(all.some((text) => text.includes('15:30'))).toBe(true);
+    expect(all.some((text) => text.includes('Записала'))).toBe(false);
+  });
+
+  it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {
+    // «Записала 1 дело… Посылку ты уже записывала — вторую не завела»:
+    // одна строка противоречила другой. Счёт — только заведённое сейчас.
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+      });
+    const { sender, all } = recordingSender();
+    const text = 'Забрать посылку';
+
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+            extractor: () =>
+              JSON.stringify({ units: [{ text, isProject: false, isEmotion: false }] }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  {
+                    text,
+                    type: 'TASK',
+                    priority: 'SOON',
+                    topic: 'покупки',
+                    isProject: false,
+                    deadline: '',
+                    deadlineAccuracy: 'none',
+                    deadlineText: '',
+                    recurrenceKind: 'none',
+                    recurrenceInterval: 0,
+                    recurrenceText: '',
+                  },
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows).toHaveLength(1);
+    expect(all.some((line) => line.includes('Записала'))).toBe(false);
+  });
+
+  it('«Не поняла, 11:30 или 23:30?» → «утра» — ставит 11:30', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    const { sender, all } = recordingSender();
+    const resolverSays = JSON.stringify({
+      action: 'update',
+      mode: 'replace',
+      itemId: '1',
+      confidence: 1,
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      reason: 'врач',
+    });
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси врача на пол 12', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'перенеси врача на пол 12' }],
+            }),
+            resolver: resolverSays,
+          }),
+        }),
+      },
+      userId,
+    );
+    expect(all.some((text) => text.includes('Не поняла, 11:30 или 23:30?'))).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'утра', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: resolverSays }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineTime).toBe(11 * 60 + 30);
   });
 
   it('«Удали это дело» при двух только что тронутых — спрашивает какое, ничего не трогая', async () => {

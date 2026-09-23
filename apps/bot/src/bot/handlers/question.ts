@@ -24,6 +24,7 @@ import {
 } from '../../modules/resolver/change-text.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { isRecordCommand } from '../../modules/router/append.js';
+import { CLARIFY_REASON } from '../../modules/resolver/clarify.js';
 import { changeKeyboard } from './undo.js';
 import { titleWithoutDate } from '../../modules/resolver/title-date.js';
 import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
@@ -199,6 +200,16 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
       const { question, applying } = settled;
 
       if (applying.kind !== 'applied') {
+        // «Не поняла, 11:30 или 23:30?» — следующая реплика может быть
+        // ответом (живой прогон Никиты 23.09.2026, см. `clarify.ts`).
+        if (applying.kind === 'unchanged' && applying.timeUnclear !== undefined) {
+          await saveDraft(db, {
+            userId: active.userId,
+            batchId: question.batchId,
+            text: question.segment,
+            reason: CLARIFY_REASON.time,
+          });
+        }
         /**
          * Не применилось — и человеку сказано почему (ревизия этапа 3,
          * A3). Раньше на любой из трёх исходов бот отвечал «Добавила к

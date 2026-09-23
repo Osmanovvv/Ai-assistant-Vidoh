@@ -13,6 +13,7 @@ import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './
 import { DEFAULT_THRESHOLDS } from './decision.js';
 import { deicticAction, namesNoDeed } from './deixis.js';
 import { lastDiscussed } from './deixis.repo.js';
+import type { ClarifyKind } from './clarify.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
@@ -134,6 +135,11 @@ export type SegmentResult =
        * должно её найти (бой 23.09.2026, 03:41 → 03:47).
        */
       readonly itemId?: string | undefined;
+      /**
+       * Переспрос без кнопок: бот ждёт одну следующую реплику — название
+       * дела или утро/вечер (см. `clarify.ts`).
+       */
+      readonly clarify?: ClarifyKind | undefined;
       /**
        * Цель не нашлась потому, что модель не ответила (панель, п. 4):
        * человеку — та же реплика, а в журнале это сбой, не непонимание.
@@ -273,6 +279,7 @@ export async function resolvePatchSegment(
         kind: 'parked',
         reason: `сказано «это», а дел в последнем разговоре ${String(discussed.length)}`,
         said: 'which',
+        clarify: 'which',
       };
     }
 
@@ -545,7 +552,7 @@ async function settle(
       said: outcome.kind,
       ...(outcome.kind === 'gone' ? {} : { itemId }),
       ...(outcome.kind === 'unchanged' && outcome.timeUnclear !== undefined
-        ? { timeUnclear: outcome.timeUnclear }
+        ? { timeUnclear: outcome.timeUnclear, clarify: 'time' as const }
         : {}),
     };
   }
