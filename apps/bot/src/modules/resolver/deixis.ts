@@ -253,3 +253,17 @@ export function commandsRecord(text: string): boolean {
       OTHER_COMMANDS.has(word),
   );
 }
+
+/**
+ * Сообщение называет только срок — ни одного слова дела (живой прогон
+ * Никиты 23.09.2026): «Давай в четверть 7», «на час позже». Уже, чем
+ * `namesNoDeed`: слово «дело» или «удали» без срока сюда не проходят —
+ * их разметку маршрутизатор решает сам.
+ */
+export function namesOnlyTime(text: string): boolean {
+  const words = tokens(text);
+  const namesTime = words.some(
+    (word) => TIME_CONTENT.has(word) || /^\d{1,4}$/u.test(word) || TIME_STEMS.test(word),
+  );
+  return namesTime && words.every(known);
+}

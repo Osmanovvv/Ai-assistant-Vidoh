@@ -11,6 +11,7 @@ import { restoreUncovered } from './coverage.js';
 import { splitDayQuestions } from './day-question.js';
 import { splitPatchTails } from './patch-tail.js';
 import { looksLikeThought } from './thought-words.js';
+import { namesOnlyTime } from '../resolver/deixis.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -232,7 +233,20 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * только резолвер: то есть лишь тогда, когда модель **сама** назвала
    * отрезок правкой. На разметку признак не влиял вовсе.
    */
+  /**
+   * Сообщение из одного времени — правка, а не мысль (живой прогон Никиты
+   * 23.09.2026). «Давай в четверть 7», «Давай через полчаса» лёгкая модель
+   * назвала мыслью, и завелись «В четверть седьмого что-то
+   * запланировано» и «Встретиться». В нём нет ни одного слова дела —
+   * мыслью оно быть не может; это поправка к последнему обсуждённому
+   * (`deixis.ts`). Только когда отрезок в сообщении один: внутри выгрузки
+   * «Так завтра.» клеится к соседней мысли, и это решает разбор.
+   */
+  const alone = segments.length === 1;
   const marked = segments.map((segment) =>
+    (alone &&
+      (segment.intent === 'DUMP' || segment.intent === 'SMALLTALK') &&
+      namesOnlyTime(segment.text)) ||
     (segment.intent === 'DUMP' &&
       (looksLikeAppend(segment.text) ||
         looksLikeCorrection(segment.text) ||
