@@ -4127,6 +4127,85 @@ describe('правка доходит до резолвера (§7, задача
     expect(all.some((text) => text.includes('применить не вышло'))).toBe(false);
   });
 
+  /**
+   * Живой прогон Никиты, 03:41 → 03:47 23.09.2026: «Перенеси посылку на
+   * пол 1» — «Там уже так — менять нечего», через шесть минут «Удали это
+   * дело» — «Какое дело?». «Это» считалось по изменениям записи, а
+   * «менять нечего» запись не меняет. Для человека же разговор был про
+   * посылку: «это» — дело, о котором бот говорил в последний раз.
+   */
+  it('«Удали это дело» после «менять нечего» — «это» то дело, о котором только что говорили', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(soon());
+    await testDb()
+      .update(items)
+      .set({ deadlineTime: 12 * 60 + 30, updatedAt: at(-40 * 60_000) })
+      .where(eq(items.id, itemId));
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси врача на пол 1', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'перенеси врача на пол 1' }],
+            }),
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'replace',
+              itemId: '1',
+              confidence: 1,
+              changes: {
+                note: '',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'врач',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Удали это дело', offsetMs: 6 * 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(7 * 60_000),
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'CANCEL', text: 'Удали это дело' }],
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.status).toBe('cancelled');
+    expect(all.some((text) => text.includes('Какое дело?'))).toBe(false);
+  });
+
   it('«Удали это дело» при двух только что тронутых — спрашивает какое, ничего не трогая', async () => {
     const prompts = await seedPrompts();
     const first = await existingItem(null);
