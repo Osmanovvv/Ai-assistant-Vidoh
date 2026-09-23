@@ -229,6 +229,12 @@ export interface DumpHandlerDeps {
    */
   readonly aiLight?: Omit<AiClientDeps, 'db'> | undefined;
   /**
+   * Модель маршрутизатора (решение Никиты 23.09.2026: Pro). Не задана —
+   * маршрутизатор идёт лёгкой, как раньше. При превышении лимита — тоже
+   * лёгкой: экономия расхода важнее.
+   */
+  readonly aiRouter?: Omit<AiClientDeps, 'db'> | undefined;
+  /**
    * Мягкий лимит расхода на пользователя (§10.5 ТЗ, задача 2.22).
    *
    * Задан — и при превышении извлечение с классификацией идут на лёгкой
@@ -556,6 +562,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const texts = textsFor(context.textProfile);
     const ai = { ...deps.ai, db };
     const aiLight = { ...(deps.aiLight ?? deps.ai), db };
+    const aiRouter = deps.aiRouter === undefined ? aiLight : { ...deps.aiRouter, db };
 
     const { combined, truncated } = await transcribeBatch(db, batch, deps.speech, {
       onStart: async () => {
@@ -924,7 +931,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             reordered: false,
             fallback: false,
           }
-        : await routeIntents(aiLight, {
+        : await routeIntents(limited.degrade ? aiLight : aiRouter, {
             input: combined,
             userId: batch.userId,
             batchId: batch.id,

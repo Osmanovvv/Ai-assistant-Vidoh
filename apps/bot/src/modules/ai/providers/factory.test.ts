@@ -50,6 +50,23 @@ describe('createLlmProvider', () => {
     expect(provider.name).toBe('yandex:yandexgpt-lite/latest');
   });
 
+  /**
+   * Решение Никиты 23.09.2026: маршрутизатор — на Pro. Своя переменная, а не
+   * «лёгкая модель = Pro»: на лёгкую переходят тяжёлые стадии при
+   * превышении лимита, и подмена сломала бы эту экономию.
+   */
+  it('маршрутизатор — на Pro по умолчанию; лёгкая остаётся лёгкой; откат — одной переменной', () => {
+    const live = { AI_PROVIDER: 'yandex', YANDEX_API_KEY: 'ключ', YANDEX_FOLDER_ID: 'каталог' };
+
+    expect(createLlmProvider(envWith(live), { router: true }).name).toBe('yandex:yandexgpt-5-pro');
+    expect(createLlmProvider(envWith(live), { light: true }).name).toBe('yandex:yandexgpt-5-lite');
+    expect(
+      createLlmProvider(envWith({ ...live, YANDEX_LLM_MODEL_ROUTER: 'yandexgpt-5-lite' }), {
+        router: true,
+      }).name,
+    ).toBe('yandex:yandexgpt-5-lite');
+  });
+
   it('без каталога отказывается собираться', () => {
     // Разбор конфигурации это уже не пропустит, но фабрика не должна
     // полагаться на то, что кто-то снаружи всё проверил.

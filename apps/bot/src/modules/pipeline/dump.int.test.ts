@@ -289,6 +289,8 @@ interface HandlerOptions {
   readonly llm?: MockLlmProvider;
   /** Лёгкая модель: на неё переходят тяжёлые стадии при превышении лимита. */
   readonly llmLight?: MockLlmProvider | undefined;
+  /** Модель маршрутизатора (решение Никиты 23.09.2026 — Pro). */
+  readonly llmRouter?: MockLlmProvider | undefined;
   readonly spendLimit?: SpendLimit | undefined;
   readonly prompts: PromptRegistry;
   readonly sender?: StatusSender | undefined;
@@ -338,6 +340,15 @@ function handler(options: HandlerOptions) {
       : {
           aiLight: {
             provider: options.llmLight,
+            prompts: options.prompts,
+            retry: { attempts: 1, sleep: () => Promise.resolve() },
+          },
+        }),
+    ...(options.llmRouter === undefined
+      ? {}
+      : {
+          aiRouter: {
+            provider: options.llmRouter,
             prompts: options.prompts,
             retry: { attempts: 1, sleep: () => Promise.resolve() },
           },
@@ -4601,6 +4612,118 @@ describe('правка доходит до резолвера (§7, задача
     expect(await timeOf()).toBe(18 * 60 + 45);
     expect(all.some((text) => text.includes('18:45'))).toBe(true);
     expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
+  /**
+   * Живой прогон Никиты, 14:57–14:58 23.09.2026: «Давай в четверть 7» и
+   * «Давай через полчаса» лёгкая модель назвала мыслью — завелись «В
+   * четверть седьмого что-то запланировано» и «Встретиться». Здесь
+   * маршрутизатор отвечает так же, как на бою: DUMP.
+   */
+  it('«Давай в четверть 7», затем «Давай через полчаса» — правят посылку, новых дел нет', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date(`${soon()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 18 * 60 + 45,
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const say = async (text: string, offsetMs: number): Promise<void> => {
+      await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at(offsetMs + 60_000),
+            llm: echoingLlm({
+              // Как на бою: лёгкая модель назвала это мыслью.
+              router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+              resolver: JSON.stringify({
+                action: 'update',
+                mode: 'replace',
+                itemId: '1',
+                confidence: 1,
+                changes: {
+                  note: '',
+                  text: '',
+                  deadline: '',
+                  deadlineAccuracy: 'none',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+                reason: 'посылка',
+              }),
+            }),
+          }),
+        },
+        userId,
+      );
+    };
+    const parcelNow = async () =>
+      (
+        await testDb()
+          .select()
+          .from(items)
+          .where(eq(items.id, parcel?.id ?? ''))
+      )[0];
+
+    await say('Давай в четверть 7.', 0);
+    expect((await parcelNow())?.deadlineTime).toBe(18 * 60 + 15);
+
+    await say('Давай через полчаса', 2 * 60_000);
+    const after = await parcelNow();
+    // 3 минуты от T0 (10:00 UTC = 13:00 по Москве) и ещё полчаса.
+    expect(after?.deadlineTime).toBe(13 * 60 + 33);
+
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows.map((row) => row.text)).toEqual(['Забрать посылку']);
+    expect(all.some((text) => text.includes('Записала'))).toBe(false);
+  });
+
+  it('маршрутизатор идёт своей моделью, остальные стадии — полной (решение Никиты 23.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    const text = 'Купить хлеб';
+    const router = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+    });
+    const full = echoingLlm();
+
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: full,
+          llmRouter: router,
+        }),
+      },
+      userId,
+    );
+
+    const stagesOf = (provider: MockLlmProvider): string[] =>
+      provider.requests.map((request) => request.stage);
+    expect(stagesOf(router)).toEqual(['router']);
+    expect(stagesOf(full)).not.toContain('router');
+    expect(stagesOf(full)).toContain('extractor');
   });
 
   it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {

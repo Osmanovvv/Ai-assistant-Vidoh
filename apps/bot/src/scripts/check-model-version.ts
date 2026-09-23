@@ -37,7 +37,7 @@ if (env.YANDEX_API_KEY === undefined || env.YANDEX_FOLDER_ID === undefined) {
 const names =
   process.argv.length > 2
     ? process.argv.slice(2)
-    : [env.YANDEX_LLM_MODEL, env.YANDEX_LLM_MODEL_LIGHT];
+    : [...new Set([env.YANDEX_LLM_MODEL, env.YANDEX_LLM_MODEL_LIGHT, env.YANDEX_LLM_MODEL_ROUTER])];
 
 const logger = createLogger({ level: 'warn' });
 const db = getDb();

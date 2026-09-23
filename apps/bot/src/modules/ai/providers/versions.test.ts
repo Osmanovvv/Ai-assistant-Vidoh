@@ -155,11 +155,13 @@ describe('связка: бой сторожит обе модели', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(resolve(here, '../../../index.ts'), 'utf8');
 
-  it('сторож создаётся один на процесс и уходит в обе фабрики', () => {
+  it('сторож создаётся один на процесс и уходит во все фабрики', () => {
     expect(source.includes('new ModelVersionWatch('), 'сторож сборки не создаётся').toBe(true);
 
+    // С 23.09.2026 фабрик три: полная, лёгкая и маршрутизатор (решение
+    // Никиты — маршрутизатор на Pro своей переменной).
     const calls = source.match(/createLlmProvider\([^;]*;/gu) ?? [];
-    expect(calls, 'фабрик модели должно быть две: полная и лёгкая').toHaveLength(2);
+    expect(calls, 'фабрик модели должно быть три: полная, лёгкая, маршрутизатор').toHaveLength(3);
     for (const call of calls) {
       expect(call.includes('versionWatch'), `сторож не передан: ${call}`).toBe(true);
     }
