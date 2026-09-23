@@ -639,18 +639,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       if (!parkedWords.includes(line)) parkedWords.push(line);
     };
     const parkedLine = (
-      said: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined,
+      said: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined,
       timeUnclear?: readonly [number, number],
     ): string =>
       said === 'refused'
         ? texts.resolver.deadlineRefused
         : said === 'unchanged'
           ? unchangedText({ timeUnclear }, texts)
-          : said === 'gone'
-            ? texts.card.gone
-            : said === 'absent'
-              ? texts.resolver.nothingToClose
-              : texts.answer.patchParked;
+          : said === 'which'
+            ? texts.resolver.whichRecord
+            : said === 'gone'
+              ? texts.card.gone
+              : said === 'absent'
+                ? texts.resolver.nothingToClose
+                : texts.answer.patchParked;
 
     const tell = async (text: string, buttons?: readonly StatusButton[]): Promise<void> => {
       /**

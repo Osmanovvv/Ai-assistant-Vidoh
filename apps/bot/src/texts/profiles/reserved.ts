@@ -247,6 +247,7 @@ export const reserved: TextProfile = {
     buttonGoOn: 'Продолжаем',
     buttonEnough: 'На сегодня хватит',
     unchanged: 'Там уже так — менять нечего.',
+    whichRecord: 'Какое дело? Назови его — и сделаю.',
     timeUnclear: (morning, evening) => `Не поняла, ${morning} или ${evening}? Скажи — и перенесу.`,
     deadlineRefused: 'Срок не подошёл — не поменяла. Назови дату ещё раз.',
     rememberFailed:

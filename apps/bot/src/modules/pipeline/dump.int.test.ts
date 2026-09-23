@@ -4074,6 +4074,93 @@ describe('правка доходит до резолвера (§7, задача
     expect(reply).toMatch(/на \d{2}\.\d{2}, 15:00\./u);
   });
 
+  /**
+   * Живой прогон Никиты, 03:16 23.09.2026: «Удали это дело» сразу после
+   * ответа про «Забрать посылку». Модель вернула номер вне списка, бот
+   * ответил «Одну правку применить не вышло». «Это» — та запись, которую
+   * только что трогали, если такая одна: код знает это лучше модели, и
+   * модель для отмены не зовётся вовсе.
+   */
+  it('«Удали это дело» — убирает только что тронутую запись, модель не спрашивая', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Удали это дело', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'CANCEL', text: 'Удали это дело' }],
+      }),
+      // Если модель всё же спросят — вернёт номер вне списка, как на бою.
+      resolver: JSON.stringify({
+        action: 'cancel',
+        mode: 'replace',
+        itemId: '0',
+        confidence: 1,
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'это дело',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.status).toBe('cancelled');
+    expect(all.some((text) => text.includes('Убрала «Записать сына к врачу'))).toBe(true);
+    expect(all.some((text) => text.includes('применить не вышло'))).toBe(false);
+  });
+
+  it('«Удали это дело» при двух только что тронутых — спрашивает какое, ничего не трогая', async () => {
+    const prompts = await seedPrompts();
+    const first = await existingItem(null);
+    const [second] = await testDb()
+      .insert(items)
+      .values({ userId, text: 'Забрать посылку', type: 'TASK', priority: 'SOON', topic: 'покупки' })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Удали это дело', offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'CANCEL', text: 'Удали это дело' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    for (const id of [first, second?.id ?? '']) {
+      expect(rows.find((row) => row.id === id)?.status).toBe('new');
+    }
+    expect(all.some((text) => text.includes('Какое дело? Назови его — и сделаю.'))).toBe(true);
+  });
+
   it('«перенеси врача на пол 12» у дела без часа — «не поняла, 11:30 или 23:30?», а не «менять нечего» (живой прогон Никиты 23.09.2026)', async () => {
     const prompts = await seedPrompts();
     const itemId = await existingItem(soon());

@@ -9,7 +9,9 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
 import { collectCandidates } from './candidates.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
-import { applyDecision, emptyChanges, type Applied } from './patch.js';
+import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './patch.js';
+import { DEFAULT_THRESHOLDS } from './decision.js';
+import { deicticAction, pointsAtLast } from './deixis.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
@@ -121,7 +123,8 @@ export type SegmentResult =
        * не было, и говорить не о чем сверх «сохранила».
        */
       /** `absent` — сказано как о сделанном или отменённом, а записи нет. */
-      readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | undefined;
+      /** `which` — сказано «это», а только что тронутых записей не одна. */
+      readonly said?: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined;
       /** При `unchanged`: час назван с двумя чтениями, см. `ApplyOutcome`. */
       readonly timeUnclear?: readonly [number, number] | undefined;
       /**
@@ -233,6 +236,62 @@ export async function resolvePatchSegment(
   }
 
   /**
+   * «Удали это дело» — указание, а не название (живой прогон Никиты
+   * 23.09.2026, 03:16; см. `deixis.ts`). «Это» — запись, которую только
+   * что трогали, если такая одна; сигнал тот же, что «подтверждено
+   * свежестью» в `decision.ts`. Отмена и выполнение применяются без
+   * модели: ей тут опереться не на что, на бою она вернула номер вне
+   * списка. Перенос идёт к модели, но выбирать ей не из чего — только
+   * указанная запись.
+   */
+  let pointed: typeof candidates | undefined;
+  if (pointsAtLast(params.text)) {
+    const fresh = candidates.filter(
+      (one) =>
+        one.sources.includes('session') &&
+        now.getTime() - one.updatedAt.getTime() <= DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+    );
+    const target = fresh.length === 1 ? fresh[0] : undefined;
+
+    if (target === undefined) {
+      return {
+        kind: 'parked',
+        reason: `сказано «это», а только что тронутых записей ${String(fresh.length)}`,
+        said: 'which',
+      };
+    }
+
+    const action =
+      deicticAction(params.text) ??
+      (params.intent === 'CANCEL'
+        ? 'cancel'
+        : params.intent === 'COMPLETE'
+          ? 'complete'
+          : undefined);
+
+    if (action !== undefined) {
+      deps.logger?.info(
+        { userId: params.userId, batchId: params.batchId, action },
+        'Указание «это» — только что тронутая запись, модель не зовётся',
+      );
+      const outcome = await applyDecision(deps.db, {
+        userId: params.userId,
+        itemId: target.id,
+        action,
+        changes: emptyChanges(),
+        spoken: params.text,
+        timeZone: params.timeZone,
+        now,
+        reason: 'указано «это» — только что тронутая запись',
+        changedBy: 'resolver',
+      });
+      return await settle(deps, outcome);
+    }
+
+    pointed = [target];
+  }
+
+  /**
    * Пороги читаются здесь — в момент решения, а не при старте.
    *
    * §15 обещает правку без выкладки: значение, запомненное при подъёме
@@ -242,7 +301,7 @@ export async function resolvePatchSegment(
 
   const resolved = await resolveSegment(deps.ai, {
     segment: params.text,
-    candidates,
+    candidates: pointed ?? candidates,
     timeZone: params.timeZone,
     now,
     userId: params.userId,
@@ -401,6 +460,11 @@ export async function resolvePatchSegment(
     changedBy: 'resolver',
   });
 
+  return await settle(deps, outcome);
+}
+
+/** Исход применения — в исход отрезка: парковка с причиной или правка. */
+async function settle(deps: ResolveDeps, outcome: ApplyOutcome): Promise<SegmentResult> {
   /**
    * Не применилось — парковка с настоящей причиной и словом человеку
    * (ревизия этапа 3, A3 и A4).
