@@ -11,7 +11,7 @@ import { collectCandidates } from './candidates.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
 import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './patch.js';
 import { DEFAULT_THRESHOLDS } from './decision.js';
-import { deicticAction, namesNoDeed } from './deixis.js';
+import { commandsRecord, deicticAction, namesNoDeed } from './deixis.js';
 import { lastDiscussed } from './deixis.repo.js';
 import type { ClarifyKind } from './clarify.js';
 import { mentionedPeriod } from './period.js';
@@ -263,6 +263,7 @@ export async function resolvePatchSegment(
    * угадывания. Внутри выгрузки не работает: там «перенеси на завтра»
    * после мысли — про неё, и это решают соседи (задача 3.24).
    */
+  let narrowed: typeof candidates | undefined;
   if (params.onlyOwnBatch !== true && namesNoDeed(params.text)) {
     // «Это» — дело из последнего разговора, а не только последнее
     // изменённое (бой 23.09.2026: «менять нечего» запись не меняет).
@@ -311,45 +312,53 @@ export async function resolvePatchSegment(
     }
 
     /**
-     * Перенос и прочие правки — предложением, не применением: дело не
-     * названо, и человек подтверждает одним нажатием. Модель зовётся
-     * ради срока, но выбирать ей не из чего — только это дело.
+     * Голая поправка — «нет, в пятницу», «а лучше в 5»: обычная логика
+     * ТЗ §7.3, но выбирать модели не из чего — только последнее
+     * обсуждённое. Тронута минуты назад — применяется сразу (§7.2, «врач
+     * в четверг, через минуту — в пятницу»), иначе — вопрос словами ТЗ.
      */
-    if (params.questionTaken === true) {
+    if (!commandsRecord(params.text)) {
+      narrowed = [target];
+    } else if (params.questionTaken === true) {
       return {
         kind: 'parked',
         reason: 'дело не названо, а вопрос за эту выгрузку уже задан (§13.9)',
         itemId: target.id,
       };
+    } else {
+      /**
+       * Приказ без дела — предложением, не применением: человек
+       * подтверждает одним нажатием. Модель зовётся ради срока, но
+       * выбирать ей не из чего — только это дело.
+       */
+      const offered = await resolveSegment(deps.ai, {
+        segment: params.text,
+        candidates: [target],
+        timeZone: params.timeZone,
+        now,
+        userId: params.userId,
+        batchId: params.batchId,
+      });
+      const changes = offered.changes ?? emptyChanges();
+      const question = await askQuestion(deps.db, {
+        userId: params.userId,
+        itemId: target.id,
+        batchId: params.batchId,
+        segment: params.text,
+        action: 'update',
+        changes,
+        ...(offered.mode === undefined ? {} : { mode: offered.mode }),
+        now,
+      });
+
+      return {
+        kind: 'asked',
+        questionId: question.id,
+        itemTitle: target.text,
+        action: 'update',
+        deadline: changes.deadline,
+      };
     }
-
-    const offered = await resolveSegment(deps.ai, {
-      segment: params.text,
-      candidates: [target],
-      timeZone: params.timeZone,
-      now,
-      userId: params.userId,
-      batchId: params.batchId,
-    });
-    const changes = offered.changes ?? emptyChanges();
-    const question = await askQuestion(deps.db, {
-      userId: params.userId,
-      itemId: target.id,
-      batchId: params.batchId,
-      segment: params.text,
-      action: 'update',
-      changes,
-      ...(offered.mode === undefined ? {} : { mode: offered.mode }),
-      now,
-    });
-
-    return {
-      kind: 'asked',
-      questionId: question.id,
-      itemTitle: target.text,
-      action: 'update',
-      deadline: changes.deadline,
-    };
   }
 
   /**
@@ -362,7 +371,7 @@ export async function resolvePatchSegment(
 
   const resolved = await resolveSegment(deps.ai, {
     segment: params.text,
-    candidates,
+    candidates: narrowed ?? candidates,
     timeZone: params.timeZone,
     now,
     userId: params.userId,
