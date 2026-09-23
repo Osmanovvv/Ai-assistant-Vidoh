@@ -416,6 +416,29 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(12 * 60 + 30);
   });
 
+  it('«Перенеси дело на пол 3», модель вернула «сегодня» — день остаётся, меняется только час (бой 23.09.2026, 04:26)', async () => {
+    // Посылка уехала с 24.09 на 23.09: модель подставила сегодняшнюю дату,
+    // хотя дня никто не называл.
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 12 * 60 + 30 });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('2026-08-29'),
+        spoken: 'Перенеси дело на пол 3.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.deadlineTime).toBe(14 * 60 + 30);
+  });
+
   it('день назван словами — дата настоящая, и час рядом тоже: «на первое сентября на пол 1»', async () => {
     const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
 
