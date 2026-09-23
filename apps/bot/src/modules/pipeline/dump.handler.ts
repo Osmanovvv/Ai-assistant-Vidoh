@@ -45,7 +45,10 @@ import { closeClarification, openClarification } from '../resolver/clarify.repo.
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
-import type { Applied } from '../resolver/patch.js';
+import { applyDecision, emptyChanges, type Applied } from '../resolver/patch.js';
+import { clockTimesIn, fromNowIn, timeShiftIn } from '../classifier/clock-time.js';
+import { namesDay, ownSentences } from '../classifier/own-sentence.js';
+import { isoDateIn as isoDayIn } from '../classifier/dates.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { selectForOutput, type SelectionResult } from '../output/filter.js';
 import {
@@ -2079,6 +2082,63 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     for (const item of [...saved, ...split.known]) mentioned.add(item.id);
 
     /**
+     * Повтор с новым сроком — перенос того же дела (живой прогон Никиты
+     * 23.09.2026, 15:42). «Давай заберём посылку без 15 6» при уже
+     * записанной посылке завело второе дело; «купить хлеб завтра» при
+     * записанном «купить хлеб» молча теряло «завтра». Повтор узнаётся
+     * отсевом (`same-text.ts`), а новый срок в его словах применяется той
+     * же правкой, что и «перенеси»: ближайшее чтение часа, час без дня —
+     * день прежний, с кнопкой отмены. Повтор без срока — просто повтор.
+     */
+    const movedRepeats = new Set<unknown>();
+    for (const { unit, item } of split.repeats) {
+      const spoken = ownSentences(unit.text, dumpText)[0] ?? unit.text;
+      const carriesTime =
+        clockTimesIn(spoken).length > 0 ||
+        timeShiftIn(spoken) !== undefined ||
+        fromNowIn(spoken) !== undefined ||
+        (unit.deadline !== undefined && namesDay(spoken));
+      if (!carriesTime) continue;
+
+      const outcome = await applyDecision(db, {
+        userId: batch.userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          ...emptyChanges(),
+          ...(unit.deadline === undefined
+            ? {}
+            : {
+                deadline: isoDayIn(unit.deadline.at, context.timeZone),
+                deadlineAccuracy: unit.deadline.accuracy,
+              }),
+        },
+        spoken,
+        timeZone: context.timeZone,
+        now,
+        reason: 'повтор с новым сроком',
+        changedBy: 'resolver',
+      });
+
+      if (outcome.kind === 'applied') {
+        movedRepeats.add(unit);
+        happened.said = true;
+        rememberTopics(touchedTopics, outcome.applied);
+        await tell(
+          describeChange(outcome.applied, texts, context.timeZone, spoken),
+          changeButtons(outcome.applied, texts, spoken),
+        );
+      } else if (
+        outcome.kind === 'unchanged' &&
+        (outcome.timeUnclear !== undefined || outcome.noTimeToShift === true)
+      ) {
+        movedRepeats.add(unit);
+        happened.said = true;
+        await tell(unchangedText(outcome, texts));
+      }
+    }
+
+    /**
      * Второй проход по правкам, чья цель не нашлась (задача 3.24).
      *
      * **Найдено на боевом 01.09.2026.** Человек в одной выгрузке сказал
@@ -2262,6 +2322,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * сферы — только заведённое сейчас.
      */
     const freshUnits = [...split.fresh, ...late.fresh];
+    // Всё сказанное — повторы с новым сроком: ответ уже дан строкой
+    // переноса, признание разбора сверху было бы лишним (23.09.2026).
+    const onlyMovedRepeats =
+      movedRepeats.size > 0 &&
+      freshUnits.length === 0 &&
+      late.units.length === 0 &&
+      units.every((unit) => movedRepeats.has(unit));
     const composition = composeOf(units);
     const recorded = composeOf(freshUnits);
     /**
@@ -2457,6 +2524,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const hasRecorded = units.some((unit) => unit.type === 'TASK' || unit.type === 'DESIRE');
     const wantsLine =
+      !onlyMovedRepeats &&
       hasRecorded &&
       !feelingsOnly &&
       quickAdded === undefined &&
@@ -2545,12 +2613,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // §13.2: под разбором три кнопки, и одна из них ведёт к остальным
     // делам. Без неё человек не знал, куда они делись.
     // Припаркованная правка — строкой под ответом, а не молча (A4).
-    await answer(
-      parkedWords.length > 0
-        ? `${presented.reply.text}\n\n${parkedWords.join('\n')}`
-        : presented.reply.text,
-      presented.reply.buttons,
-    );
+    if (!onlyMovedRepeats) {
+      await answer(
+        parkedWords.length > 0
+          ? `${presented.reply.text}\n\n${parkedWords.join('\n')}`
+          : presented.reply.text,
+        presented.reply.buttons,
+      );
+    }
 
     /**
      * Карточка 04 при первом деле с часом (ТЗ по визуалам 18.09.2026):

@@ -4726,6 +4726,120 @@ describe('правка доходит до резолвера (§7, задача
     expect(stagesOf(full)).toContain('extractor');
   });
 
+  /**
+   * Живой прогон Никиты, 15:42 23.09.2026: «Давай заберём посылку без 15
+   * 6» при уже записанной «Забрать посылку» (24.09, 18:45) завело второе
+   * дело «Забрать посылку без 15 6» на сегодня. Повтор с новым сроком —
+   * это перенос того же дела.
+   */
+  const repeatWith = (text: string, unitText: string, deadline: string) =>
+    echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+      extractor: () =>
+        JSON.stringify({ units: [{ text: unitText, isProject: false, isEmotion: false }] }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text: unitText,
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'покупки',
+              isProject: false,
+              deadline,
+              deadlineAccuracy: deadline === '' ? 'none' : 'day',
+              deadlineText: '',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
+          ],
+        }),
+    });
+
+  it('«Давай заберём посылку без 15 6» при записанной посылке — перенос на 17:45, а не второе дело', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date(`${soon()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 18 * 60 + 45,
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const text = 'Давай заберем посылку без 15 6.';
+
+    await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          // Модель подставила «сегодня», как на бою.
+          llm: repeatWith(text, 'Забрать посылку без 15 6', tomorrowIso()),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows.map((row) => row.text)).toEqual(['Забрать посылку']);
+    const after = rows.find((row) => row.id === parcel?.id);
+    expect(after?.deadlineTime).toBe(17 * 60 + 45);
+    expect(after?.deadlineAt?.toISOString()).toBe(
+      new Date(`${soon()}T00:00:00.000Z`).toISOString(),
+    );
+    expect(all.some((line) => line.includes('17:45'))).toBe(true);
+    expect(all.some((line) => line.includes('Записала') || line.includes('Всё, забрала'))).toBe(
+      false,
+    );
+  });
+
+  it('«Купить хлеб завтра» при записанном «Купить хлеб» без срока — перенос на завтра, а не тишина', async () => {
+    const prompts = await seedPrompts();
+    const [bread] = await testDb()
+      .insert(items)
+      .values({ userId, text: 'Купить хлеб', type: 'TASK', priority: 'SOON', topic: 'покупки' })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const text = 'Купить хлеб завтра';
+
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: repeatWith(text, 'Купить хлеб', tomorrowIso()),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows).toHaveLength(1);
+    expect(rows.find((row) => row.id === bread?.id)?.deadlineAt).not.toBeNull();
+    expect(all.some((line) => line.includes('Перенесла «Купить хлеб»'))).toBe(true);
+  });
+
   it('повтор уже записанного дела — без «Записала 1 дело» (живой прогон Никиты 23.09.2026, 12:51)', async () => {
     // «Записала 1 дело… Посылку ты уже записывала — вторую не завела»:
     // одна строка противоречила другой. Счёт — только заведённое сейчас.

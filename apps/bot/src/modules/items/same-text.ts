@@ -1,4 +1,5 @@
 import type { Item } from '../../db/schema.js';
+import { withoutClockPhrase } from '../classifier/clock-time.js';
 import { storedTitle } from './item-text.js';
 
 /**
@@ -39,7 +40,10 @@ import { storedTitle } from './item-text.js';
  * Хвостовая точка — потому что расшифровка ставит её через раз.
  */
 export function sameTextKey(text: string): string {
-  return storedTitle(text)
+  // Фраза о часе — не часть дела (живой прогон Никиты 23.09.2026): «Забрать
+  // посылку без 15 6» и «Забрать посылку» — одно дело; у «без 15 6» два
+  // чтения, час сроком не стал и остался в заголовке — и завёлся дубль.
+  return storedTitle(withoutClockPhrase(text))
     .toLowerCase()
     .replace(/ё/gu, 'е')
     .replace(/\s+/gu, ' ')
@@ -79,6 +83,12 @@ export interface SplitResult<T> {
   readonly fresh: readonly T[];
   /** Что уже есть: заводить не надо, но человек об этом сейчас говорил. */
   readonly known: readonly Item[];
+  /**
+   * Повторы парой: что сказано сейчас и какая запись уже есть. Сказанное
+   * может нести новый срок — «давай заберём посылку без 15 6» при уже
+   * записанной посылке: это перенос, а не повтор (23.09.2026).
+   */
+  readonly repeats: readonly { readonly unit: T; readonly item: Item }[];
 }
 
 /**
@@ -93,6 +103,7 @@ export function splitKnown<T extends { readonly text: string }>(
 ): SplitResult<T> {
   const fresh: T[] = [];
   const found: Item[] = [];
+  const repeats: { unit: T; item: Item }[] = [];
   const taken = new Set<string>();
 
   for (const unit of units) {
@@ -108,7 +119,8 @@ export function splitKnown<T extends { readonly text: string }>(
     }
 
     found.push(existing);
+    repeats.push({ unit, item: existing });
   }
 
-  return { fresh, known: found };
+  return { fresh, known: found, repeats };
 }
