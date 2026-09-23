@@ -350,6 +350,48 @@ describe('«Добавить к прошлой»', () => {
     expect(edit?.payload['reply_markup']).toBeDefined();
   });
 
+  it('перенос с часом по кнопке — те же кнопки, что голосом: «Изменить время», «Все напоминания» (живой прогон Никиты 23.09.2026)', async () => {
+    /**
+     * 04:38: «Да, перенести» под «Перенести «Забрать посылку»?» ответило
+     * «Напомню про … в 14:30» с одной кнопкой «Отменить». Голосом тот же
+     * перенос даёт три — у кнопки была своя клавиатура из одной отмены.
+     */
+    await testDb()
+      .update(items)
+      .set({
+        deadlineAt: new Date(`${nextFridayInMoscow()}T09:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 12 * 60 + 30,
+      })
+      .where(eq(items.id, item.id));
+    const question = await askQuestion(testDb(), {
+      userId,
+      itemId: item.id,
+      batchId,
+      segment: 'Перенеси дело на пол 3.',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+    const { bot, calls } = createTestBot(classifierSaying('неважно'));
+    await bot.init();
+    await bot.handleUpdate(callbackUpdate(`${QUESTION_ACTION.attach}${toShortId(question.id)}`));
+
+    const edit = calls.find((call) => call.method === 'editMessageText');
+    const labels = JSON.stringify(edit?.payload['reply_markup'] ?? {});
+    expect(labels).toContain(defaultTexts.resolver.buttonUndo);
+    expect(labels).toContain(defaultTexts.card.buttonRetime);
+    expect(labels).toContain(defaultTexts.reminders.buttonAll);
+  });
+
   it('прошедшая пятница пересчитывается: это и была красная проверка сквозного', async () => {
     /**
      * **Задача 3.82.** Кнопка звала применение БЕЗ слов человека — и

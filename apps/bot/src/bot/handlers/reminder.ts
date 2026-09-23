@@ -20,7 +20,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor } from '../../texts/index.js';
 import { buttonRefusal, nothingChangedReply } from './item-refusal.js';
-import { undoKeyboard } from './undo.js';
+import { changeKeyboard } from './undo.js';
 
 /**
  * Кнопки под напоминаниями (§11 ТЗ, задачи 3.13 и 3.16).
@@ -114,7 +114,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
     logger.info({ userId: active.userId, itemId }, 'Дело закрыто кнопкой под напоминанием');
 
     await ctx.editMessageText(active.texts.reminders.done, {
-      reply_markup: undoKeyboard(applied.revisionId, active.texts),
+      reply_markup: changeKeyboard(applied, active.texts),
     });
   });
 
@@ -185,7 +185,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
     await ctx.editMessageText(
       active.texts.reminders.postponed(applied.after.text, dayInWords(moved, active.timeZone)),
       {
-        reply_markup: undoKeyboard(applied.revisionId, active.texts),
+        reply_markup: changeKeyboard(applied, active.texts),
       },
     );
   });
@@ -237,7 +237,7 @@ export function registerReminderHandlers(bot: Bot, db: Database, logger: Logger)
     await ctx.editMessageText(
       active.texts.reminders.projectTaken,
       outcome.kind === 'applied'
-        ? { reply_markup: undoKeyboard(outcome.applied.revisionId, active.texts) }
+        ? { reply_markup: changeKeyboard(outcome.applied, active.texts) }
         : {},
     );
   });

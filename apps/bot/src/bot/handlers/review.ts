@@ -18,7 +18,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { buttonRefusal, nothingChangedReply } from './item-refusal.js';
-import { undoKeyboard } from './undo.js';
+import { changeKeyboard } from './undo.js';
 
 /**
  * Кнопки разбора вчерашнего (запрос на изменение №4, решение заказчицы
@@ -112,7 +112,7 @@ export function registerReviewHandlers(bot: Bot, db: Database, logger: Logger): 
       );
 
       await ctx.reply(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: undoKeyboard(applied.revisionId, active.texts),
+        reply_markup: changeKeyboard(applied, active.texts),
       });
     });
   };

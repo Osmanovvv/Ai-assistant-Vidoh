@@ -6,7 +6,9 @@ import { revertRevision } from '../../modules/resolver/revisions.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
-import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
+import { changeButtons, UNDO_PREFIX } from '../../modules/resolver/change-text.js';
+import type { Applied } from '../../modules/resolver/patch.js';
+import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
@@ -33,6 +35,25 @@ import type { SpendGuard } from '../../modules/metering/spend-guard.js';
  */
 
 /** Кнопка отмены под сообщением об изменении. */
+/**
+ * Кнопки под итогом правки — одни на всех путях (живой прогон Никиты
+ * 23.09.2026).
+ *
+ * «Да, перенести» под вопросом ответило «Напомню про … в 14:30» с одной
+ * «Отменить», а голосом тот же перенос даёт ещё «Изменить время» и «Все
+ * напоминания». У кнопки вопроса, карточки, напоминания и ввода часа
+ * были свои клавиатуры из одной отмены — разошлись с конвейером молча.
+ * Состав решает `changeButtons`, как в конвейере; по кнопке в строке.
+ */
+export function changeKeyboard(
+  applied: Applied,
+  texts: TextProfile,
+  /** Сказанное человеком, если было: по нему видно, говорил ли он о замене. */
+  spoken?: string,
+): InlineKeyboard {
+  return fitKeyboard(changeButtons(applied, texts, spoken).map((button) => [button]));
+}
+
 export function undoKeyboard(revisionId: string, texts: TextProfile): InlineKeyboard {
   return new InlineKeyboard().text(
     texts.resolver.buttonUndo,

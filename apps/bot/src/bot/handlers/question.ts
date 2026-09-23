@@ -24,7 +24,7 @@ import {
 } from '../../modules/resolver/change-text.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { isRecordCommand } from '../../modules/router/append.js';
-import { undoKeyboard } from './undo.js';
+import { changeKeyboard } from './undo.js';
 import { titleWithoutDate } from '../../modules/resolver/title-date.js';
 import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
 import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
@@ -234,7 +234,7 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
       );
 
       await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: undoKeyboard(applied.revisionId, active.texts),
+        reply_markup: changeKeyboard(applied, active.texts, question.segment),
       });
 
       logger.info(

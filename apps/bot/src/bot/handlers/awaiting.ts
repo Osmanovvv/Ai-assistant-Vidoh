@@ -28,7 +28,8 @@ import {
 } from '../../modules/onboarding/onboarding.service.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
-import { describeChange, undoButtons } from '../../modules/resolver/change-text.js';
+import { describeChange } from '../../modules/resolver/change-text.js';
+import { changeKeyboard } from './undo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
 import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
@@ -407,11 +408,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
       logger.info({ userId, itemId: awaiting.itemId }, 'Час дела поправлен словами');
 
       await ctx.reply(describeChange(outcome.applied, texts, context.timeZone), {
-        reply_markup: new InlineKeyboard(
-          undoButtons(outcome.applied.revisionId, texts).map((button) => [
-            { text: button.label, callback_data: button.action },
-          ]),
-        ),
+        reply_markup: changeKeyboard(outcome.applied, texts, text),
       });
 
       return true;
@@ -465,11 +462,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
       logger.info({ userId, itemId: awaiting.itemId }, 'Запись поправлена словами из карточки');
 
       await ctx.reply(describeChange(applied, texts, context.timeZone), {
-        reply_markup: new InlineKeyboard(
-          undoButtons(applied.revisionId, texts).map((button) => [
-            { text: button.label, callback_data: button.action },
-          ]),
-        ),
+        reply_markup: changeKeyboard(applied, texts),
       });
 
       return true;

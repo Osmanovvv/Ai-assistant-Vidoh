@@ -38,7 +38,6 @@ import {
   questionButtons,
   questionText,
   unchangedText,
-  undoButtons,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
@@ -1156,7 +1155,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await tell(
         describeChange(settled.applied, texts, context.timeZone),
-        undoButtons(settled.applied.revisionId, texts),
+        // Те же кнопки, что у правки голосом без вопроса (23.09.2026).
+        changeButtons(settled.applied, texts),
       );
     } else if (settled.kind === 'nothingToApply') {
       // «Добавила к прошлой» здесь было ложью на все три исхода (A3).
