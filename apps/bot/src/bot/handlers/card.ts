@@ -19,7 +19,7 @@ import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fromShortId, toShortId } from '../../modules/shared/short-id.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { buttonRefusal, nothingChangedReply } from './item-refusal.js';
-import { undoKeyboard } from './undo.js';
+import { changeKeyboard } from './undo.js';
 
 /**
  * Карточка записи (§12.2 ТЗ, задача 2.18).
@@ -291,7 +291,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       );
 
       await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: undoKeyboard(applied.revisionId, active.texts),
+        reply_markup: changeKeyboard(applied, active.texts),
       });
 
       const chatId = ctx.chat?.id;

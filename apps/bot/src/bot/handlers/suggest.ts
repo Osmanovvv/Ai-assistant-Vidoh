@@ -8,7 +8,7 @@ import { isoDateIn } from '../../modules/classifier/dates.js';
 import { SUGGEST_ACTION, rhythmInWords } from '../../modules/recurrence/suggest-text.js';
 import { resolveOffer } from '../../modules/recurrence/suggestions.repo.js';
 import { applyDecision } from '../../modules/resolver/patch.js';
-import { undoKeyboard } from './undo.js';
+import { changeKeyboard } from './undo.js';
 import { fromShortId } from '../../modules/shared/short-id.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -141,7 +141,7 @@ export function registerSuggestHandlers(bot: Bot, db: Database, logger: Logger):
     }
 
     await ctx.editMessageText(active.texts.resolver.rememberedIt, {
-      reply_markup: undoKeyboard(outcome.applied.revisionId, active.texts),
+      reply_markup: changeKeyboard(outcome.applied, active.texts),
     });
   });
 
