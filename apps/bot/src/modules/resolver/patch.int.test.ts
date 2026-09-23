@@ -437,6 +437,74 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(12 * 60 + 30);
   });
 
+  /**
+   * Решение Никиты 23.09.2026 (вопрос «час без дня»): без слова о дне
+   * меняется только час, день остаётся. А если дня у дела нет или он уже
+   * прошёл — ближайшие такие часы: сегодня, если время ещё впереди,
+   * иначе завтра. NOW здесь — 29.08 15:00 по Москве.
+   */
+  it('час без дня у бессрочного дела: время ещё впереди — сегодня', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineAt: null, deadlineAccuracy: null });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: 'Перенеси посылку на 12 часов.',
+        timeZone: MOSCOW,
+        now: new Date('2026-08-29T06:00:00.000Z'),
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineAt', 'deadlineAccuracy', 'deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-28T21:00:00.000Z');
+    expect(after.deadlineAccuracy).toBe('day');
+    expect(after.deadlineTime).toBe(12 * 60);
+  });
+
+  it('час без дня у бессрочного дела: время уже позади — завтра', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineAt: null, deadlineAccuracy: null });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку на 12 часов.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-29T21:00:00.000Z');
+    expect(after.deadlineTime).toBe(12 * 60);
+  });
+
+  it('час без дня у дела, чей день прошёл: ближайшие пол первого — завтра, а не в прошлом', async () => {
+    const item = await sow({
+      text: 'Забрать посылку',
+      deadlineAt: new Date('2026-08-26T21:00:00.000Z'),
+      deadlineTime: 11 * 60,
+    });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку на пол 1.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-08-29T21:00:00.000Z');
+    expect(after.deadlineTime).toBe(12 * 60 + 30);
+  });
+
   it('«на пол 12» у дела без часа — не угадываем: час не ставится, а исход называет оба чтения', async () => {
     const item = await sow({ text: 'Забрать посылку' });
 

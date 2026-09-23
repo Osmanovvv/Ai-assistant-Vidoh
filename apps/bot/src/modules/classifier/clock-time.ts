@@ -450,7 +450,7 @@ export function clockTimeOf(
 }
 
 /** Минуты от полуночи по часам человека. */
-function localMinutes(now: Date, timeZone: string): number {
+export function localMinutes(now: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone,
     hourCycle: 'h23',

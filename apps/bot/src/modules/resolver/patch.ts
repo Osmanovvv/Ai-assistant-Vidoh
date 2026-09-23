@@ -5,13 +5,20 @@ import type { Executor } from '../../infra/db.js';
 import type { ResolverAction, ResolverAnswer, ResolverMode } from '../ai/schemas/index.js';
 import {
   isoDateIn,
+  localDateParts,
   namedWeekday,
   resolveDeadline,
   saysDistantWeek,
   startOfDayAfter,
+  startOfDayInZone,
 } from '../classifier/dates.js';
-import { clockTimesIn, dateEchoesClock, withoutClockPhrase } from '../classifier/clock-time.js';
-import { startsWithRecordCommand } from '../router/append.js';
+import {
+  clockTimesIn,
+  dateEchoesClock,
+  localMinutes,
+  withoutClockPhrase,
+} from '../classifier/clock-time.js';
+import { isRecordCommand, startsWithRecordCommand } from '../router/append.js';
 import { weekdaysIn } from '../classifier/time-words.js';
 import { sourceOf } from '../recurrence/asked.js';
 import type { RecurrenceSource } from '../recurrence/recurrence.js';
@@ -424,9 +431,39 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * выгрузки: только однозначный час (`clock-time.ts`), голое «в 9» —
    * нет. Только при точном сроке — своём или только что поставленном.
    */
-  const accuracyAfter = next.deadlineAccuracy ?? item.deadlineAccuracy;
   const heard = spokenClockTime(params.spoken ?? '', item.deadlineTime);
   const spokenTime = heard.time;
+
+  /**
+   * Час без дня (решение Никиты 23.09.2026): день остаётся, меняется
+   * только час. А если дня у дела нет или он уже прошёл — ближайшие такие
+   * часы: сегодня, пока время впереди, иначе завтра. Без этого час у
+   * бессрочного дела не ставился вовсе, а у просроченного ложился в
+   * прошлое.
+   *
+   * Только для приказа о переносе («перенеси», «сдвинь» — список 3.67):
+   * «нет, лучше в 9 30» про бессрочное «договориться с няней, чтобы
+   * приходила в 9» — поправка слов, а не срок, и день ей не нужен.
+   */
+  if (
+    spokenTime !== undefined &&
+    !deadlineSaid &&
+    next.deadlineAt === undefined &&
+    isRecordCommand(params.spoken ?? '')
+  ) {
+    const today = isoDateIn(now, params.timeZone);
+    const dayGone = item.deadlineAt === null || isoDateIn(item.deadlineAt, params.timeZone) < today;
+    if (dayGone) {
+      const startOfToday = startOfDayInZone(localDateParts(now, params.timeZone), params.timeZone);
+      next.deadlineAt =
+        spokenTime > localMinutes(now, params.timeZone)
+          ? startOfToday
+          : startOfDayAfter(now, 1, params.timeZone);
+      next.deadlineAccuracy = 'day';
+    }
+  }
+
+  const accuracyAfter = next.deadlineAccuracy ?? item.deadlineAccuracy;
   if (heard.unclear !== undefined && accuracyAfter === 'day') timeUnclear = heard.unclear;
   if (
     spokenTime !== undefined &&
