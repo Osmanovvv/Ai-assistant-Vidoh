@@ -40,6 +40,8 @@ import {
   unchangedText,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
+import { CLARIFY_REASON, clarifiedCommand } from '../resolver/clarify.js';
+import { closeClarification, openClarification } from '../resolver/clarify.repo.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
@@ -892,16 +894,45 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
     }
 
-    const routed = await routeIntents(aiLight, {
-      input: combined,
-      userId: batch.userId,
-      batchId: batch.id,
-      ...(askedAbout === undefined
-        ? {}
-        : pending === undefined
-          ? {}
-          : { openQuestion: questionText(aboutPending(pending, askedAbout), texts) }),
-    });
+    /**
+     * Ответ на переспрос без кнопок (живой прогон Никиты 23.09.2026):
+     * «Какое дело?» — «Забрать посылку» бот принимал за новое дело. Он
+     * помнит свой переспрос четверть часа и ждёт одну реплику; похожа на
+     * ответ — доделывается команда, мимо маршрутизатора: назови он ответ
+     * мыслью, это и был бы дефект. Не похожа — разбор как обычно.
+     */
+    const clarification = await openClarification(db, batch.userId, now);
+    const clarified =
+      clarification === undefined
+        ? undefined
+        : clarifiedCommand(clarification.kind, clarification.command, combined);
+    if (clarification !== undefined) {
+      await closeClarification(db, clarification, clarified !== undefined);
+      deps.logger?.info(
+        { batchId: batch.id, kind: clarification.kind, answered: clarified !== undefined },
+        'Реплика после переспроса',
+      );
+    }
+
+    const routed =
+      clarified !== undefined
+        ? {
+            segments: [{ intent: 'PATCH' as const, text: clarified }],
+            crisis: false,
+            promptVersion: 'уточнение',
+            reordered: false,
+            fallback: false,
+          }
+        : await routeIntents(aiLight, {
+            input: combined,
+            userId: batch.userId,
+            batchId: batch.id,
+            ...(askedAbout === undefined
+              ? {}
+              : pending === undefined
+                ? {}
+                : { openQuestion: questionText(aboutPending(pending, askedAbout), texts) }),
+          });
 
     deps.observe?.({ kind: 'routed', segments: routed.segments });
 
@@ -1161,6 +1192,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     } else if (settled.kind === 'nothingToApply') {
       // «Добавила к прошлой» здесь было ложью на все три исхода (A3).
       happened.said = true;
+      if (settled.timeUnclear !== undefined && pending !== undefined) {
+        await saveDraft(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: pending.segment,
+          reason: CLARIFY_REASON.time,
+        });
+      }
       await tell(
         settled.why === 'refused'
           ? texts.resolver.deadlineRefused
@@ -1334,7 +1373,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         userId: batch.userId,
         batchId: batch.id,
         text: segment.text,
-        reason: outcome.reason,
+        // Переспрос помечен: следующая реплика может быть ответом на него.
+        reason: outcome.clarify === undefined ? outcome.reason : CLARIFY_REASON[outcome.clarify],
       });
     };
 
@@ -2091,8 +2131,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       readonly units: readonly ClassifiedItem[];
       readonly saved: readonly Item[];
       readonly known: readonly Item[];
+      /** Единицы, которых у человека ещё не было: их и называет признание. */
+      readonly fresh: readonly ClassifiedItem[];
     }> => {
-      const nothing = { units: [], saved: [], known: [] };
+      const nothing = { units: [], saved: [], known: [], fresh: [] };
       if (lateThoughts.length === 0) return nothing;
 
       const spokenLate = lateThoughts.map((segment) => segment.text).join('\n');
@@ -2195,7 +2237,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         items: await withEmbeddings(db, deps, batch, lateSplit.fresh),
       });
 
-      return { units: lateUnits, saved: lateSaved, known: lateSplit.known };
+      return { units: lateUnits, saved: lateSaved, known: lateSplit.known, fresh: lateSplit.fresh };
     };
 
     const late = await absorbLateThoughts();
@@ -2204,7 +2246,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     for (const item of [...late.saved, ...late.known]) mentioned.add(item.id);
 
     // ── Отбор и ответ ───────────────────────────────────────────────────
+    /**
+     * Признание называет только новое (живой прогон Никиты 23.09.2026):
+     * «Забрать посылку», уже записанная, получала «Записала 1 дело…
+     * Посылку ты уже записывала — вторую не завела»: одна строка
+     * противоречила другой. Уже имеющееся называет живая строка, счёт и
+     * сферы — только заведённое сейчас.
+     */
+    const freshUnits = [...split.fresh, ...late.fresh];
     const composition = composeOf(units);
+    const recorded = composeOf(freshUnits);
     /**
      * Одни чувства — старые дела не вытаскивать (решение заказчицы
      * 13.09.2026, ответ 1.4; ревизия этапа 3, E19), а ответ — одно
@@ -2431,6 +2482,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     const presented = presentDump({
       composition,
+      recorded,
       actions,
       contextLine,
       // «Сделать сейчас» ведёт к первому из показанных (E2).
@@ -2453,7 +2505,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       quickAdd: quickAdded,
       // Раскладка по сферам и «на сегодня / на завтра» — по разобранным
       // единицам этой выгрузки (заказчица, 16.09.2026, п. 3).
-      summary: summarizeDump(units, { now, timeZone: context.timeZone }),
+      summary: summarizeDump(freshUnits, { now, timeZone: context.timeZone }),
     });
     /**
      * Под признанием кнопки «Оставить как есть» / «Выбрать главное»

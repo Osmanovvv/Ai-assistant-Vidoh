@@ -323,6 +323,12 @@ export function acknowledgementOf(
   composition: DumpComposition,
   texts: TextProfile,
   mood?: Mood,
+  /**
+   * Сколько заведено сейчас — для «Записала N» (живой прогон Никиты
+   * 23.09.2026): уже имеющееся в счёт не идёт, его называет живая
+   * строка. Не задано — как раньше, весь состав.
+   */
+  counted?: DumpComposition,
 ): string {
   /**
    * Открытие — по её тексту о характере (16.09.2026): «Всё, забрала».
@@ -357,7 +363,7 @@ export function acknowledgementOf(
    * нигде, и человеку не понять, услышаны ли они. Без желаний фраза —
    * образец заказчицы, как была.
    */
-  const { tasks, desires } = composition;
+  const { tasks, desires } = counted ?? composition;
   if (tasks <= 0 && desires <= 0) return opening;
 
   const recorded =
@@ -372,6 +378,8 @@ export function acknowledgementOf(
 
 export interface PresentParams {
   readonly composition: DumpComposition;
+  /** Заведённое сейчас, без уже имевшегося: для счёта «Записала N». */
+  readonly recorded?: DumpComposition | undefined;
   readonly actions: readonly string[];
   /** См. `BuildReplyParams.firstItemId`. */
   readonly firstItemId?: string | undefined;
@@ -441,7 +449,7 @@ export function presentDump(params: PresentParams): PresentResult {
   return {
     reply: buildReply({
       texts,
-      acknowledgement: acknowledgementOf(params.composition, texts, params.mood),
+      acknowledgement: acknowledgementOf(params.composition, texts, params.mood, params.recorded),
       batchId: params.batchId,
       omitQuestion: params.omitQuestion,
       feelingsOnly: params.feelingsOnly,
