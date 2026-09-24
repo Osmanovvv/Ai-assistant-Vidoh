@@ -1,6 +1,7 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { describeToday, localDateParts } from '../classifier/dates.js';
+import { describeDialog, type DialogTurn } from '../dialog/dialog.js';
 import type { Candidate } from './candidates.js';
 import { decide, type Decision, type ResolverThresholds } from './decision.js';
 
@@ -31,6 +32,13 @@ export interface ResolveParams {
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
   readonly thresholds?: Partial<ResolverThresholds> | undefined;
+  /**
+   * Хвост разговора (решение Никиты 24.09.2026, план docs/26).
+   *
+   * Пустой, давний или отсутствующий — вход модели прежний байт в байт:
+   * так набор, на котором мерился `resolver@3`, не нужно перемеривать.
+   */
+  readonly dialog?: readonly DialogTurn[] | undefined;
 }
 
 export interface ResolveResult {
@@ -125,10 +133,13 @@ function buildInput(params: ResolveParams, now: Date): string {
   const list = params.candidates
     .map((candidate, index) => describeCandidate(candidate, index, params, now))
     .join('\n');
+  const dialog = describeDialog(params.dialog ?? [], now);
 
   return [
     describeToday(now, params.timeZone),
     '',
+    // Разговор — только когда он есть: иначе вход прежний (см. `dialog`).
+    ...(dialog === '' ? [] : [dialog, '']),
     'Записи человека:',
     list,
     '',
@@ -196,6 +207,8 @@ export async function resolveSegment(
       confidence: outcome.value.confidence,
       kind: decision.kind,
       why: decision.why,
+      // Только число: тексты разговора в журнал не пишутся.
+      dialogTurns: params.dialog?.length ?? 0,
     },
     'Резолвер принял решение',
   );

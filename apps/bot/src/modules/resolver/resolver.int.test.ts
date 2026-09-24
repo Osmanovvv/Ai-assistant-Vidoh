@@ -6,6 +6,7 @@ import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { RESOLVER_SCHEMA_NAME, type ResolverAnswer } from '../ai/schemas/index.js';
 import type { AiClientDeps } from '../ai/client.js';
+import { describeToday } from '../classifier/dates.js';
 import type { Candidate } from './candidates.js';
 import { resolveSegment } from './resolver.service.js';
 
@@ -82,6 +83,88 @@ beforeEach(async () => {
   await activatePrompt(testDb(), 'resolver', 'resolver@test');
 
   deps = withAnswer(answer());
+});
+
+describe('хвост разговора во входе модели (план docs/26, задача 5)', () => {
+  /**
+   * Решение Никиты 24.09.2026: модель видит реплики разговора. Но только
+   * когда они есть — без хвоста вход обязан остаться ровно тем, на котором
+   * мерился `resolver@3` (набор из 35 случаев). Тогда старый набор не нужно
+   * перемеривать за деньги: этот страж доказывает, что его вход не менялся.
+   */
+  const RECORD =
+    '1. Записать сына к врачу в четверг · тема: здоровье · срок 03.09 · статус: new · изменено: 2 мин назад';
+
+  it('без хвоста вход байт в байт прежний', async () => {
+    await resolveSegment(deps, {
+      segment: 'нет, в пятницу',
+      candidates: [candidate()],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+    });
+
+    expect(provider.requests[0]?.input).toBe(
+      [
+        describeToday(NOW, 'Europe/Moscow'),
+        '',
+        'Записи человека:',
+        RECORD,
+        '',
+        'Человек сказал:',
+        'нет, в пятницу',
+      ].join('\n'),
+    );
+  });
+
+  it('пустой хвост и хвост из давних реплик — тоже прежний вход', async () => {
+    for (const dialog of [
+      [],
+      [{ role: 'bot' as const, text: 'давно', at: new Date(NOW.getTime() - 40 * 60_000) }],
+    ]) {
+      deps = withAnswer(answer());
+      await resolveSegment(deps, {
+        segment: 'нет, в пятницу',
+        candidates: [candidate()],
+        timeZone: 'Europe/Moscow',
+        now: NOW,
+        dialog,
+      });
+
+      expect(provider.requests[0]?.input).not.toContain('Недавний разговор');
+      expect(provider.requests[0]?.input).not.toContain('давно');
+    }
+  });
+
+  it('хвост есть — блок между датой и записями', async () => {
+    await resolveSegment(deps, {
+      segment: 'нет, в пятницу',
+      candidates: [candidate()],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+      dialog: [
+        {
+          role: 'bot',
+          text: 'Записала 1 дело: Записать сына к врачу в четверг',
+          at: new Date(NOW.getTime() - 60_000),
+        },
+      ],
+    });
+
+    expect(provider.requests[0]?.input).toBe(
+      [
+        describeToday(NOW, 'Europe/Moscow'),
+        '',
+        'Недавний разговор — только чтобы понять, о какой записи речь. Новых дел и сроков из него не бери:',
+        'Бот (1 мин назад): Записала 1 дело: Записать сына к врачу в четверг',
+        '',
+        'Записи человека:',
+        RECORD,
+        '',
+        'Человек сказал:',
+        'нет, в пятницу',
+      ].join('\n'),
+    );
+  });
 });
 
 describe('запрос к модели', () => {
