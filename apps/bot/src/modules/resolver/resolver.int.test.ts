@@ -7,6 +7,7 @@ import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
 import { RESOLVER_SCHEMA_NAME, type ResolverAnswer } from '../ai/schemas/index.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { describeToday } from '../classifier/dates.js';
+import { DIALOG_HEADING } from '../dialog/dialog.js';
 import type { Candidate } from './candidates.js';
 import { resolveSegment } from './resolver.service.js';
 
@@ -154,8 +155,9 @@ describe('хвост разговора во входе модели (план d
       [
         describeToday(NOW, 'Europe/Moscow'),
         '',
-        'Недавний разговор — только чтобы понять, о какой записи речь. Новых дел и сроков из него не бери:',
-        'Бот (1 мин назад): Записала 1 дело: Записать сына к врачу в четверг',
+        DIALOG_HEADING,
+        // Номер записи ставит код: название дела стоит в реплике целиком.
+        'Бот (1 мин назад, о записи 1): Записала 1 дело: Записать сына к врачу в четверг',
         '',
         'Записи человека:',
         RECORD,

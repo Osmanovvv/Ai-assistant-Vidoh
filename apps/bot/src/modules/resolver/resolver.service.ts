@@ -133,7 +133,12 @@ function buildInput(params: ResolveParams, now: Date): string {
   const list = params.candidates
     .map((candidate, index) => describeCandidate(candidate, index, params, now))
     .join('\n');
-  const dialog = describeDialog(params.dialog ?? [], now);
+  // Названия — в порядке списка: реплика бота получает «о записи N».
+  const dialog = describeDialog(
+    params.dialog ?? [],
+    now,
+    params.candidates.map((candidate) => candidate.text),
+  );
 
   return [
     describeToday(now, params.timeZone),
