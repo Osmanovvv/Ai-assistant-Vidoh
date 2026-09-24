@@ -34,6 +34,13 @@ import { titleWithoutDate } from '../resolver/title-date.js';
 /** Сколько записей показывать. Сводка — это обзор, а не полный бэклог. */
 const MAX_LINES = 15;
 
+/**
+ * Полный список ветки — ответ на «какие ещё» под сводкой (живая проверка
+ * 24.09.2026). Предел — не обзор, а длина сообщения Telegram: шестьдесят
+ * строк укладываются в 4096 знаков с запасом.
+ */
+export const FULL_LIST_LINES = 60;
+
 export interface SummaryDeps {
   readonly db: Executor;
   readonly gateway: TopicGateway;
@@ -50,6 +57,8 @@ export function buildSummary(params: {
   readonly items: readonly Item[];
   readonly texts: TextProfile;
   readonly timeZone: string;
+  /** Сколько строк показать; по умолчанию — обзор сводки. */
+  readonly limit?: number | undefined;
 }): string {
   const { texts } = params;
   const lines: string[] = [texts.summary.header(params.topicName)];
@@ -59,7 +68,7 @@ export function buildSummary(params: {
     return lines.join('\n');
   }
 
-  const shown = params.items.slice(0, MAX_LINES);
+  const shown = params.items.slice(0, params.limit ?? MAX_LINES);
   lines.push('');
 
   for (const item of shown) {

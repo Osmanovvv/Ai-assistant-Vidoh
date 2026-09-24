@@ -108,7 +108,13 @@ import {
 import { pickMain, rememberMentioned } from '../presenter/pick.service.js';
 import { adoptWantedTopics } from '../topics/adopt.js';
 import type { TopicGateway } from '../topics/gateway.js';
-import { refreshSummaries } from '../topics/summary.service.js';
+import {
+  buildSummary,
+  FULL_LIST_LINES,
+  itemsOfTopic,
+  refreshSummaries,
+} from '../topics/summary.service.js';
+import { asksForRest } from '../topics/rest-request.js';
 import { settleTopics } from '../topics/ensure.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -988,6 +994,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         { batchId: batch.id, kind: clarification.kind, answered: clarified !== undefined },
         'Реплика после переспроса',
       );
+    }
+
+    /**
+     * «Какие ещё 5» под сводкой ветки (живая проверка Никиты 24.09.2026).
+     *
+     * Сводка показывает пятнадцать дел и «И ещё N.». Спросить в ветке
+     * «какие ещё» — естественно, а бот отвечал «Я здесь. Расскажешь, что в
+     * голове?»: вопрос уходил модели ответов, которая о сводке не знает.
+     * Просьба показать остальное (`asksForRest`, закрытый список целых
+     * фраз) в ветке — полный список её дел, из базы, мимо модели.
+     */
+    if (clarified === undefined && target?.threadId !== undefined && asksForRest(combined)) {
+      const topic = await topicByThread(db, batch.userId, target.threadId);
+      if (topic !== undefined) {
+        await tell(
+          buildSummary({
+            topicName: topic.name,
+            items: await itemsOfTopic(db, batch.userId, topic.name),
+            texts,
+            timeZone: context.timeZone,
+            limit: FULL_LIST_LINES,
+          }),
+        );
+        return;
+      }
     }
 
     const routed =
