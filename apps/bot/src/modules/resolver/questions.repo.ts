@@ -113,6 +113,30 @@ export async function openQuestionOf(
   return row;
 }
 
+/**
+ * Есть ли у человека живой открытый вопрос — только посмотреть (24.09.2026).
+ *
+ * Приёму сообщения это нужно, чтобы ответ на вопрос бота разобрать сразу.
+ * В отличие от `openQuestionOf`, протухший вопрос здесь **не закрывается**:
+ * его закроет уборка и положит слова черновиком (`expireQuestions`), а
+ * закрой его приём — уборка его уже не увидит, и сказанное пропало бы.
+ */
+export async function hasOpenQuestion(db: Executor, userId: string, now: Date): Promise<boolean> {
+  const [row] = await db
+    .select({ id: pendingQuestions.id })
+    .from(pendingQuestions)
+    .where(
+      and(
+        eq(pendingQuestions.userId, userId),
+        isNull(pendingQuestions.resolvedAt),
+        gt(pendingQuestions.expiresAt, now),
+      ),
+    )
+    .limit(1);
+
+  return row !== undefined;
+}
+
 /** Закрывает открытый вопрос человека. Возвращает закрытый, если он был. */
 export async function closeOpenQuestion(
   db: Executor,

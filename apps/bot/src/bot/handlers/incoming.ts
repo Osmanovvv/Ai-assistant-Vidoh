@@ -12,6 +12,9 @@ import {
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
 import { looksLikeQuestion } from '../../modules/buffer/question.js';
+import { answersNow, asksDirectly, type OpenAsk } from '../../modules/buffer/answer-now.js';
+import { openClarification } from '../../modules/resolver/clarify.repo.js';
+import { hasOpenQuestion } from '../../modules/resolver/questions.repo.js';
 import { sellable } from '../../modules/billing/checkout.service.js';
 import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
@@ -371,11 +374,25 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       chatId: ctx.chat?.id,
       threadId: ctx.message?.message_thread_id,
       text: ctx.message?.text,
+      voiceSeconds: ctx.message?.voice?.duration,
       limits,
     });
 
     await next();
   };
+}
+
+/**
+ * Что бот сейчас спросил и ждёт: переспрос без кнопок (помнится черновиком
+ * четверть часа) или вопрос с кнопками. Ничего — пусто.
+ */
+async function openAskOf(db: Database, userId: string, now: Date): Promise<OpenAsk | undefined> {
+  const clarification = await openClarification(db, userId, now);
+  if (clarification !== undefined) {
+    return { kind: 'clarify', clarifyKind: clarification.kind, command: clarification.command };
+  }
+  // Только посмотреть: протухший вопрос закрывает уборка, сохраняя слова.
+  return (await hasOpenQuestion(db, userId, now)) ? { kind: 'question' } : undefined;
 }
 
 /**
@@ -395,6 +412,8 @@ async function bufferMessage(
     readonly threadId: number | undefined;
     /** Текст сообщения — чтобы узнать вопрос; у голосового его нет. */
     readonly text?: string | undefined;
+    /** Длина голосового: короткое после вопроса бота — ответ (24.09.2026). */
+    readonly voiceSeconds?: number | undefined;
     readonly limits: BufferLimits;
   },
 ): Promise<void> {
@@ -422,9 +441,23 @@ async function bufferMessage(
    * вопроса от человека. Только первое сообщение выгрузки: вопрос,
    * пришедший внутрь серии, остаётся в ней и ждёт вместе с ней.
    */
-  const questionAlone = attached.messageCount === 1 && looksLikeQuestion(params.text);
+  const first = attached.messageCount === 1;
+  const questionAlone = first && (looksLikeQuestion(params.text) || asksDirectly(params.text));
+  /**
+   * Ответ на вопрос бота — тоже сразу (проверка Никиты 24.09.2026, 20:21):
+   * «Вечером» на «09:00 или 21:00?» ждало полминуты. Решают те же правила,
+   * что потом узнают ответ (`answer-now.ts`); не похоже на ответ — окно
+   * тишины, как прежде.
+   */
+  const answerAlone =
+    first &&
+    !questionAlone &&
+    answersNow(await openAskOf(deps.db, userId, new Date()), {
+      text: params.text,
+      voiceSeconds: params.voiceSeconds,
+    });
   const closedNow =
-    !attached.closed && questionAlone
+    !attached.closed && (questionAlone || answerAlone)
       ? (await closeBatchOnSilence(deps.db, attached.batchId, { silenceWindowMs: 0 })).closed
       : false;
 

@@ -9,6 +9,7 @@ import {
   askQuestion,
   closeOpenQuestion,
   expireQuestions,
+  hasOpenQuestion,
   openQuestionOf,
   QUESTION_TTL_HOURS,
 } from './questions.repo.js';
@@ -230,6 +231,24 @@ describe('три пути, которыми вопрос кончается', ()
 
     expect(await expireQuestions(testDb(), later)).toBe(1);
     expect(await expireQuestions(testDb(), later)).toBe(0);
+  });
+});
+
+/**
+ * Приём сообщения смотрит, спросил ли бот что-то, — чтобы ответ разобрать
+ * сразу (24.09.2026). Смотрит и только: протухший вопрос закрывает уборка
+ * и кладёт его слова черновиком; закрой его приём — слова пропали бы.
+ */
+describe('взгляд на открытый вопрос — без закрытия', () => {
+  it('живой вопрос виден, протухший — нет, и строка протухшего остаётся открытой для уборки', async () => {
+    await ask();
+
+    expect(await hasOpenQuestion(testDb(), userId, NOW)).toBe(true);
+
+    const later = new Date(NOW.getTime() + (QUESTION_TTL_HOURS + 1) * HOUR);
+    expect(await hasOpenQuestion(testDb(), userId, later)).toBe(false);
+    // Уборка всё ещё находит его — и сохранит слова.
+    expect(await expireQuestions(testDb(), later)).toBe(1);
   });
 });
 
