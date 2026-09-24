@@ -9049,6 +9049,156 @@ describe('час нового дела — утро или вечер (вари�
     expect(all.some((text) => text.includes('Записала 1 дело'))).toBe(false);
   });
 
+  /**
+   * Проверка Никиты 24.09.2026, 19:46: «Послезавтра забрать ребенка в 8» при
+   * записанном «Забрать ребенка в 7» без часа — «Перенесла «Забрать ребенка
+   * в 7» на 26.09.», про час ни слова; вопрос пришёл только на повтор.
+   */
+  it('повтор с новым днём и «в 8» — перенос и вопрос о часе в одном ответе; «вечером» ставит 20:00', async () => {
+    const prompts = await seedPrompts();
+    const [child] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать ребенка в 7',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-2 * 60 * 60_000),
+      })
+      .returning({ id: items.id });
+    const afterTomorrow = new Date(`${tomorrowIso()}T12:00:00.000Z`);
+    afterTomorrow.setUTCDate(afterTomorrow.getUTCDate() + 1);
+    const dayAfter = afterTomorrow.toISOString().slice(0, 10);
+    const { sender, all } = recordingSender();
+    const spoken = 'Послезавтра забрать ребенка в 8.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
+            extractor: () =>
+              JSON.stringify({
+                units: [{ text: 'Забрать ребенка в 8', isProject: false, isEmotion: false }],
+              }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  {
+                    text: 'Забрать ребенка в 8',
+                    type: 'TASK',
+                    priority: 'SOON',
+                    topic: 'семья',
+                    isProject: false,
+                    deadline: dayAfter,
+                    deadlineAccuracy: 'day',
+                    deadlineText: 'послезавтра',
+                    recurrenceKind: 'none',
+                    recurrenceInterval: 0,
+                    recurrenceText: '',
+                  },
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const moved = all.find((text) => text.includes('Перенесла'));
+    expect(moved).toBeDefined();
+    expect(moved).toContain('Во сколько «Забрать ребенка» — 08:00 или 20:00?');
+
+    const resolverCalls: string[] = [];
+    await queuedBatchOf([{ kind: 'text', text: 'вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toEqual([]);
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.text, row.deadlineTime])).toEqual([
+      [child?.id, 'Забрать ребенка', 20 * 60],
+    ]);
+  });
+
+  it('правка «перенеси ребёнка на послезавтра в 8» — перенос и вопрос о часе в одном ответе', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать ребенка',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-2 * 60 * 60_000),
+      });
+    const afterTomorrow = new Date(`${tomorrowIso()}T12:00:00.000Z`);
+    afterTomorrow.setUTCDate(afterTomorrow.getUTCDate() + 1);
+    const { sender, all } = recordingSender();
+    const text = 'перенеси ребёнка на послезавтра в 8';
+
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'PATCH', text }] }),
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'replace',
+              itemId: '1',
+              confidence: 0.95,
+              changes: {
+                note: '',
+                text: '',
+                deadline: afterTomorrow.toISOString().slice(0, 10),
+                deadlineAccuracy: 'day',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'перенос',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const moved = all.find((line) => line.includes('Перенесла'));
+    expect(moved).toBeDefined();
+    expect(moved).toContain('Во сколько «Забрать ребенка» — 08:00 или 20:00?');
+  });
+
   it('перенос «на пол 12» у дела без часа — «Не поняла, 11:30 или 23:30?»; «вечером» ставит 23:30 без модели', async () => {
     const prompts = await seedPrompts();
     const [parcel] = await testDb()

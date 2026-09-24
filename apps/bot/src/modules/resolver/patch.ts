@@ -601,6 +601,18 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     }
   }
 
+  /**
+   * Час назван, но с двумя чтениями, а перенос всё равно применяется —
+   * день (проверка Никиты 24.09.2026, 19:46: «Послезавтра забрать ребенка
+   * в 8» у «Забрать ребенка в 7»). Прежний час в заголовке тогда неправда:
+   * он уходит, а новый спросит конвейер. Если больше менять нечего, заголовок
+   * не трогается — исход «менять нечего» с вопросом, как прежде.
+   */
+  if (timeUnclear !== undefined && Object.keys(next).length > 0 && next.text === undefined) {
+    const cleaned = withoutClockPhrase(item.text);
+    if (cleaned !== item.text && cleaned.trim() !== '') next.text = withCapital(cleaned);
+  }
+
   return {
     next,
     ...(refused === undefined ? {} : { refused }),
@@ -620,7 +632,15 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
  */
 export type ApplyOutcome =
   /** Изменение применено, есть что отменять. */
-  | { readonly kind: 'applied'; readonly applied: Applied }
+  | {
+      readonly kind: 'applied';
+      readonly applied: Applied;
+      /**
+       * Применено, но названный час с двумя чтениями не поставлен — день
+       * перенесён (проверка Никиты 24.09.2026): о часе спросить.
+       */
+      readonly timeUnclear?: readonly [number, number] | undefined;
+    }
   /**
    * Запись уже в этом состоянии — менять нечего; это не ошибка.
    *
@@ -751,6 +771,7 @@ export async function applyDecision(db: Executor, params: ApplyParams): Promise<
     return {
       kind: 'applied',
       applied: { revisionId: revision.id, action: params.action, before: item, after, fields },
+      ...(planned.timeUnclear === undefined ? {} : { timeUnclear: planned.timeUnclear }),
     };
   });
 }

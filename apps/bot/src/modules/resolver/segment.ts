@@ -115,7 +115,12 @@ export interface ResolveSegmentParams {
 
 export type SegmentResult =
   /** Изменение применено, есть что отменять. */
-  | { readonly kind: 'applied'; readonly applied: Applied }
+  | {
+      readonly kind: 'applied';
+      readonly applied: Applied;
+      /** День перенесён, а час с двумя чтениями не поставлен — спросить (24.09.2026). */
+      readonly timeUnclear?: readonly [number, number] | undefined;
+    }
   /** Задан уточняющий вопрос: его надо показать человеку. */
   | {
       readonly kind: 'asked';
@@ -634,5 +639,9 @@ async function settle(
     applied,
   );
 
-  return { kind: 'applied', applied };
+  return {
+    kind: 'applied',
+    applied,
+    ...(outcome.timeUnclear === undefined ? {} : { timeUnclear: outcome.timeUnclear }),
+  };
 }
