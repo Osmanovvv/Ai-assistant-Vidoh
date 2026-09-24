@@ -363,6 +363,8 @@ export interface ContextLineOutcome {
   readonly why?: string | undefined;
   /** Что написала модель, когда страж отверг: стенду — для правки промпта. */
   readonly rejected?: string | undefined;
+  /** Первая попытка, если была вторая: что написала модель и почему не прошло. */
+  readonly firstTry?: { readonly line: string; readonly why: string } | undefined;
 }
 
 /** Обращение к модели — подменяется в тестах; в бою `requestStructured`. */
@@ -375,8 +377,49 @@ export type AskStructured = (
 const MAX_TOKENS = 200;
 
 /**
+ * Страж голоса (чёрный список), потом сито (белый список): только слова
+ * фактов и словаря бота, и только о поводе (`line-sieve.ts`).
+ */
+function checkedLine(raw: string, facts: string, pack: ContextPack): CheckedLine {
+  const voiced = checkContextLine(raw, facts);
+  if (!voiced.ok) return voiced;
+  const sifted = siftLine(voiced.line, pack);
+  return sifted.ok ? voiced : { ok: false, why: sifted.why };
+}
+
+/** Причина отказа словами для второй попытки. */
+function reasonFor(why: string): string {
+  const word = /^слово не из фактов: (.+)$/u.exec(why)?.[1];
+  if (word !== undefined) return `слова «${word}» нет в фактах`;
+  if (why === 'не о поводе') return 'она не о деле-поводе из фактов';
+  return why;
+}
+
+/**
+ * Вход второй попытки: те же факты и ниже — что не подошло (Никита
+ * 25.09.2026, «живость и правильность, баланс»). Модель почти
+ * детерминирована: на тот же вход она вернула бы ту же строку, и мы
+ * заплатили бы за неё дважды.
+ */
+function withFeedback(facts: string, line: string, why: string): string {
+  return (
+    `${facts}
+
+Строка «${line}» не подошла: ${reasonFor(why)}. ` +
+    'Напиши другую по тем же правилам или верни пустую строку.'
+  );
+}
+
+/**
  * Спросить строку и проверить. Никогда не бросает: строка — украшение,
  * а ответ с разбором человек ждёт в любом случае.
+ *
+ * **Вторая попытка** (бой 25.09.2026, 01:44): повод был — дела на
+ * сегодня, — модель написала «Проехать за ребёнком в 16:00 — помню.», сито
+ * отсекло, и строка пропала. Отказ — ещё одна попытка с причиной;
+ * платим только за отказы, третьей не бывает. При одних больших целях её
+ * нет: правильный ответ там чаще — пусто, и вторая попытка только
+ * уговаривала бы модель на строку «ради строки».
  */
 export async function askContextLine(
   deps: AiClientDeps,
@@ -386,7 +429,9 @@ export async function askContextLine(
   const facts = renderContextPack(params.pack);
   // Повода нет — строка может быть только «ради строки», а за неё платить
   // незачем: модель не зовётся, ответ как при пустой строке.
-  if (hooksOf(params.pack).length === 0) return { why: 'нет повода' };
+  const hooks = hooksOf(params.pack);
+  if (hooks.length === 0) return { why: 'нет повода' };
+  const retries = hooks.some((hook) => hook !== 'goals');
 
   try {
     /**
@@ -401,40 +446,43 @@ export async function askContextLine(
       return { why };
     }
 
-    const outcome = await ask(deps, {
-      stage: 'presenter',
-      input: facts,
-      userId: params.userId,
-      batchId: params.batchId,
-      maxTokens: MAX_TOKENS,
-    });
-    if (!outcome.ok) {
-      deps.logger?.info(
-        { batchId: params.batchId, problem: outcome.problem },
-        'Живая строка не получена',
-      );
-      return { why: outcome.problem };
-    }
-
-    // Сначала страж голоса (чёрный список), потом сито (белый список):
-    // только слова фактов и словаря бота, и только о поводе (`line-sieve.ts`).
-    const voiced = checkContextLine(outcome.value.line, facts);
-    const sifted = voiced.ok ? siftLine(voiced.line, params.pack) : undefined;
-    const checked: CheckedLine =
-      sifted !== undefined && !sifted.ok ? { ok: false, why: sifted.why } : voiced;
-    if (!checked.ok) {
-      if (checked.why !== 'пусто') {
+    let firstTry: { line: string; why: string } | undefined;
+    for (const input of [facts, undefined]) {
+      const outcome = await ask(deps, {
+        stage: 'presenter',
+        input: input ?? withFeedback(facts, firstTry?.line ?? '', firstTry?.why ?? ''),
+        userId: params.userId,
+        batchId: params.batchId,
+        maxTokens: MAX_TOKENS,
+      });
+      const tried = firstTry === undefined ? {} : { firstTry };
+      if (!outcome.ok) {
         deps.logger?.info(
-          { batchId: params.batchId, why: checked.why, line: outcome.value.line },
-          'Живая строка отвергнута стражем',
+          { batchId: params.batchId, problem: outcome.problem },
+          'Живая строка не получена',
         );
+        return { why: outcome.problem, ...tried };
       }
-      return checked.why === 'пусто'
-        ? { why: checked.why }
-        : { why: checked.why, rejected: outcome.value.line };
-    }
 
-    return { line: checked.line };
+      const checked = checkedLine(outcome.value.line, facts, params.pack);
+      if (checked.ok) return { line: checked.line, ...tried };
+      if (checked.why === 'пусто') return { why: checked.why, ...tried };
+
+      deps.logger?.info(
+        {
+          batchId: params.batchId,
+          why: checked.why,
+          line: outcome.value.line,
+          attempt: firstTry === undefined ? 1 : 2,
+        },
+        'Живая строка отвергнута стражем',
+      );
+      if (firstTry !== undefined || !retries) {
+        return { why: checked.why, rejected: outcome.value.line, ...tried };
+      }
+      firstTry = { line: outcome.value.line, why: checked.why };
+    }
+    return { why: 'пусто' };
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     deps.logger?.warn({ batchId: params.batchId, err: error }, 'Живая строка: модель не ответила');
