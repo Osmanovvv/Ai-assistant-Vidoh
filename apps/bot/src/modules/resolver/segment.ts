@@ -408,6 +408,26 @@ export async function resolvePatchSegment(
    */
   const thresholds = await effectiveThresholds(deps.settings);
 
+  /**
+   * О чём бот говорил только что — шестой сигнал решения (проверка Никиты
+   * 24.09.2026, «Не сыр, а творог»). Внутри своей выгрузки не нужен: там
+   * цель ищется среди её же записей. И не нужен, когда дело не названо и
+   * код сам сузил выбор до последнего обсуждённого (`narrowed`): там по
+   * правилу 65 (решение Никиты 23.09.2026) бот спрашивает, а не применяет.
+   */
+  const lastTalk =
+    params.onlyOwnBatch === true || narrowed !== undefined
+      ? undefined
+      : (
+          discussed ??
+          (await lastDiscussed(deps.db, {
+            userId: params.userId,
+            batchId: params.batchId,
+            now,
+            windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+          }))
+        ).map((one) => one.id);
+
   const resolved = await resolveSegment(deps.ai, {
     segment: params.text,
     candidates: narrowed ?? candidates,
@@ -416,6 +436,7 @@ export async function resolvePatchSegment(
     userId: params.userId,
     batchId: params.batchId,
     ...(thresholds === undefined ? {} : { thresholds }),
+    ...(lastTalk === undefined ? {} : { lastTalk }),
     // Разговор — когда выбирает модель; сузил до одной записи код — не нужен.
     ...(narrowed === undefined && params.dialog !== undefined ? { dialog: params.dialog } : {}),
   });

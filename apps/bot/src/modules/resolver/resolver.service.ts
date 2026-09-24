@@ -39,6 +39,8 @@ export interface ResolveParams {
    * так набор, на котором мерился `resolver@3`, не нужно перемеривать.
    */
   readonly dialog?: readonly DialogTurn[] | undefined;
+  /** Записи последнего разговора (`lastDiscussed`): шестой сигнал решения. */
+  readonly lastTalk?: readonly string[] | undefined;
 }
 
 export interface ResolveResult {
@@ -203,6 +205,8 @@ export async function resolveSegment(
     // Слова человека: по ним ищется названная запись (четвёртый сигнал).
     spoken: params.segment,
     timeZone: params.timeZone,
+    // Последний разговор — шестой сигнал (24.09.2026).
+    ...(params.lastTalk === undefined ? {} : { lastTalk: params.lastTalk }),
   });
   const { decision, changes } = settleWithDialog(params, now, decided, outcome.value.changes);
 

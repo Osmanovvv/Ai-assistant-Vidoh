@@ -111,9 +111,12 @@ export function registerReviewHandlers(bot: Bot, db: Database, logger: Logger): 
         'Запись изменена кнопкой разбора вчерашнего',
       );
 
-      await ctx.reply(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: changeKeyboard(applied, active.texts),
-      });
+      await ctx.reply(
+        describeChange(applied, active.texts, active.timeZone, undefined, new Date()),
+        {
+          reply_markup: changeKeyboard(applied, active.texts),
+        },
+      );
     });
   };
 

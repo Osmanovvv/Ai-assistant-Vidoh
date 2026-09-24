@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { relativeDayWord } from '../../modules/items/deadline-words.js';
 
 import { aiCalls, batches, items, pendingQuestions, type Item } from '../../db/schema.js';
 import { createLogger } from '../../infra/logger.js';
@@ -343,10 +344,13 @@ describe('«Добавить к прошлой»', () => {
         : new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(actual),
     ).toBe(expected);
 
-    // §7.3: показать, что именно изменилось, и дать кнопку отмены.
-    const [, month, day] = expected.split('-');
+    // §7.3: показать, что именно изменилось, и дать кнопку отмены. Ближний
+    // день — словом («завтра»), дальний — числом (24.09.2026): пятница от
+    // настоящих часов бывает и завтра, и через неделю.
     const edit = calls.find((call) => call.method === 'editMessageText');
-    expect(String(edit?.payload['text'])).toContain(`${day ?? ''}.${month ?? ''}`);
+    expect(String(edit?.payload['text'])).toContain(
+      relativeDayWord(actual ?? new Date(), new Date(), 'Europe/Moscow'),
+    );
     expect(edit?.payload['reply_markup']).toBeDefined();
   });
 

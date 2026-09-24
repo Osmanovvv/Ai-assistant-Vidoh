@@ -4680,6 +4680,98 @@ describe('правка доходит до резолвера (§7, задача
    * 65 (решение Никиты 23.09.2026): дело не названо, говорили давно —
    * «Какое дело?», а ответ доделывает дополнение.
    */
+  /**
+   * Проверка Никиты 24.09.2026, 16:40: «Купить сыр» записан в 16:37,
+   * посылку переносили в 16:33, «Не сыр, а творог» — модель уверена и
+   * права, но бот спросил кнопкой: свежих два, «сыр» короче четырёх букв.
+   * Последний разговор был только о сыре — это и есть подтверждение.
+   */
+  it('«Не сыр, а творог» сразу после записи сыра — правка без вопроса, хоть свежих и два', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        updatedAt: at(-7 * 60_000),
+      });
+    const [cheese] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Купить сыр',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        createdAt: at(-3 * 60_000),
+        updatedAt: at(-3 * 60_000),
+      })
+      .returning({ id: items.id });
+    await testDb()
+      .insert(batches)
+      .values({
+        userId,
+        status: 'done',
+        openedAt: at(-4 * 60_000),
+        closedAt: at(-3 * 60_000),
+        mentionedItemIds: [cheese!.id],
+      });
+    const { sender, all } = recordingSender();
+    const text = 'Не сыр, а творог.';
+
+    await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'PATCH', text }] }),
+            // Как на бою: модель уверена и выбрала сыр — по его номеру в списке.
+            resolver: (request) => {
+              const number = /^(\d+)\. Купить сыр/mu.exec(request.input)?.[1] ?? '0';
+              return JSON.stringify({
+                action: 'update',
+                mode: 'replace',
+                itemId: number,
+                confidence: 1,
+                changes: {
+                  note: '',
+                  text: 'Купить творог',
+                  deadline: '',
+                  deadlineAccuracy: 'none',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+                reason: 'замена сыра на творог',
+              });
+            },
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, cheese!.id));
+    expect(after?.text).toBe('Купить творог');
+    // Без кнопки «Перенести?» / «Это про…?»: вопроса нет.
+    expect(
+      all.some((line) => line.includes('отдельная история') || line.startsWith('Перенести «')),
+    ).toBe(false);
+    const open = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(open).toEqual([]);
+  });
+
   it('«И паспорт туда же» через полчаса после напоминания — «Какое дело?»; «Забрать посылку» дописывает паспорт', async () => {
     const prompts = await seedPrompts();
     const [parcel] = await testDb()
@@ -9178,6 +9270,8 @@ describe('час нового дела — утро или вечер (вари�
     const moved = all.find((text) => text.includes('Перенесла'));
     expect(moved).toBeDefined();
     expect(moved).toContain('Во сколько «Забрать ребенка» — 08:00 или 20:00?');
+    // Ближний день — словом, а не «26.09» (проверка Никиты 24.09.2026).
+    expect(moved).toContain('на послезавтра');
 
     const resolverCalls: string[] = [];
     await queuedBatchOf([{ kind: 'text', text: 'вечером', offsetMs: 60_000 }]);

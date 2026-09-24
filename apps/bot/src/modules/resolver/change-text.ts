@@ -1,5 +1,5 @@
 import { CARD_ACTION } from '../items/card-actions.js';
-import { deadlineWords } from '../items/deadline-words.js';
+import { deadlineWords, relativeDayWord } from '../items/deadline-words.js';
 import { clockOf } from '../scheduler/plan.js';
 import { reminderButtons } from '../scheduler/reminder-actions.js';
 import { isRecordCommand, startsWithReplacement } from '../router/append.js';
@@ -63,6 +63,12 @@ export function describeChange(
   timeZone: string,
   /** Сказанное человеком: по нему видно, говорил ли он о замене. */
   spoken?: string,
+  /**
+   * «Сейчас» — чтобы ближний день назвать словом: «сегодня в 20:25», а не
+   * «24.09 в 20:25» (проверка Никиты 24.09.2026). Не передано — датой,
+   * как прежде.
+   */
+  now?: Date,
 ): string {
   const { after, fields } = applied;
   const resolver = texts.resolver;
@@ -133,9 +139,17 @@ export function describeChange(
    * увидит в списке.
    */
   if (fields.includes('deadlineAt') && after.deadlineAt !== null) {
+    const day =
+      now !== undefined && after.deadlineAccuracy === 'day'
+        ? relativeDayWord(after.deadlineAt, now, timeZone)
+        : undefined;
     return resolver.movedDeadline(
       titleWithoutDate(after.text),
-      deadlineWords({ ...after, deadlineAt: after.deadlineAt }, timeZone, texts),
+      day === undefined
+        ? deadlineWords({ ...after, deadlineAt: after.deadlineAt }, timeZone, texts)
+        : after.deadlineTime === null
+          ? day
+          : `${day}, ${clockOf(after.deadlineTime)}`,
     );
   }
 
@@ -144,7 +158,9 @@ export function describeChange(
   if (fields.includes('deadlineTime') && after.deadlineAt !== null && after.deadlineTime !== null) {
     return resolver.retimed(
       titleWithoutDate(after.text),
-      shortDate(after.deadlineAt, timeZone),
+      now === undefined
+        ? shortDate(after.deadlineAt, timeZone)
+        : relativeDayWord(after.deadlineAt, now, timeZone),
       clockOf(after.deadlineTime),
     );
   }

@@ -397,7 +397,9 @@ describe('«Изменить время» — час словами (ТЗ про
         priority: 'SOON',
         topic: 'здоровье',
         sourceOrder: 0,
-        deadlineAt: new Date('2026-09-24T21:00:00.000Z'),
+        // Год вперёд: день в ответе — числом при любых часах теста; «сегодня /
+        // завтра» проверяет `change-text.test.ts` на своём «сейчас».
+        deadlineAt: new Date('2027-09-24T21:00:00.000Z'),
         deadlineAccuracy: 'day',
         deadlineTime: time,
       })

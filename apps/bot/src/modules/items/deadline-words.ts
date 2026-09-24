@@ -104,3 +104,22 @@ export function dueWords(
   const date = shortDate(item.deadlineAt, context.timeZone);
   return hour === undefined ? date : `${date}, ${hour}`;
 }
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * Ближний день словом — «сегодня», «завтра», «послезавтра»; дальше и в
+ * прошлом — числом (проверка Никиты 24.09.2026: «Напомню про «Забрать
+ * посылку» 24.09 в 20:25» — о сегодняшнем дне датой). Счёт — по местным
+ * дням человека.
+ */
+export function relativeDayWord(at: Date, now: Date, timeZone: string): string {
+  const today = startOfDayInZone(localDateParts(now, timeZone), timeZone);
+  const target = startOfDayInZone(localDateParts(at, timeZone), timeZone);
+  const days = Math.round((target.getTime() - today.getTime()) / DAY_MS);
+
+  if (days === 0) return 'сегодня';
+  if (days === 1) return 'завтра';
+  if (days === 2) return 'послезавтра';
+  return shortDate(at, timeZone);
+}

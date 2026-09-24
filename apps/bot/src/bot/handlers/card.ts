@@ -290,9 +290,12 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         'Запись изменена кнопкой карточки',
       );
 
-      await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: changeKeyboard(applied, active.texts),
-      });
+      await ctx.editMessageText(
+        describeChange(applied, active.texts, active.timeZone, undefined, new Date()),
+        {
+          reply_markup: changeKeyboard(applied, active.texts),
+        },
+      );
 
       const chatId = ctx.chat?.id;
       if (chatId !== undefined) await refresh(active.userId, chatId, active.item.topic);

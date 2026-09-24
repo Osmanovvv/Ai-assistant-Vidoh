@@ -1,9 +1,9 @@
 import type { DeadlineAccuracyValue, ItemTypeValue } from '../../db/schema.js';
 import { localMinutes } from '../classifier/clock-time.js';
-import { shortDate } from '../items/deadline-words.js';
+import { relativeDayWord } from '../items/deadline-words.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 import type { TextProfile } from '../../texts/index.js';
-import { clockOf, HORIZON_HOURS, localDayNumber, planFor, type PlanSettings } from './plan.js';
+import { clockOf, HORIZON_HOURS, planFor, type PlanSettings } from './plan.js';
 
 /**
  * «Напомнишь?» сразу после разговора о деле (живая проверка Никиты
@@ -68,21 +68,12 @@ const HOUR_MS = 60 * 60_000;
 /** У «месяца» возврат в начале периода, а период — до тридцати одного дня. */
 const PERIOD_HOURS = 32 * 24;
 
-/** «сегодня», «завтра», «послезавтра» или «27.09» — по местному дню. */
-function dayWord(at: Date, now: Date, timeZone: string): string {
-  const days = localDayNumber(at, timeZone) - localDayNumber(now, timeZone);
-  if (days === 0) return 'сегодня';
-  if (days === 1) return 'завтра';
-  if (days === 2) return 'послезавтра';
-  return shortDate(at, timeZone);
-}
-
 /** «сегодня в 21:00, завтра в 08:00 и в 15:30»: день второй раз не называется. */
 function whenWords(moments: readonly Date[], now: Date, timeZone: string): string {
   const parts: string[] = [];
   let previousDay: string | undefined;
   for (const at of moments) {
-    const day = dayWord(at, now, timeZone);
+    const day = relativeDayWord(at, now, timeZone);
     const clock = `в ${clockOf(localMinutes(at, timeZone))}`;
     parts.push(day === previousDay ? clock : `${day} ${clock}`);
     previousDay = day;
