@@ -1233,6 +1233,75 @@ describe('осиротевшее закрытие снимается вмест�
     expect(removed, 'задание закрытия осталось висеть над закрытой выгрузкой').toHaveLength(1);
     expect(jobs.size).toBe(0);
   });
+
+  it('сообщение из другой ветки: прежняя выгрузка — в разбор сразу, её ожидание тишины снято (живая проверка 24.09.2026)', async () => {
+    const removed: string[] = [];
+    const processed: string[] = [];
+    const jobs = new Map<string, { remove: () => Promise<void> }>();
+
+    const queue = {
+      getJob: (id: string) => Promise.resolve(jobs.get(id)),
+      add: (name: string, _data: unknown, options?: { jobId?: string }) => {
+        if (name === 'process-user') processed.push(name);
+        const id = options?.jobId;
+        if (id !== undefined) {
+          jobs.set(id, {
+            remove: () => {
+              removed.push(id);
+              jobs.delete(id);
+              return Promise.resolve();
+            },
+          });
+        }
+        return Promise.resolve({});
+      },
+    } as unknown as Queue<PipelineJob>;
+
+    const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', {
+      botInfo: {
+        id: 1,
+        is_bot: true,
+        first_name: 'ВЫДОХ',
+        username: 'vydoh_test_bot',
+      } as unknown as UserFromGetMe,
+    });
+    bot.api.config.use(() =>
+      Promise.resolve({
+        ok: true,
+        result: { message_id: 1, date: 0, chat: { id: TG_ID, type: 'private' } },
+      } as never),
+    );
+    bot.use(
+      incomingMiddleware({
+        db: testDb(),
+        queue,
+        settings: new SettingsRegistry({ db: testDb(), ttlMs: 0 }),
+        limits: DEFAULT_LIMITS,
+        privacyPolicyUrl: POLICY_URL,
+        consentUrl: CONSENT_URL,
+      }),
+    );
+
+    // Голос в главном чате — ждёт тишины.
+    await bot.handleUpdate(textUpdate('Надо будет поехать за ребенком в 4 часа'));
+    expect(processed).toEqual([]);
+    const firstClose = [...jobs.keys()];
+    expect(firstClose).toHaveLength(1);
+
+    // Через полминуты — вопрос в ветке «покупки».
+    const inThread = textUpdate('Какие еще 6') as Update & {
+      message: { message_thread_id?: number; is_topic_message?: boolean };
+    };
+    inThread.message.message_thread_id = 336049;
+    inThread.message.is_topic_message = true;
+    await bot.handleUpdate(inThread);
+
+    // Прежняя — в разбор сразу, её ожидание снято; у новой — своё.
+    expect(processed).toEqual(['process-user']);
+    expect(removed).toEqual(firstClose);
+    expect(jobs.size).toBe(1);
+    expect([...jobs.keys()]).not.toEqual(firstClose);
+  });
 });
 
 describe('вопрос разбирается сразу, не дожидаясь тишины (прогон 17.09.2026, находка 20)', () => {

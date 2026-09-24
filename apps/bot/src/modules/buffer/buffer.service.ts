@@ -73,6 +73,24 @@ export interface AttachResult {
   readonly closed: boolean;
   readonly closeReason?: CloseReason;
   readonly messageCount: number;
+  /**
+   * Прежняя выгрузка, закрытая потому, что это сообщение пришло из другой
+   * ветки (живая проверка 24.09.2026): она готова к разбору, и поставить
+   * её в очередь — дело вызывающего.
+   */
+  readonly closedOnThreadChange?: string;
+}
+
+/** Ветка первого сообщения выгрузки: из неё выгрузка и отвечает. */
+async function threadOfBatch(tx: Executor, batchId: string): Promise<number | null | undefined> {
+  const [first] = await tx
+    .select({ threadId: messagesRaw.tgThreadId })
+    .from(messagesRaw)
+    .where(eq(messagesRaw.batchId, batchId))
+    .orderBy(asc(messagesRaw.receivedAt))
+    .limit(1);
+  // Нет сообщений — сравнивать не с чем.
+  return first === undefined ? undefined : first.threadId;
 }
 
 /** Открытая выгрузка пользователя или новая, если открытой нет. */
@@ -123,7 +141,38 @@ export async function attachMessageToBatch(
   const now = params.now ?? new Date();
 
   return await db.transaction(async (tx): Promise<AttachResult> => {
-    const batch = await openBatchFor(tx, params.userId, now);
+    let batch = await openBatchFor(tx, params.userId, now);
+
+    /**
+     * Сообщение из другой ветки начинает свою выгрузку (живая проверка
+     * Никиты 24.09.2026).
+     *
+     * Выгрузка отвечает в одном месте — в ветке своей первой реплики. Голос
+     * в главном чате и через 23 секунды «Какие еще 6» в ветке «покупки»
+     * склеились: ответ на всё ушёл в главный чат, а вопрос ветки
+     * разобрался как «покажи все дела». Теперь прежняя выгрузка закрывается
+     * и идёт в разбор, а это сообщение открывает новую — и ответ придёт
+     * туда, где спрашивали.
+     */
+    let closedOnThreadChange: string | undefined;
+    const [incoming] = await tx
+      .select({ threadId: messagesRaw.tgThreadId })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.id, params.messageId))
+      .limit(1);
+    const batchThread = await threadOfBatch(tx, batch.id);
+    if (
+      incoming !== undefined &&
+      batchThread !== undefined &&
+      (batchThread ?? null) !== (incoming.threadId ?? null)
+    ) {
+      await tx
+        .update(batches)
+        .set({ status: 'queued', closedAt: now })
+        .where(eq(batches.id, batch.id));
+      closedOnThreadChange = batch.id;
+      batch = await openBatchFor(tx, params.userId, now);
+    }
 
     await tx
       .update(messagesRaw)
@@ -183,6 +232,7 @@ export async function attachMessageToBatch(
       closed: closeReason !== undefined,
       ...(closeReason ? { closeReason } : {}),
       messageCount,
+      ...(closedOnThreadChange === undefined ? {} : { closedOnThreadChange }),
     };
   });
 }
