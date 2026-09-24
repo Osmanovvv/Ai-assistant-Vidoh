@@ -48,7 +48,11 @@ import {
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
 import { CLARIFY_REASON, clarifiedCommand, hourClarifyCommand } from '../resolver/clarify.js';
-import { closeClarification, openClarification } from '../resolver/clarify.repo.js';
+import {
+  closeClarification,
+  hourClarifyTarget,
+  openClarification,
+} from '../resolver/clarify.repo.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
@@ -56,6 +60,7 @@ import { applyDecision, emptyChanges, type Applied } from '../resolver/patch.js'
 import {
   clockTimesIn,
   fromNowIn,
+  hourWithoutDay,
   timeShiftIn,
   withoutClockPhrase,
 } from '../classifier/clock-time.js';
@@ -731,6 +736,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * реплику, которая читается как «не поняла». Строка подбирается по
      * исходу и произносится один раз, даже если таких правок две.
      */
+    /**
+     * Текст переспроса «утро или вечер» (проверка Никиты 24.09.2026, 19:01).
+     *
+     * Дело известно и сказан только час — переспрос помнится командой
+     * «Перенеси «X» в N» (`hourClarifyCommand`): ответ «вечером» тогда
+     * применяется прямо к этому делу, без модели. Иначе — слова человека,
+     * как прежде: в них может быть день, и его рассудит резолвер.
+     */
+    const clarifyDraftText = async (
+      said: string,
+      itemId: string | undefined,
+      readings: readonly [number, number] | undefined,
+    ): Promise<string> => {
+      if (itemId === undefined || readings === undefined || !hourWithoutDay(said)) return said;
+      const [row] = await db
+        .select({ text: items.text })
+        .from(items)
+        .where(eq(items.id, itemId))
+        .limit(1);
+      return row === undefined ? said : hourClarifyCommand(row.text, readings[0]);
+    };
+
     const parkedWords: string[] = [];
     const sayParked = (line: string): void => {
       if (!parkedWords.includes(line)) parkedWords.push(line);
@@ -1009,6 +1036,43 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         { batchId: batch.id, kind: clarification.kind, answered: clarified !== undefined },
         'Реплика после переспроса',
       );
+    }
+
+    /**
+     * Ответ на «утро или вечер» — прямо к делу, о котором спросили
+     * (проверка Никиты 24.09.2026, 19:01).
+     *
+     * «Во сколько «Забрать ребенка» — 07:00 или 19:00?» — «Вечером» — и бот
+     * переспросил «Перенести «Забрать ребенка в 7»?»: ответ шёл резолверу
+     * обычной правкой, и модель была не уверена. Но бот сам спросил про
+     * это дело — выбирать нечего. Дело — по названию из переспроса;
+     * совпало несколько — о котором говорили в той выгрузке, иначе
+     * последнее. В словах для правки только час: день у дела остаётся.
+     */
+    if (clarification?.kind === 'time' && clarified !== undefined) {
+      const target = await hourClarifyTarget(db, batch.userId, clarification);
+      if (target !== undefined) {
+        const spoken = clarified.replace(/«[^»]*»\s*/u, '');
+        const outcome = await applyDecision(db, {
+          userId: batch.userId,
+          itemId: target.id,
+          action: 'update',
+          changes: emptyChanges(),
+          spoken,
+          timeZone: context.timeZone,
+          now,
+          reason: 'час по переспросу «утро или вечер»',
+          changedBy: 'user',
+        });
+        if (outcome.kind === 'applied') {
+          await tell(
+            describeChange(outcome.applied, texts, context.timeZone, spoken),
+            changeButtons(outcome.applied, texts, spoken),
+          );
+          await rememberMentioned(db, batch.id, [target.id]);
+          return;
+        }
+      }
     }
 
     /**
@@ -1355,7 +1419,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         await saveDraft(db, {
           userId: batch.userId,
           batchId: batch.id,
-          text: pending.segment,
+          text: await clarifyDraftText(pending.segment, pending.itemId, settled.timeUnclear),
           reason: CLARIFY_REASON.time,
         });
       }
@@ -1552,7 +1616,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
-        text: segment.text,
+        text:
+          outcome.clarify === 'time'
+            ? await clarifyDraftText(segment.text, outcome.itemId, outcome.timeUnclear)
+            : segment.text,
         // Переспрос помечен: следующая реплика может быть ответом на него.
         reason: outcome.clarify === undefined ? outcome.reason : CLARIFY_REASON[outcome.clarify],
       });

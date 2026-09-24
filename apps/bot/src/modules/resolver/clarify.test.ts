@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { clockTimesIn, hourWithoutDay } from '../classifier/clock-time.js';
 
-import { clarifiedCommand, hourClarifyCommand } from './clarify.js';
+import { clarifiedCommand, hourClarifyCommand, hourClarifyTitle } from './clarify.js';
 
 /**
  * Ответ на уточнение (живой прогон Никиты 23.09.2026, 12:50).
@@ -69,6 +69,14 @@ describe('утро или вечер у нового дела — команда
     expect(clockTimesIn(done ?? '')).toEqual([[expected]]);
     // Дня в команде нет — перенос меняет только час.
     expect(hourWithoutDay(done ?? '')).toBe(true);
+  });
+
+  it('название из команды переспроса — для ответа прямо к делу; своя команда человека — не она', () => {
+    expect(hourClarifyTitle('Перенеси «Забрать ребенка» в 7')).toBe('Забрать ребенка');
+    expect(hourClarifyTitle(hourClarifyCommand('Позвонить маме', 9 * 60 + 30))).toBe(
+      'Позвонить маме',
+    );
+    expect(hourClarifyTitle('Перенеси посылку на пол 12')).toBeUndefined();
   });
 
   it('название — без часа: «Перенеси «Забрать ребёнка» в 7»', () => {

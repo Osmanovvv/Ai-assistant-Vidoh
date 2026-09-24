@@ -61,6 +61,13 @@ const OFFICE = /(?<!\p{L})(просрочен|выгрузк|статус|кат
 const PROMISE = /(?<!\p{L})(разбер[её]мся|сделаем|успеем|справимся|займ[её]мся)(?!\p{L})/iu;
 /** Оценка — «не оценивает»: «не забыла», «умница» и прочее сверх FORBIDDEN. */
 const PRAISE = /(?<!\p{L})(не\s+забыла|умница|отлично|здорово|молодчина)(?!\p{L})/iu;
+/**
+ * Оценка самого дела — «хорошее дополнение», «важное дело» (проверка
+ * Никиты 24.09.2026). Только у живой строки: в ответе на «что важнее»
+ * слово «важнее» — ответ, а не оценка.
+ */
+const JUDGING =
+  /(?<!\p{L})(хорош\p{L}*|важн\p{L}*|прекрасн\p{L}*|замечательн\p{L}*|чудесн\p{L}*|полезн\p{L}*|правильн\p{L}*|приятн\p{L}*)(?!\p{L})/iu;
 const YOU_PLURAL = /(?<!\p{L})(вы|вас|вам|вами|ваш|ваша|ваше|ваши|вашу|вашей|вашего)(?!\p{L})/iu;
 const MASCULINE_SELF =
   /(?<!\p{L})(понял|услышал|записал|запомнил|забрал|разложил|поймал|увидел)(?!\p{L})/iu;
@@ -226,6 +233,8 @@ export interface VoiceLimits {
    * разложены» по-прежнему можно: там считает она сама по списку записи.
    */
   readonly countsFromFacts?: boolean | undefined;
+  /** Оценка дела — «хорошее», «важное»: у строки нельзя, у ответа можно. */
+  readonly forbidJudging?: boolean | undefined;
 }
 
 const LINE_LIMITS: VoiceLimits = {
@@ -233,6 +242,7 @@ const LINE_LIMITS: VoiceLimits = {
   maxSentences: MAX_SENTENCES,
   maxQuestions: 0,
   forbidOpening: true,
+  forbidJudging: true,
 };
 
 /**
@@ -284,6 +294,7 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   }
   if (PROMISE.test(line)) return { ok: false, why: 'обещание' };
   if (PRAISE.test(line)) return { ok: false, why: 'оценка' };
+  if (limits.forbidJudging === true && JUDGING.test(line)) return { ok: false, why: 'оценка' };
   if (picturesIn(line).length > 0) return { ok: false, why: 'эмодзи' };
   if (limits.forbidOpening && OPENING.test(line)) return { ok: false, why: 'повторяет открытие' };
   if (COUNT_OF_ITEMS.test(line)) return { ok: false, why: 'повторяет счёт' };
