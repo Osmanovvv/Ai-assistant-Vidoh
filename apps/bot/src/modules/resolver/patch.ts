@@ -16,7 +16,9 @@ import {
   clockTimesIn,
   fromNowIn,
   hourWithoutDay,
+  isEarlyHour,
   relativeWithoutDay,
+  sureReading,
   timeShiftIn,
   localMinutes,
   withoutClockPhrase,
@@ -672,6 +674,15 @@ function spokenClockTime(
 
   const [morning, evening] = first;
   if (morning === undefined || evening === undefined) return {};
+
+  /**
+   * Голый час с 1 до 6 — день (вариант Б, решение Никиты 24.09.2026):
+   * «в 4 часа» у дела без часа — 16:00, а не вопрос; «в 6» у посылки на
+   * 11:00 — 18:00, а не ближайшее 06:00. Утро остаётся, только когда само
+   * дело стоит ночью или рано утром: пробежка на 05:00 «в 6» — 06:00.
+   */
+  const sure = sureReading(first);
+  if (sure !== undefined && (current === null || !isEarlyHour(current))) return { time: sure };
   if (current === null) return { unclear: [morning, evening] };
 
   // Ближайшее чтение по кругу суток, а не «та же половина»: у дела на

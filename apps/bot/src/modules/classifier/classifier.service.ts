@@ -11,7 +11,13 @@ import type { ExtractedUnit } from '../extractor/extractor.service.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { withoutDayQuestions } from '../router/day-question.js';
-import { clockTimeOf, dayAfterPassedClock, fromNowOf, localMinutes } from './clock-time.js';
+import {
+  clockTimeOf,
+  dayAfterPassedClock,
+  fromNowOf,
+  localMinutes,
+  unclearClockOf,
+} from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { looksLikeSomedayTask } from './someday-task.js';
 import {
@@ -116,6 +122,12 @@ export interface ClassifiedItem {
   readonly deadline?: ResolvedDeadline | undefined;
   /** Регулярность (задача 2.18а). Поле у `TASK`, как и признак проекта. */
   readonly recurrence?: ResolvedRecurrence | undefined;
+  /**
+   * Час назван, но без вопроса его не взять — «в 9» (вариант Б, решение
+   * Никиты 24.09.2026): утреннее и вечернее чтения. Часа в сроке тогда
+   * нет, а конвейер спрашивает «утро или вечер» сразу при записи.
+   */
+  readonly unclearTime?: readonly [number, number] | undefined;
 }
 
 /** Что пришлось поправить за моделью. Ненулевое — повод к промпту. */
@@ -624,9 +636,14 @@ export function correctItems(
      * поправок не идёт — это не спор с моделью, а часть срока, которой
      * модель не отдаёт.
      */
+    let unclearTime: readonly [number, number] | undefined;
     if (isActionable(type) && heard !== undefined && deadline?.accuracy === 'day') {
       const time = clockTimeOf(item.text, heard, siblingsOf(index));
       if (time !== undefined) deadline = { ...deadline, time };
+      // «В 9» — утро или вечер, не угадываем, но и не молчим: оба чтения
+      // идут в конвейер, и он спрашивает сразу при записи (вариант Б,
+      // решение Никиты 24.09.2026).
+      else unclearTime = unclearClockOf(item.text, heard, siblingsOf(index));
     }
 
     /**
@@ -827,6 +844,9 @@ export function correctItems(
       isProject,
       deadline: withRule,
       recurrence,
+      ...(unclearTime === undefined || withRule?.accuracy !== 'day' || withRule.time !== undefined
+        ? {}
+        : { unclearTime }),
     });
   }
 

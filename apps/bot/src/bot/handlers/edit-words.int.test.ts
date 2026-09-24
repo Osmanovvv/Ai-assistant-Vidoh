@@ -459,6 +459,18 @@ describe('«Изменить время» — час словами (ТЗ про
     expect(await awaitingOfUser()).toBeNull();
   });
 
+  it('«в 4» — 16:00 без переспроса: голый час с 1 до 6 — день (вариант Б, 24.09.2026)', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(null);
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+
+    await bot.handleUpdate(textUpdate('в 4'));
+    expect(await timeOfItem(itemId)).toBe(16 * 60);
+    expect(await awaitingOfUser()).toBeNull();
+  });
+
   it('«Не менять» под подсказкой снимает ожидание', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();

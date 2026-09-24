@@ -1,4 +1,4 @@
-import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
+import { clockPhraseOf, clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
 import { isRecordCommand, startsWithReplacement } from '../router/append.js';
 import { namesNoDeed } from './deixis.js';
 
@@ -95,4 +95,19 @@ export function clarifiedCommand(
   }
 
   return undefined;
+}
+
+/**
+ * Переспрос о часе нового дела (вариант Б, решение Никиты 24.09.2026):
+ * «Забрать ребёнка в 7» — «Во сколько — 07:00 или 19:00?». Помнится он
+ * так же, как переспрос переноса, — черновиком с командой, и ответ её
+ * доделывает: «вечером» дописывает «вечера», «в 19:30» заменяет час.
+ *
+ * Команда — перенос этого дела на час без части суток, словами, которые
+ * разбор читает с дописанной частью суток ровно одним чтением
+ * (`clockPhraseOf`). Часа в названии нет: иначе первым читался бы он, с
+ * двумя чтениями.
+ */
+export function hourClarifyCommand(title: string, morning: number): string {
+  return `Перенеси «${withoutClockPhrase(title)}» ${clockPhraseOf(morning)}`;
 }

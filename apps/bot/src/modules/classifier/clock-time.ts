@@ -49,8 +49,13 @@ const COLON = /(?<!\d)(\d{1,2}):(\d{2})(?!\d)/gu;
 const DOT = /(?<!\d)(\d{1,2})\.(\d{2})(?!\d)/gu;
 /** Расшифровка: «в 13 0 0», «в 9 30» — после предлога. */
 const SPOKEN = /(?<!\p{L})(?:в|на|к|до|около|после)\s+(\d{1,2})\s+(0\s+0|\d{2})(?!\d)/gu;
-/** «в 15 часов», «в 15», «в 9» — час без минут, после предлога времени. */
-const BARE = /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})(?:\s+час(?:ов|а)?)?(?![\d:.]|\s+\d)/gu;
+/**
+ * «в 15 часов», «в 15», «в 9» — час без минут, после предлога времени.
+ * Точка за числом — минуты или дата, только если за ней цифра: «в 6.» в
+ * конце фразы — час (24.09.2026, расшифровка ставит точку).
+ */
+const BARE =
+  /(?<!\p{L})(?:в|к|до|около|после)\s+(\d{1,2})(?:\s+час(?:ов|а)?)?(?![\d:]|\.\d|\s+\d)/gu;
 /**
  * «На 12 часов», «на 15 часов» — час после «на» (живой прогон Никиты
  * 23.09.2026: «перенеси посылку на завтра на 12 часов» час не читался).
@@ -64,7 +69,7 @@ const NOON_WORD = /(?<!\p{L})полдень(?!\p{L})/gu;
 /** «В полночь» — 00:00, одно чтение (23.09.2026). */
 const MIDNIGHT_WORD = /(?<!\p{L})полночь(?!\p{L})/gu;
 /** «с 9 до 10» — промежуток: оба числа часы. */
-const RANGE = /(?<!\p{L})с\s+(\d{1,2})\s+до\s+(\d{1,2})(?![\d:.]|\s+\d)/gu;
+const RANGE = /(?<!\p{L})с\s+(\d{1,2})\s+до\s+(\d{1,2})(?![\d:]|\.\d|\s+\d)/gu;
 
 /** Предлог времени перед числом: «в 3 дня», «до 5 дня». */
 /**
@@ -533,6 +538,16 @@ export function clockTimeOf(
   /** Слова соседних записей: предложение, которого касается сосед, — не только моё. */
   siblings: readonly string[] = [],
 ): number | undefined {
+  const first = firstClockOf(itemText, spoken, siblings);
+  return first === undefined ? undefined : sureReading(first);
+}
+
+/** Первый названный час дела: из его слов, а нет их — из своего предложения. */
+function firstClockOf(
+  itemText: string,
+  spoken: string,
+  siblings: readonly string[],
+): ClockTime | undefined {
   const own = clockTimesIn(itemText);
   const sentences = ownSentences(itemText, spoken);
   const sentence = sentences[0];
@@ -543,9 +558,85 @@ export function clockTimeOf(
     siblings.some((other) => ownSentences(other, spoken).includes(sentence));
   const times =
     own.length > 0 ? own : sentences.length === 1 && !shared ? clockTimesIn(sentence ?? '') : [];
-  const first = times[0];
+  return times[0];
+}
 
-  return first?.length === 1 ? first[0] : undefined;
+/**
+ * Утро с 1:00 до 6:59 без «утра» и «ночи» — это день (вариант Б, решение
+ * Никиты 24.09.2026). Живая проверка: «надо будет поехать за ребёнком в 4
+ * часа» записалось без часа — чтений два, — и напоминание к четырём не
+ * пришло бы. На 4 часа ночи дела без слова «ночи» не планируют; кому
+ * правда туда, говорят «в 4 утра», и это одно чтение.
+ */
+const EARLY_FROM = 1 * MINUTES_IN_HOUR;
+const EARLY_UNTIL = 7 * MINUTES_IN_HOUR;
+
+/**
+ * Чтение, которое можно взять без вопроса: одно — оно; пара, где утро с
+ * 1:00 до 6:59, — вечер (вариант Б). С 7 до 11 и «пол первого» бывает
+ * по-разному — пусто, решает вопрос.
+ */
+export function sureReading(time: ClockTime): number | undefined {
+  if (time.length === 1) return time[0];
+  const [morning, evening] = time;
+  if (morning === undefined || evening === undefined || time.length !== 2) return undefined;
+  return morning >= EARLY_FROM && morning < EARLY_UNTIL ? evening : undefined;
+}
+
+/** Утро это или ночь у самой записи: тогда и голый час с 1 до 6 — её утро. */
+export function isEarlyHour(minutes: number): boolean {
+  return minutes < EARLY_UNTIL;
+}
+
+/**
+ * Час нового дела назван, но без вопроса его не взять — «в 7», «в
+ * половине восьмого» (вариант Б, 24.09.2026): оба чтения, чтобы спросить
+ * сразу при записи, а не молча оставить дело без часа.
+ */
+export function unclearClockOf(
+  itemText: string,
+  spoken: string,
+  siblings: readonly string[] = [],
+): readonly [number, number] | undefined {
+  const first = firstClockOf(itemText, spoken, siblings);
+  if (first?.length !== 2 || sureReading(first) !== undefined) {
+    return undefined;
+  }
+  const [morning, evening] = first;
+  return morning === undefined || evening === undefined ? undefined : [morning, evening];
+}
+
+const ORDINAL_GENITIVE = [
+  'первого',
+  'второго',
+  'третьего',
+  'четвёртого',
+  'пятого',
+  'шестого',
+  'седьмого',
+  'восьмого',
+  'девятого',
+  'десятого',
+  'одиннадцатого',
+  'двенадцатого',
+] as const;
+
+/**
+ * Фраза о часе для переспроса «утро или вечер» — по утреннему чтению.
+ *
+ * К ней дописывается ответ человека («вечером» → «… вечера»), и разбор
+ * обязан прочитать ровно одно чтение: «в 7 вечера», «в половине восьмого
+ * вечера», «в 15 минут восьмого вечера». Поэтому минуты — словами
+ * следующего часа, а не «7:15»: двоеточие читается одним утренним
+ * чтением, и часть суток после него не работает.
+ */
+export function clockPhraseOf(morning: number): string {
+  const hour = Math.floor(morning / MINUTES_IN_HOUR) % NOON;
+  const minute = morning % MINUTES_IN_HOUR;
+  const next = ORDINAL_GENITIVE[hour] ?? '';
+  if (minute === 0) return `в ${String(hour === 0 ? NOON : hour)}`;
+  if (minute === MINUTES_IN_HOUR / 2) return `в половине ${next}`;
+  return `в ${String(minute)} минут ${next}`;
 }
 
 /** Минуты от полуночи по часам человека. */
