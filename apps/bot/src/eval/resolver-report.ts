@@ -32,15 +32,21 @@ export interface ResolverCaseOutcome {
 
 export interface ResolverReport {
   readonly cases: number;
-  /** Решение совпало с размеченным. */
+  /** Решение совпало с размеченным — и о той записи, о какой надо. */
   readonly decisionCorrect: number;
   /**
-   * Применил там, где ждали вопроса или новой записи.
+   * Бот поправил запись, которую править было нельзя: применил там, где
+   * ждали вопроса или новой записи, **или применил к не той записи**.
    *
    * Самая дорогая ошибка набора: бот поменял запись человека, не спросив
-   * и не имея на то оснований.
+   * и не имея на то оснований. До 24.09.2026 правка не той записи сюда
+   * не входила и пряталась в строке «не та запись» — замер «как сейчас»
+   * (docs/26a) напечатал «ложных применений 0» при трёх тихих правках
+   * чужого дела из семи.
    */
   readonly falseApplies: number;
+  /** Из ложных применений — правка не той записи, когда правку ждали. */
+  readonly wrongRecordApplies: number;
   /**
    * Спросил там, где ждали применения.
    *
@@ -50,7 +56,12 @@ export interface ResolverReport {
   readonly extraQuestions: number;
   /** Завёл новую запись там, где надо было поправить существующую. */
   readonly missedPatches: number;
-  /** Решение верное, а запись выбрана не та. */
+  /**
+   * Запись выбрана не та — чем бы ни кончилось: правкой или вопросом.
+   *
+   * Вопрос про чужое дело вместо правки нужного — тоже сюда: человек
+   * ответит «да» про запись, которую не имел в виду.
+   */
   readonly wrongTarget: number;
   readonly wrongDeadline: number;
   /**
@@ -74,13 +85,26 @@ export function collectResolver(
   const count = (predicate: (outcome: ResolverCaseOutcome) => boolean): number =>
     outcomes.filter(predicate).length;
 
+  /** Решение о записи — правка или вопрос, — и ждали тоже решения о записи. */
+  const aboutRecord = (outcome: ResolverCaseOutcome): boolean =>
+    outcome.expected !== 'create' && outcome.actual !== 'create';
+
   return {
     cases: outcomes.length,
-    decisionCorrect: count((outcome) => outcome.expected === outcome.actual),
-    falseApplies: count((outcome) => outcome.actual === 'apply' && outcome.expected !== 'apply'),
+    decisionCorrect: count(
+      (outcome) =>
+        outcome.expected === outcome.actual && (outcome.expected === 'create' || outcome.targetOk),
+    ),
+    falseApplies: count(
+      (outcome) =>
+        outcome.actual === 'apply' && (outcome.expected !== 'apply' || !outcome.targetOk),
+    ),
+    wrongRecordApplies: count(
+      (outcome) => outcome.actual === 'apply' && outcome.expected !== 'create' && !outcome.targetOk,
+    ),
     extraQuestions: count((outcome) => outcome.actual === 'ask' && outcome.expected === 'apply'),
     missedPatches: count((outcome) => outcome.actual === 'create' && outcome.expected !== 'create'),
-    wrongTarget: count((outcome) => outcome.expected === outcome.actual && !outcome.targetOk),
+    wrongTarget: count((outcome) => aboutRecord(outcome) && !outcome.targetOk),
     wrongDeadline: count((outcome) => !outcome.deadlineOk),
     wrongMode: count((outcome) => !outcome.modeOk),
     rewrittenText: count((outcome) => !outcome.textOk),
@@ -155,8 +179,12 @@ export function checkResolverThreshold(
   const failures: string[] = [];
 
   if (report.falseApplies > spec.falseApplies) {
+    const wrongRecord =
+      report.wrongRecordApplies > 0
+        ? ` (из них не в ту запись: ${String(report.wrongRecordApplies)})`
+        : '';
     failures.push(
-      `ложных применений ${String(report.falseApplies)} при пороге ${String(spec.falseApplies)} — бот поправил запись, не имея на то оснований`,
+      `ложных применений ${String(report.falseApplies)}${wrongRecord} при пороге ${String(spec.falseApplies)} — бот поправил запись, не имея на то оснований`,
     );
   }
 
@@ -206,6 +234,7 @@ export function formatResolver(report: ResolverReport): string {
     '',
     `  верных решений:        ${String(report.decisionCorrect)} из ${String(report.cases)} (${share.toFixed(1)}%)`,
     `  ложных применений:     ${String(report.falseApplies)}   ← самая дорогая ошибка`,
+    `    из них не в ту запись: ${String(report.wrongRecordApplies)}`,
     `  лишних вопросов:       ${String(report.extraQuestions)}`,
     `  пропущенных правок:    ${String(report.missedPatches)}`,
     `  не та запись:          ${String(report.wrongTarget)}`,

@@ -133,6 +133,9 @@ const RESOLVER_REPORT_SHAPE = z.object({
   cases: z.number(),
   decisionCorrect: z.number(),
   falseApplies: z.number(),
+  // С 24.09.2026. В прежних отчётах поля нет: они проходили порог только
+  // при нуле «не той записи», так что ноль здесь — правда, а не допущение.
+  wrongRecordApplies: z.number().default(0),
   extraQuestions: z.number(),
   missedPatches: z.number(),
   wrongTarget: z.number(),

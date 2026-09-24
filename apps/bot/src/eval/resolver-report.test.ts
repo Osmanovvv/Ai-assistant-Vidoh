@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkResolverThreshold,
   collectResolver,
+  formatResolver,
   RESOLVER_THRESHOLD,
   type ResolverCaseOutcome,
   type ResolverReport,
@@ -61,6 +62,65 @@ describe('самая дорогая ошибка не проходит ни пр
 
     expect(verdict.passed).toBe(false);
     expect(verdict.failures.join(' ')).toContain('не та запись');
+  });
+});
+
+describe('правка не в ту запись — ложное применение, а не строчка в хвосте (замер 24.09.2026)', () => {
+  /**
+   * Замер «как сейчас» (docs/26a): модель в трёх случаях из семи выбрала
+   * не то дело, и код молча его поправил. Отчёт же напечатал «верных
+   * решений 6 из 7» и «ложных применений 0»: верным он считал вид решения,
+   * а ложным — только применение там, где ждали вопрос или новое дело.
+   * Правка чужого дела пряталась в строке «не та запись», хотя по §7.3 это
+   * та же самая ошибка — изменение, которое стоит доверия.
+   */
+
+  it('применено к не той записи — ложное применение', () => {
+    const report = runWith({ expected: 'apply', actual: 'apply', targetOk: false });
+
+    expect(report.falseApplies).toBe(1);
+    expect(report.wrongRecordApplies).toBe(1);
+    expect(checkResolverThreshold(report).failures.join(' ')).toContain('не в ту запись');
+  });
+
+  it('решение о не той записи верным не считается', () => {
+    expect(runWith({ expected: 'ask', actual: 'ask', targetOk: false }).decisionCorrect).toBe(15);
+    expect(runWith({ expected: 'apply', actual: 'apply', targetOk: false }).decisionCorrect).toBe(
+      15,
+    );
+  });
+
+  it('вопрос про не ту запись вместо правки — тоже «не та запись»', () => {
+    expect(runWith({ expected: 'apply', actual: 'ask', targetOk: false }).wrongTarget).toBe(1);
+  });
+
+  it('семь исходов замера 24.09: верных 2, ложных применений 3, не та запись 5', () => {
+    const measured = collectResolver(
+      [
+        outcome({ id: 'd01', expected: 'apply', actual: 'apply', targetOk: false }),
+        outcome({ id: 'd02', expected: 'apply', actual: 'apply', targetOk: true }),
+        outcome({ id: 'd03', expected: 'apply', actual: 'apply', targetOk: false }),
+        outcome({ id: 'd04', expected: 'apply', actual: 'ask', targetOk: false }),
+        outcome({ id: 'd05', expected: 'ask', actual: 'ask', targetOk: false }),
+        outcome({ id: 'd06', expected: 'ask', actual: 'ask', targetOk: true }),
+        outcome({ id: 'd07', expected: 'apply', actual: 'apply', targetOk: false }),
+      ],
+      'resolver@3',
+    );
+
+    expect(measured.decisionCorrect).toBe(2);
+    expect(measured.falseApplies).toBe(3);
+    expect(measured.wrongRecordApplies).toBe(3);
+    expect(measured.wrongTarget).toBe(5);
+    expect(formatResolver(measured)).toContain('ложных применений:     3');
+    expect(formatResolver(measured)).toContain('из них не в ту запись: 3');
+  });
+
+  it('применение вместо нового дела остаётся ложным, но не «не в ту запись»', () => {
+    const report = runWith({ expected: 'create', actual: 'apply' });
+
+    expect(report.falseApplies).toBe(1);
+    expect(report.wrongRecordApplies).toBe(0);
   });
 });
 
@@ -160,6 +220,7 @@ describe('порог смотрит на всё, что набор мерит (�
       cases: 16,
       decisionCorrect: 16,
       falseApplies: 0,
+      wrongRecordApplies: 0,
       extraQuestions: 0,
       missedPatches: 0,
       wrongTarget: 0,
@@ -201,6 +262,8 @@ describe('порог смотрит на всё, что набор мерит (�
       'extraQuestions',
       // Считается через долю верных решений, своего порога не имеет.
       'decisionCorrect',
+      // Часть ложных применений, для разбора: порог — через falseApplies.
+      'wrongRecordApplies',
       // Не провал сам по себе: новая запись вместо правки — мягкая
       // ошибка, и порог по ней сузил бы «спрашивать чаще».
       'missedPatches',

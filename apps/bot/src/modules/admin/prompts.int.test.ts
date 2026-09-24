@@ -152,6 +152,7 @@ async function writeResolverRun(params: {
     cases: 20,
     decisionCorrect: passing ? 20 : 5,
     falseApplies: 0,
+    wrongRecordApplies: 0,
     extraQuestions: 0,
     missedPatches: 0,
     wrongTarget: 0,
