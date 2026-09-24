@@ -707,6 +707,34 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect((await reread(item.id)).deadlineTime).toBe(6 * 60);
   });
 
+  /**
+   * Проверка Никиты 24.09.2026, 19:46: «Послезавтра забрать ребенка в 8» у
+   * «Забрать ребенка в 7» без часа — день перенесён, а про час ни слова:
+   * «Перенесла «Забрать ребенка в 7» на 26.09.» Вопрос о часе звучал
+   * только когда больше менять было нечего. Теперь исход называет оба
+   * чтения и при применённом переносе, а прежний час из заголовка уходит.
+   */
+  it('«Послезавтра … в 8» у дела без часа — день перенесён, оба чтения часа в исходе, «в 7» из заголовка ушло', async () => {
+    const item = await sow({ text: 'Забрать ребенка в 7' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('2026-09-04'),
+      spoken: 'Послезавтра забрать ребенка в 8.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(outcome.kind === 'applied' ? outcome.timeUnclear : undefined).toEqual([8 * 60, 20 * 60]);
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe('2026-09-03T21:00:00.000Z');
+    expect(after.deadlineTime).toBeNull();
+    expect(after.text).toBe('Забрать ребенка');
+  });
+
   it('«в 7» у дела без часа — по-прежнему оба чтения: утро и вечер бывают оба', async () => {
     const item = await sow({ text: 'Забрать ребёнка' });
 

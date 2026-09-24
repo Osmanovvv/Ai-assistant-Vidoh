@@ -758,6 +758,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       return row === undefined ? said : hourClarifyCommand(row.text, readings[0]);
     };
 
+    /**
+     * Перенос применён, а названный час с двумя чтениями не поставлен
+     * (проверка Никиты 24.09.2026, 19:46: «Перенесла «Забрать ребенка в 7» на
+     * 26.09.» — и про «в 8» ни слова). Вопрос — в том же ответе, и он
+     * помнится, как при записи; один на обмен (§13.9).
+     */
+    const hourQuestionAfterMove = async (
+      applied: Applied,
+      readings: readonly [number, number] | undefined,
+    ): Promise<string | undefined> => {
+      if (readings === undefined || happened.asked) return undefined;
+      happened.asked = true;
+      await saveDraft(db, {
+        userId: batch.userId,
+        batchId: batch.id,
+        text: hourClarifyCommand(applied.after.text, readings[0]),
+        reason: CLARIFY_REASON.time,
+      });
+      return texts.resolver.newTimeUnclear(
+        withoutClockPhrase(applied.after.text),
+        clockOf(readings[0]),
+        clockOf(readings[1]),
+      );
+    };
+
     const parkedWords: string[] = [];
     const sayParked = (line: string): void => {
       if (!parkedWords.includes(line)) parkedWords.push(line);
@@ -1494,8 +1519,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * с ощущением, что его поняли, при том что запись противоречит
          * сказанному.
          */
+        const hourQuestion = await hourQuestionAfterMove(outcome.applied, outcome.timeUnclear);
+        const said = describeChange(outcome.applied, texts, context.timeZone, segment.text);
         await tell(
-          describeChange(outcome.applied, texts, context.timeZone, segment.text),
+          hourQuestion === undefined ? said : `${said}\n${hourQuestion}`,
           changeButtons(outcome.applied, texts, segment.text),
         );
         return;
@@ -2368,8 +2395,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         movedRepeats.add(unit);
         happened.said = true;
         rememberTopics(touchedTopics, outcome.applied);
+        const hourQuestion = await hourQuestionAfterMove(outcome.applied, outcome.timeUnclear);
+        const said = describeChange(outcome.applied, texts, context.timeZone, spoken);
         await tell(
-          describeChange(outcome.applied, texts, context.timeZone, spoken),
+          hourQuestion === undefined ? said : `${said}\n${hourQuestion}`,
           changeButtons(outcome.applied, texts, spoken),
         );
       } else if (
