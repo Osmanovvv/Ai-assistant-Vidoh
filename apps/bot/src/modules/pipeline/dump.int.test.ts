@@ -8597,7 +8597,10 @@ describe('живая строка поверх ответа (слой A, 22.09.2
 
     const { reply, presenterInputs } = await dumpWith(llm, prompts);
 
-    expect(presenterInputs).toHaveLength(1);
+    // Вторая попытка (25.09.2026): та же выгрузка, ей сказано, что не
+    // подошло; заглушка отвечает так же — строки нет, ответ как прежде.
+    expect(presenterInputs).toHaveLength(2);
+    expect(presenterInputs[1]).toContain('Строка «Не переживай, всё будет хорошо.» не подошла');
     expect(reply).not.toContain('Не переживай');
     expect(reply.split(String.fromCharCode(10))[1]).toBe('');
   });

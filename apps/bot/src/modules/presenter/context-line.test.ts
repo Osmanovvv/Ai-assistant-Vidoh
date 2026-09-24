@@ -364,11 +364,15 @@ describe('обращение к модели', () => {
       model.ask,
     );
 
+    // Заглушка отвечает одно и то же, поэтому вторая попытка (25.09.2026)
+    // тоже отвергнута: строки нет, обе причины в журнале.
     expect(outcome).toEqual({
       why: 'запрет: не переживай',
       rejected: 'Не переживай, справку помню.',
+      firstTry: { line: 'Не переживай, справку помню.', why: 'запрет: не переживай' },
     });
-    expect(log.infos.some((message) => message.includes('отвергнута'))).toBe(true);
+    expect(model.seen).toHaveLength(2);
+    expect(log.infos.filter((message) => message.includes('отвергнута'))).toHaveLength(2);
   });
 
   it('модель ответила пусто — «сказать нечего», без шума в журнале', async () => {
@@ -556,6 +560,131 @@ describe('обращение к модели', () => {
       );
 
       expect(outcome).toEqual({ line: 'Про справку помню — запись на месте.' });
+    });
+  });
+
+  describe('вторая попытка (Никита 25.09.2026: «живость и правильность, баланс»)', () => {
+    /**
+     * Бой 25.09.2026 01:44, «Купить кефир»: повод — дела на сегодня, модель
+     * написала «Проехать за ребёнком в 16:00 — помню.», сито отсекло, и
+     * живая строка пропала. Модель почти детерминирована: тот же вход
+     * вернул бы ту же строку, поэтому во второй попытке ей сказано, что
+     * не подошло.
+     */
+    const today: ContextPack = {
+      name: 'Лера',
+      partOfDay: 'ночь',
+      daysSinceLast: 1,
+      recorded: [{ title: 'Купить кефир', topic: 'покупки', due: undefined }],
+      alreadyKnown: [],
+      overdue: [],
+      today: [{ title: 'Поехать за ребёнком', time: '16:00' }, { title: 'Купить яйца' }],
+      projects: ['Наладить жизнь'],
+      doneRecently: [],
+      openTotal: 80,
+    };
+    const crooked = 'Проехать за ребёнком в 16:00 — помню.';
+    const good = 'Про ребёнка в 16:00 помню.';
+
+    /** Подмена модели, отвечающая по очереди. */
+    function answering(...lines: string[]): { seen: StructuredRequest[]; ask: AskStructured } {
+      const seen: StructuredRequest[] = [];
+      return {
+        seen,
+        ask: (_deps, request) => {
+          const line = lines[seen.length] ?? '';
+          seen.push(request);
+          return Promise.resolve({
+            ok: true,
+            value: { line },
+            promptVersion: 'presenter@2',
+            attempts: 1,
+          });
+        },
+      };
+    }
+
+    it('сито отсекло — модель пишет ещё раз, ей сказано, что не подошло; прошла — уходит вторая', async () => {
+      const model = answering(crooked, good);
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        { pack: today, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({
+        line: good,
+        firstTry: { line: crooked, why: 'слово не из фактов: проехать' },
+      });
+      expect(model.seen).toHaveLength(2);
+      const [first, second] = model.seen;
+      // Те же факты, что в первый раз, и ниже — что не подошло.
+      expect(second?.input.startsWith(first?.input ?? '?')).toBe(true);
+      expect(second?.input).toContain(crooked);
+      expect(second?.input).toContain('«проехать»');
+      expect(second).toMatchObject({ stage: 'presenter', userId: 'u1', batchId: 'b1' });
+    });
+
+    it('вторая тоже не прошла — строки нет; третьей попытки не бывает', async () => {
+      const model = answering(crooked, 'Ряженка — хорошее дополнение к вечеру.', good);
+      const log = recorded();
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, log.logger),
+        { pack: today, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({
+        why: 'оценка',
+        rejected: 'Ряженка — хорошее дополнение к вечеру.',
+        firstTry: { line: crooked, why: 'слово не из фактов: проехать' },
+      });
+      expect(model.seen).toHaveLength(2);
+      expect(log.infos.filter((message) => message.includes('отвергнута'))).toHaveLength(2);
+    });
+
+    it('вторая вернула пусто — строки нет, это законный ответ', async () => {
+      const model = answering(crooked, '');
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        { pack: today, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({
+        why: 'пусто',
+        firstTry: { line: crooked, why: 'слово не из фактов: проехать' },
+      });
+      expect(model.seen).toHaveLength(2);
+    });
+
+    it('первая прошла или модель сказала «пусто» — второй попытки нет: платим только за отказы', async () => {
+      for (const line of [good, '']) {
+        const model = answering(line, good);
+        await askContextLine(
+          deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+          { pack: today, userId: 'u1', batchId: 'b1' },
+          model.ask,
+        );
+        expect(model.seen, line).toHaveLength(1);
+      }
+    });
+
+    it('при одних больших целях второй попытки нет: правильный ответ там чаще — пусто', async () => {
+      const goals: ContextPack = { ...today, today: [], projects: ['Наладить жизнь'] };
+      const model = answering('Про кефир помню — завтра.', 'Про жизнь помню.');
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        { pack: goals, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(model.seen).toHaveLength(1);
+      expect(outcome).toEqual({ why: 'не о поводе', rejected: 'Про кефир помню — завтра.' });
     });
   });
 });

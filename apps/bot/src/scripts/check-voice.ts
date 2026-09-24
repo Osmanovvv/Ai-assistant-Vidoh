@@ -150,6 +150,8 @@ interface Outcome {
   readonly line: string | undefined;
   readonly why: string | undefined;
   readonly rejected: string | undefined;
+  /** Первая попытка, если строка ушла на вторую (25.09.2026). */
+  readonly firstTry: { readonly line: string; readonly why: string } | undefined;
 }
 
 const outcomes: Outcome[] = [];
@@ -166,6 +168,7 @@ for (const one of cases) {
       line: asked.line,
       why: asked.why,
       rejected: asked.rejected,
+      firstTry: asked.firstTry,
     };
   } catch (error) {
     stopped = error instanceof Error ? error.message : String(error);
@@ -183,8 +186,12 @@ for (const one of cases) {
           : `✗ отвергнута: ${outcome.why ?? '?'}` +
             (outcome.rejected === undefined ? '' : ` — «${outcome.rejected}»`);
   const mark = outcome.expectEmpty && outcome.line !== undefined ? '  ← ждали пусто' : '';
+  const first =
+    outcome.firstTry === undefined
+      ? ''
+      : `\n  (первая попытка: ${outcome.firstTry.why} — «${outcome.firstTry.line}»)`;
   process.stdout.write(
-    `${one.id}${one.note === undefined ? '' : ` — ${one.note}`}\n  ${verdict}${mark}\n`,
+    `${one.id}${one.note === undefined ? '' : ` — ${one.note}`}\n  ${verdict}${mark}${first}\n`,
   );
 }
 
