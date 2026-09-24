@@ -3782,7 +3782,7 @@ describe('ответ на уточняющий вопрос голосом (§7.
     return at.toISOString().slice(0, 10);
   }
 
-  async function itemAndQuestion(): Promise<{ itemId: string }> {
+  async function itemAndQuestion(segment = 'нет, в пятницу'): Promise<{ itemId: string }> {
     const [row] = await testDb()
       .insert(items)
       .values({
@@ -3803,7 +3803,7 @@ describe('ответ на уточняющий вопрос голосом (§7.
       userId,
       itemId: row!.id,
       batchId: batch!.id,
-      segment: 'нет, в пятницу',
+      segment,
       action: 'update',
       // Срок считается от настоящих часов: конвейер в этом тесте живёт
       // по ним, а даты дальше пяти лет разбор сроков отвергает.
@@ -3820,6 +3820,67 @@ describe('ответ на уточняющий вопрос голосом (§7.
 
     return { itemId: row!.id };
   }
+
+  /**
+   * Разговорное согласие (проверка Никиты 24.09.2026): на «Перенести «X»?»
+   * «давай» читалось непонятым ответом. Только у вопроса о переносе.
+   */
+  it('«давай» на «Перенести «X»?» — перенос применён', async () => {
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion('перенеси врача на пятницу');
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'давай', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider({}),
+          prompts,
+          sender,
+          llmLight: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'ANSWER', text: 'давай' }],
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).not.toBeNull();
+    expect(all.some((text) => text.includes('Не разобрала ответ'))).toBe(false);
+  });
+
+  it('«давай» на «Это про «X» или отдельная история?» — по-прежнему не ответ: запись не тронута', async () => {
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion();
+
+    await queuedBatchOf([{ kind: 'text', text: 'давай', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider({}),
+          prompts,
+          llmLight: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'ANSWER', text: 'давай' }],
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).toBeNull();
+  });
 
   it('«да, к прошлой» правит запись и не создаёт задачу «да»', async () => {
     const prompts = await seedPrompts();
@@ -9197,6 +9258,48 @@ describe('час нового дела — утро или вечер (вари�
     const moved = all.find((line) => line.includes('Перенесла'));
     expect(moved).toBeDefined();
     expect(moved).toContain('Во сколько «Забрать ребенка» — 08:00 или 20:00?');
+  });
+
+  it('«вечерком» на «Во сколько … 07:00 или 19:00?» — 19:00 без модели (разговорный ответ, 24.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+    const spoken = 'Завтра забрать ребёнка в 7.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Забрать ребёнка в 7'),
+        }),
+      },
+      userId,
+    );
+
+    const resolverCalls: string[] = [];
+    await queuedBatchOf([{ kind: 'text', text: 'Ну давай вечерком', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toEqual([]);
+    const rows = await liveItems();
+    expect(rows.map((row) => row.deadlineTime)).toEqual([19 * 60]);
   });
 
   it('перенос «на пол 12» у дела без часа — «Не поняла, 11:30 или 23:30?»; «вечером» ставит 23:30 без модели', async () => {

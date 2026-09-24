@@ -1480,7 +1480,10 @@ describe('вопрос разбирается сразу, не дожидаяс�
     expect(await lastBatchStatus()).toBe('open');
   });
 
-  async function botAskedMove(hoursAgo: number): Promise<void> {
+  async function botAskedMove(
+    hoursAgo: number,
+    segment = 'перенеси ребенка на вечер',
+  ): Promise<void> {
     const [item] = await testDb()
       .insert(items)
       .values({ userId, text: 'Забрать ребенка', type: 'TASK', priority: 'SOON', topic: 'семья' })
@@ -1493,7 +1496,7 @@ describe('вопрос разбирается сразу, не дожидаяс�
       userId,
       itemId: item!.id,
       batchId: batch!.id,
-      segment: 'перенеси ребенка на вечер',
+      segment,
       action: 'update',
       changes: {
         note: '',
@@ -1515,6 +1518,16 @@ describe('вопрос разбирается сразу, не дожидаяс�
     await botWith(queue).handleUpdate(textUpdate('да'));
 
     expect(await lastBatchStatus()).toBe('queued');
+  });
+
+  it('«давай» после «Перенести «X»?» — сразу; после «Это про X или отдельная?» — ждёт', async () => {
+    await botAskedMove(0, 'перенеси ребенка на 8 вечера');
+    await botWith(watchingQueue().queue).handleUpdate(textUpdate('давай'));
+    expect(await lastBatchStatus()).toBe('queued');
+
+    await botAskedMove(0, 'нет, в пятницу');
+    await botWith(watchingQueue().queue).handleUpdate(textUpdate('давай'));
+    expect(await lastBatchStatus()).toBe('open');
   });
 
   it('протухший вопрос приём не закрывает: его закроет уборка и сохранит слова', async () => {

@@ -38,6 +38,14 @@ const ANSWER_WORDS = 6;
 const DAYPARTS: Readonly<Record<string, string>> = {
   утра: 'утра',
   утром: 'утра',
+  // Разговорное (проверка Никиты 24.09.2026): «вечерком», «с утра», «к
+  // вечеру», «под вечер» бот не понимал, и вопрос терялся.
+  утречком: 'утра',
+  утро: 'утра',
+  утру: 'утра',
+  вечерком: 'вечера',
+  вечер: 'вечера',
+  вечеру: 'вечера',
   дня: 'дня',
   днем: 'дня',
   днём: 'дня',
@@ -47,7 +55,22 @@ const DAYPARTS: Readonly<Record<string, string>> = {
   ночью: 'ночи',
 };
 
-const FILLERS = new Set(['давай', 'лучше', 'ну', 'наверное', 'конечно', 'это', 'в', 'на']);
+const FILLERS = new Set([
+  'давай',
+  'лучше',
+  'ну',
+  'наверное',
+  'конечно',
+  'это',
+  'в',
+  'на',
+  // «с утра», «к вечеру», «под вечер», «рано утром», «поздно вечером».
+  'с',
+  'к',
+  'под',
+  'рано',
+  'поздно',
+]);
 
 function trimmed(text: string): string {
   return text.trim().replace(/[.!…\s]+$/u, '');
@@ -89,9 +112,25 @@ export function clarifiedCommand(
   const daypart = content.length === 1 ? DAYPARTS[content[0] ?? ''] : undefined;
   if (daypart !== undefined) return `${trimmed(command)} ${daypart}`;
 
-  const reading = clockTimesIn(said)[0];
+  /**
+   * «Утром в 8» — часть суток и свой час (24.09.2026): час называет
+   * человек, а не вопрос. Только час от 1 до 12 — «утром в 15» не такой.
+   */
+  if (content.length === 2) {
+    const [first, second] = content;
+    const part = DAYPARTS[first ?? ''] ?? DAYPARTS[second ?? ''];
+    const hour = [first, second].find((word) => /^\d{1,2}$/u.test(word ?? ''));
+    if (part !== undefined && hour !== undefined && Number(hour) >= 1 && Number(hour) <= 12) {
+      return `${trimmed(withoutClockPhrase(command))} в ${hour} ${part}`;
+    }
+  }
+
+  // «Семь вечера» — час словом без «в» (24.09.2026): читается с ним.
+  const direct = clockTimesIn(said)[0];
+  const phrase = direct === undefined ? `в ${said}` : said;
+  const reading = direct ?? clockTimesIn(phrase)[0];
   if (reading?.length === 1 && spoken.length <= ANSWER_WORDS) {
-    return `${trimmed(withoutClockPhrase(command))} ${said}`;
+    return `${trimmed(withoutClockPhrase(command))} ${phrase}`;
   }
 
   return undefined;

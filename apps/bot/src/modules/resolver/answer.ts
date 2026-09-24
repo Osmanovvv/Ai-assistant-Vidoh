@@ -123,6 +123,45 @@ const YES = ['да', 'ага', 'угу', 'верно', 'точно', 'именн
 const NO = ['нет', 'неа', 'не'];
 
 /**
+ * Согласие на «Перенести «X»?» разговорными словами (проверка Никиты
+ * 24.09.2026): «давай», «ок», «хорошо» читались непонятым ответом. Только
+ * у вопроса о переносе: на «Это про «X» или отдельная история?» они ничего
+ * не выбирают и остаются заполнителями.
+ */
+const MOVE_YES = [
+  'давай',
+  'ок',
+  'окей',
+  'хорошо',
+  'ладно',
+  'можно',
+  'согласна',
+  'согласен',
+  'пойдет',
+  'переноси',
+];
+
+/**
+ * Отказ, в котором есть слово согласия (проверка Никиты 24.09.2026): «да
+ * нет» и «конечно нет» — это «нет», «давай не надо» — тоже. Проверяется
+ * раньше согласия.
+ */
+const NO_PHRASES = [
+  'да нет',
+  'конечно нет',
+  'не надо',
+  'не нужно',
+  'не стоит',
+  'не переноси',
+  'не трогай',
+];
+
+/** Что за вопрос: у вопроса о переносе согласие шире. */
+export interface AnswerContext {
+  readonly move?: boolean | undefined;
+}
+
+/**
  * Слова текста в нижнем регистре, без «ё» и без знаков.
  *
  * Границы слов ищутся разбиением, а не `\b`: `\b` определена через `\w`,
@@ -160,13 +199,15 @@ export function answerRemainder(text: string): string {
   for (const list of [UNSURE, ATTACH_PHRASES, SEPARATE_PHRASES]) {
     for (const phrase of list) for (const part of phrase.split(' ')) vocabulary.add(part);
   }
-  for (const word of [...ATTACH_VERBS, ...YES, ...NO, ...FILLERS]) vocabulary.add(word);
+  for (const word of [...ATTACH_VERBS, ...YES, ...NO, ...FILLERS, ...MOVE_YES])
+    vocabulary.add(word);
+  for (const phrase of NO_PHRASES) for (const part of phrase.split(' ')) vocabulary.add(part);
 
   const rest = words.filter((word) => !vocabulary.has(word));
   return rest.length >= 2 ? rest.join(' ') : '';
 }
 
-export function readAnswer(text: string): AnswerReading {
+export function readAnswer(text: string, context: AnswerContext = {}): AnswerReading {
   const words = wordsOf(text);
   if (words.length === 0) return 'unclear';
 
@@ -192,8 +233,10 @@ export function readAnswer(text: string): AnswerReading {
    */
   if (answerRemainder(text) !== '') return 'content';
 
+  if (NO_PHRASES.some((phrase) => hasPhrase(words, phrase))) return 'separate';
   if (ATTACH_VERBS.some((word) => words.includes(word))) return 'attach';
   if (YES.some((word) => words.includes(word))) return 'attach';
+  if (context.move === true && MOVE_YES.some((word) => words.includes(word))) return 'attach';
   if (NO.some((word) => words.includes(word))) return 'separate';
 
   return 'unclear';

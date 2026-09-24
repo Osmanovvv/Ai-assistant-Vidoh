@@ -9,7 +9,7 @@ import {
   askQuestion,
   closeOpenQuestion,
   expireQuestions,
-  hasOpenQuestion,
+  peekOpenQuestion,
   openQuestionOf,
   QUESTION_TTL_HOURS,
 } from './questions.repo.js';
@@ -243,10 +243,10 @@ describe('взгляд на открытый вопрос — без закры�
   it('живой вопрос виден, протухший — нет, и строка протухшего остаётся открытой для уборки', async () => {
     await ask();
 
-    expect(await hasOpenQuestion(testDb(), userId, NOW)).toBe(true);
+    expect(await peekOpenQuestion(testDb(), userId, NOW)).toBeDefined();
 
     const later = new Date(NOW.getTime() + (QUESTION_TTL_HOURS + 1) * HOUR);
-    expect(await hasOpenQuestion(testDb(), userId, later)).toBe(false);
+    expect(await peekOpenQuestion(testDb(), userId, later)).toBeUndefined();
     // Уборка всё ещё находит его — и сохранит слова.
     expect(await expireQuestions(testDb(), later)).toBe(1);
   });
