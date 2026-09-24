@@ -223,6 +223,7 @@ const ANSWER_LIMITS: VoiceLimits = {
   // «Сегодня надо купить молоко» на «мне надо что-то купить?» — ответ её
   // словами, не понукание; «попробуй», «пора», «не забудь» остаются советом.
   allowMust: true,
+  countsFromFacts: true,
 };
 
 export function checkLiveAnswer(raw: string, facts: string): CheckedLine {

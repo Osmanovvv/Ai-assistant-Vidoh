@@ -53,6 +53,7 @@ import {
   periodKey,
   planFor,
   type PlanDeadline,
+  type PlanSettings,
 } from './plan.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 import { localTimeToUtc } from './time.js';
@@ -226,6 +227,37 @@ async function recipients(db: Database): Promise<Recipient[]> {
     // Курсора нет — дальше идти некуда, и молча зациклиться нельзя.
     if (after === undefined) return all;
   }
+}
+
+/**
+ * Настройки раскладки одного человека — те же, что берёт `planReminders`.
+ *
+ * Нужны ответу «Напомнишь?» (живая проверка 24.09.2026): он называет
+ * время по той же раскладке, что ставит напоминания. Нет строки настроек —
+ * пусто: раскладывать не по чему, и планировщик такому не пишет.
+ */
+export async function planSettingsOf(
+  db: Database,
+  userId: string,
+  panel?: SettingsRegistry,
+): Promise<PlanSettings | undefined> {
+  const [row] = await db
+    .select({
+      morningTime: userSettings.morningTime,
+      eveningTime: userSettings.eveningTime,
+      notificationsOn: userSettings.notificationsOn,
+      eveningOn: userSettings.eveningOn,
+      quietHoursOn: userSettings.quietHoursOn,
+      quietFrom: userSettings.quietFrom,
+      quietTo: userSettings.quietTo,
+    })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId))
+    .limit(1);
+
+  return row === undefined
+    ? undefined
+    : { ...row, hourLeadMinutes: await panel?.number('hourLeadMinutes') };
 }
 
 /**

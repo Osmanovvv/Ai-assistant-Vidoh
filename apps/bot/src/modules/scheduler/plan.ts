@@ -72,6 +72,12 @@ export interface PlanInput {
   /** Проекты, по которым `nudgeDue` уже сказал «пора» (3.13). */
   readonly staleProjects: readonly string[];
   readonly now: Date;
+  /**
+   * Насколько вперёд смотреть, в часах; не задано — `HORIZON_HOURS`.
+   * Ответу «когда напомнишь» нужен весь план дела до срока, а не ближайшие
+   * сутки (живая проверка 24.09.2026, «Напомнишь?»).
+   */
+  readonly horizonHours?: number | undefined;
 }
 
 export interface PlannedReminder {
@@ -173,7 +179,7 @@ export function planFor(input: PlanInput): PlannedReminder[] {
   if (!input.settings.notificationsOn) return [];
 
   const { timeZone, settings, now } = input;
-  const horizon = now.getTime() + HORIZON_HOURS * 60 * 60_000;
+  const horizon = now.getTime() + (input.horizonHours ?? HORIZON_HOURS) * 60 * 60_000;
   const planned: PlannedReminder[] = [];
 
   /**

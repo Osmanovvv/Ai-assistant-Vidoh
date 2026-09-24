@@ -7,6 +7,7 @@ import {
 import { PRESENTER_V2_SCHEMA_NAME, type PresenterLine } from '../ai/schemas/index.js';
 import { forbiddenPhraseIn, picturesIn } from '../../texts/rules.js';
 import { renderContextPack, type ContextPack } from './context-pack.js';
+import { pastFormsOf } from './past-forms.js';
 
 /**
  * Живая строка поверх ответа на выгрузку (22.09.2026, слой A).
@@ -136,6 +137,70 @@ function spelledNumbersBeforeUnits(
   return found;
 }
 
+/**
+ * Счёт словами где угодно, а не только перед «дней» (живая проверка
+ * 24.09.2026): «срок прошёл у трёх звонков маме» — звонков в фактах два.
+ * Закрытый список целых слов от двух до десяти: «одна запись» — не счёт,
+ * «семью» — это семья, «оба» — не число.
+ */
+const COUNT_WORDS: ReadonlyMap<string, number> = new Map(
+  (
+    [
+      [2, 'два две двух двум двумя'],
+      [3, 'три трех трем тремя трое троих'],
+      [4, 'четыре четырех четырем четырьмя четверо четверых'],
+      [5, 'пять пяти пятью пятеро пятерых'],
+      [6, 'шесть шести шестью шестеро'],
+      [7, 'семь семи'],
+      [8, 'восемь восьми восемью'],
+      [9, 'девять девяти девятью'],
+      [10, 'десять десяти десятью'],
+    ] as const
+  ).flatMap(([value, words]) => words.split(' ').map((word) => [word, value] as const)),
+);
+
+/**
+ * Глаголы открытых дел из фактов (живая проверка 24.09.2026): первое слово
+ * каждого дела — после начала строки, «:», «;» или «—». Строки о сделанном
+ * («— сделано», «Сделано:», «Недавно закрыла:») и сам вопрос не берутся:
+ * о сделанном прошедшее время — правда.
+ */
+function openDeedForms(facts: string): ReadonlyMap<string, true> {
+  const forms = new Map<string, true>();
+  for (const line of facts.split('\n')) {
+    const lower = line.toLowerCase().replace(/ё/gu, 'е');
+    if (lower.startsWith('вопрос:') || /сделано|недавно закрыла/u.test(lower)) continue;
+    for (const match of lower.matchAll(/(?:^|[:;—]\s*)(\p{L}+)/gu)) {
+      for (const form of pastFormsOf(match[1] ?? '')) forms.set(form, true);
+    }
+  }
+  return forms;
+}
+
+/** «Дело», «дела», «дел» — счёт дел, а не чего-то ещё. */
+const DEEDS = /^дел[ао]?$/u;
+
+/**
+ * Длины списков в фактах: «На сегодня: А; Б» — два, строки «— …» подряд —
+ * по числу строк. По ним «два дела» в ответе — счёт, а не выдумка.
+ */
+function listSizesIn(facts: string): ReadonlySet<number> {
+  const sizes = new Set<number>();
+  let run = 0;
+  for (const line of facts.split('\n')) {
+    if (line.startsWith('— ')) {
+      run += 1;
+      continue;
+    }
+    if (run > 0) sizes.add(run);
+    run = 0;
+    const colon = line.indexOf(': ');
+    if (colon >= 0) sizes.add(line.slice(colon + 2).split('; ').length);
+  }
+  if (run > 0) sizes.add(run);
+  return sizes;
+}
+
 /** Числа фактов — по цифрам: «6 дней», «5 дней назад», «21:00» → 6, 5, 21, 0. */
 function numbersIn(facts: string): Set<number> {
   return new Set((facts.match(/\d+/gu) ?? []).map(Number));
@@ -155,6 +220,12 @@ export interface VoiceLimits {
   readonly forbidOpening: boolean;
   /** «Надо/нужно» допустимы: в ответе на вопрос это её слова, не понукание. */
   readonly allowMust?: boolean | undefined;
+  /**
+   * Счёт словами — только из фактов (ответ на вопрос, 24.09.2026: «трёх
+   * звонков маме» при двух). Живой строке «Два дела и одно желание
+   * разложены» по-прежнему можно: там считает она сама по списку записи.
+   */
+  readonly countsFromFacts?: boolean | undefined;
 }
 
 const LINE_LIMITS: VoiceLimits = {
@@ -219,6 +290,18 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   if (YOU_PLURAL.test(line)) return { ok: false, why: 'на вы' };
   if (MASCULINE_SELF.test(line)) return { ok: false, why: 'мужской род' };
 
+  // Открытое дело не называется сделанным: «ты забрала посылку» про
+  // незабранную (живая проверка 24.09.2026).
+  const openForms = openDeedForms(facts);
+  const lineWords = line.toLowerCase().match(/\p{L}+/gu) ?? [];
+  for (const [index, word] of lineWords.entries()) {
+    // «Ещё не написала» — правда об открытом (стенд 22.09.2026).
+    if (lineWords[index - 1] === 'не') continue;
+    if (openForms.has(word.replace(/ё/gu, 'е'))) {
+      return { ok: false, why: `сделанным названо открытое: ${word}` };
+    }
+  }
+
   for (const number of line.match(NUMBERS) ?? []) {
     if (!facts.includes(number)) return { ok: false, why: `число не из фактов: ${number}` };
   }
@@ -226,6 +309,16 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   for (const spelled of spelledNumbersBeforeUnits(line)) {
     if (!known.has(spelled.value)) {
       return { ok: false, why: `число не из фактов: ${spelled.word.toLowerCase()}` };
+    }
+  }
+  const lists = listSizesIn(facts);
+  for (const [index, word] of (limits.countsFromFacts === true ? lineWords : []).entries()) {
+    const value = COUNT_WORDS.get(word.replace(/ё/gu, 'е'));
+    // «Два дела» — счёт по списку фактов (стенд 22.09.2026); «трёх
+    // звонков» — не счёт дел, и числа в фактах для него нет.
+    const deeds = DEEDS.test(lineWords[index + 1] ?? '') && value !== undefined && lists.has(value);
+    if (value !== undefined && !known.has(value) && !deeds) {
+      return { ok: false, why: `число не из фактов: ${word}` };
     }
   }
   const factsLower = facts.toLowerCase().replace(/ё/gu, 'е');

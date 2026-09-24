@@ -283,6 +283,114 @@ describe('страж ответа', () => {
   });
 });
 
+/**
+ * Живая проверка Никиты 24.09.2026, 17:03: на «Напомнишь ?» модель
+ * ответила обзором дня — «На сегодня ты отвела сельди на автостанцию,
+ * забрала посылку… Срок прошёл у трёх звонков маме» — а ни одно из этих
+ * дел не сделано, и звонков маме два. Страж пропустил: «сделано» он не
+ * проверял, числа словами ловил только перед «дней» и «часов».
+ */
+describe('страж ответа: сделанным называет только сделанное, счёт — только из фактов', () => {
+  const overview = questionFacts({
+    question: 'Напомнишь ?',
+    now,
+    timeZone: MOSCOW,
+    texts: defaultTexts,
+    answer: { kind: 'nothing' },
+    overview: [
+      item('Отвести сельди на автостанцию Западная', {
+        deadlineAt: day(0),
+        deadlineAccuracy: 'day',
+        deadlineTime: 14 * 60 + 58,
+      }),
+      item('Забрать посылку', {
+        deadlineAt: day(0),
+        deadlineAccuracy: 'day',
+        deadlineTime: 18 * 60 + 45,
+      }),
+      item('Доделать бота телеграмм', { deadlineAt: day(0), deadlineAccuracy: 'day' }),
+      item('Позвонить маме', { deadlineAt: day(-1), deadlineAccuracy: 'day' }),
+      item('Позвонить маме в половине десятого', { deadlineAt: day(-1), deadlineAccuracy: 'day' }),
+      item('Записаться к стоматологу', { deadlineAt: day(-1), deadlineAccuracy: 'day' }),
+    ],
+  });
+
+  it('ответ с бою — отвергнут: открытые дела названы сделанными', () => {
+    expect(
+      checkLiveAnswer(
+        'На сегодня ты отвела сельди на автостанцию, забрала посылку, бот телеграмм ещё доделать. Срок прошёл у трёх звонков маме — всё это пока не закрыто. Остальное подождёт.',
+        overview,
+      ),
+    ).toMatchObject({ ok: false, why: 'сделанным названо открытое: отвела' });
+  });
+
+  it.each([
+    ['Посылку ты уже забрала.', 'забрала'],
+    ['Маме позвонила, осталась посылка.', 'позвонила'],
+    ['Сельди на автостанцию отвела.', 'отвела'],
+    ['Бота доделал.', 'доделал'],
+  ])('«%s» — отвергнут', (line, word) => {
+    expect(checkLiveAnswer(line, overview)).toMatchObject({
+      ok: false,
+      why: `сделанным названо открытое: ${word}`,
+    });
+  });
+
+  it('«ещё не забрала» — правда об открытом: отрицание не отвергается (стенд 22.09.2026, «Ещё не написала учительнице»)', () => {
+    expect(checkLiveAnswer('Посылку ещё не забрала — она на 18:45.', overview)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('счёт дел по списку фактов — можно: «три дела» при трёх на сегодня (стенд 22.09.2026, «два дела»)', () => {
+    expect(checkLiveAnswer('На сегодня три дела: сельди, посылка и бот.', overview)).toMatchObject({
+      ok: true,
+    });
+    // «Трёх звонков» — не счёт дел: звонков в фактах два.
+    expect(checkLiveAnswer('Срок прошёл у трёх звонков маме.', overview)).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it('открытое словами открытого — можно', () => {
+    expect(
+      checkLiveAnswer(
+        'На сегодня посылка в 18:45 и сельди на автостанцию. Маме позвонить со вчера ждёт.',
+        overview,
+      ),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('сделанное — можно назвать сделанным', () => {
+    const facts = questionFacts({
+      question: 'я забрала посылку?',
+      now,
+      timeZone: MOSCOW,
+      texts: defaultTexts,
+      answer: {
+        kind: 'aboutClosed',
+        items: [item('Забрать посылку', { status: 'done', completedAt: day(-1) })],
+      },
+    });
+    expect(checkLiveAnswer('Да, посылку ты уже забрала.', facts)).toMatchObject({ ok: true });
+  });
+
+  it('счёт словами, которого нет в фактах, — отвергнут: «трёх звонков маме» при двух', () => {
+    expect(checkLiveAnswer('Срок прошёл у трёх звонков маме.', overview)).toMatchObject({
+      ok: false,
+      why: 'число не из фактов: трёх',
+    });
+    expect(checkLiveAnswer('Сегодня пять дел.', overview)).toMatchObject({
+      ok: false,
+      why: 'число не из фактов: пять',
+    });
+    // «Семью» — это семья, а не семь; «одна» — не счёт.
+    expect(checkLiveAnswer('Про семью помню, запись одна.', overview)).toMatchObject({
+      ok: true,
+    });
+  });
+});
+
 describe('обращение к модели за ответом', () => {
   function prompts(schemaName: string): { get: () => Promise<ActivePrompt> } {
     return {
