@@ -6,7 +6,16 @@ import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { batches, billingSubscriptions, messagesRaw, users } from '../../db/schema.js';
+import {
+  batches,
+  billingSubscriptions,
+  items,
+  messagesRaw,
+  pendingQuestions,
+  users,
+} from '../../db/schema.js';
+import { askQuestion } from '../../modules/resolver/questions.repo.js';
+import { CLARIFY_REASON } from '../../modules/resolver/clarify.js';
 import { BILLING_ACTION, registerBillingHandlers, registerPaySupportCommands } from './billing.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { createLogger } from '../../infra/logger.js';
@@ -1288,8 +1297,10 @@ describe('осиротевшее закрытие снимается вмест�
     const firstClose = [...jobs.keys()];
     expect(firstClose).toHaveLength(1);
 
-    // Через полминуты — вопрос в ветке «покупки».
-    const inThread = textUpdate('Какие еще 6') as Update & {
+    // Следом — мысль в ветке «покупки». (На бою там было «Какие еще 6», но
+    // его с 24.09 бот разбирает сразу, как вопрос, — см. «вопрос
+    // разбирается сразу»; здесь проверяется ожидание у новой выгрузки.)
+    const inThread = textUpdate('Купить батон и молоко') as Update & {
       message: { message_thread_id?: number; is_topic_message?: boolean };
     };
     inThread.message.message_thread_id = 336049;
@@ -1397,5 +1408,138 @@ describe('вопрос разбирается сразу, не дожидаяс�
     await bot.handleUpdate(textUpdate('надо ли? купить хлеб и молоко'));
 
     expect(await lastBatchStatus()).toBe('open');
+  });
+
+  /**
+   * Ответ на вопрос бота (проверка Никиты 24.09.2026, 20:21): «Вечером» на
+   * «Во сколько … 09:00 или 21:00?» ждало полминуты тишины. Решают те же
+   * правила, что потом узнают ответ; не похоже на ответ — ждём, как прежде.
+   */
+  async function botAskedHour(): Promise<void> {
+    await testDb().insert(items).values({
+      userId,
+      text: 'Перенеси «Позвонить маме» в 9',
+      isDraft: true,
+      draftReason: CLARIFY_REASON.time,
+    });
+  }
+
+  function voiceUpdate(durationSec: number): Update {
+    seq++;
+    return {
+      update_id: 700_000 + seq,
+      message: {
+        message_id: seq,
+        date: Math.floor(Date.UTC(2026, 7, 27) / 1000),
+        chat: { id: TG_ID, type: 'private', first_name: 'Аня' },
+        from: { id: TG_ID, is_bot: false, first_name: 'Аня' },
+        voice: { file_id: `voice-${String(seq)}`, file_unique_id: 'u', duration: durationSec },
+      },
+    } as unknown as Update;
+  }
+
+  it('бот спросил «утро или вечер?» — «Вечером» разбирается сразу', async () => {
+    await botAskedHour();
+    const { queue, adds } = watchingQueue();
+    const bot = botWith(queue);
+
+    await bot.handleUpdate(textUpdate('Вечером'));
+
+    expect(await lastBatchStatus()).toBe('queued');
+    expect(adds.some((add) => (add.delay ?? 0) >= 1_000)).toBe(false);
+  });
+
+  it('бот спросил — но пришла другая мысль: ждём тишины, как прежде', async () => {
+    await botAskedHour();
+    const { queue, adds } = watchingQueue();
+    const bot = botWith(queue);
+
+    await bot.handleUpdate(textUpdate('Надо купить хлеб и молоко'));
+
+    expect(await lastBatchStatus()).toBe('open');
+    expect(adds.some((add) => (add.delay ?? 0) >= 1_000)).toBe(true);
+  });
+
+  it('бот спросил — короткое голосовое сразу, длинное ждёт тишины', async () => {
+    await botAskedHour();
+    const short = watchingQueue();
+    await botWith(short.queue).handleUpdate(voiceUpdate(3));
+    expect(await lastBatchStatus()).toBe('queued');
+
+    await botAskedHour();
+    const long = watchingQueue();
+    await botWith(long.queue).handleUpdate(voiceUpdate(12));
+    expect(await lastBatchStatus()).toBe('open');
+  });
+
+  it('бот ничего не спрашивал — короткое голосовое ждёт тишины, как прежде', async () => {
+    const { queue } = watchingQueue();
+
+    await botWith(queue).handleUpdate(voiceUpdate(2));
+
+    expect(await lastBatchStatus()).toBe('open');
+  });
+
+  async function botAskedMove(hoursAgo: number): Promise<void> {
+    const [item] = await testDb()
+      .insert(items)
+      .values({ userId, text: 'Забрать ребенка', type: 'TASK', priority: 'SOON', topic: 'семья' })
+      .returning({ id: items.id });
+    const [batch] = await testDb()
+      .insert(batches)
+      .values({ userId, status: 'done', openedAt: new Date(), closedAt: new Date() })
+      .returning({ id: batches.id });
+    await askQuestion(testDb(), {
+      userId,
+      itemId: item!.id,
+      batchId: batch!.id,
+      segment: 'перенеси ребенка на вечер',
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      now: new Date(Date.now() - hoursAgo * 60 * 60_000),
+    });
+  }
+
+  it('бот спросил «Перенести «X»?» — «да» разбирается сразу', async () => {
+    await botAskedMove(0);
+    const { queue } = watchingQueue();
+
+    await botWith(queue).handleUpdate(textUpdate('да'));
+
+    expect(await lastBatchStatus()).toBe('queued');
+  });
+
+  it('протухший вопрос приём не закрывает: его закроет уборка и сохранит слова', async () => {
+    await botAskedMove(24 * 30);
+    const { queue } = watchingQueue();
+
+    await botWith(queue).handleUpdate(textUpdate('да'));
+
+    // Вопроса уже нет — ждём тишины, как с обычной репликой…
+    expect(await lastBatchStatus()).toBe('open');
+    // …а строка вопроса открыта: уборка найдёт её и положит слова черновиком.
+    const open = await testDb()
+      .select({ resolvedAt: pendingQuestions.resolvedAt })
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(open.map((row) => row.resolvedAt)).toEqual([null]);
+  });
+
+  it('«Какие еще» и «Напомнишь» без знака вопроса — сразу, как вопрос', async () => {
+    const first = watchingQueue();
+    await botWith(first.queue).handleUpdate(textUpdate('Какие еще'));
+    expect(await lastBatchStatus()).toBe('queued');
+
+    const second = watchingQueue();
+    await botWith(second.queue).handleUpdate(textUpdate('Напомнишь'));
+    expect(await lastBatchStatus()).toBe('queued');
   });
 });

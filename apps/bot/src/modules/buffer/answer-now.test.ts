@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest';
+
+import { answersNow, asksDirectly, SHORT_VOICE_SECONDS, type OpenAsk } from './answer-now.js';
+
+/**
+ * Ответ на вопрос бота — разбирать сразу (проверка Никиты 24.09.2026,
+ * 20:21): «Вечером» на «Во сколько … 09:00 или 21:00?» ждало полминуты
+ * тишины. Решает код теми же правилами, по которым конвейер потом узнаёт
+ * ответ: не похоже на ответ — ждём тишины, как прежде.
+ */
+const hour: OpenAsk = {
+  kind: 'clarify',
+  clarifyKind: 'time',
+  command: 'Перенеси «Забрать ребенка» в 7',
+};
+const which: OpenAsk = { kind: 'clarify', clarifyKind: 'which', command: 'Перенеси дело на пол 4' };
+const question: OpenAsk = { kind: 'question' };
+
+describe('ответ на «утро или вечер» — сразу', () => {
+  it.each(['Вечером', 'утром.', 'Давай вечером', 'в 19:30', '9 утра'])('«%s»', (text) => {
+    expect(answersNow(hour, { text })).toBe(true);
+  });
+
+  it.each(['Надо купить хлеб и молоко', 'в 9', 'А во сколько лучше?', 'удали это дело'])(
+    '«%s» — не ответ, ждём тишины',
+    (text) => {
+      expect(answersNow(hour, { text })).toBe(false);
+    },
+  );
+});
+
+describe('ответ на «Какое дело?» — сразу', () => {
+  it.each(['посылка', 'Забрать посылку'])('«%s»', (text) => {
+    expect(answersNow(which, { text })).toBe(true);
+  });
+
+  it.each(['удали это', 'перенеси врача на пятницу', 'Какое ещё дело?'])(
+    '«%s» — не ответ',
+    (text) => {
+      expect(answersNow(which, { text })).toBe(false);
+    },
+  );
+});
+
+describe('ответ на «Перенести «X»?» — сразу', () => {
+  it.each(['да', 'Да, перенеси', 'нет', 'это новое'])('«%s»', (text) => {
+    expect(answersNow(question, { text })).toBe(true);
+  });
+
+  it.each(['не знаю', 'добавь ещё купить чехол для зонта'])('«%s» — не ответ', (text) => {
+    expect(answersNow(question, { text })).toBe(false);
+  });
+});
+
+describe('голосовое после вопроса — по длине: короткое почти всегда ответ', () => {
+  it('до пяти секунд — сразу, длиннее — ждём тишины', () => {
+    expect(answersNow(hour, { voiceSeconds: 3 })).toBe(true);
+    expect(answersNow(question, { voiceSeconds: SHORT_VOICE_SECONDS })).toBe(true);
+    expect(answersNow(hour, { voiceSeconds: SHORT_VOICE_SECONDS + 1 })).toBe(false);
+  });
+
+  it('вопроса нет — ждём тишины, что бы ни пришло', () => {
+    expect(answersNow(undefined, { voiceSeconds: 2 })).toBe(false);
+    expect(answersNow(undefined, { text: 'Вечером' })).toBe(false);
+  });
+});
+
+describe('команды, которые конвейер узнаёт мимо модели, — тоже сразу', () => {
+  it.each(['Какие еще', 'какие ещё 6', 'Напомнишь', 'Ты напомнишь'])('«%s»', (text) => {
+    expect(asksDirectly(text)).toBe(true);
+  });
+
+  it.each(['купить хлеб', 'Напомни завтра позвонить маме', undefined])('«%s» — нет', (text) => {
+    expect(asksDirectly(text)).toBe(false);
+  });
+});
