@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import type { Candidate, CandidateSource } from './candidates.js';
-import { decide, DEFAULT_THRESHOLDS } from './decision.js';
+import { decide, DEFAULT_THRESHOLDS, spokenFits } from './decision.js';
 
 /**
  * Пороговая логика резолвера (§7.3 ТЗ, задача 3.2).
@@ -522,5 +522,27 @@ describe('отметка выполнения не переспрашивает 
     // §13.5: «убрать» — тоже не переписывание, а перевод в отменённые, и
     // откатывается одним тапом.
     expect(decide(answer({ action: 'cancel' }), [found(0.42)], { now: NOW }).kind).toBe('apply');
+  });
+});
+
+describe('подходят ли слова человека к записи (страж разговора, проба 24.09.2026)', () => {
+  it('«посылку» подходит к «посылки с Вайлдберриз» — одно слово в разных формах', () => {
+    expect(
+      spokenFits('посылку давай на субботу', candidate({ text: 'Забрать посылки с Вайлдберриз' })),
+    ).toBe(true);
+  });
+
+  it('названо другое дело — не подходит', () => {
+    expect(spokenFits('врача перенеси на пятницу', candidate({ text: 'Забрать посылку' }))).toBe(
+      false,
+    );
+    expect(spokenFits('с Ирой созвонились', candidate({ text: 'Забрать посылку' }))).toBe(false);
+  });
+
+  it('связки, время и глаголы-повеления делом не называют', () => {
+    // «Давай», «на субботу», «забрать» есть у половины фраз и дел.
+    expect(spokenFits('давай забрать на субботу', candidate({ text: 'Забрать посылку' }))).toBe(
+      false,
+    );
   });
 });

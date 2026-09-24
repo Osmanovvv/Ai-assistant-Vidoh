@@ -117,6 +117,25 @@ function recordIn(text: string, titles: readonly string[]): number | undefined {
 }
 
 /**
+ * Номер записи из последней реплики бота — той, на которую человек отвечает.
+ *
+ * Нужен стражу резолвера (проба 24.09.2026): реплика назвала одно дело,
+ * модель выбрала другое — это спор, и решать его молча нельзя. Реплики
+ * человека не в счёт; последняя реплика бота без одного названия номера
+ * не даёт, даже если раньше номер был: человек отвечает на последнюю.
+ */
+export function recordNamedByLastBot(
+  turns: readonly DialogTurn[],
+  now: Date,
+  titles: readonly string[],
+): number | undefined {
+  const last = recentDialog(turns, now)
+    .filter((turn) => turn.role === 'bot')
+    .at(-1);
+  return last === undefined ? undefined : recordIn(last.text, titles);
+}
+
+/**
  * Блок разговора для модели.
  *
  * `titles` — записи в том порядке, в каком их видит модель: по ним реплика

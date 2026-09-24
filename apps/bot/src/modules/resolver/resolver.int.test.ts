@@ -296,3 +296,125 @@ describe('когда модель не отвечает', () => {
     expect(result.decision.kind).toBe('create');
   });
 });
+
+describe('страж разговора: реплика бота назвала одно дело, модель выбрала другое (проба 24.09.2026)', () => {
+  /**
+   * Проба шага 3, дважды: «посылку давай на субботу» сразу после «Через 30
+   * минут: Забрать посылки с Вайлдберриз». Модель видела разговор и даже
+   * «о записи 2» — и выбрала «Забрать посылку» с уверенностью 1: слово
+   * «посылку» она сочла названием первой записи. Слово подходит к обеим, и
+   * правильный исход в такой двусмысленности — вопрос, а не тихая правка.
+   * Решение Никиты 24.09: спросить про дело из реплики бота.
+   */
+  const PARCEL = '22222222-2222-4222-8222-222222222222';
+  const WB = '33333333-3333-4333-8333-333333333333';
+  const DOCTOR = '44444444-4444-4444-8444-444444444444';
+
+  const parcel = candidate({
+    id: PARCEL,
+    text: 'Забрать посылку',
+    topic: 'покупки',
+    updatedAt: new Date(NOW.getTime() - 6 * 60_000),
+    similarity: 0.62,
+    sources: ['session', 'semantic'],
+  });
+  const wb = candidate({
+    id: WB,
+    text: 'Забрать посылки с Вайлдберриз',
+    topic: 'покупки',
+    updatedAt: new Date(NOW.getTime() - 1440 * 60_000),
+    similarity: 0.55,
+    sources: ['semantic', 'deadline'],
+  });
+  const reminderAboutWb = [
+    {
+      role: 'bot' as const,
+      text: 'Через 30 минут: Забрать посылки с Вайлдберриз',
+      at: new Date(NOW.getTime() - 60_000),
+    },
+  ];
+  const toFirst = (text = ''): string =>
+    answer({
+      itemId: '1',
+      confidence: 1,
+      changes: {
+        note: '',
+        text,
+        deadline: '2026-09-05',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+    });
+
+  it('слова подходят к делу из реплики — вопрос про него, а не тихая правка другого', async () => {
+    deps = withAnswer(toFirst('Забрать посылку в субботу'));
+
+    const result = await resolveSegment(deps, {
+      segment: 'посылку давай на субботу',
+      candidates: [parcel, wb],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+      dialog: reminderAboutWb,
+    });
+
+    expect(result.decision.kind).toBe('ask');
+    expect(result.decision.candidate?.id).toBe(WB);
+    expect(result.decision.why).toContain('реплика бота');
+    // Срок из слов человека остаётся; переименование под чужую запись — нет.
+    expect(result.changes?.deadline).toBe('2026-09-05');
+    expect(result.changes?.text).toBe('');
+  });
+
+  it('без разговора — как раньше: страж молчит, бой без хвоста не меняется', async () => {
+    deps = withAnswer(toFirst());
+
+    const result = await resolveSegment(deps, {
+      segment: 'посылку давай на субботу',
+      candidates: [parcel, wb],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+    });
+
+    expect(result.decision.kind).toBe('apply');
+    expect(result.decision.candidate?.id).toBe(PARCEL);
+  });
+
+  it('человек назвал другое дело — страж молчит («врача» после реплики про посылку)', async () => {
+    const doctor = candidate({ id: DOCTOR, updatedAt: new Date(NOW.getTime() - 600 * 60_000) });
+    deps = withAnswer(answer({ itemId: '2', confidence: 1 }));
+
+    const result = await resolveSegment(deps, {
+      segment: 'врача перенеси на пятницу',
+      candidates: [parcel, doctor],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+      dialog: [
+        {
+          role: 'bot',
+          text: 'Напомню про «Забрать посылку» 24.09 в 17:45',
+          at: new Date(NOW.getTime() - 2 * 60_000),
+        },
+      ],
+    });
+
+    expect(result.decision.candidate?.id).toBe(DOCTOR);
+    expect(result.decision.why).not.toContain('реплика бота');
+  });
+
+  it('модель выбрала то самое дело из реплики — страж молчит', async () => {
+    deps = withAnswer(answer({ itemId: '2', confidence: 1 }));
+
+    const result = await resolveSegment(deps, {
+      segment: 'посылку давай на субботу',
+      candidates: [parcel, wb],
+      timeZone: 'Europe/Moscow',
+      now: NOW,
+      dialog: reminderAboutWb,
+    });
+
+    expect(result.decision.candidate?.id).toBe(WB);
+    expect(result.decision.why).not.toContain('реплика бота');
+  });
+});

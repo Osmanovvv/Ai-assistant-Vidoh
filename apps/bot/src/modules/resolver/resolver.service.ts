@@ -1,9 +1,9 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { describeToday, localDateParts } from '../classifier/dates.js';
-import { describeDialog, type DialogTurn } from '../dialog/dialog.js';
+import { describeDialog, recordNamedByLastBot, type DialogTurn } from '../dialog/dialog.js';
 import type { Candidate } from './candidates.js';
-import { decide, type Decision, type ResolverThresholds } from './decision.js';
+import { decide, spokenFits, type Decision, type ResolverThresholds } from './decision.js';
 
 /**
  * Резолвер: применить, спросить или создать (§7.3 ТЗ, задача 3.2).
@@ -197,13 +197,14 @@ export async function resolveSegment(
   const position = Number.parseInt(outcome.value.itemId, 10);
   const chosen = Number.isInteger(position) ? params.candidates[position - 1] : undefined;
 
-  const decision = decide({ ...outcome.value, itemId: chosen?.id ?? '' }, params.candidates, {
+  const decided = decide({ ...outcome.value, itemId: chosen?.id ?? '' }, params.candidates, {
     now,
     thresholds: params.thresholds,
     // Слова человека: по ним ищется названная запись (четвёртый сигнал).
     spoken: params.segment,
     timeZone: params.timeZone,
   });
+  const { decision, changes } = settleWithDialog(params, now, decided, outcome.value.changes);
 
   deps.logger?.debug(
     {
@@ -223,7 +224,52 @@ export async function resolveSegment(
     decision,
     promptVersion: outcome.promptVersion,
     confidence: outcome.value.confidence,
-    changes: outcome.value.changes,
+    changes,
     mode: outcome.value.mode,
+  };
+}
+
+/**
+ * Страж разговора (решение Никиты 24.09.2026, проба шага 3 плана docs/26).
+ *
+ * «Посылку давай на субботу» сразу после «Через 30 минут: Забрать посылки
+ * с Вайлдберриз»: модель дважды выбрала «Забрать посылку» с уверенностью
+ * 1 — слово «посылку» она сочла названием первой записи, хотя видела и
+ * разговор, и «о записи 2». Слово подходит к обеим записям; в такой
+ * двусмысленности правильный исход — вопрос, а не тихая правка.
+ *
+ * Правило: последняя реплика бота назвала одно дело (код знает это
+ * наверняка), модель выбрала другое, а слова человека подходят к делу из
+ * реплики — спросить про дело из реплики. Названо другое дело однозначно
+ * («врача», «с Ирой») — страж молчит. Переименование под чужую запись не
+ * переносится: срок и подробность — от слов человека, название — нет.
+ */
+function settleWithDialog(
+  params: ResolveParams,
+  now: Date,
+  decision: Decision,
+  changes: ResolverAnswer['changes'],
+): { readonly decision: Decision; readonly changes: ResolverAnswer['changes'] } {
+  const picked = decision.candidate;
+  if (decision.kind === 'create' || picked === undefined) return { decision, changes };
+
+  const named = recordNamedByLastBot(
+    params.dialog ?? [],
+    now,
+    params.candidates.map((candidate) => candidate.text),
+  );
+  const discussed = named === undefined ? undefined : params.candidates[named - 1];
+  if (discussed === undefined || discussed.id === picked.id) return { decision, changes };
+  if (!spokenFits(params.segment, discussed)) return { decision, changes };
+
+  return {
+    decision: {
+      kind: 'ask',
+      action: decision.action,
+      candidate: discussed,
+      newThought: false,
+      why: 'реплика бота называла другое дело, и слова подходят к нему — спросить, а не править молча',
+    },
+    changes: { ...changes, text: '' },
   };
 }

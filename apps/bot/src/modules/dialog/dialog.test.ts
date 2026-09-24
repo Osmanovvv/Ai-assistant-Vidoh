@@ -5,6 +5,7 @@ import {
   DIALOG_TURN_MAX_CHARS,
   describeDialog,
   recentDialog,
+  recordNamedByLastBot,
   type DialogTurn,
 } from './dialog.js';
 
@@ -196,5 +197,33 @@ describe('о какой записи была реплика бота (проб�
     expect(describeDialog([bot('Какое дело?', 1)], NOW).split('\n')[1]).toBe(
       'Бот (1 мин назад): Какое дело?',
     );
+  });
+});
+
+describe('о какой записи была последняя реплика бота (страж, проба 24.09.2026)', () => {
+  const PARCELS = ['Забрать посылку', 'Забрать посылки с Вайлдберриз'];
+
+  it('берётся последняя реплика бота, реплики человека не в счёт', () => {
+    const turns = [
+      bot('Через 30 минут: Забрать посылку', 5),
+      bot('Через 30 минут: Забрать посылки с Вайлдберриз', 2),
+      person('ок', 1),
+    ];
+    expect(recordNamedByLastBot(turns, NOW, PARCELS)).toBe(2);
+  });
+
+  it('последняя реплика бота без одного названия — номера нет, даже если раньше был', () => {
+    const turns = [
+      bot('Через 30 минут: Забрать посылку', 5),
+      bot('Твои дела: 1. Забрать посылку 2. Забрать посылки с Вайлдберриз', 1),
+    ];
+    expect(recordNamedByLastBot(turns, NOW, PARCELS)).toBeUndefined();
+  });
+
+  it('давняя реплика и пустой хвост — номера нет', () => {
+    expect(recordNamedByLastBot([bot('Через 30 минут: Забрать посылку', 40)], NOW, PARCELS)).toBe(
+      undefined,
+    );
+    expect(recordNamedByLastBot([], NOW, PARCELS)).toBeUndefined();
   });
 });
