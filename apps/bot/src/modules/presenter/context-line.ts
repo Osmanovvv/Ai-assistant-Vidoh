@@ -7,6 +7,7 @@ import {
 import { PRESENTER_V2_SCHEMA_NAME, type PresenterLine } from '../ai/schemas/index.js';
 import { forbiddenPhraseIn, picturesIn } from '../../texts/rules.js';
 import { renderContextPack, type ContextPack } from './context-pack.js';
+import { hooksOf, siftLine } from './line-sieve.js';
 import { pastFormsOf } from './past-forms.js';
 
 /**
@@ -383,6 +384,9 @@ export async function askContextLine(
   ask: AskStructured = requestStructured,
 ): Promise<ContextLineOutcome> {
   const facts = renderContextPack(params.pack);
+  // Повода нет — строка может быть только «ради строки», а за неё платить
+  // незачем: модель не зовётся, ответ как при пустой строке.
+  if (hooksOf(params.pack).length === 0) return { why: 'нет повода' };
 
   try {
     /**
@@ -412,7 +416,12 @@ export async function askContextLine(
       return { why: outcome.problem };
     }
 
-    const checked = checkContextLine(outcome.value.line, facts);
+    // Сначала страж голоса (чёрный список), потом сито (белый список):
+    // только слова фактов и словаря бота, и только о поводе (`line-sieve.ts`).
+    const voiced = checkContextLine(outcome.value.line, facts);
+    const sifted = voiced.ok ? siftLine(voiced.line, params.pack) : undefined;
+    const checked: CheckedLine =
+      sifted !== undefined && !sifted.ok ? { ok: false, why: sifted.why } : voiced;
     if (!checked.ok) {
       if (checked.why !== 'пусто') {
         deps.logger?.info(

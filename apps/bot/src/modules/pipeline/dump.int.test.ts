@@ -8559,15 +8559,17 @@ describe('живая строка поверх ответа (слой A, 22.09.2
 
   it('факты о ней уходят модели, строка встаёт второй под признанием', async () => {
     const prompts = await livePrompts();
-    const llm = echoingLlm({
-      presenter: JSON.stringify({ line: 'Стоматолога помню — запись одна, срок обновила.' }),
-    });
+    // Выгрузка первая — строка о первой выгрузке (пример промпта). Прежняя
+    // «Стоматолога помню — запись одна, срок обновила» не прошла бы сито
+    // (25.09.2026): стоматолог записан только что, и срок никто не обновлял.
+    const firstLine = 'Первый раз — дальше можно просто скидывать сюда, как приходит в голову.';
+    const llm = echoingLlm({ presenter: JSON.stringify({ line: firstLine }) });
 
     const { reply, presenterInputs } = await dumpWith(llm, prompts);
 
     expect(reply.split(String.fromCharCode(10)).slice(0, 2)).toEqual([
       'Всё, забрала. Записала 2 дела и разложила по местам.',
-      'Стоматолога помню — запись одна, срок обновила.',
+      firstLine,
     ]);
     expect(presenterInputs).toHaveLength(1);
     expect(presenterInputs[0]).toContain('Имя: Аня');
@@ -8643,10 +8645,12 @@ describe('живая строка поверх ответа (слой A, 22.09.2
     expect(marked?.at).not.toBeNull();
 
     const second = await dumpWith(llm, prompts);
-    // Запросы копятся в одной заглушке: второй выгрузке — последний.
-    expect(second.presenterInputs).toHaveLength(2);
-    expect(second.presenterInputs.at(-1)).toContain('Прошлая выгрузка: сегодня');
-    expect(second.presenterInputs.at(-1)).not.toContain('Сдать отчёт');
+    // Запросы копятся в одной заглушке. Отчёт на паузе, прошлая выгрузка
+    // сегодня — повода нет, и модель за строкой не зовётся вовсе (проверка
+    // Никиты 24.09.2026). Без паузы отчёт снова стал бы поводом, и второй
+    // запрос был бы.
+    expect(second.presenterInputs).toHaveLength(1);
+    expect(second.reply).not.toContain('Про отчёт помню');
   });
 
   it('активен презентер первой версии — модель за строкой не зовётся', async () => {
