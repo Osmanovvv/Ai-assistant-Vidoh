@@ -5061,6 +5061,127 @@ describe('правка доходит до резолвера (§7, задача
     );
   });
 
+  /**
+   * Живая проверка Никиты 24.09.2026, 15:43: «Давай заберём посылку через
+   * 40 минут» при просроченной посылке (вчера, 17:00) — бот ответил «Про
+   * посылку помню — запись одна» и срок не перенёс. «Через» разбирается,
+   * повтор узнаётся — правка не легла и исход молча пропущен.
+   */
+  for (const [what, deadline] of [
+    ['модель срока не назвала', ''],
+    ['модель поставила «сегодня»', '2026-08-24'],
+  ] as const) {
+    it(`«Давай заберём посылку через 40 минут» при просроченной посылке — сегодня 13:41 (${what})`, async () => {
+      const prompts = await seedPrompts();
+      const [parcel] = await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: 'Забрать посылку',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'покупки',
+          deadlineAt: new Date('2026-08-22T21:00:00.000Z'),
+          deadlineAccuracy: 'day',
+          deadlineTime: 17 * 60,
+        })
+        .returning({ id: items.id });
+      const { sender, all } = recordingSender();
+      const text = 'Давай заберем посылку через 40 минут.';
+
+      await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            llm: repeatWith(text, 'Забрать посылку', deadline),
+          }),
+        },
+        userId,
+      );
+
+      const rows = await testDb()
+        .select()
+        .from(items)
+        .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+      expect(rows.map((row) => row.text)).toEqual(['Забрать посылку']);
+      const after = rows.find((row) => row.id === parcel?.id);
+      // Часы теста — 13:01 по Москве 24.08; через 40 минут — 13:41 того же дня.
+      expect(after?.deadlineTime).toBe(13 * 60 + 41);
+      expect(after?.deadlineAt?.toISOString()).toBe('2026-08-23T21:00:00.000Z');
+      expect(all.some((line) => line.includes('13:41'))).toBe(true);
+    });
+  }
+
+  it('время из предложения про два дела повтору не приписывается («посылку и через 40 минут позвонить маме»)', async () => {
+    // Запасной поиск предложения берёт его, только если оно называет одно
+    // это дело: время здесь — маме, а не посылке.
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date('2026-08-22T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 17 * 60,
+      })
+      .returning({ id: items.id });
+    const text = 'Заберем посылку и через 40 минут позвонить маме.';
+    const unit = (unitText: string) => ({
+      text: unitText,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'покупки',
+      isProject: false,
+      deadline: '',
+      deadlineAccuracy: 'none',
+      deadlineText: '',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    });
+
+    await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+            extractor: () =>
+              JSON.stringify({
+                units: [
+                  { text: 'Забрать посылку', isProject: false, isEmotion: false },
+                  { text: 'Позвонить маме', isProject: false, isEmotion: false },
+                ],
+              }),
+            classifier: () =>
+              JSON.stringify({ items: [unit('Забрать посылку'), unit('Позвонить маме')] }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb()
+      .select()
+      .from(items)
+      .where(eq(items.id, parcel?.id ?? ''));
+    expect(after?.deadlineTime).toBe(17 * 60);
+    expect(after?.deadlineAt?.toISOString()).toBe('2026-08-22T21:00:00.000Z');
+  });
+
   it('«Купить хлеб завтра» при записанном «Купить хлеб» без срока — перенос на завтра, а не тишина', async () => {
     const prompts = await seedPrompts();
     const [bread] = await testDb()

@@ -234,7 +234,7 @@ function sameWord(left: string, right: string): boolean {
   return left.slice(0, length) === right.slice(0, length);
 }
 
-function namesCandidate(spoken: readonly string[], candidate: Candidate): boolean {
+function namesCandidate(spoken: readonly string[], candidate: Pick<Candidate, 'text'>): boolean {
   const own = namingWords(candidate.text);
   return spoken.some((word) => own.some((other) => sameWord(word, other)));
 }
@@ -244,7 +244,7 @@ function namesCandidate(spoken: readonly string[], candidate: Candidate): boolea
  * сигнал: «посылку» подходит к «посылки с Вайлдберриз», связки, время и
  * глаголы-повеления не в счёт. Нужно стражу разговора в резолвере.
  */
-export function spokenFits(spoken: string, candidate: Candidate): boolean {
+export function spokenFits(spoken: string, candidate: Pick<Candidate, 'text'>): boolean {
   return namesCandidate(namingWords(spoken), candidate);
 }
 
