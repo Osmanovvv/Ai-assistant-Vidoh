@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { GrammyError } from 'grammy';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ALLOWED_UPDATES, createBot } from './bot.js';
+import { ALLOWED_UPDATES, createBot, createQuietApi } from './bot.js';
 
 /**
  * Правило «та же правка — не ошибка» подключено к боту (задача 3.73).
@@ -130,6 +130,18 @@ describe('createBot', () => {
     await bot.api.sendMessage(42, 'Какое дело?');
 
     expect(remembered).toEqual([{ chatId: 42, text: 'Какое дело?' }]);
+  });
+
+  it('тихий канал: те же защиты, что у бота, — «та же правка» не роняет (сводки веток правятся так постоянно)', async () => {
+    const apiRoot = await telegramAnswering(400, {
+      ok: false,
+      error_code: 400,
+      description:
+        'Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message',
+    });
+    const quiet = createQuietApi(FAKE_TOKEN, { apiRoot });
+
+    await expect(quiet.editMessageText(1, 2, 'та же сводка')).resolves.toBe(true);
   });
 
   it('боевой запуск передаёт боту хранилище разговора', () => {

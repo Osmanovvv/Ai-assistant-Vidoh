@@ -45,3 +45,32 @@ describe('хвост разговора в боевой сборке', () => {
     expect(source).toContain("useDialog: env.DIALOG_CONTEXT === 'on'");
   });
 });
+
+describe('служебные сообщения идут мимо разговора (выкладка 24.09.2026)', () => {
+  /**
+   * Первая проверка на бою выключенным: после выгрузки последними
+   * «репликами бота» в хвосте оказались правки закреплённых сводок веток
+   * — списки дел по сферам на 550 и 625 знаков. Модель видела бы список
+   * как последний ответ, а страж, который смотрит на последнюю реплику
+   * бота, молчал бы. Сводки, оповещения мониторинга (он пишет в личный
+   * чат) и рассылки — служебное, у них свой канал без перехвата.
+   */
+  it('тихий канал один на процесс', () => {
+    expect(source).toMatch(/const quietApi = createQuietApi\(env\.BOT_TOKEN, \{/u);
+  });
+
+  it('сводки веток — через тихий канал', () => {
+    expect(source).toContain('createTopicGateway(quietApi)');
+    expect(source).not.toContain('createTopicGateway(bot.api)');
+  });
+
+  it('оповещения мониторинга — через тихий канал', () => {
+    expect(source).toContain('createAlertSink(quietApi, env.MONITORING_CHAT_ID)');
+  });
+
+  it('массовые рассылки — через тихий канал', () => {
+    expect(callOf('const broadcastSender: BroadcastSender = {', '\n  };')).toContain(
+      'quietApi.sendMessage(',
+    );
+  });
+});
