@@ -28,7 +28,7 @@ beforeEach(async () => {
 
 /** Кладёт сырое сообщение и возвращает его идентификатор. */
 async function putMessage(
-  params: { text?: string; transcript?: string; receivedAt?: Date } = {},
+  params: { text?: string; transcript?: string; receivedAt?: Date; threadId?: number } = {},
 ): Promise<string> {
   const id = nextTgMessageId++;
   const [row] = await testDb()
@@ -38,6 +38,7 @@ async function putMessage(
       updateId: 1000 + id,
       tgChatId: 500,
       tgMessageId: id,
+      ...(params.threadId === undefined ? {} : { tgThreadId: params.threadId }),
       kind: params.transcript === undefined ? 'text' : 'voice',
       text: params.text ?? null,
       transcript: params.transcript ?? null,
@@ -298,6 +299,59 @@ describe('attachMessageToBatch', () => {
       expect(next.messageCount).toBe(1);
       expect(await testDb().select().from(batches)).toHaveLength(2);
     });
+  });
+});
+
+describe('сообщение из другой ветки начинает свою выгрузку (живая проверка 24.09.2026)', () => {
+  /**
+   * Голосовое в главном чате и через 23 секунды «Какие еще 6» в ветке
+   * «покупки» склеились в одну выгрузку: ответ на всё ушёл в главный
+   * чат (ветка первой реплики), а вопрос ветки разобрался как «покажи
+   * все дела». Выгрузка отвечает в одном месте — значит и собираться
+   * должна из одного места.
+   */
+  const attach = async (text: string, now: Date, threadId?: number): Promise<AttachResult> =>
+    await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text, ...(threadId === undefined ? {} : { threadId }) }),
+      now,
+    });
+
+  for (const [what, from, to] of [
+    ['главный чат → ветка', undefined, 336049],
+    ['ветка → главный чат', 336049, undefined],
+    ['ветка → другая ветка', 336049, 336053],
+  ] as const) {
+    it(`${what}: прежняя выгрузка закрыта и готова к разбору, новое сообщение — в своей`, async () => {
+      const first = await attach('поехать за ребёнком в 4', at(0), from);
+      const second = await attach('Какие еще 6', at(23_000), to);
+
+      expect(second.batchId).not.toBe(first.batchId);
+      expect(second.messageCount).toBe(1);
+      expect(second.closed).toBe(false);
+      expect(second.closedOnThreadChange).toBe(first.batchId);
+
+      const [closed] = await testDb().select().from(batches).where(eq(batches.id, first.batchId));
+      expect(closed?.status).toBe('queued');
+      expect(closed?.closedAt?.toISOString()).toBe(at(23_000).toISOString());
+    });
+  }
+
+  it('та же ветка — одна выгрузка, как раньше', async () => {
+    const first = await attach('раз', at(0), 336049);
+    const second = await attach('два', at(10_000), 336049);
+
+    expect(second.batchId).toBe(first.batchId);
+    expect(second.messageCount).toBe(2);
+    expect(second.closedOnThreadChange).toBeUndefined();
+  });
+
+  it('оба в главном чате — одна выгрузка, как раньше', async () => {
+    const first = await attach('раз', at(0));
+    const second = await attach('два', at(10_000));
+
+    expect(second.batchId).toBe(first.batchId);
+    expect(second.closedOnThreadChange).toBeUndefined();
   });
 });
 
