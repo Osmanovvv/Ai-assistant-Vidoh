@@ -1,6 +1,9 @@
 import { Bot } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
+import type { Logger } from 'pino';
 
+import { rememberBotReplies } from '../modules/dialog/capture.js';
+import type { DialogStore } from '../modules/dialog/dialog.store.js';
 import { retryOnConnectFailure } from './retry.js';
 import { tolerateSameContent } from './same-content.js';
 
@@ -24,6 +27,13 @@ export interface BotOptions {
    * пустоту, и заметили бы это не мы, а живые люди.
    */
   readonly apiRoot?: string | undefined;
+  /**
+   * Хвост разговора (решение Никиты 24.09.2026, план docs/26): каждая
+   * реплика бота в личный чат запоминается здесь, в одной точке на все
+   * ответы. Нет хранилища — перехвата нет.
+   */
+  readonly dialog?: DialogStore | undefined;
+  readonly logger?: Logger | undefined;
 }
 
 /** Экземпляр бота (задача 1.7). */
@@ -40,6 +50,11 @@ export function createBot(token: string, options: BotOptions = {}): Bot {
   // Правка тем же содержимым — не ошибка (задача 3.73): кнопка с номером
   // страницы ведёт на ту же страницу, и Telegram отвергает такую правку.
   bot.api.config.use(tolerateSameContent());
+
+  // Реплика бота — в хвост разговора; сбой хранилища отправку не трогает.
+  if (options.dialog !== undefined) {
+    bot.api.config.use(rememberBotReplies(options.dialog, { logger: options.logger }));
+  }
 
   return bot;
 }
