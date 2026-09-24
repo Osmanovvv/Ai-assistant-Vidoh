@@ -240,6 +240,15 @@ function namesCandidate(spoken: readonly string[], candidate: Candidate): boolea
 }
 
 /**
+ * Подходят ли слова человека к записи — теми же правилами, что четвёртый
+ * сигнал: «посылку» подходит к «посылки с Вайлдберриз», связки, время и
+ * глаголы-повеления не в счёт. Нужно стражу разговора в резолвере.
+ */
+export function spokenFits(spoken: string, candidate: Candidate): boolean {
+  return namesCandidate(namingWords(spoken), candidate);
+}
+
+/**
  * Человек назвал запись её словом, и такая она одна (прогон 17.09.2026).
  *
  * «Нет, к стоматологу лучше в субботу» при тринадцати кандидатах: модель
