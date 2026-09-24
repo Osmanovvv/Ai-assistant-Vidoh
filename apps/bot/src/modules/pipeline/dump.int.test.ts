@@ -8851,3 +8851,108 @@ describe('час нового дела — утро или вечер (вари�
     expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[child?.id, 19 * 60]]);
   });
 });
+
+/**
+ * «Напомнишь?» сразу после записи (живая проверка Никиты 24.09.2026,
+ * 17:03): вопрос уходил модели ответов, и та пересказала день, назвав
+ * открытые дела сделанными. Про одно дело и про напоминание отвечает код —
+ * по плану планировщика, без модели.
+ */
+describe('«Напомнишь?» о только что обсуждённом деле (24.09.2026)', () => {
+  async function discussed(text: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-40 * 60_000),
+      })
+      .returning({ id: items.id });
+    await testDb()
+      .insert(batches)
+      .values({
+        userId,
+        status: 'done',
+        openedAt: at(-3 * 60_000),
+        closedAt: at(-2 * 60_000),
+        mentionedItemIds: [row!.id],
+      });
+    return row!.id;
+  }
+
+  it('после записи «Поехать за ребёнком» — когда напомню, словами кода; модель не зовётся', async () => {
+    const prompts = await seedPrompts();
+    await discussed('Поехать за ребёнком');
+    const { sender, all } = recordingSender();
+    const stages: string[] = [];
+    const counting = (stage: string) => () => {
+      stages.push(stage);
+      return '{}';
+    };
+
+    await queuedBatchOf([{ kind: 'text', text: 'Напомнишь ?', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: counting('router'),
+            answerer: counting('answerer'),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    expect(stages).toEqual([]);
+    const reply = all.find((text) => text.startsWith('Да, напомню про «Поехать за ребёнком»'));
+    expect(reply).toBeDefined();
+    expect(reply).toContain('завтра в');
+    // Новой записи «Напомнишь» нет.
+    const rows = await testDb()
+      .select({ text: items.text })
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(rows.map((row) => row.text)).toEqual(['Поехать за ребёнком']);
+  });
+
+  it('давно ни о чём не говорили — обычный путь, через маршрутизатор', async () => {
+    const prompts = await seedPrompts();
+    const { sender } = recordingSender();
+    const stages: string[] = [];
+
+    await queuedBatchOf([{ kind: 'text', text: 'Напомнишь ?', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: () => {
+              stages.push('router');
+              return JSON.stringify({
+                crisis: false,
+                segments: [{ intent: 'SMALLTALK', text: 'Напомнишь ?' }],
+              });
+            },
+          }),
+        }),
+      },
+      userId,
+    );
+
+    expect(stages).toEqual(['router']);
+  });
+});

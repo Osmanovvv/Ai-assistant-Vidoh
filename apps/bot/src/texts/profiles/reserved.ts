@@ -522,6 +522,14 @@ export const reserved: TextProfile = {
     buttonProjectLater: 'Не сейчас',
     projectTaken: 'Хорошо, поставила на сегодня.',
     projectLater: 'Поняла, не трогаю.',
+
+    remindWill: (title, when) => `Да, напомню про «${title}» ${when}.`,
+    remindAddHour: 'Если нужно к определённому часу — скажи время.',
+    remindNoDeadline: (title) =>
+      `У «${title}» нет срока — напоминать не к чему. Скажи, когда, и поставлю.`,
+    remindNothingAhead: (title) =>
+      `Про «${title}» напоминаний впереди нет. Скажи, когда напомнить, и поставлю.`,
+    remindOff: 'Напоминания сейчас выключены — включить их можно в настройках.',
   },
 
   onboarding: {

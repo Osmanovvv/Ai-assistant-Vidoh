@@ -30,7 +30,13 @@ import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
 import { contextOf, withNextSteps, type ProjectContext } from '../projects/projects.service.js';
-import { openItemsFor, saveDraft, saveItems, type ItemToSave } from '../items/items.repo.js';
+import {
+  openItemsFor,
+  openItemsWhere,
+  saveDraft,
+  saveItems,
+  type ItemToSave,
+} from '../items/items.repo.js';
 import { knownByText, splitKnown } from '../items/same-text.js';
 import {
   aboutPending,
@@ -54,7 +60,7 @@ import {
   withoutClockPhrase,
 } from '../classifier/clock-time.js';
 import { namesDay, ownSentences, sentencesOf } from '../classifier/own-sentence.js';
-import { spokenFits } from '../resolver/decision.js';
+import { DEFAULT_THRESHOLDS, spokenFits } from '../resolver/decision.js';
 import { isoDateIn as isoDayIn } from '../classifier/dates.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { selectForOutput, type SelectionResult } from '../output/filter.js';
@@ -121,6 +127,9 @@ import {
 } from '../topics/summary.service.js';
 import { asksForRest } from '../topics/rest-request.js';
 import { clockOf } from '../scheduler/plan.js';
+import { asksToRemind, remindAnswer } from '../scheduler/remind-request.js';
+import { planSettingsOf } from '../scheduler/scheduler.service.js';
+import { lastDiscussed } from '../resolver/deixis.repo.js';
 import { settleTopics } from '../topics/ensure.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -1023,6 +1032,43 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             limit: FULL_LIST_LINES,
           }),
         );
+        return;
+      }
+    }
+
+    /**
+     * «Напомнишь?» сразу после разговора о деле (живая проверка Никиты
+     * 24.09.2026, 17:03).
+     *
+     * Бот записал «Поехать за ребёнком», человек спросил «Напомнишь ?», а
+     * вопрос ушёл модели ответов: она пересказала день и назвала открытые
+     * дела сделанными — «ты отвела сельди на автостанцию, забрала
+     * посылку». Спросили про одно дело и про напоминание; когда напомнить,
+     * знает планировщик. Дело — последнее обсуждённое, ровно одно;
+     * иначе — обычный путь.
+     */
+    if (clarified === undefined && asksToRemind(combined)) {
+      const discussed = await lastDiscussed(db, {
+        userId: batch.userId,
+        batchId: batch.id,
+        now,
+        windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+      });
+      const about = discussed.length === 1 ? discussed[0] : undefined;
+      const [open] =
+        about === undefined
+          ? []
+          : await db
+              .select()
+              .from(items)
+              .where(and(openItemsWhere(batch.userId), eq(items.id, about.id)))
+              .limit(1);
+      const settings =
+        open === undefined ? undefined : await planSettingsOf(db, batch.userId, deps.settings);
+      if (open !== undefined && settings !== undefined) {
+        await tell(remindAnswer({ item: open, settings, now, timeZone: context.timeZone, texts }));
+        // Разговор всё ещё о нём: «а перенеси на 5» следом найдёт его.
+        await rememberMentioned(db, batch.id, [open.id]);
         return;
       }
     }

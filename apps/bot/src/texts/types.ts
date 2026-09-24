@@ -855,6 +855,19 @@ export interface TextProfile {
     readonly buttonProjectLater: string;
     readonly projectTaken: string;
     readonly projectLater: string;
+
+    /**
+     * «Напомнишь?» сразу после разговора о деле (живая проверка Никиты
+     * 24.09.2026): когда напомню — по плану планировщика, словами кода.
+     * `when` — «сегодня в 21:00 и завтра в 08:00».
+     */
+    readonly remindWill: (title: string, when: string) => string;
+    /** Срок днём, без часа: к «когда напомню» — как попросить свой час. */
+    readonly remindAddHour: string;
+    readonly remindNoDeadline: (title: string) => string;
+    /** Срок прошёл или дело не напоминается — впереди напоминаний нет. */
+    readonly remindNothingAhead: (title: string) => string;
+    readonly remindOff: string;
   };
 
   /**
