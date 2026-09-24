@@ -1,7 +1,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { BadBudgetError, isLiveRun, parseBudget, withRunBudget } from '../eval/budget.js';
+import {
+  BadBudgetError,
+  isLiveRun,
+  parseBudget,
+  recordingEnvFor,
+  withRunBudget,
+} from '../eval/budget.js';
+import { BadOnlyError, parseOnly, pickCases } from '../eval/only.js';
 import { loadResolverCases } from '../eval/resolver-dataset.js';
 import { parsePins } from '../eval/pins.js';
 import {
@@ -13,6 +20,7 @@ import { runResolverDataset } from '../eval/resolver-runner.js';
 import { closeDb, getDb } from '../infra/db.js';
 import { createRunGuard } from '../modules/metering/run-guard.js';
 import { createLogger } from '../infra/logger.js';
+import { flushCassette } from '../modules/ai/cassette/session.js';
 import { PromptRegistry } from '../modules/ai/prompts/registry.js';
 import { modelEnvSchema } from '../config/env.js';
 import { createLlmProvider } from '../modules/ai/providers/factory.js';
@@ -43,24 +51,28 @@ import { PRICING } from '../modules/metering/pricing.js';
 function usage(problem?: string): never {
   process.stderr.write(
     (problem === undefined ? '' : `${problem}\n\n`) +
-      'Использование: run-resolver-eval <набор> [отчёты] --budget <₽> [--use resolver=версия]\n' +
-      '  --budget — потолок этого прогона в рублях; обязателен для живой модели.\n',
+      'Использование: run-resolver-eval <набор> [отчёты] --budget <₽> [--use resolver=версия] [--only начало-id,…]\n' +
+      '  --budget — потолок этого прогона в рублях; обязателен для живой модели.\n' +
+      '  --only — гнать только случаи, чей id начинается с одного из перечисленного.\n',
   );
   process.exit(2);
 }
 
 let pinned: ReturnType<typeof parsePins>['pinned'];
 let budgetRub: number | undefined;
+let only: readonly string[] | undefined;
 let rest: readonly string[];
 
 try {
   const pins = parsePins(process.argv.slice(2));
   const budget = parseBudget(pins.rest);
+  const filter = parseOnly(budget.rest);
   pinned = pins.pinned;
   budgetRub = budget.budgetRub;
-  rest = budget.rest;
+  only = filter.only;
+  rest = filter.rest;
 } catch (error) {
-  if (error instanceof BadBudgetError) usage(error.message);
+  if (error instanceof BadBudgetError || error instanceof BadOnlyError) usage(error.message);
   throw error;
 }
 
@@ -89,15 +101,61 @@ const NEWLINE = String.fromCharCode(10);
 
 /** Отметка начала прогона — по ней считается его цена (задача 3.79). */
 const startedAt = new Date();
+/** Одна отметка на отчёт и плёнку: пару видно по имени файла. */
+const stamp = startedAt.toISOString().replace(/[:.]/gu, '-');
 const logger = createLogger({ level: 'warn' });
 const db = getDb();
 
-try {
-  const cases = await loadResolverCases(dataset);
+/**
+ * Живой прогон пишет ответы модели на плёнку (план docs/26, задача 1).
+ *
+ * Как у стенда выгрузок: следующая проверка правки кода идёт по записи
+ * и бесплатно. Повтор и подмена проходят как есть — им писать нечего.
+ */
+const modelEnv = recordingEnvFor(env, join(runs, `${stamp}.cassette.json`));
 
-  if (cases.length === 0) {
+/** Сохранить записанное и сказать, как повторить прогон бесплатно. */
+async function saveAnswers(): Promise<void> {
+  try {
+    const summary = await flushCassette();
+    if (summary === undefined) return;
+
+    if (summary.mode === 'replay') {
+      process.stdout.write(
+        `По записи ${summary.path}: промахов ${String(summary.misses)}` +
+          (summary.misses > 0 ? ' — вход модели изменился, эти случаи мерят не запись.' : '.') +
+          NEWLINE,
+      );
+      return;
+    }
+
+    process.stdout.write(
+      [
+        `Ответы модели записаны: ${summary.path} (${String(summary.answers)} ответов).`,
+        'Повторить бесплатно, по записи:',
+        `  AI_PROVIDER=cassette CASSETTE_PATH=${summary.path} npx tsx src/scripts/run-resolver-eval.ts ${process.argv.slice(2).join(' ')}`,
+        '',
+      ].join(NEWLINE),
+    );
+  } catch (error) {
+    logger.warn({ err: error }, 'Запись ответов модели не сохранилась');
+  }
+}
+
+try {
+  const loaded = await loadResolverCases(dataset);
+
+  if (loaded.length === 0) {
     process.stderr.write(`В «${dataset}» нет ни одного случая.\n`);
     process.exit(2);
+  }
+
+  let cases: typeof loaded;
+  try {
+    cases = pickCases(loaded, only);
+  } catch (error) {
+    if (error instanceof BadOnlyError) usage(error.message);
+    throw error;
   }
 
   const prompts = new PromptRegistry(db, 0, pinned);
@@ -132,7 +190,7 @@ try {
   const outcomes = await runResolverDataset(
     {
       db,
-      provider: createLlmProvider(env),
+      provider: createLlmProvider(modelEnv),
       prompts,
       pricing: PRICING,
       logger,
@@ -177,12 +235,16 @@ try {
    * наблюдение: разброс между запусками виден только по череде отчётов.
    */
   await mkdir(runs, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
   await writeFile(join(runs, `${stamp}.json`), `${JSON.stringify(report, null, 2)}\n`);
 
   process.stdout.write(`${NEWLINE}${await guard.costReport()}${NEWLINE}${NEWLINE}`);
+  await saveAnswers();
 
   process.exit(verdict.passed ? 0 : 1);
+} catch (error) {
+  // Оплаченные ответы не теряются и при сбое посреди прогона.
+  await saveAnswers();
+  throw error;
 } finally {
   await closeDb();
 }
