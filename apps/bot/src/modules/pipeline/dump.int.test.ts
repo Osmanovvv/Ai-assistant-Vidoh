@@ -7648,6 +7648,77 @@ describe('второй проход целится в свою выгрузку 
     expect(texts).toContain(FIXED);
     expect(texts).not.toContain(FRESH);
   });
+
+  it('поправку уже учёл разбор выгрузки — правка молчит: ни «менять нечего», ни черновика (живая проверка 24.09.2026)', async () => {
+    /**
+     * «Купить хлеб. Не хлеб, а батон.» одной выгрузкой: модель записала
+     * «Купить батон» сама, а правка на втором проходе нашла его уже таким
+     * и отвечала «Там уже так — менять нечего», заводя черновик «Не хлеб,
+     * а батон.». Человек читал это как «не получилось».
+     */
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const unit = {
+      text: 'Купить батон',
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'покупки',
+      isProject: false,
+      deadline: '',
+      deadlineAccuracy: 'none',
+      deadlineText: '',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    };
+
+    await queuedBatchOf([
+      { kind: 'text', text: `Купить хлеб.${NEWLINE}Не хлеб, а батон.`, offsetMs: 0 },
+    ]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'Купить хлеб.' },
+          { intent: 'PATCH', text: 'Не хлеб, а батон.' },
+        ],
+      }),
+      extractor: () =>
+        JSON.stringify({ units: [{ text: 'Купить батон', isProject: false, isEmotion: false }] }),
+      classifier: () => JSON.stringify({ items: [unit] }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: '',
+          text: 'Купить батон',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'поправка названия',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved.filter((one) => !one.isDraft).map((one) => one.text)).toEqual(['Купить батон']);
+    expect(saved.filter((one) => one.isDraft).map((one) => one.text)).toEqual([]);
+    expect(all.some((line) => line.includes(defaultTexts.resolver.unchanged))).toBe(false);
+  });
 });
 
 describe('сферы по содержанию (правка заказчицы 14.09.2026, п. 1.1)', () => {
