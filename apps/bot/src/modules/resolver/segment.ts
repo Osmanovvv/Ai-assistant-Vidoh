@@ -18,7 +18,7 @@ import type { ClarifyKind } from './clarify.js';
 import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
-import { startsWithReplacement } from '../router/append.js';
+import { looksLikeAppend, startsWithReplacement } from '../router/append.js';
 import { looksLikeThought } from '../router/thought-words.js';
 
 /**
@@ -106,6 +106,11 @@ export interface ResolveSegmentParams {
    * «X»?», ответ на переспрос), его не получают: выбирать там не из чего.
    */
   readonly dialog?: readonly DialogTurn[] | undefined;
+  /**
+   * Реплика доделана ответом на «Какое дело?» (`clarify.ts`): дело в ней
+   * уже названо, и отсылка «туда же» второй раз не спрашивается.
+   */
+  readonly clarified?: boolean | undefined;
 }
 
 export type SegmentResult =
@@ -272,22 +277,42 @@ export async function resolvePatchSegment(
    * угадывания. Внутри выгрузки не работает: там «перенеси на завтра»
    * после мысли — про неё, и это решают соседи (задача 3.24).
    */
+  /**
+   * Дополнение с отсылкой назад — «И паспорт туда же не забыть» (живая
+   * проверка Никиты 24.09.2026, 18:45): дело тоже не названо, «туда же»
+   * указывает на последнее обсуждённое, как «это». Напоминание пришло за
+   * 31 минуту до того, разговор забыт, модель из 27 дел не выбрала ни
+   * одного — и бот ответил «применить не вышло». По правилу 65: говорили
+   * недавно — к тому делу; давно и хвоста разговора нет — «Какое дело?».
+   * Есть хвост — выбирает модель по нему, как прежде.
+   */
+  const pointsBack = params.clarified !== true && looksLikeAppend(params.text);
+  const noDeed = namesNoDeed(params.text);
+
   let narrowed: typeof candidates | undefined;
-  if (params.onlyOwnBatch !== true && namesNoDeed(params.text)) {
+  const discussed =
+    params.onlyOwnBatch !== true && (noDeed || pointsBack)
+      ? await lastDiscussed(deps.db, {
+          userId: params.userId,
+          batchId: params.batchId,
+          now,
+          windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+        })
+      : undefined;
+  const talkedAbout = discussed?.length === 1 ? discussed[0] : undefined;
+  const byDialog = !noDeed && talkedAbout === undefined && (params.dialog?.length ?? 0) > 0;
+
+  if (discussed !== undefined && !byDialog) {
     // «Это» — дело из последнего разговора, а не только последнее
     // изменённое (бой 23.09.2026: «менять нечего» запись не меняет).
-    const discussed = await lastDiscussed(deps.db, {
-      userId: params.userId,
-      batchId: params.batchId,
-      now,
-      windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
-    });
-    const target = discussed.length === 1 ? discussed[0] : undefined;
+    const target = talkedAbout;
 
     if (target === undefined) {
       return {
         kind: 'parked',
-        reason: `сказано «это», а дел в последнем разговоре ${String(discussed.length)}`,
+        reason: noDeed
+          ? `сказано «это», а дел в последнем разговоре ${String(discussed.length)}`
+          : `отсылка «туда же» без дела, а дел в последнем разговоре ${String(discussed.length)}`,
         said: 'which',
         clarify: 'which',
       };
