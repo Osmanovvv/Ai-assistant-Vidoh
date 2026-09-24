@@ -1,6 +1,6 @@
 import type { AiClientDeps } from '../modules/ai/client.js';
 import { resolveSegment } from '../modules/resolver/resolver.service.js';
-import { candidatesOf, targetsOf, type ResolverCase } from './resolver-dataset.js';
+import { candidatesOf, dialogOf, targetsOf, type ResolverCase } from './resolver-dataset.js';
 import type { ResolverCaseOutcome } from './resolver-report.js';
 
 /**
@@ -12,9 +12,18 @@ import type { ResolverCaseOutcome } from './resolver-report.js';
  * промпт, а не продукт.
  */
 
+export interface ResolverRunOptions {
+  /**
+   * Не показывать модели разговор случая (план docs/26): замер «как
+   * сейчас» на том же наборе и повтор по плёнке, записанной до разговора.
+   */
+  readonly withoutDialog?: boolean | undefined;
+}
+
 export async function runResolverCase(
   deps: AiClientDeps,
   item: ResolverCase,
+  options: ResolverRunOptions = {},
 ): Promise<ResolverCaseOutcome> {
   const now = new Date(item.now);
   const candidates = candidatesOf(item);
@@ -24,6 +33,7 @@ export async function runResolverCase(
     candidates,
     timeZone: item.timeZone,
     now,
+    ...(options.withoutDialog === true ? {} : { dialog: dialogOf(item) }),
   });
 
   const decision = result.decision;
@@ -91,11 +101,12 @@ export async function runResolverDataset(
   deps: AiClientDeps,
   cases: readonly ResolverCase[],
   onCase?: (outcome: ResolverCaseOutcome) => void,
+  options: ResolverRunOptions = {},
 ): Promise<ResolverCaseOutcome[]> {
   const outcomes: ResolverCaseOutcome[] = [];
 
   for (const item of cases) {
-    const outcome = await runResolverCase(deps, item);
+    const outcome = await runResolverCase(deps, item, options);
     outcomes.push(outcome);
     onCase?.(outcome);
   }

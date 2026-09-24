@@ -51,9 +51,10 @@ import { PRICING } from '../modules/metering/pricing.js';
 function usage(problem?: string): never {
   process.stderr.write(
     (problem === undefined ? '' : `${problem}\n\n`) +
-      'Использование: run-resolver-eval <набор> [отчёты] --budget <₽> [--use resolver=версия] [--only начало-id,…]\n' +
+      'Использование: run-resolver-eval <набор> [отчёты] --budget <₽> [--use resolver=версия] [--only начало-id,…] [--without-dialog]\n' +
       '  --budget — потолок этого прогона в рублях; обязателен для живой модели.\n' +
-      '  --only — гнать только случаи, чей id начинается с одного из перечисленного.\n',
+      '  --only — гнать только случаи, чей id начинается с одного из перечисленного.\n' +
+      '  --without-dialog — не показывать модели разговор случаев: замер «как сейчас».\n',
   );
   process.exit(2);
 }
@@ -61,6 +62,8 @@ function usage(problem?: string): never {
 let pinned: ReturnType<typeof parsePins>['pinned'];
 let budgetRub: number | undefined;
 let only: readonly string[] | undefined;
+/** Замер «как сейчас»: разговор случаев модели не показывать (план docs/26). */
+let withoutDialog: boolean;
 let rest: readonly string[];
 
 try {
@@ -70,7 +73,8 @@ try {
   pinned = pins.pinned;
   budgetRub = budget.budgetRub;
   only = filter.only;
-  rest = filter.rest;
+  withoutDialog = filter.rest.includes('--without-dialog');
+  rest = filter.rest.filter((argument) => argument !== '--without-dialog');
 } catch (error) {
   if (error instanceof BadBudgetError || error instanceof BadOnlyError) usage(error.message);
   throw error;
@@ -161,7 +165,9 @@ try {
   const prompts = new PromptRegistry(db, 0, pinned);
   const active = await prompts.get('resolver');
 
-  process.stdout.write(`Прогон ${String(cases.length)} случаев на ${active.version}\n\n`);
+  process.stdout.write(
+    `Прогон ${String(cases.length)} случаев на ${active.version}${withoutDialog ? ', без разговора' : ''}\n\n`,
+  );
 
   /**
    * Потолок расхода до прогона, цена после (задача 3.79).
@@ -203,7 +209,11 @@ try {
     },
     cases,
     (outcome) => {
-      const mark = outcome.expected === outcome.actual ? '·' : '×';
+      // Верно — и вид решения, и запись: иначе строка «·» врёт, как врал
+      // заголовок отчёта до 24.09.2026.
+      const right =
+        outcome.expected === outcome.actual && (outcome.expected === 'create' || outcome.targetOk);
+      const mark = right ? '·' : '×';
       const target = outcome.targetOk ? '' : ' (не та запись)';
       const deadline = outcome.deadlineOk ? '' : ' (не тот срок)';
       const mode = outcome.modeOk ? '' : ' (замена вместо дополнения)';
@@ -213,6 +223,7 @@ try {
         `  ${mark} ${outcome.id.padEnd(24)} ждали ${outcome.expected.padEnd(7)} получили ${outcome.actual}${target}${deadline}${mode}${rewrite}\n`,
       );
     },
+    { withoutDialog },
   );
 
   const report = collectResolver(outcomes, active.version);
