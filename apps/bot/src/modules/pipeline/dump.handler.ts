@@ -1631,6 +1631,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           intent: segment.intent,
           // Хвост разговора — только если прочитан (`DIALOG_CONTEXT=on`).
           ...(dialog.length === 0 ? {} : { dialog }),
+          // Ответ на «Какое дело?» уже назвал дело (24.09.2026).
+          ...(clarified === undefined ? {} : { clarified: true }),
           now,
         },
       );

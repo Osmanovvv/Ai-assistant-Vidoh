@@ -4611,6 +4611,127 @@ describe('правка доходит до резолвера (§7, задача
     });
   });
 
+  /**
+   * Живая проверка Никиты 24.09.2026, 18:45: напоминание о посылке пришло в
+   * 18:15, «И паспорт туда же не забыть» — через 31 минуту. Разговор уже
+   * забыт (окно 15 минут), модель из 27 дел не выбрала ни одного, и бот
+   * ответил «Одну правку применить не вышло — слова сохранила». По правилу
+   * 65 (решение Никиты 23.09.2026): дело не названо, говорили давно —
+   * «Какое дело?», а ответ доделывает дополнение.
+   */
+  it('«И паспорт туда же» через полчаса после напоминания — «Какое дело?»; «Забрать посылку» дописывает паспорт', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        updatedAt: at(-3 * 60 * 60_000),
+      })
+      .returning({ id: items.id });
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Купить хлеб',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        updatedAt: at(-3 * 60 * 60_000),
+      });
+    await testDb()
+      .insert(reminders)
+      .values({
+        userId,
+        itemId: parcel!.id,
+        kind: 'deadline_hour',
+        dueAt: at(-31 * 60_000),
+        sentAt: at(-31 * 60_000),
+        dedupeKey: `test-hour:${parcel!.id}`,
+      });
+    const { sender, all } = recordingSender();
+    const text = 'И паспорт туда же не забыть.';
+    const resolverSays = JSON.stringify({
+      action: 'update',
+      mode: 'append',
+      itemId: '1',
+      confidence: 0.95,
+      changes: {
+        note: 'паспорт не забыть',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      reason: 'подробность к названному делу',
+    });
+
+    await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'PATCH', text }] }),
+            // Как на бою: из многих дел модель не уверена ни в одном.
+            resolver: JSON.stringify({
+              action: 'new',
+              mode: 'replace',
+              itemId: '',
+              confidence: 0.3,
+              changes: {
+                note: '',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'непонятно, о чём',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    expect(all.some((line) => line.includes('Какое дело? Назови его — и сделаю.'))).toBe(true);
+    expect(all.some((line) => line.includes('применить не вышло'))).toBe(false);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Забрать посылку', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: resolverSays }),
+        }),
+      },
+      userId,
+    );
+
+    const open = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(open.map((row) => row.text).sort()).toEqual(['Забрать посылку', 'Купить хлеб']);
+    expect(open.find((row) => row.id === parcel?.id)?.body ?? '').toContain('паспорт');
+  });
+
   it('«И паспорт туда же не забыть» в ответ на напоминание — к посылке, а не новое дело (живая проверка 24.09.2026, 16:45)', async () => {
     const prompts = await seedPrompts();
     const [parcel] = await testDb()
