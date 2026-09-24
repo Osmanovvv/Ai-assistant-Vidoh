@@ -650,6 +650,82 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect((await reread(item.id)).deadlineTime).toBeNull();
   });
 
+  /**
+   * Вариант Б (решение Никиты 24.09.2026). Живая проверка: на «напомнишь,
+   * что поехать за ребёнком надо в 4 часа» бот спросил «04:00 или 16:00?».
+   * Голый час с 1 до 6 — день; утро остаётся, только если само дело
+   * стоит ночью или рано утром. С 7 до 11 — по-прежнему вопрос.
+   */
+  it('«в 4 часа» у дела без часа — 16:00, без вопроса', async () => {
+    const item = await sow({ text: 'Поехать за ребёнком' });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: changes('', 'none'),
+        spoken: 'Напомнишь, что поехать за ребёнком надо в 4 часа.',
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    expect(applied?.fields).toContain('deadlineTime');
+    expect((await reread(item.id)).deadlineTime).toBe(16 * 60);
+  });
+
+  it('«в 6» у дела на 11:00 — 18:00, а не ближайшее 06:00', async () => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: 11 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси посылку в 6.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(18 * 60);
+  });
+
+  it('«в 6» у пробежки на 05:00 — 06:00: дело само утреннее', async () => {
+    const item = await sow({ text: 'Пробежка', deadlineTime: 5 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси пробежку в 6.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(6 * 60);
+  });
+
+  it('«в 7» у дела без часа — по-прежнему оба чтения: утро и вечер бывают оба', async () => {
+    const item = await sow({ text: 'Забрать ребёнка' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'Перенеси ребёнка в 7.',
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind === 'unchanged' ? outcome.timeUnclear : undefined).toEqual([
+      7 * 60,
+      19 * 60,
+    ]);
+  });
+
   it('новый час — старый час из заголовка уходит: «Позвонить сестре в 3:10» → «Позвонить сестре» (бой 22.09.2026)', async () => {
     // Запись до починки заголовков хранила час в тексте; после «Изменить
     // время» → 03:45 реплика говорила «Напомню про «Позвонить сестре в

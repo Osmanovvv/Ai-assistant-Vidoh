@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { clarifiedCommand } from './clarify.js';
+import { clockTimesIn, hourWithoutDay } from '../classifier/clock-time.js';
+
+import { clarifiedCommand, hourClarifyCommand } from './clarify.js';
 
 /**
  * Ответ на уточнение (живой прогон Никиты 23.09.2026, 12:50).
@@ -44,5 +46,34 @@ describe('утро или вечер — ответ называет время'
 
   it.each(['купить хлеб', 'в 9', 'не знаю'])('«%s» — не ответ', (answer) => {
     expect(clarifiedCommand('time', 'Перенеси посылку на пол 12.', answer)).toBeUndefined();
+  });
+});
+
+/**
+ * Переспрос о часе нового дела (вариант Б, решение Никиты 24.09.2026):
+ * «Забрать ребёнка в 7» — «Во сколько — 07:00 или 19:00?». Команда,
+ * которую доделает ответ, — перенос этого дела на час без части суток.
+ */
+describe('утро или вечер у нового дела — команда для ответа', () => {
+  it.each<[string, number, string, number]>([
+    ['Забрать ребёнка в 7', 7 * 60, 'Вечером', 19 * 60],
+    ['Забрать ребёнка в 7', 7 * 60, 'утром', 7 * 60],
+    ['Забрать ребёнка в 7', 7 * 60, 'в 19:30', 19 * 60 + 30],
+    ['Позвонить маме в половине десятого', 9 * 60 + 30, 'вечером', 21 * 60 + 30],
+    ['Позвонить маме', 10 * 60 + 15, 'вечером', 22 * 60 + 15],
+  ])('«%s» (%i мин), ответ «%s»', (title, morning, answer, expected) => {
+    const command = hourClarifyCommand(title, morning);
+    const done = clarifiedCommand('time', command, answer);
+
+    expect(done).toBeDefined();
+    expect(clockTimesIn(done ?? '')).toEqual([[expected]]);
+    // Дня в команде нет — перенос меняет только час.
+    expect(hourWithoutDay(done ?? '')).toBe(true);
+  });
+
+  it('название — без часа: «Перенеси «Забрать ребёнка» в 7»', () => {
+    expect(hourClarifyCommand('Забрать ребёнка в 7', 7 * 60)).toBe(
+      'Перенеси «Забрать ребёнка» в 7',
+    );
   });
 });

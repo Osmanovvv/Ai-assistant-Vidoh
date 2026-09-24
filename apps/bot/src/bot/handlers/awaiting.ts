@@ -10,7 +10,7 @@ import {
   setAwaiting,
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
-import { clockTimesIn } from '../../modules/classifier/clock-time.js';
+import { clockTimesIn, sureReading } from '../../modules/classifier/clock-time.js';
 import { zoneOfCity } from '../../modules/onboarding/cities.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
@@ -375,11 +375,12 @@ export function consumeAwaited(deps: AwaitingDeps) {
      * Час словами после «Изменить время» (ТЗ проджекта 17.09.2026, шаг
      * 5). Читает код, без модели: только однозначный час — «10:30», «6
      * вечера»; голое «в 9» — просьба повторить, ожидание остаётся (его
-     * снимает «Не менять», любая кнопка или срок ожидания).
+     * снимает «Не менять», любая кнопка или срок ожидания). Голое «в 4» —
+     * день, 16:00 (вариант Б, 24.09.2026): выбирает правка, как у голоса.
      */
     if (awaiting.kind === 'retime' && awaiting.itemId !== undefined) {
       const first = clockTimesIn(text)[0];
-      if (first?.length !== 1) {
+      if (first === undefined || sureReading(first) === undefined) {
         await ctx.reply(texts.card.retimeNotUnderstood);
         return true;
       }

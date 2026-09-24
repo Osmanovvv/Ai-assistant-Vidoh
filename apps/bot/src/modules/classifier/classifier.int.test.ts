@@ -1246,6 +1246,51 @@ describe('названное время уже прошло — срок зав�
       undefined,
     ]);
   });
+
+  /**
+   * Вариант Б (решение Никиты 24.09.2026): «в 4 часа» — 16:00, а «в 9»
+   * не угадывается, но и не теряется молча — классификатор отдаёт оба
+   * чтения, чтобы конвейер спросил сразу при записи.
+   */
+  it('«в 4 часа» — 16:00; «в 9» — час пуст, оба чтения для вопроса; без срока — вопроса нет', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Поехать за ребёнком в 4 часа',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в 4 часа',
+          },
+          {
+            text: 'Позвонить маме в 9',
+            deadline: '2026-09-04',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в 9',
+          },
+          { text: 'Созвон в 9', deadline: '', deadlineAccuracy: 'none' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Поехать за ребёнком в 4 часа', 'Позвонить маме в 9', 'Созвон в 9'),
+      speech: 'Поехать за ребёнком в 4 часа. Позвонить маме в 9. Созвон в 9.',
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items.map((item) => item.deadline?.time)).toEqual([
+      16 * 60,
+      undefined,
+      undefined,
+    ]);
+    expect(result.items.map((item) => item.unclearTime)).toEqual([
+      undefined,
+      [9 * 60, 21 * 60],
+      undefined,
+    ]);
+  });
 });
 
 describe('«через час» у нового дела — день и час от сейчас (23.09.2026)', () => {

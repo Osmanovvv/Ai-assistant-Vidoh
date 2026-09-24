@@ -41,13 +41,18 @@ import {
   unchangedText,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
-import { CLARIFY_REASON, clarifiedCommand } from '../resolver/clarify.js';
+import { CLARIFY_REASON, clarifiedCommand, hourClarifyCommand } from '../resolver/clarify.js';
 import { closeClarification, openClarification } from '../resolver/clarify.repo.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import { applyDecision, emptyChanges, type Applied } from '../resolver/patch.js';
-import { clockTimesIn, fromNowIn, timeShiftIn } from '../classifier/clock-time.js';
+import {
+  clockTimesIn,
+  fromNowIn,
+  timeShiftIn,
+  withoutClockPhrase,
+} from '../classifier/clock-time.js';
 import { namesDay, ownSentences, sentencesOf } from '../classifier/own-sentence.js';
 import { spokenFits } from '../resolver/decision.js';
 import { isoDateIn as isoDayIn } from '../classifier/dates.js';
@@ -115,6 +120,7 @@ import {
   refreshSummaries,
 } from '../topics/summary.service.js';
 import { asksForRest } from '../topics/rest-request.js';
+import { clockOf } from '../scheduler/plan.js';
 import { settleTopics } from '../topics/ensure.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
@@ -2258,6 +2264,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         movedRepeats.add(unit);
         happened.said = true;
         await tell(unchangedText(outcome, texts));
+        /**
+         * Вопрос помнится (вариант Б, 24.09.2026): на «Не поняла, 07:00
+         * или 19:00?» ответ «вечером» следом доделывает перенос. Раньше
+         * бот спрашивал и тут же забывал, о чём.
+         */
+        if (outcome.timeUnclear !== undefined) {
+          happened.asked = true;
+          await saveDraft(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            text: hourClarifyCommand(item.text, outcome.timeUnclear[0]),
+            reason: CLARIFY_REASON.time,
+          });
+        }
       }
     }
 
@@ -2295,6 +2315,47 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     for (const segment of searchEverywhere) {
       await useOutcome(segment, await resolveOne(segment), 'wide');
+    }
+
+    /**
+     * Час нового дела — утро или вечер (вариант Б, решение Никиты
+     * 24.09.2026).
+     *
+     * Живая проверка: «надо будет поехать за ребёнком в 4 часа» записалось
+     * без часа, а в названии осталось «в 4 часа» — казалось, что бот
+     * напомнит к четырём. Голый час с 1 до 6 теперь день, а с 7 до 11
+     * бывает по-разному: не угадываем и не молчим — спрашиваем сразу, под
+     * ответом о записи, и помним вопрос черновиком, как переспрос переноса.
+     * Вопрос один на обмен (§13.9): если он уже задан, этот не задаётся.
+     * Второй проход правок мог уже поставить час — тогда спрашивать нечего.
+     */
+    if (!happened.asked) {
+      for (const row of saved) {
+        const readings =
+          row.sourceOrder === null ? undefined : toSave[row.sourceOrder]?.unclearTime;
+        if (readings === undefined) continue;
+        const [stored] = await db
+          .select({ time: items.deadlineTime })
+          .from(items)
+          .where(eq(items.id, row.id));
+        if (stored?.time !== null) continue;
+
+        happened.asked = true;
+        sayParked(
+          texts.resolver.newTimeUnclear(
+            withoutClockPhrase(row.text),
+            clockOf(readings[0]),
+            clockOf(readings[1]),
+          ),
+        );
+        await saveDraft(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          text: hourClarifyCommand(row.text, readings[0]),
+          reason: CLARIFY_REASON.time,
+        });
+        break;
+      }
     }
 
     // ── Поздние мысли ───────────────────────────────────────────────────

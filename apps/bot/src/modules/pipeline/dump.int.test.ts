@@ -8660,3 +8660,194 @@ describe('сказать нечего — последняя попытка мо
     expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
   });
 });
+
+/**
+ * Вариант Б (решение Никиты 24.09.2026). Живая проверка: «надо будет
+ * поехать за ребёнком в 4 часа» записалось без часа — у четырёх два
+ * чтения, — а в названии осталось «в 4 часа», и казалось, что бот
+ * напомнит к четырём. Теперь голый час с 1 до 6 — день, а с 7 до 11 бот
+ * спрашивает сразу при записи и помнит вопрос четверть часа.
+ */
+describe('час нового дела — утро или вечер (вариант Б, 24.09.2026)', () => {
+  const resolverPicksFirst = JSON.stringify({
+    action: 'update',
+    mode: 'replace',
+    itemId: '1',
+    confidence: 1,
+    changes: {
+      note: '',
+      text: '',
+      deadline: '',
+      deadlineAccuracy: 'none',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
+    reason: 'час по переспросу',
+  });
+
+  const tomorrowDump = (spoken: string, title: string, topic = 'семья') =>
+    echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
+      extractor: () =>
+        JSON.stringify({ units: [{ text: title, isProject: false, isEmotion: false }] }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text: title,
+              type: 'TASK',
+              priority: 'SOON',
+              topic,
+              isProject: false,
+              deadline: tomorrowIso(),
+              deadlineAccuracy: 'day',
+              deadlineText: 'завтра',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
+          ],
+        }),
+      resolver: resolverPicksFirst,
+    });
+
+  async function liveItems(): Promise<(typeof items.$inferSelect)[]> {
+    return await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+  }
+
+  it('«Завтра поехать за ребёнком в 4 часа» — 16:00 без вопроса, в названии часа нет', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра надо будет поехать за ребёнком в 4 часа.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Поехать за ребёнком в 4 часа'),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime])).toEqual([
+      ['Поехать за ребёнком', 16 * 60],
+    ]);
+    expect(all.some((text) => text.includes('Во сколько'))).toBe(false);
+  });
+
+  it('«Завтра забрать ребёнка в 7» — вопрос сразу при записи; «Вечером» ставит 19:00, второго дела нет', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра забрать ребёнка в 7.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Забрать ребёнка в 7'),
+        }),
+      },
+      userId,
+    );
+
+    const [saved] = await liveItems();
+    expect(saved?.deadlineTime).toBeNull();
+    const asked = all.filter((text) =>
+      text.includes('Во сколько «Забрать ребёнка» — 07:00 или 19:00?'),
+    );
+    expect(asked).toHaveLength(1);
+    // Один вопрос на обмен (§13.9): свой вопрос разбора уступает.
+    expect(asked[0]).toContain('Записала');
+    expect(asked[0]).not.toContain('выбрать главное?');
+
+    await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: resolverPicksFirst }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 19 * 60]]);
+    expect(all.some((text) => text.includes('19:00'))).toBe(true);
+  });
+
+  it('повтор дела с «в 7» — вопрос помнится: «Вечером» ставит 19:00 у прежнего дела', async () => {
+    const prompts = await seedPrompts();
+    const [child] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать ребёнка',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-40 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const spoken = 'Забрать ребёнка в 7.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Забрать ребёнка'),
+        }),
+      },
+      userId,
+    );
+    expect(all.some((text) => text.includes('07:00 или 19:00'))).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: resolverPicksFirst }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[child?.id, 19 * 60]]);
+  });
+});
