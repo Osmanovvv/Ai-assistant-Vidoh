@@ -2667,6 +2667,71 @@ describe('ветки тем в разборе', () => {
     expect(await pickedNow()).toContain('К врачу');
   });
 
+  it('«Какие еще 3» в ветке под сводкой — полный список дел ветки, без модели (живая проверка 24.09.2026)', async () => {
+    /**
+     * Сводка ветки показывает 15 дел и «И ещё N.». Никита спросил в ветке
+     * «Какие еще 5» — бот ответил «Я здесь. Расскажешь, что в голове?», и
+     * фраза легла в журнал непонятого: вопрос ушёл модели ответов, а она
+     * о сводке не знает. Теперь — полный список этой ветки, мимо модели.
+     */
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+    await testDb()
+      .insert(topics)
+      .values([{ userId, name: 'личное', sortOrder: 0, isDefault: true }]);
+    const [personal] = await testDb().select().from(topics).where(eq(topics.name, 'личное'));
+    const thread = await ensureThread(
+      { db: testDb(), gateway },
+      { topicId: personal!.id, chatId: 700 },
+    );
+    const titles = Array.from({ length: 18 }, (_, index) => `Дело номер ${String(index + 1)}`);
+    await testDb()
+      .insert(items)
+      .values(
+        titles.map((text) => ({
+          userId,
+          text,
+          type: 'TASK' as const,
+          priority: 'SOON' as const,
+          topic: 'личное',
+        })),
+      );
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'Какие еще 3', offsetMs: 0, threadId: thread.threadId },
+    ]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          topics: gateway,
+        }),
+      },
+      userId,
+    );
+
+    const reply = all.join('\n');
+    for (const title of titles) expect(reply).toContain(title);
+    expect(reply).not.toContain(defaultTexts.answer.nothingToParse);
+    // Модель не звалась вовсе: список — из базы, кодом.
+    expect(llm.callCount).toBe(0);
+    const misread = await testDb()
+      .select()
+      .from(misunderstood)
+      .where(eq(misunderstood.userId, userId));
+    expect(misread).toEqual([]);
+    // Новых дел из вопроса не появилось.
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(saved).toHaveLength(titles.length);
+  });
+
   it('пропавшая ветка не роняет разбор', async () => {
     // §17: человек удалил ветку руками, пока шла обработка.
     const prompts = await seedPrompts();
