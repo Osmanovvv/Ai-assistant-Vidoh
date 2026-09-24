@@ -777,7 +777,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         reason: CLARIFY_REASON.time,
       });
       return texts.resolver.newTimeUnclear(
-        withoutClockPhrase(applied.after.text),
+        // Без часа и без дня (проверка 24.09.2026, 21:36: «Встретить
+        // курьера послезавтра»): так название звучит и в списках.
+        titleWithoutDate(withoutClockPhrase(applied.after.text)),
         clockOf(readings[0]),
         clockOf(readings[1]),
       );
@@ -2487,7 +2489,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         happened.asked = true;
         sayParked(
           texts.resolver.newTimeUnclear(
-            withoutClockPhrase(row.text),
+            titleWithoutDate(withoutClockPhrase(row.text)),
             clockOf(readings[0]),
             clockOf(readings[1]),
           ),

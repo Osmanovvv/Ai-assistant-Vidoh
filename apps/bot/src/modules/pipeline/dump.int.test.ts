@@ -9209,7 +9209,8 @@ describe('час нового дела — утро или вечер (вари�
       .insert(items)
       .values({
         userId,
-        text: 'Забрать ребенка',
+        // День в заголовке — как оставляет модель: в вопросе его быть не должно.
+        text: 'Забрать ребенка завтра',
         type: 'TASK',
         priority: 'SOON',
         topic: 'семья',
@@ -9258,6 +9259,82 @@ describe('час нового дела — утро или вечер (вари�
     const moved = all.find((line) => line.includes('Перенесла'));
     expect(moved).toBeDefined();
     expect(moved).toContain('Во сколько «Забрать ребенка» — 08:00 или 20:00?');
+  });
+
+  /**
+   * Проверка Никиты 24.09.2026, 21:36: модель оставила день в заголовке, и
+   * вопрос вышел «Во сколько «Встретить курьера послезавтра» — …». В
+   * списках и в «Напомню про …» день уже срезается — в вопросе тоже.
+   */
+  it('в вопросе о часе название без дня: «Встретить курьера», а не «… послезавтра»', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Послезавтра встретить курьера в 9.';
+    const afterTomorrow = new Date(`${tomorrowIso()}T12:00:00.000Z`);
+    afterTomorrow.setUTCDate(afterTomorrow.getUTCDate() + 1);
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
+            extractor: () =>
+              JSON.stringify({
+                units: [
+                  { text: 'Встретить курьера послезавтра', isProject: false, isEmotion: false },
+                ],
+              }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  {
+                    text: 'Встретить курьера послезавтра',
+                    type: 'TASK',
+                    priority: 'SOON',
+                    topic: 'дом',
+                    isProject: false,
+                    deadline: afterTomorrow.toISOString().slice(0, 10),
+                    deadlineAccuracy: 'day',
+                    deadlineText: 'послезавтра',
+                    recurrenceKind: 'none',
+                    recurrenceInterval: 0,
+                    recurrenceText: '',
+                  },
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    expect(
+      all.some((text) => text.includes('Во сколько «Встретить курьера» — 09:00 или 21:00?')),
+    ).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Вечерком', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm(),
+        }),
+      },
+      userId,
+    );
+    const rows = await liveItems();
+    expect(rows.map((row) => row.deadlineTime)).toEqual([21 * 60]);
   });
 
   it('«вечерком» на «Во сколько … 07:00 или 19:00?» — 19:00 без модели (разговорный ответ, 24.09.2026)', async () => {
