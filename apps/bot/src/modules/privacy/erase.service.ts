@@ -4,6 +4,7 @@ import type { Database } from '../../infra/db.js';
 import type { PaymentProvider } from '../billing/provider.js';
 import { stopAllRenewals } from '../billing/subscription.service.js';
 import type { Rail } from '../billing/tariffs.js';
+import type { DialogStore } from '../dialog/dialog.store.js';
 import type { TopicGateway } from '../topics/gateway.js';
 import { removeThread } from '../topics/topics.service.js';
 import { deleteUserData, type DeletionReport } from './privacy.service.js';
@@ -19,6 +20,11 @@ export interface EraseDeps {
   readonly topics: TopicGateway;
   /** Провайдеры оплаты — чтобы отменить продление ДО удаления (§16, §14). */
   readonly providers?: Partial<Record<Rail, PaymentProvider>> | undefined;
+  /**
+   * Хвост разговора (план docs/26): реплики живут в Redis полчаса и уйдут
+   * сами, но «удалить мои данные» — значит сейчас.
+   */
+  readonly dialog?: DialogStore | undefined;
 }
 
 export interface EraseOutcome {
@@ -80,6 +86,16 @@ export async function eraseUser(
     },
     `Данные пользователя удалены ${params.why}`,
   );
+
+  // Хвост разговора — после базы и так же, как ветки: отказ Redis
+  // удаление не отменяет, данные уже стёрты, хвост уйдёт сам за полчаса.
+  if (deps.dialog !== undefined) {
+    for (const chatId of new Set([params.tgId, params.chatId ?? params.tgId])) {
+      await deps.dialog.forget(chatId).catch((error: unknown) => {
+        logger.warn({ err: error, tgId: params.tgId }, 'Хвост разговора не стёрся — уйдёт сам');
+      });
+    }
+  }
 
   /**
    * Итог уборки — в журнал на уровне `info`, отказы — `warn`.

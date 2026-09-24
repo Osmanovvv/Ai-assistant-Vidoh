@@ -498,3 +498,18 @@ describe('запись ответов модели', () => {
     ).toThrow(/запись ответов модели недопустима в боевом окружении/u);
   });
 });
+
+describe('DIALOG_CONTEXT — хвост разговора для резолвера (план docs/26)', () => {
+  it('по умолчанию выключен: выкладка не меняет поведения, пока его не включат', () => {
+    expect(parseWith({}).DIALOG_CONTEXT).toBe('off');
+  });
+
+  it('включается словом on, откат — off', () => {
+    expect(parseWith({ DIALOG_CONTEXT: 'on' }).DIALOG_CONTEXT).toBe('on');
+    expect(parseWith({ DIALOG_CONTEXT: 'off' }).DIALOG_CONTEXT).toBe('off');
+  });
+
+  it('опечатка — ошибка запуска, а не молча выключенный разговор', () => {
+    expect(() => parseWith({ DIALOG_CONTEXT: 'yes' })).toThrow(/DIALOG_CONTEXT/);
+  });
+});

@@ -9,6 +9,7 @@ import { recordMisunderstood } from '../misunderstood/misunderstood.repo.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { markTrialSpent, mayParseDump } from '../billing/subscription.service.js';
 import type { SettingsRegistry } from '../settings/settings.repo.js';
+import type { DialogStore } from '../dialog/dialog.store.js';
 import { decideDegradation, type SpendLimit } from '../metering/limits.js';
 import type { ClassifiedItems } from '../ai/schemas/classifier.js';
 import type { ExtractedUnits } from '../ai/schemas/extractor.js';
@@ -292,6 +293,16 @@ export interface DumpHandlerDeps {
    * шага у неё нет. Так работали все проверки, писавшиеся до 4.4.
    */
   readonly settings?: SettingsRegistry | undefined;
+  /**
+   * Хвост разговора (решение Никиты 24.09.2026, план docs/26).
+   *
+   * Реплика человека пишется всегда, когда хранилище есть; реплики бота
+   * пишет перехват в `bot.api`. Читает хвост и показывает резолверу только
+   * `useDialog` — `DIALOG_CONTEXT=on`. Так выкладка выключенным проверяет
+   * запись, не меняя поведения, а откат — одна переменная.
+   */
+  readonly dialog?: DialogStore | undefined;
+  readonly useDialog?: boolean | undefined;
   readonly logger?: Logger | undefined;
   readonly now?: (() => Date) | undefined;
 }
@@ -561,6 +572,22 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // Считается всегда, а не только когда есть кому отвечать: из него
     // берётся и ветка, в которой человек написал, и чат для сводок тем.
     const target = await statusTarget(db, batch.id);
+
+    /**
+     * Хвост разговора читается **здесь**, до расшифровки: пока идёт
+     * распознавание, бот шлёт «Слушаю…», и эта реплика не должна встать в
+     * хвост последней репликой бота. И до записи своей реплики — иначе
+     * модель увидела бы сказанное дважды. Хранилище упало — разбор идёт
+     * без разговора, как до 24.09.2026.
+     */
+    const dialog =
+      deps.useDialog === true && deps.dialog !== undefined && target !== undefined
+        ? await deps.dialog.recent(target.chatId, now).catch((error: unknown) => {
+            deps.logger?.warn({ err: error }, 'Хвост разговора не прочитан — разбор без него');
+            return [];
+          })
+        : [];
+
     const context = await outputContextOf(db, batch.userId);
     const texts = textsFor(context.textProfile);
     const ai = { ...deps.ai, db };
@@ -580,6 +607,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       },
       slowAfterMs: deps.speech.slowAfterMs,
     });
+
+    // Реплика человека — в хвост разговора, уже после чтения хвоста.
+    // Пишется и при выключенном `useDialog`: так проверяется запись.
+    if (deps.dialog !== undefined && target !== undefined && combined.trim() !== '') {
+      await deps.dialog
+        .remember(target.chatId, { role: 'person', text: combined, at: now })
+        .catch((error: unknown) => {
+          deps.logger?.warn({ err: error }, 'Реплика человека не запомнилась — разговор без неё');
+        });
+    }
 
     /**
      * Занят ли статусный слот выгрузки.
@@ -1460,6 +1497,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           questionTaken: happened.asked,
           // Закрытие и отмена без записи не становятся мыслью (находка 5).
           intent: segment.intent,
+          // Хвост разговора — только если прочитан (`DIALOG_CONTEXT=on`).
+          ...(dialog.length === 0 ? {} : { dialog }),
           now,
         },
       );

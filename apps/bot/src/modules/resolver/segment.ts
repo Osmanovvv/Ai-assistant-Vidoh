@@ -4,6 +4,7 @@ import { effectiveThresholds, type SettingsRegistry } from '../settings/settings
 import type { Database } from '../../infra/db.js';
 import type { AiClientDeps } from '../ai/client.js';
 import type { Intent } from '../ai/schemas/router.js';
+import type { DialogTurn } from '../dialog/dialog.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import type { ModelPricing } from '../metering/pricing.js';
@@ -99,6 +100,12 @@ export interface ResolveSegmentParams {
    * без цели — действительно мысль.
    */
   readonly intent?: Intent | undefined;
+  /**
+   * Хвост разговора (решение Никиты 24.09.2026, план docs/26): уходит в
+   * основной вызов резолвера. Вызовы, где цель уже выбрал код («Перенести
+   * «X»?», ответ на переспрос), его не получают: выбирать там не из чего.
+   */
+  readonly dialog?: readonly DialogTurn[] | undefined;
 }
 
 export type SegmentResult =
@@ -379,6 +386,8 @@ export async function resolvePatchSegment(
     userId: params.userId,
     batchId: params.batchId,
     ...(thresholds === undefined ? {} : { thresholds }),
+    // Разговор — когда выбирает модель; сузил до одной записи код — не нужен.
+    ...(narrowed === undefined && params.dialog !== undefined ? { dialog: params.dialog } : {}),
   });
 
   const decision = resolved.decision;

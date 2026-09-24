@@ -6,6 +6,7 @@ import { eraseUser } from '../../modules/privacy/erase.service.js';
 import { exportUserData } from '../../modules/privacy/privacy.service.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
+import type { DialogStore } from '../../modules/dialog/dialog.store.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
@@ -46,6 +47,8 @@ export interface PrivacyDeps {
    * состояние до подключения оплаты.
    */
   readonly providers?: Partial<Record<Rail, PaymentProvider>> | undefined;
+  /** Хвост разговора стирается вместе с данными (план docs/26). */
+  readonly dialog?: DialogStore | undefined;
 }
 
 export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
@@ -130,7 +133,7 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
     // Один путь стирания на команду и на удаление после тишины: продления,
     // база, ветки — см. `eraseUser`.
     const { renewals } = await eraseUser(
-      { db, logger, topics: deps.topics, providers: deps.providers },
+      { db, logger, topics: deps.topics, providers: deps.providers, dialog: deps.dialog },
       { userId: user.id, tgId, chatId: ctx.chat?.id, why: 'по его запросу' },
     );
 

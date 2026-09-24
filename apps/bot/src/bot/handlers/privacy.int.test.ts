@@ -8,6 +8,7 @@ import { batches, messagesRaw, topics, users } from '../../db/schema.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { createLogger } from '../../infra/logger.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
+import type { DialogStore } from '../../modules/dialog/dialog.store.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import { billingSubscriptions } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -59,6 +60,8 @@ function createTestBot(
     gateway?: FakeTopicGateway;
     /** Провайдеры оплаты: отмена продления идёт до удаления (§16, §14). */
     providers?: Partial<Record<'telegram:stars' | 'robokassa:smz', PaymentProvider>>;
+    /** Хвост разговора: стирается вместе с данными (план docs/26). */
+    dialog?: DialogStore;
   } = {},
 ): {
   bot: Bot;
@@ -113,6 +116,7 @@ function createTestBot(
     logger,
     topics: gateway,
     ...(options.providers === undefined ? {} : { providers: options.providers }),
+    ...(options.dialog === undefined ? {} : { dialog: options.dialog }),
   });
 
   return { bot, calls, gateway };
@@ -310,6 +314,27 @@ describe('/delete_my_data', () => {
     const edit = calls.find((call) => call.method === 'editMessageText');
     expect(String(edit?.payload['text'])).toContain('удалено');
     expect(await rowsFor(TG_ID)).toEqual({ users: 0, messages: 0, batches: 0 });
+  });
+
+  it('хвост разговора стирается вместе с данными (план docs/26)', async () => {
+    // Реплики держатся в Redis полчаса и сами уйдут, но «удалить мои
+    // данные» — значит сейчас, а не через полчаса.
+    await seedUser();
+    const forgotten: number[] = [];
+    const { bot } = createTestBot({
+      dialog: {
+        remember: () => Promise.resolve(),
+        recent: () => Promise.resolve([]),
+        forget: (chatId) => {
+          forgotten.push(chatId);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    expect(forgotten).toContain(TG_ID);
   });
 
   it('ветки тем удаляются вместе с данными', async () => {
