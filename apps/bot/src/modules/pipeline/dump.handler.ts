@@ -48,7 +48,8 @@ import { suggestRecurrence } from '../recurrence/suggest.service.js';
 import { openQuestionOf } from '../resolver/questions.repo.js';
 import { applyDecision, emptyChanges, type Applied } from '../resolver/patch.js';
 import { clockTimesIn, fromNowIn, timeShiftIn } from '../classifier/clock-time.js';
-import { namesDay, ownSentences } from '../classifier/own-sentence.js';
+import { namesDay, ownSentences, sentencesOf } from '../classifier/own-sentence.js';
+import { spokenFits } from '../resolver/decision.js';
 import { isoDateIn as isoDayIn } from '../classifier/dates.js';
 import { resolvePatchSegment, type SegmentResult } from '../resolver/segment.js';
 import { selectForOutput, type SelectionResult } from '../output/filter.js';
@@ -305,6 +306,33 @@ export interface DumpHandlerDeps {
   readonly useDialog?: boolean | undefined;
   readonly logger?: Logger | undefined;
   readonly now?: (() => Date) | undefined;
+}
+
+/**
+ * Предложение речи, где названо дело повтора, — когда дословно не нашлось
+ * (живая проверка Никиты 24.09.2026, 15:43).
+ *
+ * «Давай заберём посылку через 40 минут» при записанной «Забрать посылку»:
+ * дословный поиск (`ownSentences`) не видит «забрать» в «заберём», и время
+ * бралось из названия дела, где его нет, — срок молча не переносился.
+ * Здесь дело узнаётся по слову, как у стража разговора (`spokenFits`:
+ * «посылку» ≈ «посылки», глаголы-повеления не в счёт).
+ *
+ * Берётся, только если такое предложение **одно** и **не называет другое
+ * дело этой выгрузки**: «заберём посылку и через 40 минут позвонить маме» —
+ * время маме, не посылке. Иначе — как раньше, без времени.
+ */
+function sentenceNaming(
+  title: string,
+  speech: string,
+  others: readonly string[],
+): string | undefined {
+  const fitting = sentencesOf(speech).filter(
+    (sentence) =>
+      spokenFits(sentence, { text: title }) &&
+      !others.some((other) => spokenFits(sentence, { text: other })),
+  );
+  return fitting.length === 1 ? fitting[0] : undefined;
 }
 
 /** Ответ человеку. Молча, если отправителя нет — так работают тесты. */
@@ -2131,7 +2159,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const movedRepeats = new Set<unknown>();
     for (const { unit, item } of split.repeats) {
-      const spoken = ownSentences(unit.text, dumpText)[0] ?? unit.text;
+      const others = units.filter((one) => one !== unit).map((one) => one.text);
+      const spoken =
+        ownSentences(unit.text, dumpText)[0] ??
+        sentenceNaming(item.text, dumpText, others) ??
+        unit.text;
       const carriesTime =
         clockTimesIn(spoken).length > 0 ||
         timeShiftIn(spoken) !== undefined ||
