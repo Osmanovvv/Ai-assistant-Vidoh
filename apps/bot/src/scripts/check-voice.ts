@@ -178,8 +178,10 @@ for (const one of cases) {
       ? `✓ ${outcome.line}`
       : outcome.why === 'пусто'
         ? '— (пусто)'
-        : `✗ отвергнута: ${outcome.why ?? '?'}` +
-          (outcome.rejected === undefined ? '' : ` — «${outcome.rejected}»`);
+        : outcome.why === 'нет повода'
+          ? '— (пусто: повода нет, модель не звали)'
+          : `✗ отвергнута: ${outcome.why ?? '?'}` +
+            (outcome.rejected === undefined ? '' : ` — «${outcome.rejected}»`);
   const mark = outcome.expectEmpty && outcome.line !== undefined ? '  ← ждали пусто' : '';
   process.stdout.write(
     `${one.id}${one.note === undefined ? '' : ` — ${one.note}`}\n  ${verdict}${mark}\n`,
@@ -187,8 +189,10 @@ for (const one of cases) {
 }
 
 const passed = outcomes.filter((one) => one.line !== undefined).length;
-const empty = outcomes.filter((one) => one.why === 'пусто').length;
-const rejected = outcomes.filter((one) => one.line === undefined && one.why !== 'пусто');
+// «Нет повода» — тоже пусто: код не звал модель, строки нет по правилу.
+const isEmpty = (one: Outcome): boolean => one.why === 'пусто' || one.why === 'нет повода';
+const empty = outcomes.filter(isEmpty).length;
+const rejected = outcomes.filter((one) => one.line === undefined && !isEmpty(one));
 const reasons = new Map<string, number>();
 for (const one of rejected) {
   const key = (one.why ?? '?').replace(/: .*/u, '');

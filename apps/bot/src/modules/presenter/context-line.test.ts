@@ -415,4 +415,147 @@ describe('обращение к модели', () => {
     expect(outcome.why).toContain('сеть');
     expect(log.warns).toHaveLength(1);
   });
+
+  describe('нет повода — нет строки (проверка Никиты 24.09.2026, 18:59–19:01)', () => {
+    /**
+     * Входы трёх строк с боя, собранные боевым кодом по базе: записано одно
+     * новое дело, прошлая выгрузка сегодня, прежние поводы на паузе — и
+     * только большие цели. Модель писала «Ряженка — хорошее дополнение к
+     * осеннему вечеру» и «Поняла, что поездка за ребёнком запланирована на
+     * завтра», хотя промпт велит при таких фактах вернуть пусто.
+     */
+    const plain: ContextPack = {
+      name: 'Лера',
+      partOfDay: 'вечер',
+      daysSinceLast: 0,
+      recorded: [{ title: 'Поехать за ребёнком', topic: 'семья', due: 'завтра' }],
+      alreadyKnown: [],
+      overdue: [],
+      today: [],
+      projects: [],
+      doneRecently: [],
+      openTotal: 79,
+    };
+    const goalsOnly: ContextPack = {
+      ...plain,
+      projects: ['Наладить жизнь', 'За осень сделать ремонт в спальне: обои, потолок, шторы'],
+    };
+
+    it('ни одного из семи поводов — модель не зовётся, строки нет и журнал молчит', async () => {
+      const model = asking({ line: 'Поняла, что поездка за ребёнком запланирована на завтра.' });
+      const log = recorded();
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, log.logger),
+        { pack: plain, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({ why: 'нет повода' });
+      expect(model.seen).toHaveLength(0);
+      expect(log.infos).toEqual([]);
+      expect(log.warns).toEqual([]);
+    });
+
+    it('каждый из семи поводов по отдельности — модель зовётся', async () => {
+      const hooks: readonly (readonly [string, ContextPack])[] = [
+        ['уже было записано', { ...plain, alreadyKnown: ['Поехать за ребёнком'] }],
+        ['срок прошёл', { ...plain, overdue: [{ title: 'забрать справку', daysLate: 6 }] }],
+        ['ещё на сегодня', { ...plain, today: [{ title: 'сдать отчёт', time: '21:00' }] }],
+        ['недавно закрыла', { ...plain, doneRecently: ['найти няню'] }],
+        ['большие цели', goalsOnly],
+        ['три дня тишины', { ...plain, daysSinceLast: 3 }],
+        ['первая выгрузка', { ...plain, daysSinceLast: undefined }],
+      ];
+
+      for (const [hook, one] of hooks) {
+        const model = asking({ line: '' });
+        await askContextLine(
+          deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+          { pack: one, userId: 'u1', batchId: 'b1' },
+          model.ask,
+        );
+        expect(model.seen, hook).toHaveLength(1);
+      }
+    });
+
+    it('прошлая выгрузка вчера или позавчера — ещё не повод', async () => {
+      for (const days of [1, 2]) {
+        const model = asking({ line: 'Два дня тишины — теперь всё здесь.' });
+        const outcome = await askContextLine(
+          deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+          { pack: { ...plain, daysSinceLast: days }, userId: 'u1', batchId: 'b1' },
+          model.ask,
+        );
+        expect(model.seen, String(days)).toHaveLength(0);
+        expect(outcome).toEqual({ why: 'нет повода' });
+      }
+    });
+
+    it('одни большие цели, а строка не о цели — пересказ записанного отвергается (бой 24.09.2026, 19:00)', async () => {
+      const model = asking({ line: 'Поняла, что поездка за ребёнком запланирована на завтра.' });
+      const log = recorded();
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, log.logger),
+        { pack: goalsOnly, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      // Сито (25.09.2026): «поняла», «поездка», «запланирована» — не из
+      // фактов и не из словаря бота.
+      expect(outcome).toEqual({
+        why: 'слово не из фактов: поняла',
+        rejected: 'Поняла, что поездка за ребёнком запланирована на завтра.',
+      });
+      expect(log.infos.some((message) => message.includes('отвергнута'))).toBe(true);
+    });
+
+    it('слова все знакомые, но строка о записанном, а не о цели — сито отвергает (25.09.2026)', async () => {
+      const model = asking({ line: 'Про ребёнка помню — завтра.' });
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        { pack: goalsOnly, userId: 'u1', batchId: 'b1' },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({ why: 'не о поводе', rejected: 'Про ребёнка помню — завтра.' });
+    });
+
+    it('одни большие цели, а строка о цели — проходит (пример промпта: обои к ремонту)', async () => {
+      const model = asking({ line: 'Обои — это к ремонту спальни, помню про него.' });
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        {
+          pack: {
+            ...goalsOnly,
+            recorded: [{ title: 'купить обои', topic: 'дом', due: undefined }],
+          },
+          userId: 'u1',
+          batchId: 'b1',
+        },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({ line: 'Обои — это к ремонту спальни, помню про него.' });
+    });
+
+    it('цели и ещё повод — строка не обязана быть о цели', async () => {
+      const model = asking({ line: 'Про справку помню — запись на месте.' });
+
+      const outcome = await askContextLine(
+        deps(PRESENTER_V2_SCHEMA_NAME, recorded().logger),
+        {
+          pack: { ...goalsOnly, overdue: [{ title: 'забрать справку', daysLate: 6 }] },
+          userId: 'u1',
+          batchId: 'b1',
+        },
+        model.ask,
+      );
+
+      expect(outcome).toEqual({ line: 'Про справку помню — запись на месте.' });
+    });
+  });
 });
