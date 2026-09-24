@@ -8807,6 +8807,30 @@ describe('час нового дела — утро или вечер (вари�
     reason: 'час по переспросу',
   });
 
+  /**
+   * Модель резолвера, как на бою 24.09.2026 в 19:01: не уверена и просит
+   * подтвердить. Ответ на переспрос о часе до неё доходить не должен.
+   */
+  const unsureResolver = (calls: string[]) => (request: { readonly input: string }) => {
+    calls.push(request.input);
+    return JSON.stringify({
+      action: 'update',
+      mode: 'replace',
+      itemId: '1',
+      confidence: 0.6,
+      changes: {
+        note: '',
+        text: '',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      reason: 'не уверена',
+    });
+  };
+
   const tomorrowDump = (spoken: string, title: string, topic = 'семья') =>
     echoingLlm({
       router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
@@ -8897,6 +8921,7 @@ describe('час нового дела — утро или вечер (вари�
     expect(asked[0]).toContain('Записала');
     expect(asked[0]).not.toContain('выбрать главное?');
 
+    const resolverCalls: string[] = [];
     await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
     await processUserBatches(
       {
@@ -8907,11 +8932,14 @@ describe('час нового дела — утро или вечер (вари�
           prompts,
           sender,
           now: at(2 * 60_000),
-          llm: echoingLlm({ resolver: resolverPicksFirst }),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
         }),
       },
       userId,
     );
+    // Бот спросил про это дело сам — модель не зовётся, «Перенести?» нет.
+    expect(resolverCalls).toEqual([]);
+    expect(all.some((text) => text.startsWith('Перенести «'))).toBe(false);
 
     const rows = await liveItems();
     expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 19 * 60]]);
@@ -8952,6 +8980,7 @@ describe('час нового дела — утро или вечер (вари�
     );
     expect(all.some((text) => text.includes('07:00 или 19:00'))).toBe(true);
 
+    const resolverCalls: string[] = [];
     await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
     await processUserBatches(
       {
@@ -8962,14 +8991,123 @@ describe('час нового дела — утро или вечер (вари�
           prompts,
           sender,
           now: at(2 * 60_000),
-          llm: echoingLlm({ resolver: resolverPicksFirst }),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+    // Бот спросил про это дело сам — модель не зовётся, «Перенести?» нет.
+    expect(resolverCalls).toEqual([]);
+    expect(all.some((text) => text.startsWith('Перенести «'))).toBe(false);
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[child?.id, 19 * 60]]);
+  });
+
+  /**
+   * Проверка Никиты 24.09.2026, 19:00: поездка за ребёнком на завтра уже
+   * была записана («Поехать за ребёнком в 4 часа», без часа), а «Завтра
+   * поехать за ребёнком в 4 часа» завело второе дело — модель оставила в
+   * заголовке «завтра», и повтор не узнался. Это перенос: час — старому.
+   */
+  it('«Завтра поехать за ребёнком в 4 часа» при записанной поездке — час старому делу, второго нет', async () => {
+    const prompts = await seedPrompts();
+    const [trip] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Поехать за ребёнком в 4 часа',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-2 * 60 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра надо будет поехать за ребёнком в 4 часа.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Поехать за ребёнком завтра'),
         }),
       },
       userId,
     );
 
     const rows = await liveItems();
-    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[child?.id, 19 * 60]]);
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[trip?.id, 16 * 60]]);
+    expect(all.some((text) => text.includes('16:00'))).toBe(true);
+    expect(all.some((text) => text.includes('Записала 1 дело'))).toBe(false);
+  });
+
+  it('перенос «на пол 12» у дела без часа — «Не поняла, 11:30 или 23:30?»; «вечером» ставит 23:30 без модели', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00.000Z`),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-2 * 60 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'перенеси посылку на пол 12', offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [{ intent: 'PATCH', text: 'перенеси посылку на пол 12' }],
+            }),
+            resolver: resolverPicksFirst,
+          }),
+        }),
+      },
+      userId,
+    );
+    expect(all.some((text) => text.includes('Не поняла, 11:30 или 23:30?'))).toBe(true);
+
+    const resolverCalls: string[] = [];
+    await queuedBatchOf([{ kind: 'text', text: 'вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toEqual([]);
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[parcel?.id, 23 * 60 + 30]]);
   });
 });
 

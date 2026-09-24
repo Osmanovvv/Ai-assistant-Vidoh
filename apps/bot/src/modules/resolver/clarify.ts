@@ -108,6 +108,12 @@ export function clarifiedCommand(
  * (`clockPhraseOf`). Часа в названии нет: иначе первым читался бы он, с
  * двумя чтениями.
  */
+/** Название дела из команды `hourClarifyCommand`; своя команда человека — пусто. */
+export function hourClarifyTitle(command: string): string | undefined {
+  const title = /^Перенеси «(.+)» в [^«»]+$/u.exec(command.trim())?.[1];
+  return title === undefined || title.trim() === '' ? undefined : title;
+}
+
 export function hourClarifyCommand(title: string, morning: number): string {
   return `Перенеси «${withoutClockPhrase(title)}» ${clockPhraseOf(morning)}`;
 }

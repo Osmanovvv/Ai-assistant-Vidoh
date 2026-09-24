@@ -1,6 +1,7 @@
 import { isoDateIn, startOfDayAfter } from '../classifier/dates.js';
 import type { ItemType } from '../ai/schemas/index.js';
 import { withCapital } from '../items/item-text.js';
+import { clockOf } from '../scheduler/plan.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 import { normalizeTopicName } from '../topics/topics.repo.js';
 import { topicIcon } from '../topics/topics.service.js';
@@ -22,7 +23,9 @@ export interface SummarizedUnit {
   readonly text: string;
   readonly type: ItemType;
   readonly topic: string;
-  readonly deadline?: { readonly at: Date; readonly accuracy: string } | undefined;
+  readonly deadline?:
+    | { readonly at: Date; readonly accuracy: string; readonly time?: number | undefined }
+    | undefined;
 }
 
 export interface SphereCount {
@@ -67,7 +70,13 @@ export function summarizeDump(
       )
       // Под заголовком дня свой день в заголовке — эхо (прогон 18.09.2026):
       // тот же срез, что в списке ветки, и с заглавной.
-      .map((task) => withCapital(titleWithoutDate(task.text)));
+      .map((task) => {
+        const title = withCapital(titleWithoutDate(task.text));
+        // Час ушёл из заголовка в срок — в итоге он виден, как в списке
+        // ветки (проверка Никиты 24.09.2026: «в 4 часа» стало 16:00 молча).
+        const time = task.deadline?.time;
+        return time === undefined ? title : `${title} · ${clockOf(time)}`;
+      });
 
   return { spheres, today: dueOn(today), tomorrow: dueOn(tomorrow) };
 }
