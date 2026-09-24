@@ -102,6 +102,49 @@ describe('createBot', () => {
 
     await expect(bot.api.editMessageText(1, 2, 'текст')).rejects.toBeInstanceOf(GrammyError);
   });
+
+  it('реплики бота уходят в хвост разговора, если хранилище передано (план docs/26)', async () => {
+    /**
+     * Логика перехвата проверена в `capture.test.ts`; здесь — что строка
+     * подключения на месте. Пропади она — тест логики останется зелёным, а
+     * модель на бою увидит разговор без единой реплики бота.
+     */
+    const apiRoot = await telegramAnswering(200, {
+      ok: true,
+      result: { message_id: 77, date: 0, chat: { id: 42, type: 'private' }, text: 'Какое дело?' },
+    });
+    const remembered: { chatId: number; text: string }[] = [];
+    const bot = createBot(FAKE_TOKEN, {
+      botInfo: BOT_INFO,
+      apiRoot,
+      dialog: {
+        remember: (chatId, turn) => {
+          remembered.push({ chatId, text: turn.text });
+          return Promise.resolve();
+        },
+        recent: () => Promise.resolve([]),
+        forget: () => Promise.resolve(),
+      },
+    });
+
+    await bot.api.sendMessage(42, 'Какое дело?');
+
+    expect(remembered).toEqual([{ chatId: 42, text: 'Какое дело?' }]);
+  });
+
+  it('боевой запуск передаёт боту хранилище разговора', () => {
+    // Без этой строки перехват написан, покрыт проверкой выше и на бою
+    // недостижим: модель увидит только реплики человека.
+    const source = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../index.ts'),
+      'utf8',
+    );
+    const start = source.indexOf('createBot(env.BOT_TOKEN');
+    expect(start, 'createBot в запуске не найден').toBeGreaterThan(-1);
+
+    const call = source.slice(start, source.indexOf(');', start));
+    expect(call).toMatch(/dialog\s*[:,]/u);
+  });
 });
 
 describe('фильтр апдейтов пропускает всё, на что есть обработчик', () => {
