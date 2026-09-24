@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Api, Bot } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 import type { Logger } from 'pino';
 
@@ -36,6 +36,17 @@ export interface BotOptions {
   readonly logger?: Logger | undefined;
 }
 
+/** Защиты, общие для любого канала к Telegram. */
+function installTransport(api: Api): void {
+  // Отказ соединения с Telegram повторяется один раз (задача 3.60):
+  // иначе ответ пропадает молча, а человек видит свою команду и тишину.
+  api.config.use(retryOnConnectFailure());
+
+  // Правка тем же содержимым — не ошибка (задача 3.73): кнопка с номером
+  // страницы ведёт на ту же страницу, и Telegram отвергает такую правку.
+  api.config.use(tolerateSameContent());
+}
+
 /** Экземпляр бота (задача 1.7). */
 export function createBot(token: string, options: BotOptions = {}): Bot {
   const bot = new Bot(token, {
@@ -43,13 +54,7 @@ export function createBot(token: string, options: BotOptions = {}): Bot {
     ...(options.apiRoot === undefined ? {} : { client: { apiRoot: options.apiRoot } }),
   });
 
-  // Отказ соединения с Telegram повторяется один раз (задача 3.60):
-  // иначе ответ пропадает молча, а человек видит свою команду и тишину.
-  bot.api.config.use(retryOnConnectFailure());
-
-  // Правка тем же содержимым — не ошибка (задача 3.73): кнопка с номером
-  // страницы ведёт на ту же страницу, и Telegram отвергает такую правку.
-  bot.api.config.use(tolerateSameContent());
+  installTransport(bot.api);
 
   // Реплика бота — в хвост разговора; сбой хранилища отправку не трогает.
   if (options.dialog !== undefined) {
@@ -57,6 +62,28 @@ export function createBot(token: string, options: BotOptions = {}): Bot {
   }
 
   return bot;
+}
+
+/**
+ * Тихий канал к Telegram — для служебного, что разговором не является.
+ *
+ * Первая проверка разговора на бою выключенным (24.09.2026): после
+ * выгрузки последними «репликами бота» в хвосте стояли правки закреплённых
+ * сводок веток — списки дел по сферам. Модель видела бы список как ответ
+ * человеку, а страж разговора, который смотрит на последнюю реплику бота,
+ * молчал бы. Сводки веток, оповещения мониторинга (он пишет в личный
+ * чат) и рассылки идут здесь: защиты те же, перехвата нет.
+ */
+export function createQuietApi(
+  token: string,
+  options: { readonly apiRoot?: string | undefined } = {},
+): Api {
+  const api = new Api(
+    token,
+    options.apiRoot === undefined ? undefined : { apiRoot: options.apiRoot },
+  );
+  installTransport(api);
+  return api;
 }
 
 /**

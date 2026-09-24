@@ -7,7 +7,7 @@ import type { Server } from 'node:http';
 import type { Worker } from 'bullmq';
 import type { Api } from 'grammy';
 
-import { createBot } from './bot/bot.js';
+import { createBot, createQuietApi } from './bot/bot.js';
 import { flushCassette } from './modules/ai/cassette/session.js';
 import { publishCommands } from './bot/commands.js';
 import { consumeAwaited } from './bot/handlers/awaiting.js';
@@ -233,6 +233,14 @@ async function main(): Promise<void> {
   // TELEGRAM_API_ROOT задаётся только сквозным тестом (2.23); в бою
   // конфигурация его запрещает.
   const bot = createBot(env.BOT_TOKEN, { apiRoot: env.TELEGRAM_API_ROOT, dialog, logger });
+
+  /**
+   * Тихий канал — для служебного, что разговором не является: сводки
+   * веток, оповещения мониторинга, рассылки. Защиты те же, перехвата нет
+   * (проверка на бою выключенным 24.09.2026: правки сводок вставали в
+   * хвост последними «репликами бота»).
+   */
+  const quietApi = createQuietApi(env.BOT_TOKEN, { apiRoot: env.TELEGRAM_API_ROOT });
   await bot.init();
   logger.info(
     {
@@ -257,7 +265,7 @@ async function main(): Promise<void> {
     logger.error({ err: error }, 'Не удалось опубликовать меню команд');
   }
 
-  const monitor = new Monitor({ sink: createAlertSink(bot.api, env.MONITORING_CHAT_ID) });
+  const monitor = new Monitor({ sink: createAlertSink(quietApi, env.MONITORING_CHAT_ID) });
 
   const speech = createSpeechProvider(env);
   logger.info({ provider: speech.name }, 'Провайдер расшифровки выбран');
@@ -518,7 +526,7 @@ async function main(): Promise<void> {
   // Ветки личного чата. Проба 0.3 подтвердила, что в ЛС это работает;
   // если режим тем выключен в @BotFather, шлюз честно об этом скажет, и
   // продукт перейдёт в плоский режим §8.2.
-  const topicGateway = createTopicGateway(bot.api);
+  const topicGateway = createTopicGateway(quietApi);
 
   const handleBatch = createDumpHandler({
     speech: {
@@ -714,7 +722,7 @@ async function main(): Promise<void> {
 
   const broadcastSender: BroadcastSender = {
     send: async ({ tgId, text }) => {
-      await bot.api.sendMessage(tgId, text);
+      await quietApi.sendMessage(tgId, text);
     },
   };
 
