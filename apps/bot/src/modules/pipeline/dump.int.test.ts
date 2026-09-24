@@ -4611,6 +4611,85 @@ describe('правка доходит до резолвера (§7, задача
     });
   });
 
+  it('«И паспорт туда же не забыть» в ответ на напоминание — к посылке, а не новое дело (живая проверка 24.09.2026, 16:45)', async () => {
+    const prompts = await seedPrompts();
+    const [parcel] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Забрать посылку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'покупки',
+        updatedAt: at(-30 * 60_000),
+      })
+      .returning({ id: items.id });
+    const store = dialogMemory();
+    await store.remember(700, {
+      role: 'bot',
+      text: 'Через 30 минут, в 17:13: Забрать посылку.',
+      at: at(0),
+    });
+    const seen: string[] = [];
+    const text = 'И паспорт туда же не забыть.';
+
+    await queuedBatchOf([{ kind: 'voice', transcript: text, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          dialog: store,
+          useDialog: true,
+          llm: echoingLlm({
+            // Как на бою: модель маршрутизатора назвала это мыслью.
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+            resolver: (request) => {
+              seen.push(request.input);
+              return JSON.stringify({
+                action: 'update',
+                mode: 'append',
+                itemId: '1',
+                confidence: 0.9,
+                changes: {
+                  note: 'паспорт не забыть',
+                  text: '',
+                  deadline: '',
+                  deadlineAccuracy: 'none',
+                  recurrenceKind: 'none',
+                  recurrenceInterval: 0,
+                  recurrenceText: '',
+                },
+                reason: 'подробность к посылке из напоминания',
+              });
+            },
+          }),
+        }),
+      },
+      userId,
+    );
+
+    // До резолвера дошло — и с разговором.
+    expect(seen[0]).toContain('Через 30 минут, в 17:13: Забрать посылку.');
+    // Нового дела «Взять паспорт» нет.
+    const open = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(open.map((row) => row.text)).toEqual(['Забрать посылку']);
+    // Паспорт к посылке — дописан или спрошен про неё.
+    const [after] = open;
+    const asked = await testDb()
+      .select()
+      .from(pendingQuestions)
+      .where(eq(pendingQuestions.userId, userId));
+    expect(
+      (after?.body ?? '').includes('паспорт') || asked.some((one) => one.itemId === parcel?.id),
+    ).toBe(true);
+  });
+
   it('хранилище упало — разбор идёт как без разговора, человек получает ответ', async () => {
     const prompts = await seedPrompts();
     const itemId = await existingItem(null);
