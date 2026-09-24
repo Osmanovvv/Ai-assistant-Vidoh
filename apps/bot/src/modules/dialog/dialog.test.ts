@@ -16,6 +16,11 @@ import {
  * не зная, о чём бот говорил секунду назад.
  */
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+/** Видимые знаки строки — так, как их видит человек. */
+const visible = (text: string): string[] =>
+  Array.from(GRAPHEMES.segment(text), (piece) => piece.segment);
+
 const NOW = new Date('2026-09-23T13:20:00.000Z');
 const at = (minutes: number): Date => new Date(NOW.getTime() - minutes * 60_000);
 const bot = (text: string, minutes: number, messageId?: number): DialogTurn => ({
@@ -87,8 +92,19 @@ describe('текст блока для модели', () => {
 
     expect(line.startsWith('Бот (2 мин назад): Твои дела: 1. Купить хлеб')).toBe(true);
     expect(said.endsWith('…')).toBe(true);
-    expect([...said].length).toBe(DIALOG_TURN_MAX_CHARS);
+    expect(visible(said)).toHaveLength(DIALOG_TURN_MAX_CHARS);
     expect(line).not.toContain('\n');
+  });
+
+  it('режется по видимым знакам: фирменное 😮‍💨 не разламывается пополам', () => {
+    // В ответах бота бывают составные эмодзи (texts/rules.ts). Резка по
+    // кодовым точкам оставила бы в конце обломок «😮» без «💨».
+    const line = describeDialog([bot('😮‍💨'.repeat(250), 1)], NOW).split('\n')[1] ?? '';
+    const pieces = visible(line.slice('Бот (1 мин назад): '.length));
+
+    expect(pieces).toHaveLength(DIALOG_TURN_MAX_CHARS);
+    expect(pieces.at(-1)).toBe('…');
+    expect(pieces.slice(0, -1).every((piece) => piece === '😮‍💨')).toBe(true);
   });
 
   it('короткое не трогается', () => {

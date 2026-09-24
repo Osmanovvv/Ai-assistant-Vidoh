@@ -57,9 +57,19 @@ function agoWords(at: Date, now: Date): string {
   return minutes < 1 ? 'только что' : `${String(minutes)} мин назад`;
 }
 
-/** В одну строку и не длиннее предела; режется по символам, а не байтам. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * В одну строку и не длиннее предела.
+ *
+ * Режется по видимым знакам, как `picturesIn` в `texts/rules.ts`: в ответах
+ * бота бывает 😮‍💨, и резка по кодовым точкам оставила бы обломок «😮».
+ */
 function clip(text: string): string {
-  const flat = [...text.replace(/\s+/gu, ' ').trim()];
+  const flat = Array.from(
+    GRAPHEMES.segment(text.replace(/\s+/gu, ' ').trim()),
+    (piece) => piece.segment,
+  );
   return flat.length <= DIALOG_TURN_MAX_CHARS
     ? flat.join('')
     : `${flat.slice(0, DIALOG_TURN_MAX_CHARS - 1).join('')}…`;
