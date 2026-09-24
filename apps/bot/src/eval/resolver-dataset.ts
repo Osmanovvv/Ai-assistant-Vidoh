@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { itemStatus } from '../db/schema.js';
 import type { Candidate } from '../modules/resolver/candidates.js';
+import type { DialogTurn } from '../modules/dialog/dialog.js';
 import { RESOLVER_ACTIONS, RESOLVER_MODES } from '../modules/ai/schemas/index.js';
 
 /**
@@ -52,6 +53,17 @@ const candidateSchema = z.object({
     .min(1)
     .default(['session']),
   similarity: z.number().min(0).max(1).nullable().default(null),
+});
+
+/**
+ * Реплика разговора перед сказанным (план docs/26, задача 2).
+ *
+ * Минуты, а не отметка времени — как у `updatedMinutesAgo`.
+ */
+const dialogTurnSchema = z.object({
+  role: z.enum(['person', 'bot']),
+  text: z.string().min(1),
+  minutesAgo: z.number().min(0),
 });
 
 const expectedSchema = z.object({
@@ -109,6 +121,11 @@ export const resolverCaseSchema = z.object({
   timeZone: z.string().min(1).default('Europe/Moscow'),
   /** Момент, от которого считается свежесть и сроки. */
   now: z.string().min(1),
+  /**
+   * Что говорилось перед этим. Нет поля — разговора нет, и вход модели
+   * прежний байт в байт: старые случаи так и меряются.
+   */
+  dialog: z.array(dialogTurnSchema).default([]),
   candidates: z.array(candidateSchema),
   expected: expectedSchema,
 });
@@ -142,6 +159,17 @@ export function candidatesOf(item: ResolverCase): Candidate[] {
     updatedAt: new Date(now.getTime() - candidate.updatedMinutesAgo * 60_000),
     similarity: candidate.similarity,
     sources: candidate.sources,
+  }));
+}
+
+/** Разговор случая — в реплики, как их собирает бой (`modules/dialog`). */
+export function dialogOf(item: ResolverCase): DialogTurn[] {
+  const now = new Date(item.now).getTime();
+
+  return item.dialog.map((turn) => ({
+    role: turn.role,
+    text: turn.text,
+    at: new Date(now - turn.minutesAgo * 60_000),
   }));
 }
 

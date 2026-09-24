@@ -42,4 +42,10 @@ describe('стенд резолвера: живой прогон пишется 
     expect(source).toContain('parseOnly(');
     expect(source).toContain('pickCases(');
   });
+
+  it('флаг --without-dialog доходит до прогонщика (замер «как сейчас», план docs/26)', async () => {
+    const source = await code();
+    expect(source).toContain("'--without-dialog'");
+    expect(source).toMatch(/runResolverDataset\([\s\S]*withoutDialog/u);
+  });
 });
