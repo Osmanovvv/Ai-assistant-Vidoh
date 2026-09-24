@@ -133,3 +133,54 @@ describe('содержание — не ответ (задача 3.44)', () => {
     expect(answerRemainder('')).toBe('');
   });
 });
+
+/**
+ * Разговорные ответы (проверка Никиты 24.09.2026). На «Перенести «X»?»
+ * «давай», «ок», «хорошо» читались непонятым ответом — «Не разобрала
+ * ответ, ничего не меняла». На «Это про «X» или отдельная история?» они
+ * ничего не выбирают и остаются непонятыми.
+ */
+describe('«Перенести «X»?» — разговорное согласие', () => {
+  it.each([
+    'давай',
+    'ок',
+    'окей',
+    'хорошо',
+    'ладно',
+    'можно',
+    'согласна',
+    'пойдёт',
+    'давай, переноси',
+  ])('«%s» — да', (text) => {
+    expect(readAnswer(text, { move: true })).toBe('attach');
+  });
+
+  it('на «Это про «X» или отдельная история?» «давай» и «ок» — по-прежнему не ответ', () => {
+    expect(readAnswer('давай')).toBe('unclear');
+    expect(readAnswer('ок')).toBe('unclear');
+    expect(readAnswer('хорошо')).toBe('unclear');
+  });
+
+  it('прежние ответы на перенос не изменились', () => {
+    expect(readAnswer('да', { move: true })).toBe('attach');
+    expect(readAnswer('нет', { move: true })).toBe('separate');
+    expect(readAnswer('не знаю', { move: true })).toBe('unclear');
+    expect(readAnswer('да, купить хлеб', { move: true })).toBe('content');
+  });
+});
+
+describe('«да нет» — это нет', () => {
+  it.each([
+    'да нет',
+    'конечно нет',
+    'не надо',
+    'давай не надо',
+    'не нужно',
+    'не стоит',
+    'не переноси',
+    'не трогай',
+  ])('«%s»', (text) => {
+    expect(readAnswer(text, { move: true })).toBe('separate');
+    expect(readAnswer(text)).toBe('separate');
+  });
+});

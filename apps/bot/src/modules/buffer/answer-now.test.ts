@@ -14,7 +14,8 @@ const hour: OpenAsk = {
   command: 'Перенеси «Забрать ребенка» в 7',
 };
 const which: OpenAsk = { kind: 'clarify', clarifyKind: 'which', command: 'Перенеси дело на пол 4' };
-const question: OpenAsk = { kind: 'question' };
+const question: OpenAsk = { kind: 'question', move: false };
+const move: OpenAsk = { kind: 'question', move: true };
 
 describe('ответ на «утро или вечер» — сразу', () => {
   it.each(['Вечером', 'утром.', 'Давай вечером', 'в 19:30', '9 утра'])('«%s»', (text) => {
@@ -49,6 +50,12 @@ describe('ответ на «Перенести «X»?» — сразу', () => {
 
   it.each(['не знаю', 'добавь ещё купить чехол для зонта'])('«%s» — не ответ', (text) => {
     expect(answersNow(question, { text })).toBe(false);
+  });
+
+  it('«давай», «ок» — ответ на «Перенести?», но не на «Это про X или отдельная?»', () => {
+    expect(answersNow(move, { text: 'давай' })).toBe(true);
+    expect(answersNow(move, { text: 'ок' })).toBe(true);
+    expect(answersNow(question, { text: 'давай' })).toBe(false);
   });
 });
 

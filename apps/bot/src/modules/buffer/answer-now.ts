@@ -27,8 +27,11 @@ export const SHORT_VOICE_SECONDS = 5;
 export type OpenAsk =
   /** Переспрос без кнопок: «утро или вечер?», «Какое дело?» (`clarify.ts`). */
   | { readonly kind: 'clarify'; readonly clarifyKind: ClarifyKind; readonly command: string }
-  /** Вопрос с кнопками: «Перенести «X»?», «Добавить к прошлой?». */
-  | { readonly kind: 'question' };
+  /**
+   * Вопрос с кнопками: «Перенести «X»?» (`move`) или «Это про «X» или
+   * отдельная история?». У переноса согласие шире: «давай», «ок».
+   */
+  | { readonly kind: 'question'; readonly move: boolean };
 
 export interface IncomingShape {
   readonly text?: string | undefined;
@@ -43,7 +46,7 @@ export function answersNow(open: OpenAsk | undefined, message: IncomingShape): b
     if (open.kind === 'clarify') {
       return clarifiedCommand(open.clarifyKind, open.command, message.text) !== undefined;
     }
-    const reading = readAnswer(message.text);
+    const reading = readAnswer(message.text, { move: open.move });
     return reading === 'attach' || reading === 'separate';
   }
 

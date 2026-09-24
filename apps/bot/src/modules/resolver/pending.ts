@@ -4,6 +4,7 @@ import type { Database } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { hasDraft, saveDraft } from '../items/items.repo.js';
 import { answerRemainder, readAnswer } from './answer.js';
+import { aboutPending, isMoveQuestion } from './change-text.js';
 import { applyDecision, type Applied } from './patch.js';
 import {
   answerQuestion,
@@ -189,7 +190,10 @@ export async function settlePendingQuestion(
     return { kind: 'superseded' };
   }
 
-  const reading = readAnswer(params.answerText);
+  // У вопроса о переносе согласие шире: «давай», «ок» (24.09.2026).
+  const reading = readAnswer(params.answerText, {
+    move: isMoveQuestion(aboutPending(open, '')),
+  });
 
   if (reading === 'unclear') {
     // Ответ был, но что он значит — неизвестно. Переспрашивать §7.3

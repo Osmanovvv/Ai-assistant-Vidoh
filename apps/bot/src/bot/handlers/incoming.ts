@@ -14,7 +14,8 @@ import {
 import { looksLikeQuestion } from '../../modules/buffer/question.js';
 import { answersNow, asksDirectly, type OpenAsk } from '../../modules/buffer/answer-now.js';
 import { openClarification } from '../../modules/resolver/clarify.repo.js';
-import { hasOpenQuestion } from '../../modules/resolver/questions.repo.js';
+import { peekOpenQuestion } from '../../modules/resolver/questions.repo.js';
+import { aboutPending, isMoveQuestion } from '../../modules/resolver/change-text.js';
 import { sellable } from '../../modules/billing/checkout.service.js';
 import { accessOf } from '../../modules/billing/subscription.service.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
@@ -392,7 +393,10 @@ async function openAskOf(db: Database, userId: string, now: Date): Promise<OpenA
     return { kind: 'clarify', clarifyKind: clarification.kind, command: clarification.command };
   }
   // Только посмотреть: протухший вопрос закрывает уборка, сохраняя слова.
-  return (await hasOpenQuestion(db, userId, now)) ? { kind: 'question' } : undefined;
+  const question = await peekOpenQuestion(db, userId, now);
+  return question === undefined
+    ? undefined
+    : { kind: 'question', move: isMoveQuestion(aboutPending(question, '')) };
 }
 
 /**

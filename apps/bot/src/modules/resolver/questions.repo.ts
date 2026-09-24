@@ -114,16 +114,24 @@ export async function openQuestionOf(
 }
 
 /**
- * Есть ли у человека живой открытый вопрос — только посмотреть (24.09.2026).
+ * Живой открытый вопрос человека — только посмотреть (24.09.2026).
  *
  * Приёму сообщения это нужно, чтобы ответ на вопрос бота разобрать сразу.
  * В отличие от `openQuestionOf`, протухший вопрос здесь **не закрывается**:
  * его закроет уборка и положит слова черновиком (`expireQuestions`), а
  * закрой его приём — уборка его уже не увидит, и сказанное пропало бы.
  */
-export async function hasOpenQuestion(db: Executor, userId: string, now: Date): Promise<boolean> {
+export async function peekOpenQuestion(
+  db: Executor,
+  userId: string,
+  now: Date,
+): Promise<Pick<PendingQuestion, 'segment' | 'action' | 'changes'> | undefined> {
   const [row] = await db
-    .select({ id: pendingQuestions.id })
+    .select({
+      segment: pendingQuestions.segment,
+      action: pendingQuestions.action,
+      changes: pendingQuestions.changes,
+    })
     .from(pendingQuestions)
     .where(
       and(
@@ -134,7 +142,7 @@ export async function hasOpenQuestion(db: Executor, userId: string, now: Date): 
     )
     .limit(1);
 
-  return row !== undefined;
+  return row;
 }
 
 /** Закрывает открытый вопрос человека. Возвращает закрытый, если он был. */
