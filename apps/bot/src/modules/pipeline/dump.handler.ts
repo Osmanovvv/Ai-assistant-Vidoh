@@ -1093,7 +1093,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         });
         if (outcome.kind === 'applied') {
           await tell(
-            describeChange(outcome.applied, texts, context.timeZone, spoken),
+            describeChange(outcome.applied, texts, context.timeZone, spoken, now),
             changeButtons(outcome.applied, texts, spoken),
           );
           await rememberMentioned(db, batch.id, [target.id]);
@@ -1435,7 +1435,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       );
       // §7.3: показать, что именно изменилось, и дать кнопку отмены.
       await tell(
-        describeChange(settled.applied, texts, context.timeZone),
+        describeChange(settled.applied, texts, context.timeZone, undefined, now),
         // Те же кнопки, что у правки голосом без вопроса (23.09.2026).
         changeButtons(settled.applied, texts),
       );
@@ -1522,7 +1522,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * сказанному.
          */
         const hourQuestion = await hourQuestionAfterMove(outcome.applied, outcome.timeUnclear);
-        const said = describeChange(outcome.applied, texts, context.timeZone, segment.text);
+        const said = describeChange(outcome.applied, texts, context.timeZone, segment.text, now);
         await tell(
           hourQuestion === undefined ? said : `${said}\n${hourQuestion}`,
           changeButtons(outcome.applied, texts, segment.text),
@@ -2398,7 +2398,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         happened.said = true;
         rememberTopics(touchedTopics, outcome.applied);
         const hourQuestion = await hourQuestionAfterMove(outcome.applied, outcome.timeUnclear);
-        const said = describeChange(outcome.applied, texts, context.timeZone, spoken);
+        const said = describeChange(outcome.applied, texts, context.timeZone, spoken, now);
         await tell(
           hourQuestion === undefined ? said : `${said}\n${hourQuestion}`,
           changeButtons(outcome.applied, texts, spoken),

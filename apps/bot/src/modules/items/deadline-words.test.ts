@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { defaultTexts } from '../../texts/index.js';
-import { deadlineWords, dueWords } from './deadline-words.js';
+import { deadlineWords, dueWords, relativeDayWord } from './deadline-words.js';
 
 /**
  * Слова срока в карточке и списках (`deadline-words.ts`) — с часом
@@ -77,5 +77,18 @@ describe('срок словами', () => {
         defaultTexts,
       ),
     ).toBe('завтра, 13:00');
+  });
+});
+
+describe('ближний день словом (24.09.2026)', () => {
+  const now = new Date('2026-09-24T20:50:00.000Z'); // 23:50 по Москве — ещё 24.09
+  it.each<[string, string]>([
+    ['2026-09-23T21:00:00.000Z', 'сегодня'],
+    ['2026-09-24T21:00:00.000Z', 'завтра'],
+    ['2026-09-25T21:00:00.000Z', 'послезавтра'],
+    ['2026-09-26T21:00:00.000Z', '27.09'],
+    ['2026-09-22T21:00:00.000Z', '23.09'],
+  ])('%s — «%s»', (at, word) => {
+    expect(relativeDayWord(new Date(at), now, 'Europe/Moscow')).toBe(word);
   });
 });

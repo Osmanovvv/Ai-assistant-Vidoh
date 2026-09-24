@@ -408,9 +408,12 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
       logger.info({ userId, itemId: awaiting.itemId }, 'Час дела поправлен словами');
 
-      await ctx.reply(describeChange(outcome.applied, texts, context.timeZone), {
-        reply_markup: changeKeyboard(outcome.applied, texts, text),
-      });
+      await ctx.reply(
+        describeChange(outcome.applied, texts, context.timeZone, undefined, new Date()),
+        {
+          reply_markup: changeKeyboard(outcome.applied, texts, text),
+        },
+      );
 
       return true;
     }
@@ -462,7 +465,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
       logger.info({ userId, itemId: awaiting.itemId }, 'Запись поправлена словами из карточки');
 
-      await ctx.reply(describeChange(applied, texts, context.timeZone), {
+      await ctx.reply(describeChange(applied, texts, context.timeZone, undefined, new Date()), {
         reply_markup: changeKeyboard(applied, texts),
       });
 

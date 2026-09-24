@@ -244,9 +244,12 @@ export function registerQuestionHandlers(bot: Bot, deps: QuestionDeps): void {
         applied,
       );
 
-      await ctx.editMessageText(describeChange(applied, active.texts, active.timeZone), {
-        reply_markup: changeKeyboard(applied, active.texts, question.segment),
-      });
+      await ctx.editMessageText(
+        describeChange(applied, active.texts, active.timeZone, undefined, new Date()),
+        {
+          reply_markup: changeKeyboard(applied, active.texts, question.segment),
+        },
+      );
 
       logger.info(
         { userId: active.userId, itemId: question.itemId, revisionId: applied.revisionId },

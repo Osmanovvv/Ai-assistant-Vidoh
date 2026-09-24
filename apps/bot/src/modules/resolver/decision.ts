@@ -153,6 +153,11 @@ export interface DecideContext {
   readonly spoken?: string | undefined;
   /** Пояс человека — сверить день срока с днём из ответа модели. */
   readonly timeZone?: string | undefined;
+  /**
+   * Записи последнего разговора — о чём бот говорил только что
+   * (`lastDiscussed`, четверть часа). Одна и она же выбор модели — сигнал.
+   */
+  readonly lastTalk?: readonly string[] | undefined;
 }
 
 /**
@@ -459,6 +464,24 @@ export function decide(
       candidate,
       newThought: false,
       why: 'подтверждено переносом',
+    };
+  }
+
+  /**
+   * Шестой сигнал: запись — единственная из последнего разговора (проверка
+   * Никиты 24.09.2026, 16:40). «Купить сыр» записан три минуты назад, «Не
+   * сыр, а творог» — модель уверена и права, но свежих два, а «сыр» короче
+   * четырёх букв. Последний разговор был ровно об одном деле, и модель
+   * выбрала его — это и есть подтверждение; то же «последнее обсуждённое»,
+   * что у «это» и «туда же» (правила 64–65).
+   */
+  if (context.lastTalk?.length === 1 && context.lastTalk[0] === candidate.id) {
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'подтверждено разговором',
     };
   }
 

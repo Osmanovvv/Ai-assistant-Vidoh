@@ -168,6 +168,40 @@ describe('describeChange', () => {
     );
   });
 
+  /**
+   * «Напомню про «Забрать посылку» 24.09 в 20:25» — о сегодняшнем дне
+   * датой (проверка Никиты 24.09.2026). Когда известно «сейчас», ближние
+   * дни — словами, как говорят люди; дальше и в прошлом — числом.
+   */
+  it.each<[string, string, string]>([
+    ['2026-09-23T21:00:00.000Z', 'сегодня', 'на сегодня, 15:00'],
+    ['2026-09-24T21:00:00.000Z', 'завтра', 'на завтра, 15:00'],
+    ['2026-09-25T21:00:00.000Z', 'послезавтра', 'на послезавтра, 15:00'],
+    ['2026-09-27T21:00:00.000Z', '28.09', 'на 28.09, 15:00'],
+    ['2026-09-21T21:00:00.000Z', '22.09', 'на 22.09, 15:00'],
+  ])('день %s при «сейчас» 24.09 — «%s»', (at, day, moved) => {
+    const now = new Date('2026-09-24T17:25:00.000Z'); // 20:25 по Москве
+    const after = {
+      ...ITEM,
+      deadlineAt: new Date(at),
+      deadlineAccuracy: 'day' as const,
+      deadlineTime: 15 * 60,
+    };
+
+    expect(
+      describeChange({ ...applied(['deadlineTime']), after }, defaultTexts, MOSCOW, undefined, now),
+    ).toBe(defaultTexts.resolver.retimed(ITEM.text, day, '15:00'));
+    expect(
+      describeChange(
+        { ...applied(['deadlineAt', 'deadlineAccuracy', 'deadlineTime']), after },
+        defaultTexts,
+        MOSCOW,
+        undefined,
+        now,
+      ),
+    ).toBe(`Перенесла «${ITEM.text}» ${moved}.`);
+  });
+
   it('под ответом про дело с часом — «Изменить время» и «Все напоминания» после «Отменить» (шаг 5)', () => {
     const retimed: Applied = {
       ...applied(['deadlineTime']),
