@@ -55,6 +55,8 @@ import { listTopics, MAX_TOPICS } from '../topics/topics.repo.js';
 import { STEP } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
+import type { DialogTurn } from '../dialog/dialog.js';
+import type { DialogStore } from '../dialog/dialog.store.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import type { AudioLimits } from '../speech/audio.service.js';
 import { run } from '../speech/ffmpeg.js';
@@ -304,6 +306,9 @@ interface HandlerOptions {
   readonly now?: Date | undefined;
   /** Наблюдатель конвейера — для стенда набора (20.09.2026). */
   readonly observe?: PipelineObserver | undefined;
+  /** Хвост разговора и выключатель (план docs/26, задача 8). */
+  readonly dialog?: DialogStore | undefined;
+  readonly useDialog?: boolean | undefined;
 }
 
 /** Считает заданные вопросы онбординга вместо обращений к Telegram. */
@@ -360,6 +365,8 @@ function handler(options: HandlerOptions) {
     ...(options.onboarding === undefined ? {} : { onboarding: options.onboarding }),
     ...(options.topics === undefined ? {} : { topics: options.topics }),
     ...(options.observe === undefined ? {} : { observe: options.observe }),
+    ...(options.dialog === undefined ? {} : { dialog: options.dialog }),
+    ...(options.useDialog === undefined ? {} : { useDialog: options.useDialog }),
     /**
      * Реестр настроек — **всегда**, а не по желанию проверки.
      *
@@ -4409,6 +4416,164 @@ describe('правка доходит до резолвера (§7, задача
 
     expect(all.some((text) => text.includes('Какое дело? Назови его — и сделаю.'))).toBe(true);
     expect(all.some((text) => text.startsWith('Перенести «'))).toBe(false);
+  });
+
+  /**
+   * Хвост разговора в конвейере (план docs/26, задача 8; решение Никиты
+   * 24.09.2026). Бот запоминает реплики обеих сторон, резолвер видит их —
+   * но только при включённом `DIALOG_CONTEXT`. Выключенным он всё равно
+   * пишет реплику человека: так на бою можно проверить запись, не меняя
+   * поведения.
+   */
+  function dialogMemory(options: { readonly broken?: boolean } = {}): DialogStore & {
+    readonly turns: (chatId: number) => DialogTurn[];
+    readonly asked: number[];
+  } {
+    const saved = new Map<number, DialogTurn[]>();
+    const asked: number[] = [];
+    return {
+      asked,
+      turns: (chatId) => saved.get(chatId) ?? [],
+      remember: (chatId, turn) => {
+        if (options.broken === true) return Promise.reject(new Error('redis down'));
+        saved.set(chatId, [...(saved.get(chatId) ?? []), turn]);
+        return Promise.resolve();
+      },
+      recent: (chatId) => {
+        asked.push(chatId);
+        if (options.broken === true) return Promise.reject(new Error('redis down'));
+        return Promise.resolve(saved.get(chatId) ?? []);
+      },
+      forget: () => Promise.resolve(),
+    };
+  }
+
+  /** Резолвер, который запоминает, что ему показали, и переносит на пятницу. */
+  function seeingResolver(seen: string[]): MockLlmProvider {
+    return echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'PATCH', text: 'врача перенеси на пятницу' }],
+      }),
+      resolver: (request) => {
+        seen.push(request.input);
+        return JSON.stringify({
+          action: 'update',
+          mode: 'replace',
+          itemId: '1',
+          confidence: 0.9,
+          changes: {
+            note: '',
+            text: '',
+            deadline: soon(),
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          reason: 'поправка срока',
+        });
+      },
+    });
+  }
+
+  const REMINDER = 'Напомню про «Записать сына к врачу в четверг» 04.09 в 10:00';
+
+  it('разговор включён: реплика бота доходит до резолвера, своя не дублируется, реплика человека записана', async () => {
+    const prompts = await seedPrompts();
+    await existingItem(null);
+    const store = dialogMemory();
+    await store.remember(700, { role: 'bot', text: REMINDER, at: at(0) });
+    const seen: string[] = [];
+
+    await queuedBatchOf([{ kind: 'text', text: 'врача перенеси на пятницу', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: seeingResolver(seen),
+          dialog: store,
+          useDialog: true,
+        }),
+      },
+      userId,
+    );
+
+    expect(seen[0]).toContain('Недавний разговор');
+    expect(seen[0]).toContain(`Бот (1 мин назад, о записи 1): ${REMINDER}`);
+    // Своя реплика уже стоит в «Человек сказал» — второй раз ей в хвосте не место.
+    expect(seen[0]).not.toContain('Человек (');
+    expect(store.asked).toEqual([700]);
+    expect(store.turns(700).map((turn) => [turn.role, turn.text])).toEqual([
+      ['bot', REMINDER],
+      ['person', 'врача перенеси на пятницу'],
+    ]);
+  });
+
+  it('разговор выключен: резолвер его не видит, но реплика человека пишется', async () => {
+    const prompts = await seedPrompts();
+    await existingItem(null);
+    const store = dialogMemory();
+    await store.remember(700, { role: 'bot', text: REMINDER, at: at(0) });
+    const seen: string[] = [];
+
+    await queuedBatchOf([{ kind: 'text', text: 'врача перенеси на пятницу', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: seeingResolver(seen),
+          dialog: store,
+          useDialog: false,
+        }),
+      },
+      userId,
+    );
+
+    expect(seen[0]).not.toContain('Недавний разговор');
+    expect(store.asked).toEqual([]);
+    expect(store.turns(700).at(-1)).toMatchObject({
+      role: 'person',
+      text: 'врача перенеси на пятницу',
+    });
+  });
+
+  it('хранилище упало — разбор идёт как без разговора, человек получает ответ', async () => {
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const seen: string[] = [];
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'врача перенеси на пятницу', offsetMs: 0 }]);
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm: seeingResolver(seen),
+          sender,
+          dialog: dialogMemory({ broken: true }),
+          useDialog: true,
+        }),
+      },
+      userId,
+    );
+
+    expect(seen[0]).not.toContain('Недавний разговор');
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    expect(after?.deadlineAt).not.toBeNull();
+    expect(all.length).toBeGreaterThan(0);
   });
 
   /**

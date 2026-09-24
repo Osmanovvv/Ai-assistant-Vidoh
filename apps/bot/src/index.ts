@@ -80,6 +80,7 @@ import {
   type PipelineJob,
 } from './infra/queue.js';
 import { closeRedis, createRedis, getRedis, pingRedis } from './infra/redis.js';
+import { redisDialogStore } from './modules/dialog/dialog.store.js';
 import { AccessDeniedError } from './infra/failures.js';
 import { createServer, runHealthChecks, type HealthCheck } from './http/server.js';
 import { DEFAULT_LIMITS } from './modules/buffer/buffer.service.js';
@@ -222,13 +223,22 @@ async function main(): Promise<void> {
 
   logger.info('Postgres и Redis отвечают');
 
+  /**
+   * Хвост разговора (решение Никиты 24.09.2026, план docs/26): один на
+   * процесс — его пишут перехват ответов бота и конвейер, читает конвейер.
+   * Пишется всегда; модели показывается только при `DIALOG_CONTEXT=on`.
+   */
+  const dialog = redisDialogStore(getRedis());
+
   // TELEGRAM_API_ROOT задаётся только сквозным тестом (2.23); в бою
   // конфигурация его запрещает.
-  const bot = createBot(env.BOT_TOKEN, { apiRoot: env.TELEGRAM_API_ROOT });
+  const bot = createBot(env.BOT_TOKEN, { apiRoot: env.TELEGRAM_API_ROOT, dialog, logger });
   await bot.init();
   logger.info(
     {
       username: bot.botInfo.username,
+      // Видно при подъёме, как видно модель маршрутизатора: включён ли разговор.
+      dialogContext: env.DIALOG_CONTEXT,
       // §8 ТЗ целиком зависит от этого флага: если режим тем выключен
       // в @BotFather, бот работает в плоском режиме, и это видно в логе.
       hasTopicsEnabled: bot.botInfo.has_topics_enabled,
@@ -544,6 +554,10 @@ async function main(): Promise<void> {
      * страж `dump.wiring.test.ts`.
      */
     settings,
+    // Хвост разговора: реплика человека пишется всегда, модели он виден
+    // только при DIALOG_CONTEXT=on (план docs/26).
+    dialog,
+    useDialog: env.DIALOG_CONTEXT === 'on',
   });
 
   // BullMQ держит блокирующие соединения, поэтому у очереди и воркера
@@ -959,6 +973,8 @@ async function main(): Promise<void> {
      * удалено», а остановить её не сможет никто.
      */
     providers,
+    // Хвост разговора стирается вместе с данными (план docs/26).
+    dialog,
   });
   registerMembershipHandlers(bot, db, logger);
   // Служебные строки Telegram о наших ветках и закреплениях — прочь
@@ -1322,6 +1338,7 @@ async function main(): Promise<void> {
         sender: questions,
         topics: topicGateway,
         providers,
+        dialog,
       })
     : () => undefined;
 
