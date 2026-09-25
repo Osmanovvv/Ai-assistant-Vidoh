@@ -113,6 +113,17 @@ function normalized(text: string): string {
   return text.toLowerCase().replace(/ё/gu, 'е');
 }
 
+/**
+ * «Срок был», «срок прошёл» — правда только при прошедшем сроке в фактах
+ * (бой 25.09.2026, 17:12): стоматолог перенесён на послезавтра, а живой
+ * ответ сказал «срок был 27.09, 19:00». Все слова из фактов и словаря —
+ * сито слов такое пропускает; ловит только связь «срок» с прошедшим.
+ */
+const PAST_DEADLINE =
+  /(?<!\p{L})срок\p{L}*\s+(?:уже\s+)?(?:был|прошел|вышел|истек)(?!\p{L})|(?<!\p{L})(?:уже\s+)?(?:прошел|вышел|истек)\s+срок/u;
+
+const PAST_DEADLINE_WHY = 'срок назван прошедшим, а он впереди';
+
 function wordsOf(text: string): string[] {
   return normalized(text).match(/\p{L}+/gu) ?? [];
 }
@@ -179,6 +190,10 @@ export function siftLine(line: string, pack: ContextPack): SiftedLine {
   const facts = factWordsOf(pack);
   const pastOfDone = donePastForms(pack);
   const words = wordsOf(line);
+
+  if (pack.overdue.length === 0 && PAST_DEADLINE.test(normalized(line))) {
+    return { ok: false, why: PAST_DEADLINE_WHY };
+  }
 
   for (const [index, word] of words.entries()) {
     if (DONE_WORDS.has(word)) {
@@ -281,6 +296,10 @@ export function siftAnswer(answer: string, facts: string): SiftedLine {
   const anyDone = /сделано|все шаги закрыты/u.test(factsText);
   const anyOpen = hasOpen(factsText);
   const words = wordsOf(answer);
+
+  if (!factsText.includes('срок прошел') && PAST_DEADLINE.test(normalized(answer))) {
+    return { ok: false, why: PAST_DEADLINE_WHY };
+  }
 
   for (const [index, word] of words.entries()) {
     const state = STATE_WORDS.get(word);
