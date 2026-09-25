@@ -26,7 +26,7 @@ import {
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
-import { isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
+import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
@@ -2031,7 +2031,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
                   ? texts.backlog.line(title)
                   : texts.summary.lineWithDate(title, when);
               }
-              return texts.backlog.line(item.text);
+              // «Про это» — со сроком: живой ответ отсечён, а спрашивали,
+              // может быть, именно «когда» (проверка Никиты 25.09.2026).
+              const { title, when } = aboutLine(item, { now, timeZone: context.timeZone }, texts);
+              return when === ''
+                ? texts.backlog.line(title)
+                : texts.summary.lineWithDate(title, when);
             })
           : answer.kind === 'aboutClosed'
             ? shownItems.map((item) =>

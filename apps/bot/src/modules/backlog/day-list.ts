@@ -1,4 +1,5 @@
 import { withoutClockPhrase } from '../classifier/clock-time.js';
+import { isoDateIn } from '../classifier/dates.js';
 import { deadlineWords, dueWords } from '../items/deadline-words.js';
 import { withCapital } from '../items/item-text.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
@@ -60,6 +61,26 @@ export function spanLine(
       ? (dueWords(dated, context, texts) ?? texts.backlog.dueToday)
       : deadlineWords(dated, context.timeZone, texts);
   return { title, when };
+}
+
+/**
+ * Строка ответа «про это» — со своим сроком (проверка Никиты 25.09.2026,
+ * 20:24). Живой ответ на «На когда стоматолог?» страж отсёк, и словарный
+ * пришёл без даты: «— Записаться к стоматологу». Шапки дня у такого ответа
+ * нет, поэтому и сегодняшний час — с днём: «сегодня, 16:00», а не «16:00».
+ */
+export function aboutLine(
+  item: ListedItem,
+  context: { readonly now: Date; readonly timeZone: string },
+  texts: TextProfile,
+): { readonly title: string; readonly when: string } {
+  const line = spanLine(item, context, texts);
+  const todayWithHour =
+    item.deadlineAt !== null &&
+    item.deadlineAccuracy === 'day' &&
+    item.deadlineTime !== null &&
+    isoDateIn(item.deadlineAt, context.timeZone) === isoDateIn(context.now, context.timeZone);
+  return todayWithHour ? { ...line, when: `${texts.backlog.dueToday}, ${line.when}` } : line;
 }
 
 /** Отрезок в один день — «завтра», «послезавтра», «в пятницу». */
