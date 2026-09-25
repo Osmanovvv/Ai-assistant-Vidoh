@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { ErrorRateWindow, Monitor, formatAlert, type Alert, type AlertSink } from './monitoring.js';
+import {
+  ErrorRateWindow,
+  Monitor,
+  formatAlert,
+  type Alert,
+  type AlertMemory,
+  type AlertSink,
+} from './monitoring.js';
 
 function collectingSink() {
   const delivered: Alert[] = [];
@@ -127,6 +134,110 @@ describe('Monitor: дребезг', () => {
     for (let i = 0; i < 100; i++) await monitor.recordOutcome(false);
 
     expect(delivered).toHaveLength(1);
+  });
+});
+
+describe('Monitor: дребезг переживает перезапуск (бой 25.09.2026)', () => {
+  /**
+   * «Баланс ниже порога» пришёл в 03:47 и снова в 03:51: выкладка
+   * перезапустила бота, память дребезга была в процессе и пропала. Два
+   * `Monitor` с одной памятью — это бот до и после перезапуска.
+   */
+  function sharedMemory() {
+    const stored = new Map<string, number>();
+    const ttls: number[] = [];
+    const memory: AlertMemory = {
+      last: (key) => Promise.resolve(stored.get(key)),
+      remember: (key, at, ttlMs) => {
+        stored.set(key, at);
+        ttls.push(ttlMs);
+        return Promise.resolve();
+      },
+      forget: (key) => {
+        stored.delete(key);
+        return Promise.resolve();
+      },
+    };
+    return { memory, ttls };
+  }
+
+  it('второй процесс помнит оповещение первого: повтора нет, после паузы — есть', async () => {
+    const { sink, delivered } = collectingSink();
+    const { memory, ttls } = sharedMemory();
+    let now = 0;
+    const before = new Monitor({ sink, memory, cooldownMs: 15 * 60_000, now: () => now });
+    const after = new Monitor({ sink, memory, cooldownMs: 15 * 60_000, now: () => now });
+
+    expect(await before.alert({ key: 'yandex-balance-low', title: 'Баланс' })).toBe(true);
+    now = 4 * 60_000;
+    expect(await after.alert({ key: 'yandex-balance-low', title: 'Баланс' })).toBe(false);
+    now = 16 * 60_000;
+    expect(await after.alert({ key: 'yandex-balance-low', title: 'Баланс' })).toBe(true);
+
+    expect(delivered).toHaveLength(2);
+    // Память живёт ровно паузу: дольше хранить незачем.
+    expect(ttls).toEqual([15 * 60_000, 15 * 60_000]);
+  });
+
+  it('своя пауза у оповещения — сутки у баланса — держится и через перезапуск', async () => {
+    const { sink, delivered } = collectingSink();
+    const { memory, ttls } = sharedMemory();
+    let now = 0;
+    const day = 24 * 60 * 60_000;
+    const before = new Monitor({ sink, memory, now: () => now });
+    const after = new Monitor({ sink, memory, now: () => now });
+
+    await before.alert({ key: 'yandex-balance-low', title: 'Баланс', cooldownMs: day });
+    now = 20 * 60_000;
+    expect(await after.alert({ key: 'yandex-balance-low', title: 'Баланс', cooldownMs: day })).toBe(
+      false,
+    );
+    now = day + 60_000;
+    expect(await after.alert({ key: 'yandex-balance-low', title: 'Баланс', cooldownMs: day })).toBe(
+      true,
+    );
+
+    expect(delivered).toHaveLength(2);
+    expect(ttls[0]).toBe(day);
+  });
+
+  it('память недоступна — оповещение всё равно уходит: лучше повтор, чем тишина об аварии', async () => {
+    const { sink, delivered } = collectingSink();
+    const warnings: string[] = [];
+    const broken: AlertMemory = {
+      last: () => Promise.reject(new Error('Redis недоступен')),
+      remember: () => Promise.reject(new Error('Redis недоступен')),
+      forget: () => Promise.reject(new Error('Redis недоступен')),
+    };
+    const monitor = new Monitor({
+      sink,
+      memory: broken,
+      now: () => 0,
+      warn: (why) => warnings.push(why),
+    });
+
+    expect(await monitor.alert({ key: 'bot-down', title: 'Бот не отвечает' })).toBe(true);
+    await monitor.forget('bot-down');
+
+    expect(delivered).toHaveLength(1);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('забытое оповещение уходит снова сразу — и в другом процессе тоже', async () => {
+    const { sink, delivered } = collectingSink();
+    const { memory } = sharedMemory();
+    let now = 0;
+    const before = new Monitor({ sink, memory, now: () => now });
+    const after = new Monitor({ sink, memory, now: () => now });
+
+    await before.alert({ key: 'yandex-balance-low', title: 'Баланс' });
+    await before.forget('yandex-balance-low');
+    now = 60_000;
+
+    expect(await before.alert({ key: 'yandex-balance-low', title: 'Баланс' })).toBe(true);
+    await before.forget('yandex-balance-low');
+    expect(await after.alert({ key: 'yandex-balance-low', title: 'Баланс' })).toBe(true);
+    expect(delivered).toHaveLength(3);
   });
 });
 

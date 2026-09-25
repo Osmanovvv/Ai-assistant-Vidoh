@@ -34,6 +34,8 @@ export interface StartBalanceWatchParams {
   readonly keyFile: string | undefined;
   readonly thresholdRub: () => Promise<number>;
   readonly alert: (alert: Alert) => Promise<boolean>;
+  /** Стереть память о предупреждении, когда баланс снова выше порога. */
+  readonly forget?: ((key: string) => Promise<void>) | undefined;
   readonly logger: Logger;
   /** Подмена сторожа — для проверки расписания без сети и без ключа. */
   readonly watch?:
@@ -64,6 +66,7 @@ export async function startBalanceWatch(
         client: new YandexBillingClient({ key }),
         thresholdRub: params.thresholdRub,
         alert: params.alert,
+        forget: params.forget,
         logger,
       });
       logger.info({ файл: params.keyFile }, 'Сторож баланса Yandex Cloud запущен');

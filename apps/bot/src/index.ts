@@ -64,6 +64,7 @@ import { closeDb, getDb, pingDb } from './infra/db.js';
 import { RedisLock } from './infra/lock.js';
 import { createLogger, withRequestId } from './infra/logger.js';
 import { isOwnOutage } from './infra/errors.js';
+import { redisAlertMemory } from './infra/alert-memory.js';
 import { Monitor, formatAlert, type AlertSink } from './infra/monitoring.js';
 import { startBalanceWatch } from './modules/cloud/balance-watch.js';
 import { startMisunderstoodDigest } from './modules/misunderstood/digest.js';
@@ -265,7 +266,17 @@ async function main(): Promise<void> {
     logger.error({ err: error }, 'Не удалось опубликовать меню команд');
   }
 
-  const monitor = new Monitor({ sink: createAlertSink(quietApi, env.MONITORING_CHAT_ID) });
+  /**
+   * Дребезг оповещений помнится в Redis (бой 25.09.2026): «баланс ниже
+   * порога» приходил после каждой выкладки — память была в процессе.
+   */
+  const monitor = new Monitor({
+    sink: createAlertSink(quietApi, env.MONITORING_CHAT_ID),
+    memory: redisAlertMemory(getRedis()),
+    warn: (why) => {
+      logger.warn(why);
+    },
+  });
 
   const speech = createSpeechProvider(env);
   logger.info({ provider: speech.name }, 'Провайдер расшифровки выбран');
@@ -390,6 +401,9 @@ async function main(): Promise<void> {
     keyFile: env.YANDEX_SA_KEY_FILE,
     thresholdRub: async () => await settings.number('yandexBalanceAlertRub'),
     alert: async (alert) => await monitor.alert(alert),
+    forget: async (key) => {
+      await monitor.forget(key);
+    },
     logger,
   });
 

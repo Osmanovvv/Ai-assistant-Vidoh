@@ -211,6 +211,7 @@ describe('сторож баланса', () => {
       ...(params.balance === undefined ? {} : { balance: params.balance }),
     });
     const alerts: Alert[] = [];
+    const forgotten: string[] = [];
     let billingCalls = 0;
     const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
       if (urlOf(input).includes('billing') && params.failAfter !== undefined) {
@@ -227,12 +228,17 @@ describe('сторож баланса', () => {
         alerts.push(alert);
         return Promise.resolve(true);
       },
+      forget: (alertKey) => {
+        forgotten.push(alertKey);
+        return Promise.resolve();
+      },
       now: () => now,
     });
 
     return {
       watch,
       alerts,
+      forgotten,
       cloud,
       advance: (ms: number) => {
         now = new Date(now.getTime() + ms);
@@ -325,5 +331,23 @@ describe('сторож баланса', () => {
     await watch.check();
 
     expect(alerts).toHaveLength(0);
+  });
+
+  it('оповещение о балансе — с паузой в сутки: мониторинг помнит её и через перезапуск (бой 25.09.2026)', async () => {
+    const { watch, alerts } = stand({ balance: '292.33' });
+
+    await watch.check();
+
+    expect(alerts[0]?.cooldownMs).toBe(24 * 60 * 60_000);
+  });
+
+  it('баланс выше порога — память о предупреждении стёрта: следующее падение предупредит сразу', async () => {
+    const low = stand({ balance: '120.5' });
+    await low.watch.check();
+    expect(low.forgotten).toEqual([]);
+
+    const topped = stand({ balance: '1500' });
+    await topped.watch.check();
+    expect(topped.forgotten).toEqual(['yandex-balance-low']);
   });
 });
