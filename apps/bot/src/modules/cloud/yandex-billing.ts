@@ -38,6 +38,8 @@ const TOKEN_MARGIN_MS = 5 * 60_000;
 const BALANCE_MAX_AGE_MS = 10 * 60_000;
 /** Пока баланс ниже порога, напоминание повторяется раз в сутки. */
 const REALERT_MS = 24 * 60 * 60_000;
+/** Ключ дребезга предупреждения о балансе. */
+const LOW_BALANCE_ALERT = 'yandex-balance-low';
 
 const RSA_PKCS1_PSS_PADDING = 6;
 const PSS_SALT_LENGTH = 32;
@@ -225,6 +227,12 @@ export interface BalanceWatchDeps {
   readonly thresholdRub: () => Promise<number>;
   /** Кто доставляет оповещение: `Monitor.alert` в бою. */
   readonly alert: (alert: Alert) => Promise<boolean>;
+  /**
+   * Стереть память о предупреждении, когда баланс снова выше порога:
+   * `Monitor.forget` в бою. Память живёт вне процесса (бой 25.09.2026), и
+   * без этого следующее падение ждало бы суток с прошлого.
+   */
+  readonly forget?: ((key: string) => Promise<void>) | undefined;
   readonly now?: (() => Date) | undefined;
   readonly logger?: Logger | undefined;
 }
@@ -289,6 +297,7 @@ export class YandexBalanceWatch {
 
     if (!status.low) {
       this.alertedAt = undefined;
+      await this.deps.forget?.(LOW_BALANCE_ALERT);
       return;
     }
 
@@ -297,9 +306,12 @@ export class YandexBalanceWatch {
 
     this.alertedAt = nowMs;
     await this.deps.alert({
-      key: 'yandex-balance-low',
+      key: LOW_BALANCE_ALERT,
       title: 'Yandex Cloud: баланс ниже порога — пора пополнить',
       details: { баланс: rubles(status.balanceRub), порог: `${String(status.thresholdRub)} ₽` },
+      // Сутки и через перезапуск (бой 25.09.2026: повтор через четыре
+      // минуты после выкладки) — паузу помнит мониторинг вне процесса.
+      cooldownMs: REALERT_MS,
     });
   }
 }

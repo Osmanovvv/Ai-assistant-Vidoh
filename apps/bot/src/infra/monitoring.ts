@@ -13,10 +13,24 @@ export interface Alert {
   readonly key: string;
   readonly title: string;
   readonly details?: Record<string, string | number> | undefined;
+  /** Своя пауза до повтора — у баланса сутки; нет — общая пауза монитора. */
+  readonly cooldownMs?: number | undefined;
 }
 
 export interface AlertSink {
   deliver(alert: Alert): Promise<void>;
+}
+
+/**
+ * Память дребезга вне процесса (бой 25.09.2026): «баланс ниже порога»
+ * пришёл в 03:47 и снова в 03:51 — выкладка перезапустила бота, а память
+ * «уже оповестили» жила в процессе. Хранится в Redis ровно паузу.
+ */
+export interface AlertMemory {
+  /** Когда ушло последнее оповещение с этим ключом; не было — undefined. */
+  last(key: string): Promise<number | undefined>;
+  remember(key: string, at: number, ttlMs: number): Promise<void>;
+  forget(key: string): Promise<void>;
 }
 
 /**
@@ -69,6 +83,10 @@ export interface MonitorOptions {
   /** Сколько молчать после оповещения с тем же ключом. */
   readonly cooldownMs?: number;
   readonly now?: () => number;
+  /** Память дребезга, переживающая перезапуск; нет — только в процессе. */
+  readonly memory?: AlertMemory | undefined;
+  /** Куда сказать, что память недоступна: оповещение от этого не глохнет. */
+  readonly warn?: ((why: string) => void) | undefined;
 }
 
 const DEFAULTS = {
@@ -117,16 +135,46 @@ export class Monitor {
    */
   async alert(alert: Alert): Promise<boolean> {
     const now = this.now();
-    const cooldownMs = this.options.cooldownMs ?? DEFAULTS.cooldownMs;
-    const last = this.lastAlertAt.get(alert.key);
+    const cooldownMs = alert.cooldownMs ?? this.options.cooldownMs ?? DEFAULTS.cooldownMs;
+    // Своя память — первой: она свежее; после перезапуска её нет — тогда
+    // память вне процесса. Та недоступна — оповещаем: лучше повтор, чем
+    // тишина об аварии.
+    const last = this.lastAlertAt.get(alert.key) ?? (await this.remembered(alert.key));
 
     if (last !== undefined && now - last < cooldownMs) {
       return false;
     }
 
     this.lastAlertAt.set(alert.key, now);
+    await this.quietly('запомнить', () =>
+      this.options.memory?.remember(alert.key, now, cooldownMs),
+    );
     await this.options.sink.deliver(alert);
     return true;
+  }
+
+  /** Забыть оповещение: следующее с этим ключом уйдёт сразу (баланс пополнили). */
+  async forget(key: string): Promise<void> {
+    this.lastAlertAt.delete(key);
+    await this.quietly('забыть', () => this.options.memory?.forget(key));
+  }
+
+  private async remembered(key: string): Promise<number | undefined> {
+    let last: number | undefined;
+    await this.quietly('прочитать', async () => {
+      last = await this.options.memory?.last(key);
+    });
+    return last;
+  }
+
+  private async quietly(what: string, run: () => Promise<unknown> | undefined): Promise<void> {
+    try {
+      await run();
+    } catch (error) {
+      this.options.warn?.(
+        `Память оповещений: не удалось ${what} — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }
 
