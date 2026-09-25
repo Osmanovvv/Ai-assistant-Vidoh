@@ -305,6 +305,39 @@ const STATE_WORDS: ReadonlyMap<string, string> = new Map([
  */
 const OPEN_WORDS: ReadonlySet<string> = new Set(['открыт', 'открыта', 'открыто', 'открыты']);
 
+/**
+ * «Ничего не назначено» — речь самого бота (`periodEmpty`: «На вторник
+ * ничего не назначено.»), и только с «не» (проверка Никиты 25.09.2026,
+ * 20:24: верный ответ «На сегодня ничего не назначено. Завтра — …» сито
+ * отвергло из-за одного слова). «Стоматолог назначен на 27.09» — уже
+ * запись к врачу, а у человека дело «записаться»: без «не» — нет.
+ */
+const NEGATED_ONLY: ReadonlySet<string> = new Set(['назначено']);
+
+/**
+ * «На сегодня ничего не назначено» — правда, только если на сегодня в
+ * фактах пусто: в обзоре нет строки «На сегодня:», у найденного нет срока
+ * «сегодня» или одного часа (так `questionFacts` пишет сегодняшний).
+ * «Ничего не записано» словарь знал и раньше — правило то же. «Больше
+ * ничего», «кроме», «только» — о прочем: при делах на сегодня это правда.
+ */
+const EMPTY_TODAY_WHY = 'на сегодня дела есть, а сказано «ничего»';
+
+function emptyTodayWrongInAnswer(answer: string, factsText: string): boolean {
+  const todayInFacts =
+    /(?:^|\n)на сегодня:/u.test(factsText) || /срок: (?:сегодня|\d{2}:\d{2})/u.test(factsText);
+  if (!todayInFacts) return false;
+
+  return normalized(answer)
+    .split(/[.!?\n]+/u)
+    .some(
+      (sentence) =>
+        /(?<!\p{L})сегодня(?!\p{L})/u.test(sentence) &&
+        /(?<!\p{L})не\s+(?:назначено|записано)(?!\p{L})/u.test(sentence) &&
+        !/(?<!\p{L})(?:больше|кроме|только)(?!\p{L})/u.test(sentence),
+    );
+}
+
 /** Есть ли в фактах незакрытое: найденное без «сделано/отменено», обзор или шаги. */
 function hasOpen(factsText: string): boolean {
   return factsText
@@ -334,8 +367,15 @@ export function siftAnswer(answer: string, facts: string): SiftedLine {
   if (pastDeadlineWrongInAnswer(answer, factsText)) {
     return { ok: false, why: PAST_DEADLINE_WHY };
   }
+  if (emptyTodayWrongInAnswer(answer, factsText)) {
+    return { ok: false, why: EMPTY_TODAY_WHY };
+  }
 
   for (const [index, word] of words.entries()) {
+    if (NEGATED_ONLY.has(word)) {
+      if (words[index - 1] === 'не') continue;
+      return { ok: false, why: `слово не из фактов: ${word}` };
+    }
     const state = STATE_WORDS.get(word);
     if (state !== undefined) {
       if (factsText.includes(state)) continue;
