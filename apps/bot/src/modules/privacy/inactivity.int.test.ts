@@ -148,6 +148,29 @@ describe('удаление', () => {
     expect(gateway.deletedThreads.map((one) => one.chatId)).toEqual([tgId]);
   });
 
+  it('хвост разговора стирается и здесь — прощания у этого пути нет, стирание одно', async () => {
+    /**
+     * С 25.09.2026 команда удаления стирает хвост ещё раз — после прощания,
+     * и её тест больше не видит, стёр ли его сам `eraseUser`. Здесь это
+     * единственное стирание.
+     */
+    const forgotten: number[] = [];
+    const dialog = {
+      remember: () => Promise.resolve(),
+      recent: () => Promise.resolve([]),
+      forget: (chatId: number) => {
+        forgotten.push(chatId);
+        return Promise.resolve();
+      },
+    };
+    const { tgId } = await person(25);
+    await retireInactive({ ...deps(), dialog }, { now: NOW });
+
+    await retireInactive({ ...deps(), dialog }, { now: new Date(NOW.getTime() + 31 * DAY) });
+
+    expect(forgotten).toEqual([tgId]);
+  });
+
   it('30 дней ещё не прошли — ждём', async () => {
     const { id } = await person(25);
     await retireInactive(deps(), { now: NOW });
