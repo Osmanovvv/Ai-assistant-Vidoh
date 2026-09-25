@@ -21,6 +21,9 @@ import { outputContextOf } from '../users/state.repo.js';
 import { askedList, asksAboutEverything, type ListQuestion } from './list-questions.js';
 import { askedDay, type AskedPeriod, doneWindow, periodLabel, periodWindow } from './periods.js';
 import { FRAME_WORDS, normalizeText, wordsOf } from './question-words.js';
+import { asksWhenOfUnnamed } from './when-unnamed.js';
+import { DEFAULT_THRESHOLDS } from '../resolver/decision.js';
+import { lastDiscussed } from '../resolver/deixis.repo.js';
 
 /**
  * Вопрос по бэклогу (§13.4 ТЗ, задача 3.10).
@@ -116,6 +119,12 @@ export type BacklogAnswer =
   | { readonly kind: 'todayEmpty'; readonly open: number }
   /** Спрашивали про конкретное дело: что о нём известно. */
   | { readonly kind: 'about'; readonly items: readonly Item[] }
+  /**
+   * «На когда» без названного дела, а о каком шла речь — не понять: разговора
+   * не было, он давно или был о нескольких делах (проверка Никиты
+   * 25.09.2026, 20:23). «Ничего не записано» здесь — неправда о записях.
+   */
+  | { readonly kind: 'whichItem' }
   /** Спрашивали обо всём сразу («покажи все мои задачи»): открытые дела. */
   | { readonly kind: 'all'; readonly items: readonly Item[] }
   /** Обо всём — а записей нет: «пусто», а не «ничего не записано» про предмет. */
@@ -361,6 +370,13 @@ async function askedTopic(db: Database, params: QueryParams): Promise<string | u
  * Ничего не пишет в базу — ни записи, ни черновика, ни вопроса. Это не
  * осторожность, а требование §13.4, и проверяется оно счётчиком.
  */
+/** Дела, о которых ответ: разговор после него — о них (проверка Никиты 25.09.2026). */
+export function answeredItemIds(answer: BacklogAnswer): readonly string[] {
+  if ('items' in answer) return answer.items.map((item) => item.id);
+  if (answer.kind === 'project') return [answer.item.id];
+  return [];
+}
+
 export async function answerBacklogQuery(
   deps: QueryDeps,
   params: QueryParams,
@@ -452,6 +468,32 @@ export async function answerBacklogQuery(
       (item) => normalizeTopicName(item.topic ?? '') === normalizeTopicName(topic),
     );
     return { kind: 'listed', question: { kind: 'byTopic', topic }, items: open };
+  }
+
+  /**
+   * «На когда» без названного дела — про последнее обсуждённое (проверка
+   * Никиты 25.09.2026, 20:23): «Что там со стоматологом?» → «На когда» →
+   * было «Про это у меня ничего не записано». Дело — то же, что у «это» в
+   * правках (`lastDiscussed`, окно свежести), ровно одно и открытое;
+   * иначе — переспрос, а не поиск по смыслу: искать в «на когда» нечего.
+   */
+  if (params.batchId !== undefined && asksWhenOfUnnamed(params.text)) {
+    const discussed = await lastDiscussed(deps.db, {
+      userId: params.userId,
+      batchId: params.batchId,
+      now,
+      windowMs: DEFAULT_THRESHOLDS.freshMinutes * 60_000,
+    });
+    const only = discussed.length === 1 ? discussed[0] : undefined;
+    const open =
+      only === undefined
+        ? []
+        : await deps.db
+            .select()
+            .from(items)
+            .where(and(openItemsWhere(params.userId), eq(items.id, only.id)))
+            .limit(1);
+    return open.length === 1 ? { kind: 'about', items: open } : { kind: 'whichItem' };
   }
 
   // «Ничего не записано» без взгляда в записи — ложь (ревизия этапа 3, F3):

@@ -20,6 +20,7 @@ import type { EmbeddingProvider } from '../embedder/providers/types.js';
 import { extractUnits } from '../extractor/extractor.service.js';
 import {
   answerBacklogQuery,
+  answeredItemIds,
   type BacklogAnswer,
   listHeader,
   periodLabel,
@@ -1802,6 +1803,20 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     for (const { text: asked, answer } of questions) {
       happened.said = true;
+
+      /**
+       * О каких делах ответ — разговор теперь о них (проверка Никиты
+       * 25.09.2026, 20:23). «Что там со стоматологом?» стоматолога не
+       * отмечало, и «На когда» следом, как и «перенеси его», искали среди
+       * дел прошлого разговора — у мамы из переноса минутой раньше.
+       */
+      for (const id of answeredItemIds(answer)) mentioned.add(id);
+
+      // Дело не названо и из разговора не понять — переспрос (там же).
+      if (answer.kind === 'whichItem') {
+        await tell(texts.backlog.whichItem);
+        continue;
+      }
 
       /**
        * Живой ответ на вопрос (слой B, 22.09.2026; §13.4 ТЗ — прозой, не

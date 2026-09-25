@@ -379,6 +379,7 @@ export const reserved: TextProfile = {
     inBackground: 'в фоне',
     more: (rest) => `…и ещё ${String(rest)}. Полный список — в меню.`,
     nothing: 'Про это у меня ничего не записано.',
+    whichItem: 'Про какое дело? Назови его — скажу, когда.',
     unavailable: 'Сейчас не смогла заглянуть в записи — они на месте.',
   },
 

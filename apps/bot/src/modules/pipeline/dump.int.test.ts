@@ -9083,6 +9083,140 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     );
   });
 
+  describe('«На когда» без названного дела — про последнее обсуждённое (проверка Никиты 25.09.2026, 20:23)', () => {
+    /**
+     * Бот ответил про стоматолога, человек переспросил «На когда» (с
+     * опиской: «На когад На когда») — и получил «Про это у меня ничего не
+     * записано». Ответы на вопросы не отмечали, о каком деле шла речь, и
+     * последним обсуждённым оставалась мама из переноса минутой раньше.
+     */
+    const old = at(-60 * 60_000);
+    const dentist = {
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'здоровье',
+      text: 'Записаться к стоматологу',
+      // 26.08 по Москве, послезавтра от часов теста.
+      deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+      deadlineTime: 19 * 60,
+      embedding: oneVector,
+      updatedAt: old,
+    } as const;
+    const mama = {
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'семья',
+      text: 'Позвонить маме',
+      deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+      deadlineAccuracy: 'day',
+      deadlineTime: 20 * 60,
+      updatedAt: old,
+    } as const;
+
+    /** Прошлый разговор: бот говорил о `ids` за `ms` до часов теста. */
+    async function pastTalk(ids: readonly string[], ms: number): Promise<void> {
+      await testDb()
+        .insert(batches)
+        .values({
+          userId,
+          status: 'done',
+          openedAt: at(-ms),
+          closedAt: at(-ms),
+          mentionedItemIds: [...ids],
+        });
+    }
+
+    const asking = (question: string) =>
+      echoingLlm({
+        router: routerQuery(question),
+        // Живого ответа нет — виден словарный: проверяется, о каком деле он.
+        answerer: JSON.stringify({ answer: '' }),
+      });
+    /**
+     * Поиск по смыслу — как на бою: «стоматолог» находит стоматолога, а
+     * «На когда» не находит ничего. Один вектор на любой текст здесь
+     * нашёл бы дело и без разговора — и тест мерил бы не то.
+     */
+    const elsewhere = Array.from({ length: 256 }, (_, index) => (index === 1 ? 1 : 0));
+    const same = new MockEmbeddingProvider({
+      vectorFor: (request) => (/стоматолог/iu.test(request.text) ? oneVector : elsewhere),
+    });
+
+    it('бой: мама → «Что там со стоматологом?» → «На когад На когда» — о стоматологе, с датой', async () => {
+      const prompts = await answeringPrompts();
+      const [mamaRow] = await testDb()
+        .insert(items)
+        .values({ userId, ...mama })
+        .returning();
+      await testDb()
+        .insert(items)
+        .values({ userId, ...dentist });
+      await pastTalk([mamaRow?.id ?? ''], 2 * 60_000);
+
+      await ask('Что там со стоматологом?', asking('Что там со стоматологом?'), prompts, same);
+      const { replies } = await ask(
+        'На когад На когда',
+        asking('На когад На когда'),
+        prompts,
+        same,
+      );
+
+      expect(replies.at(-1)).toBe(
+        `${defaultTexts.backlog.about}\n— Записаться к стоматологу · 26.08, 19:00`,
+      );
+    });
+
+    it('разговора не было — «Про какое дело?», а не «ничего не записано»; модель не зовётся', async () => {
+      const prompts = await answeringPrompts();
+      await testDb()
+        .insert(items)
+        .values({ userId, ...dentist });
+
+      const { replies, answererInputs } = await ask(
+        'На когда?',
+        asking('На когда?'),
+        prompts,
+        same,
+      );
+
+      expect(replies.at(-1)).toBe(defaultTexts.backlog.whichItem);
+      expect(answererInputs).toHaveLength(0);
+    });
+
+    it('последний разговор — о двух делах: какое из них, не угадываем', async () => {
+      const prompts = await answeringPrompts();
+      const rows = await testDb()
+        .insert(items)
+        .values([
+          { userId, ...dentist },
+          { userId, ...mama },
+        ])
+        .returning();
+      await pastTalk(
+        rows.map((row) => row.id),
+        60_000,
+      );
+
+      const { replies } = await ask('Когда?', asking('Когда?'), prompts, same);
+
+      expect(replies.at(-1)).toBe(defaultTexts.backlog.whichItem);
+    });
+
+    it('разговор был давно — больше четверти часа: тоже переспрос', async () => {
+      const prompts = await answeringPrompts();
+      const [row] = await testDb()
+        .insert(items)
+        .values({ userId, ...dentist })
+        .returning();
+      await pastTalk([row?.id ?? ''], 20 * 60_000);
+
+      const { replies } = await ask('На когда?', asking('На когда?'), prompts, same);
+
+      expect(replies.at(-1)).toBe(defaultTexts.backlog.whichItem);
+    });
+  });
+
   it('ответ не прошёл стража или пуст — словарный ответ, как раньше', async () => {
     const prompts = await answeringPrompts();
     const llm = echoingLlm({
