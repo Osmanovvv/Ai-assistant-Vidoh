@@ -10,6 +10,7 @@ import { isoDateIn, localDateParts, startOfDayInZone } from '../classifier/dates
 import { deadlineWords, dueWords, shortDate } from '../items/deadline-words.js';
 import { partOfDayIn } from '../presenter/context-pack.js';
 import { checkVoice, type CheckedLine, type VoiceLimits } from '../presenter/context-line.js';
+import { siftAnswer } from '../presenter/line-sieve.js';
 import type { ProjectContext } from '../projects/projects.service.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 import type { TextProfile } from '../../texts/index.js';
@@ -278,7 +279,12 @@ export async function askLiveAnswer(
       return { why: outcome.problem };
     }
 
-    const checked = checkLiveAnswer(outcome.value.answer, params.facts);
+    // Страж голоса (чёрный список), потом сито (белый список, 25.09.2026):
+    // каждое слово — из фактов, её вопроса или словаря бота.
+    const voiced = checkLiveAnswer(outcome.value.answer, params.facts);
+    const sifted = voiced.ok ? siftAnswer(voiced.line, params.facts) : undefined;
+    const checked: CheckedLine =
+      sifted !== undefined && !sifted.ok ? { ok: false, why: sifted.why } : voiced;
     if (!checked.ok) {
       if (checked.why === 'пусто') return { why: checked.why };
       deps.logger?.info(

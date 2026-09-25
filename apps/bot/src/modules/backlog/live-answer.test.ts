@@ -440,9 +440,14 @@ describe('обращение к модели за ответом', () => {
   it('факты уходят входом на этап answerer, ответ возвращается проверенным', async () => {
     const model = asking({ answer: 'Цветы — у них срок завтра, ковёр без срока.' });
 
+    // Ковёр — в фактах: сито (25.09.2026) пропускает только их слова.
     const outcome = await askLiveAnswer(
       deps(ANSWERER_SCHEMA_NAME),
-      { facts: 'Вопрос: что важнее\n— Заказать цветы, срок: завтра', userId: 'u1', batchId: 'b1' },
+      {
+        facts: 'Вопрос: что важнее\n— Заказать цветы, срок: завтра\n— Купить ковёр, без срока',
+        userId: 'u1',
+        batchId: 'b1',
+      },
       model.ask,
     );
 
@@ -473,6 +478,23 @@ describe('обращение к модели за ответом', () => {
       asking(new Error('сеть')).ask,
     );
     expect(failed.line).toBeUndefined();
+  });
+
+  it('выдумка, которую страж голоса пропускает, — сито отсекает, ответ словарный (25.09.2026)', async () => {
+    const facts = 'Вопрос: что там с посылкой?\n— Забрать посылку с почты (быт) — поручено: муж';
+    const invented = 'Посылку заберёт муж, всё в порядке.';
+    // Чёрный список такую фразу пропускает — ловит только сито.
+    expect(checkLiveAnswer(invented, facts).ok).toBe(true);
+
+    const outcome = await askLiveAnswer(
+      deps(ANSWERER_SCHEMA_NAME),
+      { facts },
+      asking({ answer: invented }).ask,
+    );
+
+    expect(outcome.line).toBeUndefined();
+    expect(outcome.rejected).toBe(invented);
+    expect(outcome.why).toMatch(/^слово не из фактов/u);
   });
 
   it('промпт не той схемы — модель не зовётся', async () => {

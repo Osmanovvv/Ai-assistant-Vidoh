@@ -136,11 +136,21 @@ function factWordsOf(pack: ContextPack): string[] {
  * слово без двух последних букв, не короче четырёх; она должна стоять
  * внутри слова фактов. Короткое слово факта («кот», «обои», «няню») —
  * по первым трём буквам, но не служебное: «под» из «под ключ» не
- * открывает «подарок». «Осеннему» из «осень» так не сложить, и это
- * нарочно: подробность, которой в фактах нет.
+ * открывает «подарок». Слово в четыре буквы — по первым трём в начале
+ * слова факта: «кота» из «котом», «маме» из «мамы». «Осеннему» из
+ * «осень» так не сложить, и это нарочно: подробность, которой в фактах
+ * нет.
  */
 function fromFacts(word: string, facts: readonly string[]): boolean {
   if (word.length <= 3) return facts.some((fact) => fact.startsWith(word));
+  if (
+    word.length === 4 &&
+    facts.some(
+      (fact) => fact.length >= 4 && !VOCABULARY.has(fact) && fact.startsWith(word.slice(0, 3)),
+    )
+  ) {
+    return true;
+  }
   const core = word.slice(0, Math.max(4, word.length - 2));
   return facts.some(
     (fact) =>
@@ -199,4 +209,102 @@ export function siftLine(line: string, pack: ContextPack): SiftedLine {
   const generic = hooks.includes('silence') || hooks.includes('first');
   const aboutNew = mentionedIn(line, asCandidates(newTitles)).length > 0;
   return generic && !aboutNew ? { ok: true } : { ok: false, why: 'не о поводе' };
+}
+
+/**
+ * Сито живого ответа на вопрос (Никита 25.09.2026, пункт 2).
+ *
+ * Ответ пишет модель по закрытому списку фактов (`questionFacts`), и
+ * страж голоса там — тот же чёрный список, что был у строки. Правило то
+ * же, что у строки: каждое слово — из фактов (найденные дела, шаги,
+ * сроки, её же вопрос) или из словаря бота. Ответ длиннее строки и
+ * говорит о найденном полнее — словарь шире: «дальше», «потом»,
+ * «подождёт», «ничего не записано», месяцы.
+ *
+ * О сделанном: прошедшее время глагола из фактов («собрала», «нашла») —
+ * можно, открытое сделанным не назовёт страж голоса (`openDeedForms`);
+ * «закрыто» — только при сделанном в фактах; «отложила», «поручила»,
+ * «отменила» — только при таком состоянии в фактах.
+ */
+const ANSWER_VOCABULARY: ReadonlySet<string> = new Set(
+  [
+    'хотела дальше потом затем следующий следующая следующее остается осталось осталась остались',
+    'подождет подождут оба обе остальное остальные ближайшее ближайшая ближайший ближайшие время',
+    'надо нужно ничего записано говорила да у них нем',
+    'января февраля марта апреля мая июня июля августа сентября октября ноября декабря',
+    'конце начале середине месяца неделе утром днем вечером',
+  ]
+    .join(' ')
+    .split(' '),
+);
+
+/** Слова состояния — правда только при нём же в фактах. */
+const STATE_WORDS: ReadonlyMap<string, string> = new Map([
+  ['отложила', 'отложено'],
+  ['отложено', 'отложено'],
+  ['поручила', 'поручено'],
+  ['поручено', 'поручено'],
+  ['отменила', 'отменено'],
+  ['отменено', 'отменено'],
+  ['отменен', 'отменено'],
+  ['отменена', 'отменено'],
+]);
+
+/**
+ * «Запись всё ещё открыта» — правда, только если в фактах есть незакрытое
+ * (интеграционный тест 22.09.2026); у одних сделанных — неправда.
+ */
+const OPEN_WORDS: ReadonlySet<string> = new Set(['открыт', 'открыта', 'открыто', 'открыты']);
+
+/** Есть ли в фактах незакрытое: найденное без «сделано/отменено», обзор или шаги. */
+function hasOpen(factsText: string): boolean {
+  return factsText
+    .split('\n')
+    .some(
+      (line) =>
+        (line.startsWith('— ') && !/— (сделано|отменено)$/u.test(line)) ||
+        /^(на сегодня|срок прошел|ближайшие дни|большие цели|неточные сроки|следующий шаг|осталось еще|шаги еще не разложены)/u.test(
+          line,
+        ),
+    );
+}
+
+/** Прошедшее время всех глаголов фактов: «Собрать фотографии» → «собрала». */
+function pastFormsIn(facts: string): ReadonlySet<string> {
+  return new Set(wordsOf(facts).flatMap((word) => pastFormsOf(word)));
+}
+
+export function siftAnswer(answer: string, facts: string): SiftedLine {
+  const factsText = normalized(facts);
+  const factWords = wordsOf(facts);
+  const past = pastFormsIn(facts);
+  const anyDone = /сделано|все шаги закрыты/u.test(factsText);
+  const anyOpen = hasOpen(factsText);
+  const words = wordsOf(answer);
+
+  for (const [index, word] of words.entries()) {
+    const state = STATE_WORDS.get(word);
+    if (state !== undefined) {
+      if (factsText.includes(state)) continue;
+      return { ok: false, why: `слово не из фактов: ${word}` };
+    }
+    if (OPEN_WORDS.has(word)) {
+      if (anyOpen) continue;
+      return { ok: false, why: `слово не из фактов: ${word}` };
+    }
+    if (DONE_WORDS.has(word)) {
+      if (words[index - 1] === 'не' || anyDone) continue;
+      return { ok: false, why: `слово не из фактов: ${word}` };
+    }
+    if (
+      VOCABULARY.has(word) ||
+      ANSWER_VOCABULARY.has(word) ||
+      past.has(word) ||
+      fromFacts(word, factWords)
+    ) {
+      continue;
+    }
+    return { ok: false, why: `слово не из фактов: ${word}` };
+  }
+  return { ok: true };
 }
