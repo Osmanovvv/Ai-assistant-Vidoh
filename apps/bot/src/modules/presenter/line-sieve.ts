@@ -317,7 +317,7 @@ const NEGATED_ONLY: ReadonlySet<string> = new Set(['назначено']);
 /**
  * «На сегодня ничего не назначено» — правда, только если на сегодня в
  * фактах пусто: в обзоре нет строки «На сегодня:», у найденного нет срока
- * «сегодня» или одного часа (так `questionFacts` пишет сегодняшний).
+ * «сегодня» (`questionFacts` пишет его и с часом: «срок: сегодня, 16:00»).
  * «Ничего не записано» словарь знал и раньше — правило то же. «Больше
  * ничего», «кроме», «только» — о прочем: при делах на сегодня это правда.
  */
@@ -325,7 +325,7 @@ const EMPTY_TODAY_WHY = 'на сегодня дела есть, а сказан�
 
 function emptyTodayWrongInAnswer(answer: string, factsText: string): boolean {
   const todayInFacts =
-    /(?:^|\n)на сегодня:/u.test(factsText) || /срок: (?:сегодня|\d{2}:\d{2})/u.test(factsText);
+    /(?:^|\n)на сегодня:/u.test(factsText) || factsText.includes('срок: сегодня');
   if (!todayInFacts) return false;
 
   return normalized(answer)
