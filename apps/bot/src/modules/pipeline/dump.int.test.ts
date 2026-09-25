@@ -3871,6 +3871,63 @@ describe('ответ на уточняющий вопрос голосом (§7.
    * Разговорное согласие (проверка Никиты 24.09.2026): на «Перенести «X»?»
    * «давай» читалось непонятым ответом. Только у вопроса о переносе.
    */
+  it('«давай» на «Перенести?» и в той же выгрузке правка того же дела — «менять нечего» не звучит (25.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    const { itemId } = await itemAndQuestion('перенеси врача на пятницу');
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'давай', offsetMs: 0 },
+      { kind: 'text', text: 'перенеси врача', offsetMs: 3_000 },
+    ]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider({}),
+          prompts,
+          sender,
+          llmLight: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [
+                { intent: 'ANSWER', text: 'давай' },
+                { intent: 'PATCH', text: 'перенеси врача' },
+              ],
+            }),
+          }),
+          // Правка без срока — резолвер находит врача, менять нечего.
+          llm: echoingLlm({
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'replace',
+              itemId: '1',
+              confidence: 0.95,
+              changes: {
+                note: '',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'врач',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+    // Перенос применён ответом «давай»…
+    expect(after?.deadlineAt).not.toBeNull();
+    // …и о том же деле «менять нечего» не звучит.
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
   it('«давай» на «Перенести «X»?» — перенос применён', async () => {
     const prompts = await seedPrompts();
     const { itemId } = await itemAndQuestion('перенеси врача на пятницу');
@@ -4403,6 +4460,125 @@ describe('правка доходит до резолвера (§7, задача
    * последнем обсуждённом: недавно говорили — предложить его вопросом;
    * время прошло — не угадывать, а спросить «Какое дело?».
    */
+  it('обрывок правки и следом она же целиком — модель зовётся раз, «менять нечего» не звучит («с нуля» 25.09.2026)', async () => {
+    /**
+     * «Перенеси стоматолога на после.» оборвалось, следом — «Перенеси
+     * стоматолога на послезавтра в 7.»: бот разобрал обрывок отдельной
+     * правкой (лишний вызов) и ответил «Там уже так — менять нечего».
+     */
+    const prompts = await seedPrompts();
+    const itemId = await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'Перенеси врача на пят.', offsetMs: 0 },
+      { kind: 'text', text: 'Перенеси врача на пятницу.', offsetMs: 5_000 },
+    ]);
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'PATCH', text: 'Перенеси врача на пят.' },
+          { intent: 'PATCH', text: 'Перенеси врача на пятницу.' },
+        ],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: '',
+          text: '',
+          deadline: soon(),
+          deadlineAccuracy: 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'перенос врача',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(llm.requests.filter((request) => stageOf(request) === 'resolver')).toHaveLength(1);
+    expect(all.some((text) => text.includes('Перенесла'))).toBe(true);
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    // Слова обрывка не пропали — черновиком (§16).
+    expect(saved.filter((row) => row.isDraft).map((row) => row.text)).toContain(
+      'Перенеси врача на пят.',
+    );
+    // Перенесено по полной фразе: «на пятницу» от понедельника 24.08 —
+    // пятница 28.08, полночь по Москве (день из слов важнее даты модели).
+    const moved = saved.find((row) => row.id === itemId);
+    expect(moved?.deadlineAt?.toISOString()).toBe('2026-08-27T21:00:00.000Z');
+  });
+
+  it('правка, где менять нечего, и следом другими словами настоящая — «менять нечего» не звучит: дело уже изменено', async () => {
+    const prompts = await seedPrompts();
+    await existingItem(null);
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([
+      { kind: 'text', text: 'Врача перенеси.', offsetMs: 0 },
+      { kind: 'text', text: 'Давай на пятницу к врачу.', offsetMs: 5_000 },
+    ]);
+    const decision = (deadline: string): string =>
+      JSON.stringify({
+        action: 'update',
+        mode: 'replace',
+        itemId: '1',
+        confidence: 0.95,
+        changes: {
+          note: '',
+          text: '',
+          deadline,
+          deadlineAccuracy: deadline === '' ? 'none' : 'day',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'врач',
+      });
+    let resolverCalls = 0;
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'PATCH', text: 'Врача перенеси.' },
+          { intent: 'PATCH', text: 'Давай на пятницу к врачу.' },
+        ],
+      }),
+      // Первая — без срока: «менять нечего»; вторая переносит.
+      resolver: () => {
+        resolverCalls += 1;
+        return decision(resolverCalls === 1 ? '' : soon());
+      },
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toBe(2);
+    expect(all.some((text) => text.includes('Перенесла'))).toBe(true);
+    expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
   it('«Перенеси дело на пол 3» — предлагает дело из последнего разговора, а не угаданное', async () => {
     const prompts = await seedPrompts();
     const itemId = await existingItem(soon());

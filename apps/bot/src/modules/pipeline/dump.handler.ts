@@ -138,6 +138,7 @@ import { lastDiscussed } from '../resolver/deixis.repo.js';
 import { settleTopics } from '../topics/ensure.js';
 import { outputContextOf } from '../users/state.repo.js';
 import type { BatchHandler } from './pipeline.service.js';
+import { restartedFragments } from './restarted.js';
 import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
@@ -785,10 +786,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       );
     };
 
-    const parkedWords: string[] = [];
-    const sayParked = (line: string): void => {
-      if (!parkedWords.includes(line)) parkedWords.push(line);
+    /**
+     * Строки под ответом: отложенные правки, переспросы.
+     *
+     * «Там уже так — менять нечего» о деле, которое эта же выгрузка
+     * изменила другой фразой, — лишнее («с нуля» Никиты 25.09.2026:
+     * обрывок и полная фраза, два ответа). Решается при выводе, а не при
+     * записи строки: фразы разбираются в любом порядке, и «менять нечего»
+     * может прозвучать раньше настоящей правки.
+     */
+    const parkedWords: { readonly line: string; readonly unchangedOf?: string | undefined }[] = [];
+    const sayParked = (line: string, unchangedOf?: string): void => {
+      parkedWords.push({ line, unchangedOf });
     };
+    /** Дела, изменённые этой выгрузкой: о них «менять нечего» не говорится. */
+    const changedHere = new Set<string>();
+    const parkedLines = (): string[] => [
+      ...new Set(
+        parkedWords
+          .filter((one) => one.unchangedOf === undefined || !changedHere.has(one.unchangedOf))
+          .map((one) => one.line),
+      ),
+    ];
     const parkedLine = (
       said: 'unchanged' | 'refused' | 'gone' | 'absent' | 'which' | undefined,
       timeUnclear?: readonly [number, number],
@@ -1375,7 +1394,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     /** Прозвучала ли в этой выгрузке мысль до текущего сегмента. */
     let thoughtSaid = false;
 
-    for (const segment of segments) {
+    /**
+     * Обрывок правки, сказанной следом целиком («с нуля» Никиты
+     * 25.09.2026): резолвер его не видит — ни лишнего вызова, ни «менять
+     * нечего», ни занятого вопроса. Слова — черновиком (§16).
+     */
+    const restarted = restartedFragments(segments, (intent) => RESOLVED_INTENTS.has(intent));
+
+    for (const [index, segment] of segments.entries()) {
       if (segment.intent === ANSWER_INTENT) answers.push(segment.text);
       // QUERY уже отвечен выше — здесь ему делать нечего.
       else if (segment.intent === QUERY_INTENT) continue;
@@ -1383,6 +1409,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         parsed.push(segment);
         thoughtSaid = true;
       } else if (RESOLVED_INTENTS.has(segment.intent)) {
+        if (restarted.has(index)) {
+          await saveDraft(db, {
+            userId: batch.userId,
+            batchId: batch.id,
+            text: segment.text,
+            reason: 'оборвано и сказано заново — разобрано по полной фразе',
+          });
+          continue;
+        }
         (thoughtSaid ? patchesAfterThought : patches).push(segment);
       } else if (IGNORED_INTENTS.has(segment.intent)) smalltalk.push(segment);
       else deferred.push(segment);
@@ -1422,6 +1457,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.said = true;
       rememberTopics(touchedTopics, settled.applied);
       mentioned.add(settled.applied.after.id);
+      changedHere.add(settled.applied.after.id);
       // Заголовок мог смениться — вектор вслед (A5).
       await reembedIfRetitled(
         {
@@ -1510,6 +1546,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         happened.said = true;
         rememberTopics(touchedTopics, outcome.applied);
         mentioned.add(outcome.applied.after.id);
+        changedHere.add(outcome.applied.after.id);
         if (outcome.applied.action === 'complete') happened.closed = true;
         /**
          * Сказанное человеком идёт в реплику (задача 3.28).
@@ -1641,7 +1678,17 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       if (outcome.itemId !== undefined) mentioned.add(outcome.itemId);
       // Модель резолвера молчала — это сбой, а не непонятая правка (п. 4).
       if (outcome.fault !== undefined) happened.fault = outcome.fault;
-      sayParked(parkedLine(outcome.said, outcome.timeUnclear, outcome.noTimeToShift));
+      // Простое «менять нечего» помнит своё дело: если выгрузка изменила
+      // его другой фразой, строка не выводится (25.09.2026). Переспрос о
+      // часе и «сдвигать не от чего» — выводятся всегда.
+      const plainUnchanged =
+        outcome.said === 'unchanged' &&
+        outcome.timeUnclear === undefined &&
+        outcome.noTimeToShift !== true;
+      sayParked(
+        parkedLine(outcome.said, outcome.timeUnclear, outcome.noTimeToShift),
+        plainUnchanged ? outcome.itemId : undefined,
+      );
       await saveDraft(db, {
         userId: batch.userId,
         batchId: batch.id,
@@ -2076,13 +2123,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           { label: texts.resolver.buttonGoOn, action: ANSWER_ACTION.now },
           { label: texts.resolver.buttonEnough, action: ANSWER_ACTION.later },
         ]);
-      } else if (parkedHere > 0 || parkedWords.length > 0) {
+      } else if (parkedHere > 0 || parkedLines().length > 0) {
         /**
          * Слова сохранены — так и говорим, и по исходу (A4). «Расскажешь,
          * что в голове?» человеку, который только что сказал своё,
          * читается как «я тебя не услышала».
          */
-        await answer(parkedWords.length > 0 ? parkedWords.join('\n') : texts.answer.savedUnparsed);
+        const lines = parkedLines();
+        await answer(lines.length > 0 ? lines.join('\n') : texts.answer.savedUnparsed);
       } else if (deferred.length === 0 && !happened.said) {
         /**
          * «Я здесь. Расскажешь, что в голове?» — только когда сказать
@@ -2947,8 +2995,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // Припаркованная правка — строкой под ответом, а не молча (A4).
     if (!onlyMovedRepeats) {
       await answer(
-        parkedWords.length > 0
-          ? `${presented.reply.text}\n\n${parkedWords.join('\n')}`
+        parkedLines().length > 0
+          ? `${presented.reply.text}\n\n${parkedLines().join('\n')}`
           : presented.reply.text,
         presented.reply.buttons,
       );
