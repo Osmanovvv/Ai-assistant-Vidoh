@@ -26,6 +26,7 @@ import {
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
+import { isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
@@ -89,8 +90,7 @@ import { loadContextFacts, markLineMentions } from '../presenter/context-pack.re
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
-import { deadlineWords } from '../items/deadline-words.js';
-import { titleUnderDayHeader, withCapital } from '../items/item-text.js';
+import { withCapital } from '../items/item-text.js';
 import { showFirstReminderCard } from '../scheduler/first-reminder-card.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
@@ -1964,26 +1964,28 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
       const body =
         answer.kind === 'today' || answer.kind === 'about' || answer.kind === 'period'
-          ? (await withNextSteps(db, shownItems)).map((item) =>
-              answer.kind === 'period' &&
-              item.deadlineAt !== null &&
-              item.deadlineAccuracy !== 'day'
-                ? // Неточный срок в списке периода — словами карточки, чтобы
-                  // «на неделе с 21.09» не читалось как точный день.
-                  texts.summary.lineWithDate(
-                    item.text,
-                    deadlineWords(
-                      { ...item, deadlineAt: item.deadlineAt },
-                      context.timeZone,
-                      texts,
-                    ),
-                  )
-                : texts.backlog.line(
-                    answer.kind === 'today'
-                      ? titleUnderDayHeader(item, { now, timeZone: context.timeZone })
-                      : item.text,
-                  ),
-            )
+          ? (await withNextSteps(db, shownItems)).map((item) => {
+              /**
+               * Под шапкой дня — название без слова дня и час из срока
+               * (проверка Никиты 25.09.2026: «На завтра… — Встретить
+               * курьера послезавтра»). Под шапкой нескольких дней — свой
+               * день из срока: «завтра, 21:00»; неточный — словами
+               * карточки, чтобы «на неделе с 21.09» не читалось как день.
+               */
+              if (
+                answer.kind === 'today' ||
+                (answer.kind === 'period' && isSingleDayPeriod(answer.period))
+              ) {
+                return texts.backlog.line(underDayTitle(item));
+              }
+              if (answer.kind === 'period') {
+                const { title, when } = spanLine(item, { now, timeZone: context.timeZone }, texts);
+                return when === ''
+                  ? texts.backlog.line(title)
+                  : texts.summary.lineWithDate(title, when);
+              }
+              return texts.backlog.line(item.text);
+            })
           : answer.kind === 'aboutClosed'
             ? shownItems.map((item) =>
                 texts.backlog.closedLine(
