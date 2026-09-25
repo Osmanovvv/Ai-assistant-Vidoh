@@ -2,13 +2,16 @@ import type { Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import type { Redis } from 'ioredis';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { batches, messagesRaw, topics, users } from '../../db/schema.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { createLogger } from '../../infra/logger.js';
+import { createRedis } from '../../infra/redis.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
-import type { DialogStore } from '../../modules/dialog/dialog.store.js';
+import { rememberBotReplies } from '../../modules/dialog/capture.js';
+import { redisDialogStore, type DialogStore } from '../../modules/dialog/dialog.store.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import { billingSubscriptions } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
@@ -212,8 +215,20 @@ async function rowsFor(
   return { users: found.length, messages: messages.length, batches: dumps.length };
 }
 
-beforeEach(() => {
+/** Хвост разговора — в настоящем Redis, как в бою; ключи теста — под своим префиксом. */
+const redis: Redis = createRedis(process.env['TEST_REDIS_URL'] ?? 'redis://localhost:6379', {
+  maxReconnectAttempts: 3,
+});
+const DIALOG_PREFIX = 'test-privacy-dialog:';
+
+beforeEach(async () => {
   seq = 0;
+  const keys = await redis.keys(`${DIALOG_PREFIX}*`);
+  if (keys.length > 0) await redis.del(...keys);
+});
+
+afterAll(async () => {
+  await redis.quit();
 });
 
 describe('/start', () => {
@@ -335,6 +350,45 @@ describe('/delete_my_data', () => {
     await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
 
     expect(forgotten).toContain(TG_ID);
+  });
+
+  it('после «всё удалено» хвоста разговора нет — и прощания в нём тоже', async () => {
+    /**
+     * Проверка Никиты «с нуля», часть Б (25.09.2026): после удаления в
+     * Redis ещё полчаса жил ключ хвоста разговора — с «Готово. Всё
+     * удалено.». Хвост стирался вместе с данными, а прощание уходило
+     * следом, и перехват ответов бота (в бою он стоит на `bot.api`,
+     * `createBot`) записывал его заново.
+     */
+    await seedUser();
+    const store = redisDialogStore(redis, { prefix: DIALOG_PREFIX });
+    const { bot, calls } = createTestBot({ dialog: store });
+    bot.api.config.use(rememberBotReplies(store));
+    await store.remember(TG_ID, {
+      role: 'person',
+      text: 'надо записаться к врачу',
+      at: new Date(),
+    });
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const edit = calls.find((call) => call.method === 'editMessageText');
+    expect(String(edit?.payload['text'])).toContain('удалено');
+    expect(await redis.exists(`${DIALOG_PREFIX}${String(TG_ID)}`)).toBe(0);
+  });
+
+  it('«удалять нечего» тоже не заводит хвост разговора', async () => {
+    // Второе «Да, удалить» со старого сообщения — человека уже нет, и ключ
+    // с его чатом появляться не должен.
+    const store = redisDialogStore(redis, { prefix: DIALOG_PREFIX });
+    const { bot, calls } = createTestBot({ dialog: store });
+    bot.api.config.use(rememberBotReplies(store));
+
+    await bot.handleUpdate(callbackUpdate(DELETE_STEP_TWO));
+
+    const edit = calls.find((call) => call.method === 'editMessageText');
+    expect(String(edit?.payload['text'])).toBe(defaultTexts.privacy.nothingToDelete);
+    expect(await redis.exists(`${DIALOG_PREFIX}${String(TG_ID)}`)).toBe(0);
   });
 
   it('ветки тем удаляются вместе с данными', async () => {

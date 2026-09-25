@@ -87,15 +87,7 @@ export async function eraseUser(
     `Данные пользователя удалены ${params.why}`,
   );
 
-  // Хвост разговора — после базы и так же, как ветки: отказ Redis
-  // удаление не отменяет, данные уже стёрты, хвост уйдёт сам за полчаса.
-  if (deps.dialog !== undefined) {
-    for (const chatId of new Set([params.tgId, params.chatId ?? params.tgId])) {
-      await deps.dialog.forget(chatId).catch((error: unknown) => {
-        logger.warn({ err: error, tgId: params.tgId }, 'Хвост разговора не стёрся — уйдёт сам');
-      });
-    }
-  }
+  await forgetDialog(deps, { tgId: params.tgId, chatId: params.chatId });
 
   /**
    * Итог уборки — в журнал на уровне `info`, отказы — `warn`.
@@ -125,4 +117,26 @@ export async function eraseUser(
   }
 
   return { report, renewals, threads };
+}
+
+/**
+ * Хвост разговора — стереть (план docs/26). Зовётся после базы и ещё раз
+ * после прощания: перехват ответов бота (`dialog/capture.ts`) кладёт
+ * «Готово. Всё удалено.» в хвост заново (проверка Никиты «с нуля», часть Б,
+ * 25.09.2026).
+ *
+ * Так же, как ветки: отказ Redis удаление не отменяет, данные уже стёрты,
+ * хвост уйдёт сам за полчаса.
+ */
+export async function forgetDialog(
+  deps: { readonly dialog?: DialogStore | undefined; readonly logger: Logger },
+  chats: { readonly tgId: number; readonly chatId: number | undefined },
+): Promise<void> {
+  if (deps.dialog === undefined) return;
+
+  for (const chatId of new Set([chats.tgId, chats.chatId ?? chats.tgId])) {
+    await deps.dialog.forget(chatId).catch((error: unknown) => {
+      deps.logger.warn({ err: error, tgId: chats.tgId }, 'Хвост разговора не стёрся — уйдёт сам');
+    });
+  }
 }

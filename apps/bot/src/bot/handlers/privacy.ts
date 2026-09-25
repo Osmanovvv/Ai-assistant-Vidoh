@@ -2,7 +2,7 @@ import { InputFile, type Bot } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
-import { eraseUser } from '../../modules/privacy/erase.service.js';
+import { eraseUser, forgetDialog } from '../../modules/privacy/erase.service.js';
 import { exportUserData } from '../../modules/privacy/privacy.service.js';
 import type { PaymentProvider } from '../../modules/billing/provider.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
@@ -127,6 +127,8 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
     const user = await findByTgId(db, tgId);
     if (!user) {
       await ctx.editMessageText(texts.privacy.nothingToDelete);
+      // Человека уже нет — и ключ с его чатом не заводится (см. ниже).
+      await forgetDialog(deps, { tgId, chatId: ctx.chat?.id });
       return;
     }
 
@@ -157,6 +159,14 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
         ? texts.privacy.deleteDoneSubscriptionLeft
         : texts.privacy.deleteDone,
     );
+
+    /**
+     * Прощание уходит после стирания, и перехват ответов бота кладёт его в
+     * хвост разговора заново: ключ с чатом человека жил ещё полчаса после
+     * «всё удалено» (проверка Никиты «с нуля», часть Б, 25.09.2026). Хвост
+     * стирается ещё раз — после последней реплики.
+     */
+    await forgetDialog(deps, { tgId, chatId: ctx.chat?.id });
   });
 
   bot.callbackQuery(DELETE_CANCEL, async (ctx) => {
