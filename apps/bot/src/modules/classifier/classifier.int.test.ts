@@ -1,3 +1,4 @@
+import pino from 'pino';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { aiCalls, promptVersions } from '../../db/schema.js';
@@ -1395,5 +1396,79 @@ describe('день без слова о дне уступает своему п�
 
     expect(result.items[0]?.deadline?.at.toISOString()).toBe('2026-09-03T21:00:00.000Z');
     expect(result.corrections.deadline).toBe(0);
+  });
+});
+
+describe('«завтра» соседа не достаётся делу перед ним («с нуля» Никиты 25.09.2026, 17:04)', () => {
+  it('«Купить хлеб и молоко, завтра забрать в 4 часа ребенка…» — у хлеба срока нет', async () => {
+    /**
+     * Бой: хлеб получил 26.09. Журнал показал два хода кода подряд: срок
+     * модели у хлеба отвергнут — цитата «завтра» в словах ребёнка, — и
+     * тут же запасной путь вернул его «из своего предложения»: правило
+     * «срок сразу за словами дела» видит за «молоко» слово «завтра» и
+     * соседей не спрашивает. Модель здесь отвечает так, как следует из
+     * журнала боя: у стоматолога срока не было (ревизия переноса).
+     */
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Купить хлеб и молоко',
+            topic: 'покупки',
+            deadline: '2026-09-26',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+          },
+          {
+            text: 'Забрать ребёнка из школы в 4 часа',
+            topic: 'семья',
+            deadline: '2026-09-26',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+          },
+          { text: 'Записаться к стоматологу', topic: 'здоровье' },
+        ]),
+      ],
+    });
+    const lines: string[] = [];
+    const heard = pino(
+      { level: 'info' },
+      {
+        write: (line: string) => {
+          lines.push(line);
+        },
+      },
+    );
+    const speech =
+      'Купить хлеб и молоко, завтра забрать в 4 часа ребенка из школы и записаться к стоматологу.';
+
+    const result = await classifyUnits(
+      { ...deps(provider, prompts), logger: heard },
+      {
+        ...params(
+          'Купить хлеб и молоко',
+          'Завтра забрать в 4 часа ребенка из школы',
+          'Записаться к стоматологу',
+        ),
+        now: new Date('2026-09-25T14:05:06.000Z'),
+        spoken: speech,
+        speech,
+      },
+    );
+    if (!result.ok) throw new Error('разбор должен был удаться');
+    const said = lines.map((line) => (JSON.parse(line) as { msg: string }).msg);
+
+    expect(result.items.map((item) => item.deadline?.at.toISOString())).toEqual([
+      undefined,
+      '2026-09-25T21:00:00.000Z',
+      undefined,
+    ]);
+    // Ребёнок — завтра в 16:00, как и было на бою.
+    expect(result.items[1]?.deadline?.time).toBe(16 * 60);
+    // Отказ по чужой цитате остаётся, возврата «из своего предложения» нет.
+    expect(said).toContain('Срок не прошёл проверку, запись сохраняется без срока');
+    expect(said).not.toContain('Срок взят из своего предложения речи: модель его не дала');
+    expect(result.corrections.deadline).toBe(1);
   });
 });

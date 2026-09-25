@@ -449,9 +449,7 @@ export function dayFromOwnSentence(params: {
   }
 
   // Обозначения из слов соседей — их, не этой записи.
-  const claimed = new Set(
-    (params.siblings ?? []).flatMap((said) => marksIn(said).map((mark) => keyOf(mark))),
-  );
+  const claimed = claimedBy(params.siblings);
   const marks = [...seen.values()].filter((mark) => !claimed.has(keyOf(mark)));
 
   /**
@@ -468,6 +466,11 @@ export function dayFromOwnSentence(params: {
   if (mark === undefined) return undefined;
 
   return dateOf(mark, params.now, params.timeZone) ?? dayRightAfterItsWords(params);
+}
+
+/** Обозначения дня, названные в словах соседних записей: они — соседей. */
+function claimedBy(siblings: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set((siblings ?? []).flatMap((said) => marksIn(said).map((mark) => keyOf(mark))));
 }
 
 /** Дата обозначения. Считается один раз, уже убедившись, что оно одно. */
@@ -544,14 +547,23 @@ function timesInSpeech(spoken: string, word: string): number {
  *
  * Если таких мест несколько и они называют разные сроки — правило
  * молчит: спор решать не ему.
+ *
+ * **Обозначение из слов соседа — соседа и здесь** («с нуля» Никиты
+ * 25.09.2026, 17:04). «Купить хлеб и молоко, завтра забрать в 4 часа
+ * ребенка из школы»: первое правило отдало «завтра» ребёнку, а это
+ * видело за «молоко» слово «завтра» и ставило его хлебу — после того как
+ * страж срока тот же срок у хлеба только что отверг. Слово о дне между
+ * двумя делами по месту не делится; кому оно, сказали слова соседа.
  */
 function dayRightAfterItsWords(params: {
   readonly itemText: string;
   readonly spoken: string;
   readonly now: Date;
   readonly timeZone: string;
+  readonly siblings?: readonly string[] | undefined;
 }): SentenceDay | undefined {
   const own = new Set(tokens(params.itemText));
+  const claimed = claimedBy(params.siblings);
   const found = new Map<string, DayMark>();
 
   for (const sentence of sentencesOf(params.spoken)) {
@@ -567,7 +579,7 @@ function dayRightAfterItsWords(params: {
       if (LINKING.includes(words[after] ?? '')) after++;
 
       const mark = markAt(words, after);
-      if (mark !== undefined) found.set(keyOf(mark), mark);
+      if (mark !== undefined && !claimed.has(keyOf(mark))) found.set(keyOf(mark), mark);
     }
   }
 
