@@ -235,6 +235,56 @@ describe('база не пускает нецелостные записи', () 
     );
   });
 
+  it('час без срока отвергается — и когда срок снимают, а час забывают', async () => {
+    /**
+     * «С нуля» Никиты 25.09.2026: страж стоял, но сравнение пустой
+     * точности с 'day' даёт NULL, а NULL в проверке базы — «пропустить».
+     * Умолчание «Позже» так и оставляло 15:30 у дела без дня, и новый
+     * день потом молча получал старый час.
+     */
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'дело',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        deadlineAt: new Date('2026-09-10T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 15 * 60 + 30,
+      })
+      .returning();
+    if (row === undefined) throw new Error('запись не создалась');
+
+    await expectConstraint(
+      testDb()
+        .update(items)
+        .set({ deadlineAt: null, deadlineAccuracy: null })
+        .where(eq(items.id, row.id)),
+      'items_deadline_time_day_only',
+    );
+  });
+
+  it('час у неточного срока отвергается', async () => {
+    // У «на неделе» часа не бывает; страж переписан — это держится по-прежнему.
+    await expectConstraint(
+      testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: 'дело',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'личное',
+          deadlineAt: new Date('2026-09-10T21:00:00.000Z'),
+          deadlineAccuracy: 'week',
+          deadlineTime: 9 * 60,
+        }),
+      'items_deadline_time_day_only',
+    );
+  });
+
   it('черновик без типа проходит: у него его и не должно быть', async () => {
     await expect(
       testDb().insert(items).values({ userId, text: 'неразобранное', isDraft: true }),

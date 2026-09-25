@@ -851,10 +851,16 @@ export const items = pgTable(
       'items_deadline_with_accuracy',
       sql`(${table.deadlineAt} is null) = (${table.deadlineAccuracy} is null)`,
     ),
-    /** Час — только у точного срока и только в пределах суток. */
+    /**
+     * Час — только у точного срока и только в пределах суток.
+     *
+     * `is not null` — не лишнее («с нуля» 25.09.2026): без него у дела без
+     * срока сравнение с 'day' давало NULL, а NULL проверка пропускает. Так
+     * умолчание «Позже» оставляло час у дела без дня.
+     */
     check(
       'items_deadline_time_day_only',
-      sql`${table.deadlineTime} is null or (${table.deadlineAccuracy} = 'day' and ${table.deadlineTime} between 0 and 1439)`,
+      sql`${table.deadlineTime} is null or (${table.deadlineAccuracy} is not null and ${table.deadlineAccuracy} = 'day' and ${table.deadlineTime} between 0 and 1439)`,
     ),
     // Выдача берёт активные записи пользователя по приоритету (задача 2.10).
     index('items_user_status_priority_idx').on(table.userId, table.status, table.priority),
