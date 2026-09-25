@@ -3062,6 +3062,52 @@ describe('бренд-карточки (ТЗ по визуалам, продже�
     expect(reply).toContain('Сдать отчёт');
   });
 
+  it('«что у меня на завтра»: слово дня из названия срезано, час из срока виден (проверка Никиты 25.09.2026, 03:29)', async () => {
+    /**
+     * Бой: «На завтра у тебя вот это: — Встретить курьера послезавтра» —
+     * срок 26.09 21:00, то есть завтра; «послезавтра» осталось в названии
+     * со дня записи, а часа видно не было.
+     */
+    const prompts = await seedPrompts();
+    // T0 — 24.08 13:00 МСК; завтра — 25.08, полночь по Москве.
+    const tomorrow = new Date('2026-08-24T21:00:00.000Z');
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Встретить курьера послезавтра',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        status: 'new',
+        deadlineAt: tomorrow,
+        deadlineAccuracy: 'day',
+        deadlineTime: 21 * 60,
+      });
+    await queuedBatchOf([{ kind: 'text', text: 'Что у меня на завтра', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'QUERY', text: 'Что у меня на завтра' }],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, sender, llm }),
+      },
+      userId,
+    );
+
+    const reply = all.at(-1) ?? '';
+    expect(reply.startsWith(defaultTexts.backlog.period('завтра'))).toBe(true);
+    expect(reply).toContain('— Встретить курьера · 21:00');
+    expect(reply).not.toContain('послезавтра');
+  });
+
   it('«что просрочено», «сколько у меня дел», «с чего начать» — списки по признаку словами (21.09.2026)', async () => {
     const prompts = await seedPrompts();
     await testDb()
