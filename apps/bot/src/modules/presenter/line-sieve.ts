@@ -118,11 +118,45 @@ function normalized(text: string): string {
  * (бой 25.09.2026, 17:12): стоматолог перенесён на послезавтра, а живой
  * ответ сказал «срок был 27.09, 19:00». Все слова из фактов и словаря —
  * сито слов такое пропускает; ловит только связь «срок» с прошедшим.
+ *
+ * Между «срок» и «был» — до трёх слов («срок у анализов был»), и обратный
+ * порядок («был срок»). Запятая или число между ними связь рвут.
  */
-const PAST_DEADLINE =
-  /(?<!\p{L})срок\p{L}*\s+(?:уже\s+)?(?:был|прошел|вышел|истек)(?!\p{L})|(?<!\p{L})(?:уже\s+)?(?:прошел|вышел|истек)\s+срок/u;
+const PAST_DEADLINE_SOURCE =
+  '(?<!\\p{L})срок\\p{L}*(?:\\s+\\p{L}+){0,3}?\\s+(?:уже\\s+)?(?:был|прошел|вышел|истек)(?!\\p{L})' +
+  '|(?<!\\p{L})(?:уже\\s+)?(?:был|прошел|вышел|истек)\\s+срок';
 
 const PAST_DEADLINE_WHY = 'срок назван прошедшим, а он впереди';
+
+/** Где в тексте срок назван прошедшим. Свежий объект — у глобального нет общего `lastIndex`. */
+function pastDeadlineClaims(text: string): RegExpMatchArray[] {
+  return [...normalized(text).matchAll(new RegExp(PAST_DEADLINE_SOURCE, 'gu'))];
+}
+
+const DATE = /(?<!\d)(\d{1,2})\.(\d{2})(?!\d)/u;
+
+/**
+ * Срок в ответе назван прошедшим неверно (у ответа факты — текст
+ * `questionFacts`). Дата рядом — сверяется она сама: прошедшая в фактах
+ * записана «срок прошёл: 13.09», будущая — «срок: 27.09» или «— 23.09» в
+ * ближайших днях. Даты нет — хватит прошедшего срока хоть у одного дела.
+ */
+function pastDeadlineWrongInAnswer(answer: string, factsText: string): boolean {
+  const text = normalized(answer);
+  const claims = pastDeadlineClaims(answer);
+  if (claims.length === 0) return false;
+
+  const anyPast = factsText.includes('срок прошел');
+  return claims.some((claim) => {
+    const start = claim.index ?? 0;
+    const end = start + claim[0].length;
+    const found =
+      DATE.exec(text.slice(end, end + 24)) ?? DATE.exec(text.slice(Math.max(0, start - 12), start));
+    if (found === null) return !anyPast;
+    const date = `${(found[1] ?? '').padStart(2, '0')}.${found[2] ?? ''}`;
+    return !factsText.includes(`срок прошел: ${date}`);
+  });
+}
 
 function wordsOf(text: string): string[] {
   return normalized(text).match(/\p{L}+/gu) ?? [];
@@ -191,7 +225,7 @@ export function siftLine(line: string, pack: ContextPack): SiftedLine {
   const pastOfDone = donePastForms(pack);
   const words = wordsOf(line);
 
-  if (pack.overdue.length === 0 && PAST_DEADLINE.test(normalized(line))) {
+  if (pack.overdue.length === 0 && pastDeadlineClaims(line).length > 0) {
     return { ok: false, why: PAST_DEADLINE_WHY };
   }
 
@@ -297,7 +331,7 @@ export function siftAnswer(answer: string, facts: string): SiftedLine {
   const anyOpen = hasOpen(factsText);
   const words = wordsOf(answer);
 
-  if (!factsText.includes('срок прошел') && PAST_DEADLINE.test(normalized(answer))) {
+  if (pastDeadlineWrongInAnswer(answer, factsText)) {
     return { ok: false, why: PAST_DEADLINE_WHY };
   }
 
