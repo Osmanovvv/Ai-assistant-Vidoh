@@ -1339,7 +1339,7 @@ describe('вопрос разбирается сразу, не дожидаяс�
     };
   }
 
-  function botWith(queue: Queue<PipelineJob>): Bot {
+  function botWith(queue: Queue<PipelineJob>, sender?: StatusSender): Bot {
     const bot = new Bot('123456789:TESTTESTTESTTESTTESTTESTTESTTEST', {
       botInfo: {
         id: 1,
@@ -1362,10 +1362,39 @@ describe('вопрос разбирается сразу, не дожидаяс�
         queue,
         privacyPolicyUrl: POLICY_URL,
         consentUrl: CONSENT_URL,
+        ...(sender === undefined ? {} : { sender }),
       }),
     );
 
     return bot;
+  }
+
+  /**
+   * Очередь, которая в миг постановки разбора смотрит, записано ли уже
+   * «Слушаю» у выгрузки («с нуля» Никиты 25.09.2026, 17:11: «Вечером» →
+   * «Слушаю.» и отдельно «Напомню…»). Разбор ответа о часе идёт без
+   * модели и успевал раньше «Слушаю» — ответ не находил, что заменить.
+   */
+  function statusCheckingQueue(): { queue: Queue<PipelineJob>; seen: (number | null)[] } {
+    const seen: (number | null)[] = [];
+    return {
+      seen,
+      queue: {
+        getJob: () => Promise.resolve(undefined),
+        add: async (_name: string, _data: unknown, options?: { delay?: number }) => {
+          if ((options?.delay ?? 0) === 0) {
+            const [row] = await testDb()
+              .select({ status: batches.statusMessageId })
+              .from(batches)
+              .where(eq(batches.userId, userId))
+              .orderBy(desc(batches.openedAt))
+              .limit(1);
+            seen.push(row?.status ?? null);
+          }
+          return {};
+        },
+      } as unknown as Queue<PipelineJob>,
+    };
   }
 
   async function lastBatchStatus(): Promise<string | undefined> {
@@ -1447,6 +1476,46 @@ describe('вопрос разбирается сразу, не дожидаяс�
 
     expect(await lastBatchStatus()).toBe('queued');
     expect(adds.some((add) => (add.delay ?? 0) >= 1_000)).toBe(false);
+  });
+
+  it('ответ на вопрос бота: «Слушаю» записано до начала разбора — ответ встанет на его место («с нуля» 25.09.2026, 17:11)', async () => {
+    await botAskedHour();
+    const { queue, seen } = statusCheckingQueue();
+    const { sender, said } = recordingStatus();
+
+    await botWith(queue, sender).handleUpdate(textUpdate('Вечером'));
+
+    expect(said).toContain(defaultTexts.listening.acknowledged);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((status) => status !== null)).toBe(true);
+  });
+
+  it('одиночный вопрос — так же: «Слушаю» на месте к началу разбора', async () => {
+    const { queue, seen } = statusCheckingQueue();
+    const { sender } = recordingStatus();
+
+    await botWith(queue, sender).handleUpdate(textUpdate('Что у меня на завтра?'));
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((status) => status !== null)).toBe(true);
+  });
+
+  it('«Слушаю» не отправилось — разбор всё равно поставлен: ответ важнее реплики приёма', async () => {
+    await botAskedHour();
+    const { queue, adds } = watchingQueue();
+    const failing: StatusSender = {
+      send: () => Promise.reject(new Error('Telegram недоступен')),
+      edit: () => Promise.reject(new Error('Telegram недоступен')),
+      delete: () => Promise.resolve(false),
+    };
+
+    // Сбой не проглатывается — уходит дальше, в журнал бота.
+    await expect(botWith(queue, failing).handleUpdate(textUpdate('Вечером'))).rejects.toThrow(
+      /Telegram недоступен/u,
+    );
+
+    expect(await lastBatchStatus()).toBe('queued');
+    expect(adds.some((add) => (add.delay ?? 0) === 0)).toBe(true);
   });
 
   it('бот спросил — но пришла другая мысль: ждём тишины, как прежде', async () => {

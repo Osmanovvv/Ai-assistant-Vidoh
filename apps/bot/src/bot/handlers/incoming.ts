@@ -465,40 +465,14 @@ async function bufferMessage(
       ? (await closeBatchOnSilence(deps.db, attached.batchId, { silenceWindowMs: 0 })).closed
       : false;
 
-  if (attached.closed || closedNow) {
-    // Потолок по числу сообщений или по возрасту — либо одиночный
-    // вопрос: обрабатываем сразу, не дожидаясь тишины.
-    await enqueueUserProcessing(deps.queue, userId);
-
-    /**
-     * И снимаем закрытие, поставленное предыдущим сообщением.
-     *
-     * Иначе оно висит до конца окна, просыпается над закрытой выгрузкой
-     * и уходит ни с чем. Вреда от него нет — заход над закрытой
-     * выгрузкой себя не переставляет, — но обещание `closeJobId`
-     * («одно задание на выгрузку») без этой строки неправда: задание
-     * живёт дольше самой выгрузки.
-     */
-    await cancelBatchClose(deps.queue, attached.batchId);
-  } else {
-    // Каждое новое сообщение отодвигает закрытие: серия голосовых —
-    // это одна мысль (§9.1 правило 2 ТЗ).
-    await scheduleBatchClose(deps.queue, {
-      batchId: attached.batchId,
-      userId,
-      delayMs: limits.silenceWindowMs,
-    });
-  }
-
   // §10.2 ТЗ: приём подтверждается сразу, не дожидаясь разбора.
   // §9.2 ТЗ: пока идёт ожидание тишины, бот молчит — поэтому реплика
-  // одна на выгрузку, а не на каждое сообщение. Ставится после
-  // постановки заданий: медленный Telegram не должен задерживать
-  // конвейер, а сбой отправки не должен мешать разбору.
+  // одна на выгрузку, а не на каждое сообщение.
   // Со второго сообщения серии реплика переезжает под новое (Никита,
   // 17.09.2026): иначе итог разбора оказывается над последними
   // голосовыми.
-  if (deps.sender && params.chatId !== undefined) {
+  const acknowledge = async (): Promise<void> => {
+    if (!deps.sender || params.chatId === undefined) return;
     const texts = textsFor(await textProfileOf(deps.db, userId));
     const statusDeps = { db: deps.db, sender: deps.sender };
     const target = {
@@ -512,7 +486,53 @@ async function bufferMessage(
     } else {
       await moveStatus(statusDeps, target, texts.listening.acknowledged);
     }
+  };
+
+  if (attached.closed || closedNow) {
+    /**
+     * Потолок по числу сообщений или по возрасту — либо одиночный вопрос,
+     * либо ответ на вопрос бота: обрабатываем сразу, не дожидаясь тишины.
+     *
+     * «Слушаю» — **до** постановки разбора («с нуля» Никиты 25.09.2026,
+     * 17:11): ответ о часе разбирается без модели за доли секунды и
+     * обгонял реплику приёма — ответ не находил, что заменить, и «Слушаю.»
+     * висело над «Напомню…». Сбой отправки разбору не мешает: разбор
+     * ставится всё равно, а сбой уходит дальше, в журнал.
+     */
+    let acknowledgeFailure: Error | undefined;
+    try {
+      await acknowledge();
+    } catch (error) {
+      acknowledgeFailure = error instanceof Error ? error : new Error(String(error));
+    }
+
+    await enqueueUserProcessing(deps.queue, userId);
+
+    /**
+     * И снимаем закрытие, поставленное предыдущим сообщением.
+     *
+     * Иначе оно висит до конца окна, просыпается над закрытой выгрузкой
+     * и уходит ни с чем. Вреда от него нет — заход над закрытой
+     * выгрузкой себя не переставляет, — но обещание `closeJobId`
+     * («одно задание на выгрузку») без этой строки неправда: задание
+     * живёт дольше самой выгрузки.
+     */
+    await cancelBatchClose(deps.queue, attached.batchId);
+
+    if (acknowledgeFailure !== undefined) throw acknowledgeFailure;
+    return;
   }
+
+  // Каждое новое сообщение отодвигает закрытие: серия голосовых —
+  // это одна мысль (§9.1 правило 2 ТЗ). Реплика приёма — после
+  // постановки: медленный Telegram не должен задерживать конвейер, а до
+  // разбора здесь ещё полминуты тишины.
+  await scheduleBatchClose(deps.queue, {
+    batchId: attached.batchId,
+    userId,
+    delayMs: limits.silenceWindowMs,
+  });
+  await acknowledge();
 }
 
 /**
