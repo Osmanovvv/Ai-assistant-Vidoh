@@ -8997,6 +8997,92 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     expect(replies.at(-1)).toBe('Ты хотела записаться к стоматологу — запись всё ещё открыта.');
   });
 
+  it('живой ответ отвергнут — в словарном у дела его срок (проверка Никиты 25.09.2026, 20:24)', async () => {
+    /**
+     * «На когда стоматолог?» — модель написала «срок прошёл» про срок
+     * послезавтра, страж это отсёк, и пришло «Вот что у меня про это
+     * записано: — Записаться к стоматологу». Спрашивали «когда», а даты в
+     * ответе не было.
+     */
+    const prompts = await answeringPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        text: 'Записаться к стоматологу',
+        // 26.08 по Москве, послезавтра от часов теста (24.08, 13:01).
+        deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 19 * 60,
+        embedding: oneVector,
+      });
+    const llm = echoingLlm({
+      router: routerQuery('на когда стоматолог'),
+      answerer: JSON.stringify({
+        answer:
+          'Записаться к стоматологу нужно было 26.08 в 19:00 — срок прошёл, запись всё ещё не сделана.',
+      }),
+    });
+
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies, answererInputs } = await ask('на когда стоматолог', llm, prompts, same);
+
+    expect(answererInputs[0]).toContain('Найдено по вопросу:');
+    expect(replies.at(-1)).toBe(
+      `${defaultTexts.backlog.about}\n— Записаться к стоматологу · 26.08, 19:00`,
+    );
+  });
+
+  it('словарный ответ «про это»: день — из срока, а не из названия; сегодняшний час — с днём', async () => {
+    // Название хранит слово дня со дня записи («Позвонить маме завтра»,
+    // перенесено на 26.08) — в строке ему не место. Час сегодняшнего дела
+    // без слова дня не читался бы: шапки дня у этого ответа нет.
+    const prompts = await answeringPrompts();
+    const classified = { userId, type: 'TASK', priority: 'SOON', embedding: oneVector } as const;
+    await testDb()
+      .insert(items)
+      .values([
+        {
+          ...classified,
+          topic: 'семья',
+          text: 'Позвонить маме завтра',
+          deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+          deadlineAccuracy: 'day',
+          deadlineTime: 20 * 60,
+        },
+        {
+          ...classified,
+          topic: 'семья',
+          text: 'Забрать ребёнка из школы',
+          deadlineAt: new Date('2026-08-23T21:00:00.000Z'),
+          deadlineAccuracy: 'day',
+          deadlineTime: 16 * 60,
+        },
+        { ...classified, topic: 'покупки', text: 'Купить батарейки' },
+      ]);
+    const llm = echoingLlm({
+      router: routerQuery('что там с делами'),
+      answerer: JSON.stringify({ answer: '' }),
+    });
+
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies, answererInputs } = await ask('что там с делами', llm, prompts, same);
+
+    expect(answererInputs[0]).toContain('Найдено по вопросу:');
+    const lines = (replies.at(-1) ?? '').split('\n');
+    expect(lines[0]).toBe(defaultTexts.backlog.about);
+    expect(lines.slice(1).sort()).toEqual(
+      [
+        '— Купить батарейки',
+        '— Позвонить маме · 26.08, 20:00',
+        '— Забрать ребёнка из школы · сегодня, 16:00',
+      ].sort(),
+    );
+  });
+
   it('ответ не прошёл стража или пуст — словарный ответ, как раньше', async () => {
     const prompts = await answeringPrompts();
     const llm = echoingLlm({

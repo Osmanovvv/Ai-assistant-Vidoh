@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { defaultTexts } from '../../texts/index.js';
-import { isSingleDayPeriod, spanLine, underDayTitle } from './day-list.js';
+import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from './day-list.js';
 
 /**
  * Строки списков «На завтра у тебя вот это:» (проверка Никиты 25.09.2026,
@@ -83,6 +83,43 @@ describe('строка под шапкой нескольких дней: без
     const line = spanLine(item('Купить шторы', '2026-09-28', null, 'week'), context, defaultTexts);
     expect(line.title).toBe('Купить шторы');
     expect(line.when).toBe(defaultTexts.card.deadlineWeek('28.09'));
+  });
+});
+
+describe('строка ответа «про это»: срок целиком, шапки дня нет (проверка Никиты 25.09.2026, 20:24)', () => {
+  const context = { now, timeZone };
+
+  it('сегодня с часом — «сегодня, 16:00»: один час без дня не читался бы', () => {
+    expect(
+      aboutLine(item('Поехать за ребёнком', '2026-09-25', 16 * 60), context, defaultTexts),
+    ).toEqual({ title: 'Поехать за ребёнком', when: 'сегодня, 16:00' });
+  });
+
+  it('остальное — как в строке нескольких дней', () => {
+    for (const one of [
+      item('Встретить курьера послезавтра', '2026-09-26', 21 * 60),
+      item('Записаться к стоматологу', '2026-09-27', 19 * 60),
+      item('Пойти в кипу', '2026-09-25'),
+      item('Купить шторы', '2026-09-28', null, 'week'),
+      item('Оплатить садик', '2026-09-20'),
+    ]) {
+      expect(aboutLine(one, context, defaultTexts), one.text).toEqual(
+        spanLine(one, context, defaultTexts),
+      );
+    }
+    expect(
+      aboutLine(item('Записаться к стоматологу', '2026-09-27', 19 * 60), context, defaultTexts),
+    ).toEqual({ title: 'Записаться к стоматологу', when: '27.09, 19:00' });
+  });
+
+  it('без срока — только название', () => {
+    expect(
+      aboutLine(
+        { text: 'Купить батарейки', deadlineAt: null, deadlineAccuracy: null, deadlineTime: null },
+        context,
+        defaultTexts,
+      ),
+    ).toEqual({ title: 'Купить батарейки', when: '' });
   });
 });
 
