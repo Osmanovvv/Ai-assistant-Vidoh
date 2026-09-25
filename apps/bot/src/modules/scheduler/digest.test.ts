@@ -23,7 +23,13 @@ import {
  * дороже, чем в ответе на вопрос.
  */
 
-const item = (text: string, deadlineAt: Date | null = null): Item => ({ text, deadlineAt }) as Item;
+const item = (text: string, deadlineAt: Date | null = null): Item =>
+  ({
+    text,
+    deadlineAt,
+    deadlineAccuracy: deadlineAt === null ? null : 'day',
+    deadlineTime: null,
+  }) as Item;
 
 /** Полдень 5 сентября 2026 по Москве — «сегодня» для всех проверок ниже. */
 const NOW = new Date('2026-09-05T09:00:00.000Z');
@@ -390,6 +396,49 @@ describe('сроки и проект', () => {
     expect(eve).not.toBe(day);
     expect(eve).toMatch(/завтра/iu);
     expect(day).toMatch(/сегодня/iu);
+  });
+
+  describe('час срока назван (проверка Никиты 25.09.2026, 21:00)', () => {
+    // «Завтра срок: Забрать ребёнка из школы» — без 16:00, хотя час известен
+    // и в списках стоит «· 16:00». Утром в «Сегодня срок» и в утреннем — так же.
+    const timed = (text: string, deadlineAt: Date, minutes: number): Item => ({
+      ...item(text, deadlineAt),
+      deadlineTime: minutes,
+    });
+
+    it('«Завтра срок» и «Сегодня срок» — с часом из срока; старый час из названия срезан', () => {
+      const child = timed('Забрать ребёнка из школы', todayAt, 16 * 60);
+      expect(deadlineText(defaultTexts, { item: child, onDay: false })).toBe(
+        'Завтра срок: Забрать ребёнка из школы · 16:00',
+      );
+      expect(deadlineText(defaultTexts, { item: child, onDay: true })).toBe(
+        'Сегодня срок: Забрать ребёнка из школы · 16:00',
+      );
+      expect(
+        deadlineText(defaultTexts, {
+          item: timed('Позвонить маме в 9', todayAt, 21 * 60),
+          onDay: false,
+        }),
+      ).toBe('Завтра срок: Позвонить маме · 21:00');
+      // Без часа — как было.
+      expect(
+        deadlineText(defaultTexts, { item: item('Оплатить квитанцию', todayAt), onDay: false }),
+      ).toBe('Завтра срок: Оплатить квитанцию');
+    });
+
+    it('утреннее и вечернее: у сегодняшнего дела — час из срока', () => {
+      const child = timed('Забрать ребёнка из школы', todayAt, 16 * 60);
+      const morning = morningText(defaultTexts, [child, item('Купить кефир')], TODAY);
+      expect(morning).toContain('— Забрать ребёнка из школы · 16:00');
+      expect(morning).toContain('— Купить кефир');
+      expect(evening(0, [child])).toContain('— Забрать ребёнка из школы · 16:00');
+    });
+
+    it('у дела без срока заголовок не трогается: «завтра» в нём — единственное про день', () => {
+      expect(morningText(defaultTexts, [item('Купить хлеб завтра')], TODAY)).toContain(
+        '— Купить хлеб завтра',
+      );
+    });
   });
 
   it('вопрос про проект называет и цель, и шаг', () => {

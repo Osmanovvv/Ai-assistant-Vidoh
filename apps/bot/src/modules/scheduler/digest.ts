@@ -3,7 +3,8 @@ import { toShortId } from '../shared/short-id.js';
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
 import { titleUnderDayHeader } from '../items/item-text.js';
-import { localDateParts } from '../classifier/dates.js';
+import { isoDateIn, localDateParts } from '../classifier/dates.js';
+import { underDayTitle } from '../backlog/day-list.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 
 /**
@@ -104,7 +105,7 @@ export function morningText(
   } else {
     if (shown.length < MORNING_ACTIONS_LIMIT) lines.push(hello, texts.reminders.morningLight);
     else lines.push(`${hello} ${variantOf(texts.reminders.morningIntro, day)}`);
-    for (const item of shown) lines.push(texts.reminders.line(titleUnderDayHeader(item, day)));
+    for (const item of shown) lines.push(texts.reminders.line(dayLine(item, day)));
   }
 
   if (extra.review !== undefined) {
@@ -194,7 +195,7 @@ export function eveningText(
     lines.push(variantOf(texts.reminders.eveningHello, params.day), ...closed);
     lines.push(texts.reminders.eveningLeft);
     for (const item of params.left) {
-      lines.push(texts.reminders.line(titleUnderDayHeader(item, params.day)));
+      lines.push(texts.reminders.line(dayLine(item, params.day)));
     }
     lines.push(texts.reminders.eveningLeftHint);
   }
@@ -207,14 +208,28 @@ export function eveningText(
   return lines.join('\n');
 }
 
+/**
+ * Строка дела в утреннем и вечернем. У сегодняшнего — час из срока, как в
+ * списках дня (проверка Никиты 25.09.2026, 21:00: «Забрать ребёнка из
+ * школы» без 16:00); у остальных — заголовок под шапкой дня, как был: у
+ * дела без срока он не трогается.
+ */
+function dayLine(item: Item, day: { readonly now: Date; readonly timeZone: string }): string {
+  const today =
+    item.deadlineAt !== null &&
+    isoDateIn(item.deadlineAt, day.timeZone) === isoDateIn(day.now, day.timeZone);
+  return today ? underDayTitle(item) : titleUnderDayHeader(item, day);
+}
+
 /** Реплика напоминания по сроку (задача 3.16). */
 export function deadlineText(
   texts: TextProfile,
   params: { readonly item: Item; readonly onDay: boolean },
 ): string {
-  // Реплика сама называет день, поэтому дату из цитаты убираем:
-  // иначе в одной фразе окажутся две даты. См. title-date.ts.
-  const title = titleWithoutDate(params.item.text);
+  // Реплика сама называет день, поэтому дату из цитаты убираем: иначе в
+  // одной фразе окажутся две даты (см. title-date.ts). Час — из срока, со
+  // старым часом из названия вместо (проверка Никиты 25.09.2026, 21:00).
+  const title = underDayTitle(params.item);
 
   return params.onDay
     ? texts.reminders.deadlineToday(title)
