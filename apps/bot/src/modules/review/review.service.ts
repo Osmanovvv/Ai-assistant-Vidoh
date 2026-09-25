@@ -105,6 +105,9 @@ export async function autoDeferReviewed(
     .set({
       deadlineAt: null,
       deadlineAccuracy: null,
+      // Час — вместе с днём, как у кнопки «Позже» («с нуля» 25.09.2026):
+      // оставленный, он молча возвращался с любым новым днём.
+      deadlineTime: null,
       priority: 'LATER',
       deferredAt: params.now,
       // Уснувшее кнопкой «Отложить» просыпается: «Позже» — не сон.

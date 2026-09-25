@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { items, type Item } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
+import { applyDecision } from '../resolver/patch.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
   autoDeferReviewed,
@@ -149,6 +150,68 @@ describe('autoDeferReviewed — нетронутое к следующему у�
     expect(after.priority).toBe('LATER');
     expect(after.deferredAt?.toISOString()).toBe(NOW.toISOString());
     expect(after.status).toBe('new');
+  });
+
+  it('час уходит вместе с днём — как у кнопки «Позже»', async () => {
+    /**
+     * «С нуля» Никиты 25.09.2026: кнопка «Позже» час снимала, а умолчание —
+     * нет. Дело оставалось без дня, но с 15:30 внутри, невидимым: списки
+     * без дня час не печатают.
+     */
+    const untouched = await sow({
+      text: 'Забрать посылку',
+      deadlineAt: day('2026-09-10'),
+      deadlineAccuracy: 'day',
+      deadlineTime: 15 * 60 + 30,
+      reviewedAt: new Date(NOW.getTime() - DAY),
+    });
+
+    expect(await autoDeferReviewed(testDb(), { userId, now: NOW, timeZone: MOSCOW })).toBe(1);
+
+    const after = await reread(untouched.id);
+    expect(after.deadlineAt).toBeNull();
+    expect(after.deadlineTime).toBeNull();
+  });
+
+  it('новый день у отложенного — без прежнего часа', async () => {
+    /**
+     * То, чем это кончалось: «перенеси посылку на пятницу» ставило пятницу,
+     * а час правка не трогает, раз новый не назван, — и в пятницу в 15:00
+     * приходило «Напомню… в 15:30», которого человек для этого дня не
+     * говорил.
+     */
+    const untouched = await sow({
+      text: 'Забрать посылку',
+      deadlineAt: day('2026-09-10'),
+      deadlineAccuracy: 'day',
+      deadlineTime: 15 * 60 + 30,
+      reviewedAt: new Date(NOW.getTime() - DAY),
+    });
+    await autoDeferReviewed(testDb(), { userId, now: NOW, timeZone: MOSCOW });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: untouched.id,
+      action: 'update',
+      changes: {
+        note: '',
+        text: '',
+        deadline: '2026-09-18',
+        deadlineAccuracy: 'day',
+        recurrenceKind: 'none',
+        recurrenceInterval: 0,
+        recurrenceText: '',
+      },
+      spoken: 'перенеси посылку на пятницу',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(untouched.id);
+    // Пятница 18.09 по Москве.
+    expect(after.deadlineAt?.toISOString()).toBe(day('2026-09-17').toISOString());
+    expect(after.deadlineTime).toBeNull();
   });
 
   it('показанное сегодня утром не трогает: у человека ещё день на решение', async () => {
