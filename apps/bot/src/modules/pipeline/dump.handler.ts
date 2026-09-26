@@ -619,6 +619,16 @@ async function withEmbeddings(
   return result;
 }
 
+/**
+ * Название в вопросе о часе: без часа и дня (проверка 24.09.2026, 21:36:
+ * «Встретить курьера послезавтра») — и с заглавной (живой прогон Никиты
+ * 26.09.2026, 02:06: час в начале — «В 7 зайти в аптеку» — срезался
+ * вместе с ней: «Во сколько «зайти в аптеку»…»).
+ */
+function hourQuestionTitle(text: string): string {
+  return withCapital(titleWithoutDate(withoutClockPhrase(text)));
+}
+
 export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
   const clock = deps.now ?? ((): Date => new Date());
 
@@ -781,7 +791,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       return texts.resolver.newTimeUnclear(
         // Без часа и без дня (проверка 24.09.2026, 21:36: «Встретить
         // курьера послезавтра»): так название звучит и в списках.
-        titleWithoutDate(withoutClockPhrase(applied.after.text)),
+        hourQuestionTitle(applied.after.text),
         clockOf(readings[0]),
         clockOf(readings[1]),
       );
@@ -2559,7 +2569,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         happened.asked = true;
         sayParked(
           texts.resolver.newTimeUnclear(
-            titleWithoutDate(withoutClockPhrase(row.text)),
+            hourQuestionTitle(row.text),
             clockOf(readings[0]),
             clockOf(readings[1]),
           ),
