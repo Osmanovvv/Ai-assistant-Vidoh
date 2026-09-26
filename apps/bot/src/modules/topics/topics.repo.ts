@@ -3,6 +3,7 @@ import { SETTINGS } from '../settings/settings.repo.js';
 
 import { items, topics, type Topic } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
+import { sameTopicName } from './topic-key.js';
 
 /**
  * Темы человека (§6.4 ТЗ).
@@ -19,7 +20,14 @@ import type { Executor } from '../../infra/db.js';
 
 // «Дом» — из примеров ТЗ проджекта 17.09.2026 (2.4): без него всё про дом и
 // машину ложилось в «покупки» и «личное» (прогон 18.09.2026, голос 6).
-export const DEFAULT_TOPIC_NAMES = ['семья', 'здоровье', 'работа', 'покупки', 'дом', 'личное'] as const;
+export const DEFAULT_TOPIC_NAMES = [
+  'семья',
+  'здоровье',
+  'работа',
+  'покупки',
+  'дом',
+  'личное',
+] as const;
 
 /** §6.4: куда уходит запись, не попавшая ни в одну тему. */
 export const FALLBACK_TOPIC = 'личное';
@@ -198,9 +206,17 @@ export async function appendTopics(
   maxTopics?: number,
 ): Promise<AppendResult> {
   const existing = await listTopics(db, userId);
-  const taken = new Set(existing.map((topic) => normalizeTopicName(topic.name)));
-
-  const fresh = names.filter((name) => !taken.has(normalizeTopicName(name)));
+  /**
+   * Занято и повторено — с учётом формы имени (`topic-key.ts`, бой
+   * 26.09.2026): «покупка» при своей «покупки» — не новая сфера, и две
+   * формы одного имени в одном добавлении — одна.
+   */
+  const taken = existing.map((topic) => topic.name);
+  const fresh: string[] = [];
+  for (const name of names) {
+    if ([...taken, ...fresh].some((one) => sameTopicName(one, name))) continue;
+    fresh.push(name);
+  }
   if (fresh.length === 0) return { added: [], limited: false };
 
   const room = Math.max(0, (maxTopics ?? MAX_TOPICS) - existing.length);
@@ -224,12 +240,11 @@ export async function appendTopics(
     .from(topics)
     .where(and(eq(topics.userId, userId), eq(topics.isArchived, true)));
 
-  const revivable = new Map(archived.map((topic) => [normalizeTopicName(topic.name), topic]));
   const added: string[] = [];
   let order = nextOrder;
 
   for (const name of allowed) {
-    const dormant = revivable.get(normalizeTopicName(name));
+    const dormant = archived.find((topic) => sameTopicName(topic.name, name));
 
     if (dormant) {
       await db
