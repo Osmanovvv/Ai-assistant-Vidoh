@@ -709,8 +709,10 @@ function dateAgreesWith(
   const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
   const sameDay = relativeDaysIn(quote).some((shift) => {
     const wanted = new Date(today.getTime() + shift * 24 * 60 * 60_000);
-    return startOfDayInZone(localDateParts(wanted, context.timeZone), context.timeZone).getTime() ===
-      at.getTime();
+    return (
+      startOfDayInZone(localDateParts(wanted, context.timeZone), context.timeZone).getTime() ===
+      at.getTime()
+    );
   });
   if (sameDay) return true;
 
