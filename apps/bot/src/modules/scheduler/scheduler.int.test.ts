@@ -718,6 +718,87 @@ describe('утро со сроками — одним сообщением (ре
   });
 });
 
+describe('вечернее первым, «Завтра срок» за ним (проверка Никиты 26.09.2026, 21:00)', () => {
+  /**
+   * 21:00 26.09.2026 пришло «Завтра срок: Позвонить маме · 20:00», потом
+   * «Вечер добрый…», потом «Завтра срок: Записаться к стоматологу». В
+   * одну минуту первым шло только утреннее, а вечернее и «Завтра срок»
+   * база отдавала в том порядке, в каком строки лежали. Здесь они
+   * переложены ровно как на бою: срок, вечер, срок.
+   */
+  const tomorrow = new Date('2026-08-30T21:00:00.000Z'); // 31.08 по Москве
+  const eve = new Date('2026-08-30T18:00:00.000Z'); // 21:00 МСК, 30.08
+  // Раскладка днём: утреннее 30.08 уже позади, в очереди к 21:00 — только вечер.
+  const planAt = new Date('2026-08-30T09:00:00.000Z'); // 12:00 МСК
+
+  it('вечернее уходит первым, «Завтра срок» — следом, как бы ни лежали строки', async () => {
+    for (const text of ['Позвонить маме', 'Записаться к стоматологу']) {
+      await testDb().insert(items).values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: tomorrow,
+        deadlineAccuracy: 'day',
+      });
+    }
+    await planReminders(deps(), { now: planAt });
+
+    const atEve = and(eq(reminders.userId, userId), eq(reminders.dueAt, eve));
+    const rows = await testDb().select().from(reminders).where(atEve);
+    const [evening] = rows.filter((row) => row.kind === 'evening');
+    const [first, second] = rows.filter((row) => row.kind === 'deadline_eve');
+    expect(rows).toHaveLength(3);
+    await testDb().delete(reminders).where(atEve);
+    for (const row of [first, evening, second]) await testDb().insert(reminders).values(row!);
+
+    await dispatchReminders(deps(), { now: eve });
+
+    expect(outbox).toHaveLength(3);
+    expect(isEvening(outbox[0]?.text ?? '')).toBe(true);
+    expect(outbox.slice(1).every((one) => one.text.startsWith('Завтра срок: '))).toBe(true);
+  });
+
+  it('утреннее — тоже первым: «Сегодня срок» его дел не уходит, даже если строка лежала раньше', async () => {
+    // Порядок утра держался тем, как строки легли при раскладке, —
+    // диверсия «утреннее не первым» проходила все тесты.
+    for (const text of ['Позвонить маме', 'Записаться к стоматологу']) {
+      await testDb().insert(items).values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: tomorrow,
+        deadlineAccuracy: 'day',
+      });
+    }
+    await planReminders(deps(), { now: planAt });
+    await dispatchReminders(deps(), { now: eve });
+    outbox = [];
+
+    const morning = new Date('2026-08-31T05:30:00.000Z'); // 08:30 МСК, 31.08
+    const atMorning = and(eq(reminders.userId, userId), eq(reminders.dueAt, morning));
+    const rows = await testDb().select().from(reminders).where(atMorning);
+    const [digest] = rows.filter((row) => row.kind === 'morning');
+    const [first, second] = rows.filter((row) => row.kind === 'deadline_day');
+    expect(rows).toHaveLength(3);
+    await testDb().delete(reminders).where(atMorning);
+    for (const row of [first, digest, second]) await testDb().insert(reminders).values(row!);
+
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(outbox).toHaveLength(1);
+    expect(isMorning(outbox[0]?.text ?? '')).toBe(true);
+    const reasons = await testDb()
+      .select({ reason: reminders.skippedReason })
+      .from(reminders)
+      .where(and(atMorning, eq(reminders.kind, 'deadline_day')));
+    expect(reasons.map((row) => row.reason)).toEqual(['in_morning', 'in_morning']);
+  });
+});
+
 describe('напоминание в указанный час (ТЗ проджекта 17.09.2026, шаг 5)', () => {
   /** «Сходить к стоматологу в 13:00» на 31.08: срок — день, час — 13:00. */
   async function dentist(time: number | null = 13 * 60): Promise<string> {
