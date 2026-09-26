@@ -136,7 +136,7 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/ё/gu, 'е');
 }
 
-function tokens(text: string): readonly string[] {
+export function tokens(text: string): readonly string[] {
   return normalize(text)
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()

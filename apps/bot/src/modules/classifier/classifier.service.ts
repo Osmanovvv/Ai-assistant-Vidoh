@@ -32,6 +32,7 @@ import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
 import { sameTopicName } from '../topics/topic-key.js';
+import { rejoinSplitByDays } from './split-by-days.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -145,6 +146,8 @@ export interface Corrections {
   readonly project: number;
   /** Регулярность у записи, которая не задача, либо без правила. */
   readonly recurrence: number;
+  /** Кусок дела, разрезанного моделью по дням, — убран (`split-by-days.ts`). */
+  readonly split: number;
 }
 
 interface ClassifySuccess {
@@ -319,27 +322,51 @@ export function correctItems(
     deadline: 0,
     project: 0,
     recurrence: 0,
+    split: 0,
   };
 
   const items: ClassifiedItem[] = [];
 
+  /**
+   * Одно дело, разрезанное моделью по дням, — снова одно (живой прогон
+   * 27.09.2026, шаг 3): «отчет по продажам сдать во вторник до обеда в
+   * субботу» стало тремя делами, и дни кружка и свекрови ушли к ним.
+   * Первым, до правил срока: убранный кусок не должен ни дать дату, ни
+   * оставаться соседом, чья цитата «занимает» чужой день.
+   */
+  const whole = ctx.speech ?? ctx.spoken;
+  const rejoined = rejoinSplitByDays(
+    raw.items,
+    ctx.said,
+    whole === undefined ? undefined : withoutDayQuestions(whole),
+  );
+  if (rejoined.merged > 0) {
+    corrections.split += rejoined.merged;
+    logger?.info(
+      { promptVersion, убрано: rejoined.merged, отданоДней: rejoined.moved },
+      'Дело, разрезанное моделью по дням, собрано в одно',
+    );
+  }
+  const modelItems = rejoined.items;
+  const said = rejoined.said;
+
   // Входные тексты годятся только при совпадении числа записей.
-  const aligned = ctx.said?.length === raw.items.length;
+  const aligned = said?.length === modelItems.length;
 
   /**
    * Слова каждой записи — человека и модели вместе — считаются заранее:
    * правилу срока нужны и свои, и соседей (чужая цитата, прогон
    * 17.09.2026).
    */
-  const saidOf = raw.items.map(
-    (item, index) => `${aligned ? (ctx.said[index] ?? '') : ''} ${item.text}`,
+  const saidOf = modelItems.map(
+    (item, index) => `${aligned ? (said[index] ?? '') : ''} ${item.text}`,
   );
   const siblingsOf = (index: number): readonly string[] => [
     ...saidOf.filter((_, other) => other !== index),
     ...(ctx.outside ?? []),
   ];
 
-  for (const [index, item] of raw.items.entries()) {
+  for (const [index, item] of modelItems.entries()) {
     let type = item.type;
     let priority: Priority = item.priority;
 
