@@ -3,7 +3,8 @@ import type { Logger } from 'pino';
 
 import { topics } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
-import { appendTopics, normalizeTopicName } from './topics.repo.js';
+import { sameTopicName } from './topic-key.js';
+import { appendTopics } from './topics.repo.js';
 
 /**
  * Сферы по содержанию (правка заказчицы 14.09.2026, п. 1.1).
@@ -54,40 +55,42 @@ export async function adoptWantedTopics<T extends WantsTopic>(
     readonly logger?: Logger | undefined;
   },
 ): Promise<AdoptResult<T>> {
+  /**
+   * Имена сравниваются с учётом формы (`topic-key.ts`, бой 26.09.2026):
+   * «покупка» и «покупки» — одна сфера. И выключенная человеком сфера не
+   * возвращается под другой формой имени.
+   */
   const wanted: string[] = [];
-  const seen = new Set<string>();
 
   for (const unit of params.units) {
-    if (unit.wantedTopic === undefined) continue;
-    const key = normalizeTopicName(unit.wantedTopic);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    wanted.push(unit.wantedTopic);
+    const name = unit.wantedTopic;
+    if (name === undefined) continue;
+    if (wanted.some((one) => sameTopicName(one, name))) continue;
+    wanted.push(name);
   }
 
   if (wanted.length === 0) return { units: params.units, created: [], declined: [] };
 
-  const archived = new Set(
-    (
-      await db
-        .select({ name: topics.name })
-        .from(topics)
-        .where(and(eq(topics.userId, params.userId), eq(topics.isArchived, true)))
-    ).map((row) => normalizeTopicName(row.name)),
-  );
+  const archived = (
+    await db
+      .select({ name: topics.name })
+      .from(topics)
+      .where(and(eq(topics.userId, params.userId), eq(topics.isArchived, true)))
+  ).map((row) => row.name);
 
-  const candidates = wanted.filter((name) => !archived.has(normalizeTopicName(name)));
+  const candidates = wanted.filter((name) => !archived.some((off) => sameTopicName(off, name)));
   const { added } =
     candidates.length === 0
       ? { added: [] as readonly string[] }
       : await appendTopics(db, params.userId, candidates, params.maxTopics);
 
-  const adopted = new Map(added.map((name) => [normalizeTopicName(name), name]));
-  const declined = wanted.filter((name) => !adopted.has(normalizeTopicName(name)));
+  const adoptedAs = (name: string): string | undefined =>
+    added.find((one) => sameTopicName(one, name));
+  const declined = wanted.filter((name) => adoptedAs(name) === undefined);
 
   const units = params.units.map((unit) => {
     if (unit.wantedTopic === undefined) return unit;
-    const name = adopted.get(normalizeTopicName(unit.wantedTopic));
+    const name = adoptedAs(unit.wantedTopic);
     return name === undefined ? unit : { ...unit, topic: name };
   });
 

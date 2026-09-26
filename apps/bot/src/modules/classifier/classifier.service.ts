@@ -31,6 +31,7 @@ import {
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
+import { sameTopicName } from '../topics/topic-key.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -400,9 +401,15 @@ export function correctItems(
     }
 
     // Тема не из списка — в тему по умолчанию, а названное имя отдаётся
-    // конвейеру: заводить сферу или нет, решает он (п. 1.1).
-    const topic = byNormalized.get(normalizeTopic(item.topic));
-    if (topic === undefined) corrections.topic++;
+    // конвейеру: заводить сферу или нет, решает он (п. 1.1). Другая форма
+    // своей сферы — это она: «покупка» при «покупки» (бой 26.09.2026)
+    // иначе заводила вторую сферу с веткой в чате.
+    // Форма имени — `topic-key.ts`; две похожие свои сферы — не угадываем.
+    const exact = byNormalized.get(normalizeTopic(item.topic));
+    const alike =
+      exact === undefined ? ctx.topics.filter((own) => sameTopicName(own, item.topic)) : [];
+    const topic = exact ?? (alike.length === 1 ? alike[0] : undefined);
+    if (exact === undefined) corrections.topic++;
     const wantedTopic = topic === undefined ? topicNameFrom(item.topic) : undefined;
 
     const accuracy: DeadlineAccuracy = item.deadlineAccuracy;

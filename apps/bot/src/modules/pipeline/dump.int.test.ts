@@ -8489,6 +8489,56 @@ describe('сферы по содержанию (правка заказчицы 
     expect(saved.map((item) => item.topic)).toEqual(['дом']);
   });
 
+  it('бой 26.09.2026: модель назвала «покупка» при своей «покупки» — сфера не заводится, дело в «покупках»', async () => {
+    const gateway = await ownTopics(['личное', 'покупки']);
+    await queuedBatchOf([{ kind: 'text', text: 'отвезти машину в сервис', offsetMs: 0 }]);
+
+    await run(gateway, () => 'покупка');
+
+    const mine = await listTopics(testDb(), userId);
+    expect(mine.map((topic) => topic.name)).toEqual(['личное', 'покупки']);
+
+    const saved = await testDb().select().from(items);
+    expect(saved.map((item) => item.topic)).toEqual(['покупки']);
+    // Ветки «покупка» в чате нет.
+    expect(gateway.created.map((thread) => thread.name)).not.toContain('покупка');
+  });
+
+  it('выключенная человеком сфера не возвращается и под другой формой: «покупка» при снятой «покупки»', async () => {
+    const gateway = await ownTopics(['личное']);
+    await testDb()
+      .insert(topics)
+      .values({ userId, name: 'покупки', sortOrder: 5, isDefault: false, isArchived: true });
+    await queuedBatchOf([{ kind: 'text', text: 'купить молоко', offsetMs: 0 }]);
+
+    await run(gateway, () => 'покупка');
+
+    const mine = await listTopics(testDb(), userId);
+    expect(mine.map((topic) => topic.name)).toEqual(['личное']);
+
+    const saved = await testDb().select().from(items);
+    expect(saved.map((item) => item.topic)).toEqual(['личное']);
+  });
+
+  it('и своя, не базовая: выключенное «саморазвитие» не возвращается как «саморазвития»', async () => {
+    // Базовые имена («покупки») модель видит в списке всегда, и форму
+    // «покупка» ловит сверка в классификации. Своей сферы вне набора в
+    // списке нет — форму её имени держит заведение сфер (`adopt.ts`).
+    const gateway = await ownTopics(['личное']);
+    await testDb()
+      .insert(topics)
+      .values({ userId, name: 'саморазвитие', sortOrder: 5, isDefault: false, isArchived: true });
+    await queuedBatchOf([{ kind: 'text', text: 'прочитать книгу', offsetMs: 0 }]);
+
+    await run(gateway, () => 'саморазвития');
+
+    const mine = await listTopics(testDb(), userId);
+    expect(mine.map((topic) => topic.name)).toEqual(['личное']);
+
+    const saved = await testDb().select().from(items);
+    expect(saved.map((item) => item.topic)).toEqual(['личное']);
+  });
+
   it('две записи в одну новую сферу — сфера одна', async () => {
     const gateway = await ownTopics(['личное']);
     // Две единицы: извлечение-заглушка делит по строкам.

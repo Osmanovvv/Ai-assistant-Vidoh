@@ -1,5 +1,7 @@
+import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { topics } from '../../db/schema.js';
 import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import {
@@ -66,6 +68,41 @@ describe('предел числа тем под записи', () => {
     await ensureTopics(testDb(), userId, [...DEFAULT_TOPIC_NAMES]);
 
     expect(await names()).toEqual([...DEFAULT_TOPIC_NAMES]);
+  });
+});
+
+describe('другая форма имени — та же сфера (бой 26.09.2026, 02:03)', () => {
+  it('«покупка» при своей «покупки» не заводится: сфера уже есть', async () => {
+    await ensureTopics(testDb(), userId, ['семья', 'покупки']);
+
+    const result = await appendTopics(testDb(), userId, ['покупка']);
+
+    expect(result).toEqual({ added: [], limited: false });
+    expect(await names()).toEqual(['семья', 'покупки']);
+  });
+
+  it('выключенная сфера по согласию возвращается и под другой формой, а не заводится второй', async () => {
+    // Путь согласия человека (задача 3.43): архивная «покупки» и просьба
+    // «покупка» — вернуть её, а не завести рядом вторую.
+    await ensureTopics(testDb(), userId, ['семья', 'покупки']);
+    await testDb()
+      .update(topics)
+      .set({ isArchived: true })
+      .where(and(eq(topics.userId, userId), eq(topics.name, 'покупки')));
+
+    const result = await appendTopics(testDb(), userId, ['покупка']);
+
+    expect(result.added).toEqual(['покупки']);
+    expect(await names()).toEqual(['семья', 'покупки']);
+  });
+
+  it('две формы в одном добавлении — одна сфера', async () => {
+    await ensureTopics(testDb(), userId, ['семья']);
+
+    const result = await appendTopics(testDb(), userId, ['финансы', 'финансов']);
+
+    expect(result.added).toEqual(['финансы']);
+    expect(await names()).toEqual(['семья', 'финансы']);
   });
 });
 

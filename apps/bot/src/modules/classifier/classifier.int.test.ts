@@ -291,6 +291,41 @@ describe('темы', () => {
     expect(result.corrections.topic).toBe(1);
   });
 
+  it('другая форма своей сферы — это она: «покупка» при «покупки» (бой 26.09.2026, 02:03)', async () => {
+    // Модель назвала сферу машины «покупка», у человека своя «покупки»:
+    // точное сравнение имён завело вторую сферу с веткой в чате.
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ topic: 'покупка' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('дело'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.topic).toBe('покупки');
+    expect(result.items[0]?.wantedTopic).toBeUndefined();
+    // Имя модели не совпало со списком — поправка, как и прежде.
+    expect(result.corrections.topic).toBe(1);
+  });
+
+  it('две свои сферы с одним ключом — не угадываем, какая: имя уходит, как незнакомое', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ topic: 'домах' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('дело'),
+      topics: [...TOPICS, 'дом', 'дома'],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.topic).toBe('личное');
+    expect(result.items[0]?.wantedTopic).toBe('домах');
+  });
+
   it('названное имя приводится к виду записи: без краёв и лишних пробелов, строчными', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
