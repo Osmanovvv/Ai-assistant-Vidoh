@@ -6,6 +6,7 @@ import { forbiddenPhraseIn } from '../../texts/rules.js';
 import {
   deadlineText,
   eveningText,
+  hourText,
   MORNING_ACTIONS_LIMIT,
   morningText,
   projectText,
@@ -432,6 +433,21 @@ describe('сроки и проект', () => {
       expect(morning).toContain('— Забрать ребёнка из школы · 16:00');
       expect(morning).toContain('— Купить кефир');
       expect(evening(0, [child])).toContain('— Забрать ребёнка из школы · 16:00');
+    });
+
+    it('напоминание о часе — с заглавной, даже если дело хранится строчным (живой прогон 26.09.2026)', () => {
+      // «зайти в аптеку» сохранилось строчным до починки: «Через 30 минут,
+      // в 19:00: зайти в аптеку.» — единственное место, где заглавной не было.
+      expect(
+        hourText(defaultTexts, { item: item('зайти в аптеку'), time: '19:00', leadMinutes: 30 }),
+      ).toBe('Через 30 минут, в 19:00: Зайти в аптеку.');
+      expect(
+        hourText(defaultTexts, {
+          item: item('Позвонить сестре в 3:10'),
+          time: '03:45',
+          leadMinutes: 0,
+        }),
+      ).toBe('Сейчас, в 03:45: Позвонить сестре.');
     });
 
     it('у дела без срока заголовок не трогается: «завтра» в нём — единственное про день', () => {

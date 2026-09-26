@@ -2,7 +2,7 @@ import type { Review } from '../review/review.service.js';
 import { toShortId } from '../shared/short-id.js';
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
-import { titleUnderDayHeader } from '../items/item-text.js';
+import { titleUnderDayHeader, withCapital } from '../items/item-text.js';
 import { isoDateIn, localDateParts } from '../classifier/dates.js';
 import { underDayTitle } from '../backlog/day-list.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
@@ -246,7 +246,9 @@ export function hourText(
   texts: TextProfile,
   params: { readonly item: Item; readonly time: string; readonly leadMinutes: number },
 ): string {
-  const title = titleWithoutClock(titleWithoutDate(params.item.text));
+  // С заглавной (живой прогон 26.09.2026): дело, сохранённое строчным до
+  // починки, иначе приходило «…в 19:00: зайти в аптеку».
+  const title = withCapital(titleWithoutClock(titleWithoutDate(params.item.text)));
 
   return params.leadMinutes > 0
     ? texts.reminders.deadlineHourSoon(String(params.leadMinutes), params.time, title)
