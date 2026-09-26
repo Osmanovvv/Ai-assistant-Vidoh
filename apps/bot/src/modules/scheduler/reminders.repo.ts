@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 
 import { messagesRaw, reminders, users, type Reminder } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
@@ -68,7 +68,12 @@ export async function duePending(
         lte(reminders.dueAt, params.now),
       ),
     )
-    .orderBy(asc(reminders.dueAt))
+    /**
+     * В одну минуту — утреннее первым (решение Никиты 26.09.2026, вариант
+     * А): оно забирает «Сегодня срок» своих дел, и в очереди за ним они
+     * уже не уйдут отдельно.
+     */
+    .orderBy(asc(reminders.dueAt), sql`${reminders.kind} <> 'morning'`)
     .limit(params.limit);
 }
 
@@ -99,31 +104,54 @@ export async function dropPending(db: Executor, userId: string): Promise<number>
 }
 
 /**
- * Записи, у которых сегодня своё напоминание по сроку.
+ * «Сегодня срок» дел, названных утренним, — утреннему (решение Никиты
+ * 26.09.2026, вариант А).
  *
- * Нужны утренней сводке, чтобы не называть одно дело дважды. Напоминание
- * «сегодня срок» встаёт на то же местное утро, что и сводка, — человек
- * получал два сообщения подряд про одну запись: сначала списком, потом
- * отдельно. Отдельное полезнее: у него кнопки «Сделано» и «Перенести».
+ * Приёмка этапа 3: «сегодня срок» встаёт на то же утро, что и сводка, —
+ * два сообщения подряд про одну запись. Тогда дело из сводки убрали, и
+ * утро вышло «На сегодня немного: — Купить кефир» при четырёх делах, а при
+ * одних датированных — «ничего срочного» над тремя «Сегодня срок». Теперь
+ * дело остаётся в утреннем, а его отдельное напоминание дня помечается
+ * `in_morning` и не уходит. Возвращаются номера помеченных — снять, если
+ * утреннее не ушло.
  */
-export async function itemsWithDeadlineReminder(
+export async function takeIntoMorning(
   db: Executor,
-  params: { readonly userId: string; readonly from: Date; readonly to: Date },
-): Promise<Set<string>> {
-  const rows = await db
-    .select({ itemId: reminders.itemId })
-    .from(reminders)
+  params: {
+    readonly userId: string;
+    readonly itemIds: readonly string[];
+    readonly from: Date;
+    readonly to: Date;
+  },
+): Promise<readonly string[]> {
+  if (params.itemIds.length === 0) return [];
+
+  const taken = await db
+    .update(reminders)
+    .set({ skippedReason: 'in_morning' })
     .where(
       and(
         eq(reminders.userId, params.userId),
         eq(reminders.kind, 'deadline_day'),
+        inArray(reminders.itemId, [...params.itemIds]),
+        isNull(reminders.sentAt),
         isNull(reminders.skippedReason),
         gte(reminders.dueAt, params.from),
         lt(reminders.dueAt, params.to),
       ),
-    );
+    )
+    .returning({ id: reminders.id });
 
-  return new Set(rows.flatMap((row) => (row.itemId === null ? [] : [row.itemId])));
+  return taken.map((row) => row.id);
+}
+
+/** Утреннее не ушло — его дела снова ждут своего «Сегодня срок». */
+export async function releaseFromMorning(db: Executor, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(reminders)
+    .set({ skippedReason: null })
+    .where(and(inArray(reminders.id, [...ids]), eq(reminders.skippedReason, 'in_morning')));
 }
 
 export async function markSent(db: Executor, id: string, at: Date): Promise<void> {
@@ -175,6 +203,11 @@ export const SKIP_REASONS = [
    * сроку раскладка поставит своё.
    */
   'stale',
+  /**
+   * «Сегодня срок» дела, которое назвало утреннее (решение Никиты
+   * 26.09.2026, вариант А): одно сообщение про дело, а не два подряд.
+   */
+  'in_morning',
 ] as const;
 
 export type SkipReason = (typeof SKIP_REASONS)[number];

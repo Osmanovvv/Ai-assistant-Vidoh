@@ -62,12 +62,13 @@ import {
   countAttempt,
   duePending,
   ignoredStreak,
-  itemsWithDeadlineReminder,
   lastMorningDay,
   markSent,
   markSkipped,
+  releaseFromMorning,
   type SkipReason,
   storePlanned,
+  takeIntoMorning,
 } from './reminders.repo.js';
 
 /**
@@ -459,6 +460,19 @@ export async function dispatchReminders(
 }
 
 async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Promise<boolean> {
+  /**
+   * Статус — заново (решение Никиты 26.09.2026, вариант А): утреннее,
+   * собранное раньше в этом же проходе, забирает «Сегодня срок» своих дел
+   * (`takeIntoMorning`), а в заранее взятой порции они всё ещё значатся
+   * ждущими и ушли бы вторым сообщением про то же дело.
+   */
+  const [current] = await deps.db
+    .select({ sentAt: reminders.sentAt, skippedReason: reminders.skippedReason })
+    .from(reminders)
+    .where(eq(reminders.id, reminder.id))
+    .limit(1);
+  if (current?.sentAt !== null || current.skippedReason !== null) return false;
+
   const [person] = await deps.db
     .select({
       tgId: users.tgId,
@@ -510,6 +524,7 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
    * Карточка — перед сообщением, своим фото (ТЗ по визуалам 18.09.2026).
    * Не ушла — сообщение идёт всё равно: картинка украшение, список суть.
    */
+  let cardShown = false;
   if (message.card !== undefined && deps.cards !== undefined) {
     const shown = await deps.cards.send({
       chatId: person.tgId,
@@ -517,11 +532,12 @@ async function sendOne(deps: SchedulerDeps, reminder: Reminder, now: Date): Prom
       caption: message.card.caption,
     });
     if (shown !== 0) await message.card.afterShown();
+    cardShown = shown !== 0;
   }
 
   const messageId = await deps.sender.ask({
     chatId: person.tgId,
-    text: message.text,
+    text: cardShown && message.textAfterCard !== undefined ? message.textAfterCard : message.text,
     rows: [...(message.rows ?? []), ...(message.buttons.length === 0 ? [] : [message.buttons])],
   });
 
@@ -575,6 +591,12 @@ export interface ComposedReminder {
         readonly afterShown: () => Promise<void>;
       }
     | undefined;
+  /**
+   * Текст, если карточка ушла (проверка Никиты 26.09.2026, 09:00): она уже
+   * поздоровалась — «Доброе утро ☀️ Вот что сегодня важно:», — и дальше
+   * сразу дела. Не ушла — идёт `text` со своим приветствием.
+   */
+  readonly textAfterCard?: string | undefined;
 }
 
 /**
@@ -674,22 +696,6 @@ export async function composeMorning(
   });
 
   /**
-   * Дела, у которых сегодня своё напоминание по сроку, из сводки
-   * выпадают.
-   *
-   * Напоминание «сегодня срок» встаёт на то же местное утро, что и
-   * сводка: человек получал два сообщения подряд про одну запись.
-   * Остаётся то, что полезнее, — у отдельного есть кнопки «Сделано»
-   * и «Перенести».
-   */
-  const dayStart = startOfDayInZone(localDateParts(now, context.timeZone), context.timeZone);
-  const covered = await itemsWithDeadlineReminder(deps.db, {
-    userId,
-    from: dayStart,
-    to: new Date(dayStart.getTime() + DAY_MS),
-  });
-
-  /**
    * Приглашение выгружать — только тому, кого бот пустит.
    *
    * Ревизия четвёртого этапа: «наговори, разложу» уходило каждое
@@ -702,10 +708,21 @@ export async function composeMorning(
   const mayDump = await mayDumpNow(deps, userId, now);
 
   // Большая цель — ближайшим шагом (E17).
-  const actions = await withNextSteps(
-    deps.db,
-    today.filter((item) => !covered.has(item.id)),
-  );
+  const actions = await withNextSteps(deps.db, today);
+
+  /**
+   * Дела со сроком — в утреннем, их «Сегодня срок» в то же утро не
+   * уходит (решение Никиты 26.09.2026, вариант А; `takeIntoMorning`).
+   * Только названные: сверх `MORNING_ACTIONS_LIMIT` дело приходит своим
+   * напоминанием, как раньше.
+   */
+  const dayStart = startOfDayInZone(localDateParts(now, context.timeZone), context.timeZone);
+  const takenIds = await takeIntoMorning(deps.db, {
+    userId,
+    itemIds: actions.slice(0, MORNING_ACTIONS_LIMIT).map((item) => item.id),
+    from: dayStart,
+    to: new Date(dayStart.getTime() + DAY_MS),
+  });
 
   /**
    * Дел на утро меньше трёх — одно из «Позже» отдельной строкой, как
@@ -721,18 +738,23 @@ export async function composeMorning(
   await markReviewed(deps.db, reviewedIds, now);
   if (offer !== undefined) await markOffered(deps.db, offer.id, now);
 
+  const day = { now, timeZone: context.timeZone };
   return {
-    text: morningText(texts, actions, { now, timeZone: context.timeZone }, mayDump, {
-      review,
-      offer,
-    }),
+    text: morningText(texts, actions, day, mayDump, { review, offer }),
+    textAfterCard: morningText(texts, actions, day, mayDump, { review, offer, afterCard: true }),
     buttons: mayDump ? [] : payButtons(texts),
     rows: review === undefined ? [] : reviewRows(texts, review),
     undoIfUnsent: async () => {
       await unmarkReviewed(deps.db, reviewedIds);
       if (offer !== undefined) await unmarkOffered(deps.db, offer.id);
+      await releaseFromMorning(deps.db, takenIds);
     },
-    card,
+    /**
+     * Пустое утро — без карточки: «Вот что сегодня важно:» показать нечего,
+     * а следом «ничего срочного» спорило бы с ней. Карточка ждёт первого
+     * утра с делами.
+     */
+    card: actions.length === 0 ? undefined : card,
   };
 }
 
