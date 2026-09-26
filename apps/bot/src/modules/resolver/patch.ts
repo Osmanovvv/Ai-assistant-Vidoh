@@ -519,11 +519,13 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
      * Прежний час в заголовке — теперь неправда (бой 22.09.2026: «Напомню
      * про «Позвонить сестре в 3:10» … в 03:45»). Записи до починки
      * заголовков хранили час в тексте; новый час его снимает. Если
-     * формулировку в этой же правке уже переписали — её и чистим.
+     * формулировку в этой же правке уже переписали — её и чистим. С
+     * заглавной (живой прогон 26.09.2026, 02:07): час в начале — «В 7
+     * зайти в аптеку» — уходил вместе с ней, и дело так и хранилось.
      */
     const title = next.text ?? item.text;
     const cleaned = withoutClockPhrase(title);
-    if (cleaned !== title && /\p{L}{2,}/u.test(cleaned)) next.text = cleaned;
+    if (cleaned !== title && /\p{L}{2,}/u.test(cleaned)) next.text = withCapital(cleaned);
   }
 
   /**

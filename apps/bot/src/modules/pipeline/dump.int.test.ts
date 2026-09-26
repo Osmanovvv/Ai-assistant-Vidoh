@@ -9598,6 +9598,57 @@ describe('час нового дела — утро или вечер (вари�
     expect(all.some((text) => text.includes('19:00'))).toBe(true);
   });
 
+  it('час в начале названия — в вопросе и после ответа название с заглавной (живой прогон 26.09.2026, 02:06)', async () => {
+    // «Сегодня в 7 зайти в аптеку» → «Во сколько «зайти в аптеку»…», после
+    // «Вечером» — «Напомню про «зайти в аптеку»…»: час срезался из начала
+    // названия, заглавная — вместе с ним, и так название и сохранилось.
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра в 7 зайти в аптеку.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'В 7 зайти в аптеку'),
+        }),
+      },
+      userId,
+    );
+
+    expect(
+      all.some((text) => text.includes('Во сколько «Зайти в аптеку» — 07:00 или 19:00?')),
+    ).toBe(true);
+
+    await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver([]) }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime])).toEqual([['Зайти в аптеку', 19 * 60]]);
+    expect(all.some((text) => text.includes('«Зайти в аптеку»') && text.includes('19:00'))).toBe(
+      true,
+    );
+    expect(all.some((text) => text.includes('«зайти в аптеку»'))).toBe(false);
+  });
+
   it('повтор дела с «в 7» — вопрос помнится: «Вечером» ставит 19:00 у прежнего дела', async () => {
     const prompts = await seedPrompts();
     const [child] = await testDb()

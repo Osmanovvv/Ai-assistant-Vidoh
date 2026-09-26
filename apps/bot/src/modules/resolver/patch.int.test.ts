@@ -779,6 +779,26 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(3 * 60 + 45);
   });
 
+  it('час ставится — название без часа не переписывается, даже со строчной (живой прогон 26.09.2026)', async () => {
+    // Заглавная — только у названия, из которого срезан час: «В 7 зайти в
+    // аптеку» → «Зайти в аптеку». Без часа в названии правка его не трогает.
+    const item = await sow({ text: 'позвонить в банк' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('2026-09-04'),
+      spoken: 'перенеси на пятницу в 15:00',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    expect(appliedOf(outcome)?.fields).not.toContain('text');
+    expect((await reread(item.id)).text).toBe('позвонить в банк');
+  });
+
   it('двусмысленное «в 9» час не ставит', async () => {
     const item = await sow();
 
