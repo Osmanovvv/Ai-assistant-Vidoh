@@ -1,6 +1,6 @@
 import type { Item } from '../../db/schema.js';
 import type { TextProfile } from '../../texts/types.js';
-import { dueWords } from '../items/deadline-words.js';
+import { aboutLine } from './day-list.js';
 import { withCapital } from '../items/item-text.js';
 import type { StatusButton } from '../presenter/status.service.js';
 import { ANSWER_ACTION } from '../presenter/presenter.service.js';
@@ -117,12 +117,14 @@ export function lineOf(item: Item, day: DayContext, texts: TextProfile): string 
   }
 
   if (item.deadlineAt !== null) {
-    const when = dueWords(
-      { deadlineAt: item.deadlineAt, deadlineAccuracy: item.deadlineAccuracy },
-      day,
-      texts,
-    );
-    return texts.summary.lineWithDate(title, when ?? texts.backlog.dueToday);
+    /**
+     * Срок — с часом, как в сводках веток и списках дня (живой прогон
+     * Никиты 26.09.2026: «Зайти в аптеку · сегодня» без 19:00). Шапки дня
+     * здесь нет — сегодняшний час с днём: «сегодня, 19:00»; старый час из
+     * названия — прочь. Та же строка, что у ответа «про это».
+     */
+    const line = aboutLine(item, day, texts);
+    return texts.summary.lineWithDate(line.title, line.when);
   }
 
   return texts.backlog.line(title);

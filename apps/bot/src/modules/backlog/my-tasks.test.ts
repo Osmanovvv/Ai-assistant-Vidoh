@@ -23,6 +23,7 @@ function task(
     topic: string | null;
     deadlineAt: Date | null;
     deadlineAccuracy: 'day' | 'week' | 'month' | null;
+    deadlineTime: number | null;
     deferredAt: Date | null;
     recurrenceText: string | null;
     type: Item['type'];
@@ -36,6 +37,7 @@ function task(
     topic: 'личное',
     deadlineAt: null,
     deadlineAccuracy: null,
+    deadlineTime: null,
     deferredAt: null,
     recurrenceRule: overrides.recurrenceText === undefined ? null : { kind: 'weekly' },
     recurrenceText: null,
@@ -179,6 +181,34 @@ describe('до 15 дел — одно сообщение', () => {
     expect(text).toContain('— Сегодня · сегодня');
     expect(text).toContain('— Завтра · завтра');
     expect(text).toContain('— Неделя · ' + defaultTexts.card.deadlineWeek('21.09'));
+  });
+
+  it('час у датированных — как в сводках: сегодня — с днём, дальше — после дня (живой прогон 26.09.2026)', () => {
+    // Было «Зайти в аптеку · сегодня» — без 19:00, у мамы без 20:00, у
+    // машины без 10:00, хотя сводки веток и списки дня час показывают.
+    const at = (offset: number): Date => new Date(Date.UTC(2026, 8, 19 + offset, 21, 0, 0));
+    const items = [
+      task('Зайти в аптеку', { deadlineAt: at(0), deadlineAccuracy: 'day', deadlineTime: 19 * 60 }),
+      task('Позвонить маме', { deadlineAt: at(1), deadlineAccuracy: 'day', deadlineTime: 20 * 60 }),
+      task('Отвести машину в сервис', {
+        deadlineAt: at(2),
+        deadlineAccuracy: 'day',
+        deadlineTime: 10 * 60,
+      }),
+      // Старый час из названия — прочь: час один, из срока.
+      task('Позвонить сестре в 9', {
+        deadlineAt: at(1),
+        deadlineAccuracy: 'day',
+        deadlineTime: 21 * 60,
+      }),
+    ];
+
+    const text = renderMyTasks(layoutMyTasks(items, DAY), DAY, defaultTexts).messages[0] ?? '';
+
+    expect(text).toContain('— Зайти в аптеку · сегодня, 19:00');
+    expect(text).toContain('— Позвонить маме · завтра, 20:00');
+    expect(text).toContain('— Отвести машину в сервис · 22.09, 10:00');
+    expect(text).toContain('— Позвонить сестре · завтра, 21:00');
   });
 
   it('пустой список — «пусто», без сфер и без подписи', () => {
