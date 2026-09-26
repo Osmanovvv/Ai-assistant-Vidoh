@@ -82,7 +82,17 @@ export function morningText(
    * раз. Предложение из отложенного — последней строкой, как
    * необязательное: не в списке дел и без «надо».
    */
-  extra: { readonly review?: Review | undefined; readonly offer?: Item | undefined } = {},
+  extra: {
+    readonly review?: Review | undefined;
+    readonly offer?: Item | undefined;
+    /**
+     * Сразу после карточки первого утра (проверка Никиты 26.09.2026,
+     * 09:00): карточка уже поздоровалась — «Доброе утро ☀️ Вот что сегодня
+     * важно:», — и второе «Утро доброе. На сегодня немного:» под ней
+     * читалось повтором. Дела — сразу.
+     */
+    readonly afterCard?: boolean | undefined;
+  } = {},
 ): string {
   /**
    * Приветствие — одна строка, дальше сразу суть (ТЗ 17.09.2026, 2.9).
@@ -103,8 +113,13 @@ export function morningText(
       mayDump ? texts.reminders.morningEmptyInvite : texts.reminders.needsPay,
     );
   } else {
-    if (shown.length < MORNING_ACTIONS_LIMIT) lines.push(hello, texts.reminders.morningLight);
-    else lines.push(`${hello} ${variantOf(texts.reminders.morningIntro, day)}`);
+    if (extra.afterCard === true) {
+      // Шапку дала карточка.
+    } else if (shown.length < MORNING_ACTIONS_LIMIT) {
+      lines.push(hello, texts.reminders.morningLight);
+    } else {
+      lines.push(`${hello} ${variantOf(texts.reminders.morningIntro, day)}`);
+    }
     for (const item of shown) lines.push(texts.reminders.line(dayLine(item, day)));
   }
 

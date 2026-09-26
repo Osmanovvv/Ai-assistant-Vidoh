@@ -246,39 +246,81 @@ describe('карточка первого утра (ТЗ по визуалам, 
 
   const morning = new Date('2026-08-30T05:30:00.000Z'); // 08:30 МСК
   const nextMorning = new Date(morning.getTime() + DAY);
+  const afterMorning = new Date(morning.getTime() + 60 * 60_000);
+
+  /** Дело «сейчас» без срока: в утреннем списке — каждое утро. */
+  async function urgent(text = 'Купить кефир'): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({ userId, text, type: 'TASK', priority: 'NOW', topic: 'покупки' });
+  }
 
   it('первое утро — карточка перед списком, второе — без карточки', async () => {
+    await urgent();
     const { cards, shown } = recordingCards();
     await planReminders({ ...deps(), cards }, { now: NOW });
     await dispatchReminders({ ...deps(), cards }, { now: morning });
 
     expect(shown).toEqual([{ chatId: tgId, card: 'morning', caption: defaultTexts.cards.morning }]);
     expect(outbox).toHaveLength(1);
+    /**
+     * Карточка уже поздоровалась: «Доброе утро ☀️ Вот что сегодня важно:»
+     * (проверка Никиты 26.09.2026, 09:00) — следом сразу дела, без «Утро
+     * доброе. На сегодня немного:».
+     */
+    expect(outbox[0]?.text).toBe('— Купить кефир');
     const [settings] = await testDb()
       .select({ at: userSettings.morningCardAt })
       .from(userSettings)
       .where(eq(userSettings.userId, userId));
     expect(settings?.at).not.toBeNull();
 
-    await planReminders({ ...deps(), cards }, { now: morning });
+    // Раскладка после утра: в ту же минуту утро на завтра не ставится, и
+    // вторым сообщением прежде приходил вечер — второе утро не проверялось.
+    await planReminders({ ...deps(), cards }, { now: afterMorning });
     await dispatchReminders({ ...deps(), cards }, { now: nextMorning });
 
     expect(shown).toHaveLength(1);
-    expect(outbox).toHaveLength(2);
+    const second = outbox.filter((one) => isMorning(one.text));
+    expect(second).toHaveLength(1);
+    expect(second[0]?.text).toContain('— Купить кефир');
   });
 
-  it('карточка не ушла — утро идёт текстом, и карточка попробуется завтра', async () => {
+  it('карточка не ушла — утро идёт текстом со своим приветствием, и карточка попробуется завтра', async () => {
+    await urgent();
     const { cards, shown } = recordingCards({ fails: true });
     await planReminders({ ...deps(), cards }, { now: NOW });
     await dispatchReminders({ ...deps(), cards }, { now: morning });
 
     expect(shown).toEqual([]);
     expect(outbox).toHaveLength(1);
+    expect(isMorning(outbox[0]?.text ?? '')).toBe(true);
     const [settings] = await testDb()
       .select({ at: userSettings.morningCardAt })
       .from(userSettings)
       .where(eq(userSettings.userId, userId));
     expect(settings?.at).toBeNull();
+  });
+
+  it('пустое первое утро — без карточки: «Вот что сегодня важно:» показать нечего; карточка ждёт утра с делами', async () => {
+    const { cards, shown } = recordingCards();
+    await planReminders({ ...deps(), cards }, { now: NOW });
+    await dispatchReminders({ ...deps(), cards }, { now: morning });
+
+    expect(shown).toEqual([]);
+    expect(outbox[0]?.text).toContain(defaultTexts.reminders.morningEmpty);
+    const [settings] = await testDb()
+      .select({ at: userSettings.morningCardAt })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    expect(settings?.at).toBeNull();
+
+    await urgent();
+    await planReminders({ ...deps(), cards }, { now: afterMorning });
+    await dispatchReminders({ ...deps(), cards }, { now: nextMorning });
+
+    expect(shown).toHaveLength(1);
+    expect(outbox.at(-1)?.text).toBe('— Купить кефир');
   });
 
   it('без карточек в зависимостях — как раньше', async () => {
@@ -531,23 +573,24 @@ describe('сроки (3.16)', () => {
     );
   });
 
-  it('дело со своим напоминанием не называется в утренней сводке дважды', async () => {
+  it('дело со сроком сегодня — в утреннем, и одно: «Сегодня срок» в то же утро не приходит (решение Никиты 26.09.2026)', async () => {
     /**
-     * Найдено на приёмке этапа 3. Напоминание «сегодня срок» встаёт на то
-     * же местное утро, что и сводка: человек получал два сообщения подряд
-     * про одну запись — сначала списком, потом отдельно.
+     * Приёмка этапа 3: «сегодня срок» встаёт на то же утро, что и сводка, —
+     * два сообщения подряд про одну запись. Тогда дело из сводки убрали, и
+     * утро 26.09.2026 вышло «На сегодня немного: — Купить кефир» при
+     * четырёх делах. Вариант А: дело остаётся в утреннем, отдельное —
+     * снимается.
      */
     await sow(new Date('2026-08-30T15:00:00.000Z'), 'day'); // срок сегодня
-    await planReminders(deps(), { now: new Date('2026-08-29T03:00:00.000Z') });
+    // Раскладка тем же утром: вчерашнее «Завтра срок» в очередь не попадает.
+    await planReminders(deps(), { now: NOW });
 
     const morning = new Date('2026-08-30T05:30:00.000Z'); // 08:30 МСК
     await dispatchReminders(deps(), { now: morning });
 
     const digest = outbox.find((one) => isMorning(one.text));
-    const deadline = outbox.find((one) => one.buttons.includes(defaultTexts.reminders.buttonDone));
-
-    expect(digest?.text).not.toContain('Оплатить квитанцию');
-    expect(deadline?.text).toContain('Оплатить квитанцию');
+    expect(digest?.text).toContain('Оплатить квитанцию');
+    expect(outbox.filter((one) => one.text.includes('Оплатить квитанцию'))).toHaveLength(1);
   });
 
   it('большая цель в утреннем — ближайшим шагом (ревизия этапа 3, E17)', async () => {
@@ -581,6 +624,97 @@ describe('сроки (3.16)', () => {
 
     const withDeadline = outbox.find((one) => one.text.includes('Оплатить квитанцию'));
     expect(withDeadline?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+});
+
+describe('утро со сроками — одним сообщением (решение Никиты 26.09.2026, вариант А)', () => {
+  /**
+   * Утро 26.09.2026: «Утро доброе. На сегодня немного: — Купить кефир», и
+   * следом три «Сегодня срок». Дела со своим напоминанием из утреннего
+   * выпадали, а шапка считала остаток: «немного» при четырёх делах,
+   * «ничего срочного» — при одних датированных. Теперь утро называет дела
+   * дня, а их «Сегодня срок» в то же утро не приходит.
+   */
+  const today = new Date('2026-08-29T21:00:00.000Z'); // 30.08 по Москве
+  // Раскладка тем же утром, в 06:00: в очереди к 08:30 — только утренние.
+  const planAt = NOW;
+  const morning = new Date('2026-08-30T05:30:00.000Z'); // 08:30 МСК
+
+  async function dated(text: string, time: number | null = null): Promise<void> {
+    await testDb().insert(items).values({
+      userId,
+      text,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'дом',
+      deadlineAt: today,
+      deadlineAccuracy: 'day',
+      deadlineTime: time,
+    });
+  }
+
+  async function dayReasons(): Promise<(string | null)[]> {
+    const rows = await testDb()
+      .select({ reason: reminders.skippedReason })
+      .from(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'deadline_day')));
+    return rows.map((row) => row.reason);
+  }
+
+  it('только дела со сроком: утро их называет, с часом, — не «ничего срочного»; отдельных нет', async () => {
+    await dated('Забрать ребёнка из школы', 16 * 60);
+    await dated('Купить хлеб');
+    await planReminders(deps(), { now: planAt });
+
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(outbox).toHaveLength(1);
+    const text = outbox[0]?.text ?? '';
+    expect(isMorning(text)).toBe(true);
+    expect(text).toContain('— Забрать ребёнка из школы · 16:00');
+    expect(text).toContain('— Купить хлеб');
+    expect(text).not.toContain(defaultTexts.reminders.morningEmpty);
+    expect(await dayReasons()).toEqual(['in_morning', 'in_morning']);
+  });
+
+  it('дел больше, чем влезает в утро, — не вошедшее приходит своим «Сегодня срок»', async () => {
+    for (const text of ['Первое', 'Второе', 'Третье', 'Четвёртое']) await dated(text);
+    await planReminders(deps(), { now: planAt });
+
+    await dispatchReminders(deps(), { now: morning });
+
+    const digest = outbox.find((one) => isMorning(one.text))?.text ?? '';
+    const separate = outbox.filter((one) =>
+      one.buttons.includes(defaultTexts.reminders.buttonDone),
+    );
+    expect(separate).toHaveLength(1);
+    const title = separate[0]?.text.replace('Сегодня срок: ', '') ?? '';
+    expect(digest).not.toContain(title);
+    expect((await dayReasons()).filter((reason) => reason === 'in_morning')).toHaveLength(3);
+  });
+
+  it('утреннего в этот день нет (реже — 3.17, тишина) — «Сегодня срок» приходит, как раньше', async () => {
+    await dated('Купить хлеб');
+    await planReminders(deps(), { now: planAt });
+    await testDb()
+      .delete(reminders)
+      .where(and(eq(reminders.userId, userId), eq(reminders.kind, 'morning')));
+
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]?.text).toBe('Сегодня срок: Купить хлеб');
+    expect(outbox[0]?.buttons).toEqual(['Сделано', 'Перенести']);
+  });
+
+  it('утреннее не ушло — «Сегодня срок» его дел не пропадает: пометка снята', async () => {
+    await dated('Купить хлеб');
+    await planReminders(deps(), { now: planAt });
+    sendFails = true;
+
+    await dispatchReminders(deps(), { now: morning });
+
+    expect(await dayReasons()).toEqual([null]);
   });
 });
 
