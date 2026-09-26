@@ -496,6 +496,7 @@ export const reserved: TextProfile = {
     eveningHello: { one: 'Добрый вечер 🌙', two: 'Вечер добрый.', three: 'Добрый вечер.' },
     eveningAllDone: 'На сегодня всё 🤍',
     eveningLeft: 'Вот что осталось с сегодня:',
+    eveningMore: (count) => `И ещё ${counted(count, ['дело', 'дела', 'дел'])} — в «Мои дела».`,
     eveningLeftHint: 'Можно перенести на завтра или оставить на потом.',
     remembered: 'Остальное я помню.',
 
