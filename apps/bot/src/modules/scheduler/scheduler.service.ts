@@ -776,11 +776,15 @@ async function composeOne(
        * Что на сегодня осталось (ТЗ 17.09.2026, 2.9): те же дела, что
        * утро зовёт «на сегодня», — вечером они и есть «осталось с
        * сегодня». Пусто — «На сегодня всё 🤍».
+       *
+       * Весь список, без предела утра: сколько назвать и что сказать про
+       * остальное, решает `eveningText` (проверка 26.09.2026, 21:00 —
+       * четвёртое дело выпадало молча).
        */
       const left = selectForToday(await openItemsFor(deps.db, reminder.userId), {
         now,
         timeZone: context.timeZone,
-      }).slice(0, MORNING_ACTIONS_LIMIT);
+      });
       const day = { now, timeZone: context.timeZone };
 
       /**

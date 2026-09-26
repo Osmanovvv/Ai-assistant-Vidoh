@@ -799,6 +799,67 @@ describe('вечернее первым, «Завтра срок» за ним (
   });
 });
 
+describe('вечер: что осталось — до пяти, остальное строкой (проверка Никиты 26.09.2026, 21:00)', () => {
+  /**
+   * «Вот что осталось с сегодня:» — хлеб, ребёнок, аптека, а «Купить
+   * кефир» выпал молча: вечер резал список пределом утра (три).
+   */
+  const today = new Date('2026-08-29T21:00:00.000Z'); // 30.08 по Москве
+  const eve = new Date('2026-08-30T18:00:00.000Z'); // 21:00 МСК, 30.08
+  const planAt = new Date('2026-08-30T09:00:00.000Z'); // 12:00 МСК
+
+  async function sow(text: string, dated: boolean, time: number | null = null): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'NOW',
+        topic: 'дом',
+        ...(dated
+          ? { deadlineAt: today, deadlineAccuracy: 'day' as const, deadlineTime: time }
+          : {}),
+      });
+  }
+
+  async function eveningSent(): Promise<string> {
+    await planReminders(deps(), { now: planAt });
+    await dispatchReminders(deps(), { now: eve });
+    return outbox.map((one) => one.text).find((text) => isEvening(text)) ?? '';
+  }
+
+  it('четыре дела — все четыре, как было на бою: кефир не выпадает', async () => {
+    await sow('Купить хлеб и молоко', true);
+    await sow('Забрать ребёнка из школы', true, 16 * 60);
+    await sow('Зайти в аптеку', true, 19 * 60);
+    await sow('Купить кефир', false);
+
+    const text = await eveningSent();
+
+    for (const line of [
+      '— Купить хлеб и молоко',
+      '— Забрать ребёнка из школы · 16:00',
+      '— Зайти в аптеку · 19:00',
+      '— Купить кефир',
+    ]) {
+      expect(text).toContain(line);
+    }
+    expect(text).not.toContain('И ещё');
+  });
+
+  it('шесть дел — пять и «И ещё 1 дело — в «Мои дела»»', async () => {
+    for (const title of ['Первое', 'Второе', 'Третье', 'Четвёртое', 'Пятое', 'Шестое']) {
+      await sow(title, true);
+    }
+
+    const text = await eveningSent();
+
+    expect(text.split('\n').filter((line) => line.startsWith('— '))).toHaveLength(5);
+    expect(text).toContain('И ещё 1 дело — в «Мои дела».');
+  });
+});
+
 describe('напоминание в указанный час (ТЗ проджекта 17.09.2026, шаг 5)', () => {
   /** «Сходить к стоматологу в 13:00» на 31.08: срок — день, час — 13:00. */
   async function dentist(time: number | null = 13 * 60): Promise<string> {

@@ -34,6 +34,14 @@ import { titleWithoutDate } from '../resolver/title-date.js';
 export const MORNING_ACTIONS_LIMIT = 3;
 
 /**
+ * Сколько дел называет вечер (решение Никиты 26.09.2026). Не предел утра:
+ * утро выбирает главное, а вечер отчитывается, что осталось, — и три дела
+ * там прятали четвёртое молча («Купить кефир», проверка 26.09, 21:00).
+ * Сверх пяти — строка с числом и куда смотреть.
+ */
+export const EVENING_LEFT_LIMIT = 5;
+
+/**
  * Какой из трёх вариантов приветствия сегодня (ТЗ 17.09.2026, 2.9): по
  * номеру дня в поясе человека, по кругу. Не случайность и не модель:
  * одно и то же утро у одного человека всегда собирается одинаково, и
@@ -209,9 +217,12 @@ export function eveningText(
   } else {
     lines.push(variantOf(texts.reminders.eveningHello, params.day), ...closed);
     lines.push(texts.reminders.eveningLeft);
-    for (const item of params.left) {
+    const shown = params.left.slice(0, EVENING_LEFT_LIMIT);
+    for (const item of shown) {
       lines.push(texts.reminders.line(dayLine(item, params.day)));
     }
+    const rest = params.left.length - shown.length;
+    if (rest > 0) lines.push(texts.reminders.eveningMore(rest));
     lines.push(texts.reminders.eveningLeftHint);
   }
 

@@ -817,6 +817,11 @@ export interface TextProfile {
     readonly eveningAllDone: string;
     /** Что-то осталось: шапка списка и что с этим можно сделать. */
     readonly eveningLeft: string;
+    /**
+     * Не вошедшее в вечерний список — числом и куда смотреть (проверка
+     * Никиты 26.09.2026, 21:00): дело не должно пропадать молча.
+     */
+    readonly eveningMore: (count: number) => string;
     readonly eveningLeftHint: string;
     /** «Остальное я помню» — фирменная формула ВЫДОХа (2.9). */
     readonly remembered: string;

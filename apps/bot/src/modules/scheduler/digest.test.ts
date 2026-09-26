@@ -260,6 +260,51 @@ describe('вечер', () => {
       defaultTexts.reminders.needsPay,
     );
   });
+
+  /**
+   * Проверка Никиты 26.09.2026, 21:00: «Вот что осталось с сегодня:» и
+   * три дела, а четвёртое — «Купить кефир» — выпало молча: вечер брал
+   * предел утра. Теперь до пяти, остальное — строкой, куда смотреть
+   * (решение Никиты).
+   */
+  const titles = ['Первое', 'Второе', 'Третье', 'Четвёртое', 'Пятое', 'Шестое', 'Седьмое'];
+
+  it('осталось больше пяти: пять дел и «И ещё N — в «Мои дела»» — ничего не пропадает молча', () => {
+    const lines = evening(
+      0,
+      titles.map((title) => item(title)),
+    ).split('\n');
+
+    expect(lines.slice(1)).toEqual([
+      defaultTexts.reminders.eveningLeft,
+      ...titles.slice(0, 5).map((title) => defaultTexts.reminders.line(title)),
+      'И ещё 2 дела — в «Мои дела».',
+      defaultTexts.reminders.eveningLeftHint,
+    ]);
+  });
+
+  it('ровно пять — все пять, строки «ещё» нет', () => {
+    const lines = evening(
+      0,
+      titles.slice(0, 5).map((title) => item(title)),
+    ).split('\n');
+
+    expect(lines.slice(1)).toEqual([
+      defaultTexts.reminders.eveningLeft,
+      ...titles.slice(0, 5).map((title) => defaultTexts.reminders.line(title)),
+      defaultTexts.reminders.eveningLeftHint,
+    ]);
+  });
+
+  it.each([
+    [1, 'И ещё 1 дело — в «Мои дела».'],
+    [2, 'И ещё 2 дела — в «Мои дела».'],
+    [5, 'И ещё 5 дел — в «Мои дела».'],
+    [11, 'И ещё 11 дел — в «Мои дела».'],
+    [21, 'И ещё 21 дело — в «Мои дела».'],
+  ])('«ещё %i» — со склонением', (count, expected) => {
+    expect(defaultTexts.reminders.eveningMore(count)).toBe(expected);
+  });
 });
 
 describe('предложение запомнить регулярность в сводке (3.17а)', () => {
