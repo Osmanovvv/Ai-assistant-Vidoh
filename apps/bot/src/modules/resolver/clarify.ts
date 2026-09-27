@@ -88,6 +88,16 @@ const FILLERS = new Set([
   'поздно',
   // «Второй вариант».
   'вариант',
+  // «Нет, вечером», «пусть будет вечером», «да, утром», «тогда вечером»
+  // (прогон Никиты 27.09.2026): ответ — по-прежнему только часть суток или
+  // час, эти слова вокруг него ничего не решают.
+  'нет',
+  'да',
+  'ага',
+  'пусть',
+  'будет',
+  'тогда',
+  'пожалуй',
 ]);
 
 function trimmed(text: string): string {
@@ -126,6 +136,44 @@ export function clarifiedCommand(
     return `${trimmed(command)} — ${said}`;
   }
 
+  /**
+   * Ответ со словами самого дела (прогон Никиты 27.09.2026, 23:29): «Платье
+   * забрать вечером» на вопрос о «Забрать платье из ателье». Слова дела —
+   * не ответ и не новая мысль: без них должно остаться то, что ответом и
+   * так считается («вечером», «в 8 вечера», «второе»). Осталось что-то
+   * ещё — «…и купить хлеб» — не ответ, как и было.
+   */
+  const heard = timeAnswer(command, said);
+  if (heard !== undefined) return heard;
+
+  const rest = withoutTitleWords(said, command);
+  return rest === said || rest === '' ? undefined : timeAnswer(command, rest);
+}
+
+/** Слова дела из команды переспроса: «Перенеси «Забрать платье из ателье» в 8». */
+function titleWords(command: string): readonly string[] {
+  const title = /«([^»]+)»/u.exec(command)?.[1];
+  return title === undefined ? [] : words(title.replace(/ё/gu, 'е'));
+}
+
+/** Слово то же, что в названии: целиком или общее начало из четырёх букв. */
+function sameWord(one: string, other: string): boolean {
+  if (one === other) return true;
+  return one.length >= 4 && other.length >= 4 && one.slice(0, 4) === other.slice(0, 4);
+}
+
+function withoutTitleWords(said: string, command: string): string {
+  const title = titleWords(command);
+  if (title.length === 0) return said;
+
+  return words(said.replace(/ё/gu, 'е'))
+    .filter((word) => !title.some((own) => sameWord(word, own)))
+    .join(' ');
+}
+
+/** Ответ о части суток или часе — или ничего. */
+function timeAnswer(command: string, said: string): string | undefined {
+  const spoken = words(said);
   const content = spoken.filter((word) => !FILLERS.has(word));
   const daypart = content.length === 1 ? DAYPARTS[content[0] ?? ''] : undefined;
   if (daypart !== undefined) return `${trimmed(command)} ${daypart}`;
@@ -151,6 +199,45 @@ export function clarifiedCommand(
     return `${trimmed(withoutClockPhrase(command))} ${phrase}`;
   }
 
+  return undefined;
+}
+
+/**
+ * Ответ на переспрос внутри выгрузки из нескольких сообщений (прогон
+ * Никиты 27.09.2026, 23:29).
+ *
+ * Бот спросил «08:00 или 20:00?», а человек успел наговорить два голосовых
+ * про зубного и следом ответил «Платье забрать вечером» — одна выгрузка.
+ * Ответ искался по всей выгрузке и не нашёлся: вопрос закрылся, «вечером»
+ * стало новым делом. Теперь выгрузка целиком — как раньше; не ответ —
+ * ответом может быть одно её сообщение (строка), с конца, а остальное
+ * разбирается как обычно.
+ *
+ * Только у «утро или вечер»: ответы там узкие — часть суток, час, «второе».
+ * На «Какое дело?» ответом выглядит любая короткая фраза, и среди новых
+ * мыслей бот начал бы принимать их за ответ.
+ */
+export function answerInBatch(
+  kind: ClarifyKind,
+  command: string,
+  combined: string,
+): { readonly command: string; readonly besides: string } | undefined {
+  const whole = clarifiedCommand(kind, command, combined);
+  if (whole !== undefined) return { command: whole, besides: '' };
+  if (kind !== 'time') return undefined;
+
+  const lines = combined
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  if (lines.length < 2) return undefined;
+
+  for (let at = lines.length - 1; at >= 0; at--) {
+    const one = clarifiedCommand(kind, command, lines[at] ?? '');
+    if (one !== undefined) {
+      return { command: one, besides: lines.filter((_, index) => index !== at).join('\n') };
+    }
+  }
   return undefined;
 }
 

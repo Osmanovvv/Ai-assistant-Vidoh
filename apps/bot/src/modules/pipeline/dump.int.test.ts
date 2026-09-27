@@ -9865,6 +9865,106 @@ describe('час нового дела — утро или вечер (вари�
     expect(all.some((text) => text.startsWith('Добавила подробность'))).toBe(false);
   });
 
+  it('ответ «Платье забрать вечером» среди двух голосовых про зубного — час платью, зубной — разбору (прогон Никиты 27.09.2026, 23:29)', async () => {
+    // Было: одна выгрузка из трёх сообщений, ответ не нашёлся, вопрос
+    // закрылся — и завелось второе дело «Забрать платье вечером» на сегодня.
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра в 8 забрать платье из ателье.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'В 8 забрать платье из ателье', 'покупки'),
+        }),
+      },
+      userId,
+    );
+    expect(
+      all.some((text) => text.includes('Во сколько «Забрать платье из ателье» — 08:00 или 20:00?')),
+    ).toBe(true);
+
+    const dentist = 'Записать Диму к зубному.';
+    const dentistWed = 'Записать Диму к зубному в среду.';
+    const routerInputs: string[] = [];
+    const item = (text: string, deadline: string, deadlineText: string) => ({
+      text,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'здоровье',
+      isProject: false,
+      deadline,
+      deadlineAccuracy: deadline === '' ? 'none' : 'day',
+      deadlineText,
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    });
+
+    await queuedBatchOf([
+      { kind: 'text', text: dentist, offsetMs: 60_000 },
+      { kind: 'text', text: dentistWed, offsetMs: 63_000 },
+      { kind: 'text', text: 'Платье забрать вечером', offsetMs: 66_000 },
+    ]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({
+            router: (request: { readonly input: string }) => {
+              routerInputs.push(request.input);
+              return JSON.stringify({
+                crisis: false,
+                segments: [{ intent: 'DUMP', text: `${dentist}\n${dentistWed}` }],
+              });
+            },
+            extractor: () =>
+              JSON.stringify({
+                units: [
+                  { text: 'Записать Диму к зубному', isProject: false, isEmotion: false },
+                  { text: 'Записать Диму к зубному в среду', isProject: false, isEmotion: false },
+                ],
+              }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  item('Записать Диму к зубному', '', ''),
+                  // Часы теста — понедельник 24.08, среда — 26.08.
+                  item('Записать Диму к зубному в среду', '2026-08-26', 'в среду'),
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    // Разбору ушло только про зубного — без ответа о платье.
+    expect(routerInputs).toHaveLength(1);
+    expect(routerInputs[0]).not.toContain('Платье');
+
+    const rows = await liveItems();
+    const dress = rows.filter((row) => row.text.toLowerCase().includes('плать'));
+    expect(dress.map((row) => [row.text, row.deadlineTime])).toEqual([
+      ['Забрать платье из ателье', 20 * 60],
+    ]);
+    const dental = rows.filter((row) => row.text.includes('зубному'));
+    expect(dental).toHaveLength(1);
+    expect(dental[0]?.deadlineAt?.toISOString()).toBe('2026-08-25T21:00:00.000Z');
+    expect(all.some((text) => text.includes('20:00'))).toBe(true);
+  });
+
   it('час в начале названия — в вопросе и после ответа название с заглавной (живой прогон 26.09.2026, 02:06)', async () => {
     // «Сегодня в 7 зайти в аптеку» → «Во сколько «зайти в аптеку»…», после
     // «Вечером» — «Напомню про «зайти в аптеку»…»: час срезался из начала
