@@ -1667,3 +1667,44 @@ describe('число месяца словами — срок (стенд 27.09.
     expect(result.items[0]?.deadline?.at.toISOString()).toBe('2026-10-09T21:00:00.000Z');
   });
 });
+
+describe('день в конце предложения — следующему делу (стенд 27.09.2026, voice-27-08)', () => {
+  it('«…в банк по кредиту в пятницу в субботу. День рождения у Иры…» — банк 02.10, подарок 03.10', async () => {
+    const prompts = await prepare();
+    const day = (deadline: string, deadlineText: string) => ({
+      deadline,
+      deadlineAccuracy: 'day',
+      deadlineText,
+    });
+    const recorded = [
+      {
+        text: 'В понедельник отвести Артёма к логопеду в 4 часа',
+        ...day('2026-09-28', 'в понедельник'),
+      },
+      { text: 'Купить продукты на неделю и заехать в аптеку за витаминами' },
+      { text: 'В среду сдать квартальный отчёт до обеда', ...day('2026-09-30', 'в среду') },
+      {
+        text: 'Позвонить в банк по кредиту в пятницу или в субботу',
+        ...day('2026-10-01', 'в пятницу или в субботу'),
+      },
+      { text: 'День рождения у Иры, подарок ещё не купила' },
+    ];
+    const provider = new MockLlmProvider({ responses: [answer(recorded)] });
+    const speech =
+      'Так значит, в понедельник отвести Артема к логопеду в 4 часа. Потом купить продукты на неделю и заехать в аптеку за витаминами. В среду у меня. Отчет квартальный надо сдать до обеда, кстати, и позвонить в банк по кредиту в пятницу в субботу. День рождения у Иры, подарок еще не купила.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(...recorded.map((one) => one.text)),
+      now: new Date('2026-09-27T16:40:00.000Z'),
+      spoken: speech,
+      speech,
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    const bank = result.items.find((item) => item.text.includes('банк'));
+    const gift = result.items.find((item) => item.text.includes('Иры'));
+    expect(bank?.deadline?.at.toISOString()).toBe('2026-10-01T21:00:00.000Z');
+    expect(bank?.text).not.toContain('или');
+    expect(gift?.deadline?.at.toISOString()).toBe('2026-10-02T21:00:00.000Z');
+  });
+});
