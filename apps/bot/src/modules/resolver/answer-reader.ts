@@ -7,6 +7,7 @@ import {
 import { READER_SCHEMA_NAME, type ReaderReading } from '../ai/schemas/index.js';
 import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
 import { withCapital } from '../items/item-text.js';
+import { moodOf } from '../presenter/mood.js';
 import type { TextProfile } from '../../texts/index.js';
 
 import { hourClarifyTitle, notADeed, sameWord, titleWords, words } from './clarify.js';
@@ -265,8 +266,43 @@ function soundsUndecided(reply: string): boolean {
   return UNDECIDED.some((phrase) => joined.includes(` ${phrase} `));
 }
 
+/**
+ * Отказ ставить или переносить (замер 28.09.2026: «Не надо переносить»,
+ * «Время не надо»): у вопроса о часе — «оставлю как есть». У «Перенести?»
+ * «не надо» — это «нет», и там его узнаёт словарь.
+ */
+const REFUSALS = ['не надо', 'не нужно', 'не ставь', 'не переноси', 'оставь'];
+
+function refuses(reply: string): boolean {
+  const joined = ` ${words(reply).join(' ')} `;
+  return REFUSALS.some((phrase) => joined.includes(` ${phrase} `));
+}
+
+/**
+ * Вопрос о своих делах — не встречный вопрос (замер 28.09.2026): «Что у
+ * меня на завтра?» модель читала переспросом, и бот объяснял бы свой
+ * вопрос вместо ответа.
+ */
+const ABOUT_OWN = new Set(['меня', 'мне', 'мой', 'моя', 'моё', 'мое', 'мои', 'моих', 'мою']);
+
 function asksBack(reply: string): boolean {
+  if (words(reply).some((word) => ABOUT_OWN.has(word))) return false;
   return reply.includes('?') || words(reply).some((word) => QUESTION_WORDS.has(word));
+}
+
+/**
+ * Новая мысль называет дело, чувство или помечена «ещё», «кстати», «надо».
+ * Иначе это пояснение к ответу (замер 28.09.2026: «Утром я на работе, так
+ * что вечером», «ночью кто ж посылки забирает», «Посылку днём») — оно
+ * часть ответа, а не запись.
+ */
+const THOUGHT_MARKERS = new Set(['ещё', 'еще', 'кстати', 'надо', 'нужно', 'забыть', 'также']);
+
+function isThought(thought: string): boolean {
+  if (moodOf(thought) !== undefined) return true;
+  return words(thought.replace(/ё/gu, 'е')).some(
+    (word) => THOUGHT_MARKERS.has(word) || isVerb(word),
+  );
 }
 
 /** Ответ модели — через проверки кода. */
@@ -281,10 +317,13 @@ export function checkReading(
     case 'not_answer':
       return { kind: 'not_answer' };
     case 'counter_question':
+      if (words(reply).some((word) => ABOUT_OWN.has(word))) return { kind: 'not_answer' };
       return asksBack(reply)
         ? { kind: 'counter_question' }
         : { kind: 'unread', why: 'встречный вопрос без вопроса' };
     case 'undecided':
+      // «А какая разница?» — спрашивает, а не отказывается: объяснить.
+      if (reply.includes('?') && asksBack(reply)) return { kind: 'counter_question' };
       return words(reply).length <= UNDECIDED_WORDS && !namesDeed(reply, title)
         ? { kind: 'undecided' }
         : { kind: 'unread', why: '«не решил» с новым делом' };
@@ -296,14 +335,27 @@ export function checkReading(
       break;
   }
 
-  const thought = reading.thought.trim();
+  // Пояснение к ответу — часть ответа, а не мысль.
+  const thought = isThought(reading.thought) ? reading.thought.trim() : '';
   const part = answerPartOf(reply, thought);
   if (part === undefined) return { kind: 'unread', why: 'мысль не из реплики или не отделена' };
-  if (soundsUndecided(part)) return { kind: 'unread', why: '«не знаю» — выбора нет' };
+
+  /**
+   * «Не знаю», «не надо переносить» у вопроса о часе и «Какое дело?» —
+   * «оставлю как есть», какой бы выбор ни назвала модель. У кнопок —
+   * не прочитано: там «не надо» — это «нет», и его знает словарь.
+   */
+  const unsure = soundsUndecided(part);
+  if ((question.kind === 'time' || question.kind === 'which') && !namesDeed(part, title)) {
+    if (unsure || refuses(part)) return { kind: 'undecided' };
+  }
+  if (unsure) return { kind: 'unread', why: '«не знаю» — выбора нет' };
   const choice = reading.choice.trim();
 
   if (question.kind === 'which') {
-    if (choice === '' || notADeed(choice)) return { kind: 'unread', why: 'не название дела' };
+    if (choice === '' || notADeed(choice) || notADeed(part)) {
+      return { kind: 'unread', why: 'не название дела' };
+    }
     if (!part.toLowerCase().includes(choice.toLowerCase())) {
       return { kind: 'unread', why: 'дело названо не словами реплики' };
     }

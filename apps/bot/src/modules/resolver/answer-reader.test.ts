@@ -125,9 +125,12 @@ describe('какое дело: слова дела — дословно из р�
   it.each<[string, string]>([
     ['Ну посылку же', 'хлеб'],
     ['Спасибо', 'Спасибо'],
-    ['Не помню', 'Не помню'],
   ])('«%s» → «%s» — не прочитано', (reply, choice) => {
     expect(checkReading(which, reply, reading('answer', choice)).kind).toBe('unread');
+  });
+
+  it('«Не помню» — не название дела, а «не решил»: ничего не менять', () => {
+    expect(checkReading(which, 'Не помню', reading('answer', 'Не помню')).kind).toBe('undecided');
   });
 });
 
@@ -234,14 +237,91 @@ describe('обращение к модели', () => {
 });
 
 describe('«не знаю» ответом с выбором не бывает', () => {
+  // С замера 28.09.2026 у вопроса о часе это «не решил» — «оставлю как есть».
   it.each(['Не знаю пока', 'Потом скажу', 'Без разницы', 'Да всё равно'])(
-    '«%s» — модель выбрала 07:00, код не верит',
+    '«%s» — модель выбрала 07:00, код не верит: не решил',
     (reply) => {
-      expect(checkReading(shoes, reply, reading('answer', '07:00')).kind).toBe('unread');
+      expect(checkReading(shoes, reply, reading('answer', '07:00')).kind).toBe('undecided');
     },
   );
 
   it('«Не знаю» на «Перенести?» — не «да»', () => {
     expect(checkReading(move, 'Не знаю даже', reading('answer', 'да')).kind).toBe('unread');
+  });
+});
+
+/**
+ * Замер на стенде 28.09.2026 (reader@1, 122 ответа модели): десять «не так».
+ */
+describe('замер: пояснение к ответу — не новая мысль', () => {
+  it.each<[ReaderQuestion, string, string, string, number]>([
+    [shoes, 'Утром я на работе, так что вечером', '19:00', 'Утром я на работе', 19 * 60],
+    [
+      parcel,
+      'Конечно днём, ночью кто ж посылки забирает',
+      '11:30',
+      'ночью кто ж посылки забирает',
+      690,
+    ],
+    [parcel, 'Посылку днём', '11:30', 'Посылку днём', 690],
+  ])('%#: «%s» — ответ без мысли', (question, reply, choice, thought, expected) => {
+    const meaning = checkReading(question, reply, reading('answer', choice, thought));
+    expect(meaning).toMatchObject({ kind: 'answer', thought: '' });
+    expect(clockTimesIn(meaning.kind === 'answer' ? (meaning.command ?? '') : '')).toEqual([
+      [expected],
+    ]);
+  });
+
+  it('мысль без глагола, но с «ещё» — мысль: «Вечером. И ещё хлеб»', () => {
+    expect(
+      checkReading(shoes, 'Вечером. И ещё хлеб', reading('answer', '19:00', 'И ещё хлеб')),
+    ).toMatchObject({ kind: 'answer', thought: 'И ещё хлеб' });
+  });
+
+  it('чувство — мысль: «Вечером. Устала сегодня ужасно»', () => {
+    expect(
+      checkReading(
+        shoes,
+        'Вечером. Устала сегодня ужасно',
+        reading('answer', '19:00', 'Устала сегодня ужасно'),
+      ),
+    ).toMatchObject({ kind: 'answer', thought: 'Устала сегодня ужасно' });
+  });
+});
+
+describe('замер: вопрос о своих делах — не встречный вопрос', () => {
+  it.each(['Что у меня на завтра?', 'Сколько у меня дел?', 'А какие мои дела на неделю?'])(
+    '«%s» — не ответ: его разберёт обычный путь',
+    (reply) => {
+      expect(checkReading(shoes, reply, reading('counter_question')).kind).toBe('not_answer');
+    },
+  );
+
+  it('«А какая разница?» — модель сказала «не решил», но это вопрос: бот объясняет', () => {
+    expect(checkReading(parcel, 'А какая разница?', reading('undecided')).kind).toBe(
+      'counter_question',
+    );
+  });
+});
+
+describe('замер: «ещё» в ответе на «Какое дело?» — новая мысль', () => {
+  it.each<[string, string]>([
+    ['Надо ещё купить молоко и яйца', 'купить молоко и яйца'],
+    [
+      'Надо ещё купить хлеб молоко яйца и позвонить маме вечером',
+      'купить хлеб молоко яйца и позвонить маме вечером',
+    ],
+  ])('«%s» — не прочитано', (reply, choice) => {
+    expect(checkReading(which, reply, reading('answer', choice)).kind).toBe('unread');
+  });
+});
+
+describe('замер: отказ и «не знаю» на вопрос о часе — «оставлю как есть»', () => {
+  it.each<[ReaderQuestion, string, string]>([
+    [parcel, 'Не надо переносить', 'нет'],
+    [shoes, 'Не знаю пока', '07:00'],
+    [shoes, 'Время не надо', ''],
+  ])('%#: «%s» → «%s» — не решил', (question, reply, choice) => {
+    expect(checkReading(question, reply, reading('answer', choice)).kind).toBe('undecided');
   });
 });
