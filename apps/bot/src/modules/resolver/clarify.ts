@@ -1,4 +1,6 @@
 import { clockPhraseOf, clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
+import { moodOf } from '../presenter/mood.js';
+import { onlyThanks } from '../presenter/thanks.js';
 import { isRecordCommand, startsWithReplacement } from '../router/append.js';
 import { namesNoDeed } from './deixis.js';
 
@@ -147,6 +149,13 @@ const FILLERS = new Set([
   'сделай',
   'запиши',
   'пожалуйста',
+  // «Часов в семь вечера», «где-то в семь», «примерно в 7 вечера».
+  'часов',
+  'часа',
+  'где',
+  'то',
+  'примерно',
+  'около',
 ]);
 
 /**
@@ -159,6 +168,39 @@ function withoutRejected(spoken: readonly string[]): readonly string[] {
       !(word === 'не' && DAYPARTS[spoken[index + 1] ?? ''] !== undefined) &&
       !(spoken[index - 1] === 'не' && DAYPARTS[word] !== undefined),
   );
+}
+
+/**
+ * На «Какое дело?» — не название дела (замер docs/eval-dialog, 28.09.2026):
+ * «Спасибо», «Устала», «Не помню», «Забудь» бот принимал за название и
+ * искал такое дело. «Не знаю», «не надо» — ничего не решено; «ещё»,
+ * «кстати», второе предложение — новая мысль, которую ответ целиком
+ * проглотил бы.
+ */
+const NOT_A_DEED = [
+  'не помню',
+  'не знаю',
+  'забудь',
+  'не надо',
+  'не нужно',
+  'никакое',
+  'никакого',
+  'не важно',
+  'неважно',
+  'не поняла',
+  'не понял',
+  'проехали',
+];
+
+const NEW_THOUGHT = new Set(['ещё', 'еще', 'кстати']);
+
+function notADeed(said: string): boolean {
+  if (onlyThanks(said) || moodOf(said) !== undefined) return true;
+  const spoken = words(said);
+  const joined = ` ${spoken.join(' ')} `;
+  if (NOT_A_DEED.some((phrase) => joined.includes(` ${phrase} `))) return true;
+  if (spoken.some((word) => NEW_THOUGHT.has(word))) return true;
+  return said.split(/[.!?;]+/u).filter((part) => /\p{L}/u.test(part)).length > 1;
 }
 
 function trimmed(text: string): string {
@@ -193,6 +235,7 @@ export function clarifiedCommand(
     if (namesNoDeed(said) || isRecordCommand(said) || startsWithReplacement(said)) {
       return undefined;
     }
+    if (notADeed(said)) return undefined;
     if (!spoken.some((word) => /\p{L}{3,}/u.test(word))) return undefined;
     return `${trimmed(command)} — ${said}`;
   }
@@ -279,11 +322,22 @@ function timeAnswer(command: string, said: string): string | undefined {
   const direct = clockTimesIn(said)[0];
   const phrase = direct === undefined ? `в ${said}` : said;
   const reading = direct ?? clockTimesIn(phrase)[0];
-  if (reading?.length === 1 && spoken.length <= ANSWER_WORDS) {
+  if (reading?.length === 1 && spoken.length <= ANSWER_WORDS && onlyClockIn(phrase)) {
     return `${trimmed(withoutClockPhrase(command))} ${phrase}`;
   }
 
   return undefined;
+}
+
+/**
+ * Кроме часа — только присказки (замер docs/eval-dialog, 28.09.2026):
+ * «Позвонить в банк в 7 вечера» на вопрос про туфли ставило туфлям 19:00,
+ * а звонок пропадал. Слова сверх часа — своя мысль, не ответ.
+ */
+function onlyClockIn(phrase: string): boolean {
+  return words(withoutClockPhrase(phrase)).every(
+    (word) => FILLERS.has(word) || DAYPARTS[word] !== undefined,
+  );
 }
 
 /**
