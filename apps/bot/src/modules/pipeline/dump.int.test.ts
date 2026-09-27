@@ -2499,15 +2499,13 @@ describe('«уже сделала» без такой записи (прогон
     it('с глагола дела, но о сделанном — «Позвонить маме, уже позвонил» — по-прежнему не дело', async () => {
       const prompts = await seedPrompts();
       const { sender, all } = recordingSender();
-      await testDb()
-        .insert(items)
-        .values({
-          userId,
-          text: 'Оплатить садик',
-          type: 'TASK',
-          priority: 'SOON',
-          topic: 'личное',
-        });
+      await testDb().insert(items).values({
+        userId,
+        text: 'Оплатить садик',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+      });
       const DONE = 'Позвонить маме, уже позвонил';
 
       await queuedBatchOf([{ kind: 'text', text: DONE, offsetMs: 0 }]);
