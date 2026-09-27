@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { clockTimesIn, hourWithoutDay } from '../classifier/clock-time.js';
 
-import { clarifiedCommand, hourClarifyCommand, hourClarifyTitle } from './clarify.js';
+import {
+  answerInBatch,
+  clarifiedCommand,
+  hourClarifyCommand,
+  hourClarifyTitle,
+} from './clarify.js';
 
 /**
  * Ответ на уточнение (живой прогон Никиты 23.09.2026, 12:50).
@@ -163,4 +168,95 @@ describe('утро или вечер — выбор по порядку', () => 
       expect(clarifiedCommand('time', command, answer)).toBeUndefined();
     },
   );
+});
+
+/**
+ * Ответ со словами дела (прогон Никиты 27.09.2026, 23:29): на «Во сколько
+ * «Забрать платье из ателье» — 08:00 или 20:00?» он ответил «Платье
+ * забрать вечером» — бот ждал голое «вечером», не понял, и завёл второе
+ * дело «Забрать платье вечером» на сегодня.
+ */
+describe('утро или вечер — ответ со словами самого дела', () => {
+  const command = hourClarifyCommand('В 8 забрать платье из ателье', 8 * 60);
+
+  it.each<[string, number]>([
+    ['Платье забрать вечером', 20 * 60],
+    ['забрать платье в 8 вечера', 20 * 60],
+    ['давай платье вечером', 20 * 60],
+    ['платье утром', 8 * 60],
+    ['Платье из ателье — второе', 20 * 60],
+  ])('«%s»', (answer, expected) => {
+    const done = clarifiedCommand('time', command, answer);
+
+    expect(done).toBeDefined();
+    expect(clockTimesIn(done ?? '')).toEqual([[expected]]);
+    expect(hourWithoutDay(done ?? '')).toBe(true);
+  });
+
+  it.each(['Платье забрать вечером и купить хлеб', 'Сумку забрать вечером', 'Забрать платье'])(
+    '«%s» — не ответ',
+    (answer) => {
+      expect(clarifiedCommand('time', command, answer)).toBeUndefined();
+    },
+  );
+});
+
+/**
+ * Ответ среди других сообщений (прогон Никиты 27.09.2026, 23:29): два
+ * голосовых про зубного и следом «Платье забрать вечером» — одна
+ * выгрузка. Ответ искался по всей выгрузке и не нашёлся.
+ */
+describe('ответ на «утро или вечер» внутри выгрузки из нескольких сообщений', () => {
+  const command = hourClarifyCommand('В 8 забрать платье из ателье', 8 * 60);
+
+  it('ответ — своё сообщение; остальное — разбору', () => {
+    const found = answerInBatch(
+      'time',
+      command,
+      'записать диму к зубному\nзаписать диму к зубному в среду\nПлатье забрать вечером',
+    );
+
+    expect(found?.besides).toBe('записать диму к зубному\nзаписать диму к зубному в среду');
+    expect(clockTimesIn(found?.command ?? '')).toEqual([[20 * 60]]);
+  });
+
+  it('вся выгрузка — ответ: остального нет', () => {
+    expect(answerInBatch('time', command, 'Вечером')?.besides).toBe('');
+  });
+
+  it('ответа нет ни в одном сообщении — ничего', () => {
+    expect(answerInBatch('time', command, 'купить хлеб\nпозвонить маме')).toBeUndefined();
+  });
+
+  it('«Какое дело?» — только целиком, по строкам не ищется: короткая мысль среди других похожа на ответ', () => {
+    // Целиком — длиннее ответа; строкой «позвонить маме» ответ бы нашёлся.
+    expect(
+      answerInBatch(
+        'which',
+        'Перенеси это на пятницу',
+        'купить хлеб, молоко и ещё яйца к завтраку\nпозвонить маме',
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe('утро или вечер — ответ с «да/нет/пусть будет»', () => {
+  const command = hourClarifyCommand('В 8 забрать платье из ателье', 8 * 60);
+
+  it.each<[string, number]>([
+    ['Нет, вечером', 20 * 60],
+    ['пусть будет вечером', 20 * 60],
+    ['да, утром', 8 * 60],
+    ['Тогда вечером', 20 * 60],
+    ['ага, в 8 вечера', 20 * 60],
+  ])('«%s»', (answer, expected) => {
+    const done = clarifiedCommand('time', command, answer);
+
+    expect(done).toBeDefined();
+    expect(clockTimesIn(done ?? '')).toEqual([[expected]]);
+  });
+
+  it.each(['нет, не надо', 'да', 'пусть будет'])('«%s» — не ответ', (answer) => {
+    expect(clarifiedCommand('time', command, answer)).toBeUndefined();
+  });
 });

@@ -49,7 +49,7 @@ import {
   unchangedText,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
-import { CLARIFY_REASON, clarifiedCommand, hourClarifyCommand } from '../resolver/clarify.js';
+import { CLARIFY_REASON, answerInBatch, hourClarifyCommand } from '../resolver/clarify.js';
 import {
   closeClarification,
   hourClarifyTarget,
@@ -1083,10 +1083,22 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * мыслью, это и был бы дефект. Не похожа — разбор как обычно.
      */
     const clarification = await openClarification(db, batch.userId, now);
-    const clarified =
+    /**
+     * Ответ может быть одним из сообщений выгрузки (прогон Никиты
+     * 27.09.2026, 23:29): два голосовых про зубного и «Платье забрать
+     * вечером» — одна выгрузка. Условия — в `answerInBatch`.
+     */
+    const answered =
       clarification === undefined
         ? undefined
-        : clarifiedCommand(clarification.kind, clarification.command, combined);
+        : answerInBatch(clarification.kind, clarification.command, combined);
+    const clarified = answered?.command;
+    /**
+     * Что разбирать дальше и доделывать ли команду переспроса правкой.
+     * Час поставлен прямо — остальное выгрузки идёт обычным разбором.
+     */
+    let parseText = combined;
+    let clarifiedLeft = clarified;
     if (clarification !== undefined) {
       await closeClarification(db, clarification, clarified !== undefined);
       deps.logger?.info(
@@ -1127,9 +1139,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             changeButtons(outcome.applied, texts, spoken),
           );
           await rememberMentioned(db, batch.id, [target.id]);
-          return;
+          if (answered === undefined || answered.besides === '') return;
+          // Час поставлен; остальные сообщения выгрузки — разбору.
+          parseText = answered.besides;
+          clarifiedLeft = undefined;
         }
       }
+    }
+
+    // Ответ нашёлся среди сообщений, но прямо поставить час не вышло —
+    // выгрузка целиком разбирается как обычно: остальное не теряется.
+    if (clarifiedLeft !== undefined && answered !== undefined && answered.besides !== '') {
+      clarifiedLeft = undefined;
     }
 
     /**
@@ -1141,7 +1162,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * Просьба показать остальное (`asksForRest`, закрытый список целых
      * фраз) в ветке — полный список её дел, из базы, мимо модели.
      */
-    if (clarified === undefined && target?.threadId !== undefined && asksForRest(combined)) {
+    if (clarifiedLeft === undefined && target?.threadId !== undefined && asksForRest(parseText)) {
       const topic = await topicByThread(db, batch.userId, target.threadId);
       if (topic !== undefined) {
         await tell(
@@ -1168,7 +1189,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * знает планировщик. Дело — последнее обсуждённое, ровно одно;
      * иначе — обычный путь.
      */
-    if (clarified === undefined && asksToRemind(combined)) {
+    if (clarifiedLeft === undefined && asksToRemind(parseText)) {
       const discussed = await lastDiscussed(db, {
         userId: batch.userId,
         batchId: batch.id,
@@ -1195,16 +1216,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     }
 
     const routed =
-      clarified !== undefined
+      clarifiedLeft !== undefined
         ? {
-            segments: [{ intent: 'PATCH' as const, text: clarified }],
+            segments: [{ intent: 'PATCH' as const, text: clarifiedLeft }],
             crisis: false,
             promptVersion: 'уточнение',
             reordered: false,
             fallback: false,
           }
         : await routeIntents(limited.degrade ? aiLight : aiRouter, {
-            input: combined,
+            input: parseText,
             userId: batch.userId,
             batchId: batch.id,
             ...(askedAbout === undefined
@@ -1786,7 +1807,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           // Хвост разговора — только если прочитан (`DIALOG_CONTEXT=on`).
           ...(dialog.length === 0 ? {} : { dialog }),
           // Ответ на «Какое дело?» уже назвал дело (24.09.2026).
-          ...(clarified === undefined ? {} : { clarified: true }),
+          ...(clarifiedLeft === undefined ? {} : { clarified: true }),
           now,
         },
       );
@@ -2219,7 +2240,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * пустой список дел.
          */
         const lastTry = !thanked && mood === undefined && (await openItemsFor(db, batch.userId));
-        const spokenHere = combined.trim();
+        const spokenHere = parseText.trim();
         const rescue =
           lastTry !== false && lastTry.length > 0 && spokenHere !== ''
             ? (
@@ -2325,7 +2346,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * убирает из `dumpText` отрезки с намерением `PATCH`, и вместе с
        * ними уходит отмена дня: «Хотя нет, давай мойку лучше в пятницу».
        */
-      speech: combined,
+      speech: parseText,
       topics: topics.names,
       defaultTopic: threadTopic?.name ?? topics.defaultName,
       timeZone: context.timeZone,
@@ -2374,7 +2395,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      */
     const echoes = retractionEchoes(
       classified.items.map((item) => item.text),
-      combined,
+      parseText,
     );
     const unechoed = classified.items.filter((_, index) => !echoes.has(index));
 
@@ -2697,7 +2718,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         units: lateExtracted.units,
         spoken: spokenLate,
         // Правилам дня — речь целиком, как и у основного прохода.
-        speech: combined,
+        speech: parseText,
         // …и слова записей основного прохода — человека (единицы) и
         // модели: их день — не поздней мысли («записать сына к врачу в
         // четверг, купить молоко», 17.09.2026). Единицы обязательны:
