@@ -31,7 +31,7 @@ import {
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
-import { sameTopicName } from '../topics/topic-key.js';
+import { knownTopicName, sameTopicName } from '../topics/topic-key.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
@@ -181,6 +181,26 @@ function isActionable(type: ItemType): boolean {
 }
 
 /**
+ * Повтор назван человеком — три приметы сразу (прогон Никиты 27.09.2026):
+ * модель его услышала, фраза повтора дословно есть в речи, и код собрал
+ * из неё правило. Одна фраза без правила («иногда») или выдуманная
+ * моделью («каждую неделю» при «у Сони бассейн») сведение не трогает.
+ */
+function statedRepeat(item: ClassifiedItems['items'][number], speech: string | undefined): boolean {
+  if (item.recurrenceKind === 'none' || speech === undefined) return false;
+  if (!quoteInSpeech(item.recurrenceText, speech)) return false;
+
+  return (
+    resolveRecurrence({
+      kind: item.recurrenceKind,
+      interval: item.recurrenceInterval,
+      text: item.recurrenceText,
+      deadline: item.deadline,
+    }).rule !== undefined
+  );
+}
+
+/**
  * Кому можно быть большой целью (правка заказчика 05.09.2026).
  *
  * **Что было не так.** Признак проекта разрешался только задаче. А живой
@@ -227,7 +247,8 @@ export function topicNameFrom(raw: string): string | undefined {
   if (name.length < 2 || name.length > 24) return undefined;
   if (!/^[а-яё]+(?: [а-яё]+)?$/u.test(name)) return undefined;
 
-  return name;
+  // «Финансовое» — это «деньги» со значком 💰 (прогон Никиты 27.09.2026).
+  return knownTopicName(name);
 }
 
 function normalizeTopic(text: string): string {
@@ -424,6 +445,24 @@ export function correctItems(
       if (priority === 'NONE') priority = 'LATER';
       corrections.type++;
       logger?.info({ promptVersion }, 'Отложенное словами дело записано делом, не желанием');
+    }
+
+    /**
+     * Повтор сведением не бывает (прогон Никиты 27.09.2026, 15:34).
+     *
+     * «Каждый вторник и четверг у Сони бассейн в 6 вечера» — глагола нет,
+     * и модель отдала сведение. Повтор она при этом услышала, но у
+     * сведения повтора нет (§5.1), и код снимал его вместе с часом: ни
+     * напоминания во вторник, ни строки в «Моих делах». Человек назвал
+     * расписание, чтобы о нём помнили, — это дело. Правило узкое, из трёх
+     * примет сразу (`statedRepeat`); важность — «скоро», если своей модель
+     * не дала: расписание начинается на этой неделе.
+     */
+    if (type === 'INFO' && statedRepeat(item, ctx.speech ?? ctx.spoken)) {
+      type = 'TASK';
+      if (priority === 'NONE') priority = 'SOON';
+      corrections.type++;
+      logger?.info({ promptVersion }, 'Сведение с повтором записано делом');
     }
 
     // §6.3 ТЗ и §6.2: желание, идея, информация и эмоция в выдачу не

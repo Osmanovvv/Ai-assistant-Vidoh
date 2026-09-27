@@ -1,5 +1,6 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
 import {
+  dayOfMonthDigitsIn,
   dayOfMonthIn,
   dayWordsIn,
   hasTimeWord,
@@ -359,6 +360,47 @@ function nearestWeekdayAmong(
 }
 
 /**
+ * Число названо, месяц модели прошёл — ближайшее такое число впереди
+ * (прогон Никиты 27.09.2026, 15:31).
+ *
+ * «…и оплатить квартплату до 10» — модель дала 10 **сентября** 27-го
+ * числа, и срок снимался как «в прошлом». Число назвал человек, месяц —
+ * догадка модели: берётся ближайшее 10-е впереди. Только когда в словах
+ * дела то же число, что у модели («до десятого», «до 10»), и нет ни
+ * месяца, ни дня недели, ни «завтра»: названный месяц делает прошедшее
+ * прошедшим, а день недели разбирается своим правилом.
+ */
+function aheadOnNamedDay(
+  parts: DateParts,
+  accuracy: DeadlineAccuracy,
+  context: { readonly now: Date; readonly timeZone: string; readonly said?: string | undefined },
+): Date | undefined {
+  const said = context.said;
+  if (accuracy !== 'day' || said === undefined) return undefined;
+  if (monthsIn(said).length > 0 || weekdaysIn(said).length > 0) return undefined;
+  if (relativeDaysIn(said).length > 0) return undefined;
+  if (![...dayOfMonthIn(said), ...dayOfMonthDigitsIn(said)].includes(parts.day)) return undefined;
+
+  const today = localDateParts(context.now, context.timeZone);
+  for (let step = 0; step <= 12; step++) {
+    const monthIndex = today.month - 1 + step;
+    const wanted = {
+      year: today.year + Math.floor(monthIndex / 12),
+      month: (monthIndex % 12) + 1,
+      day: parts.day,
+    };
+    if (step === 0 && wanted.day < today.day) continue;
+
+    const at = startOfDayInZone(wanted, context.timeZone);
+    const back = localDateParts(at, context.timeZone);
+    // 31-го в сентябре нет: такой месяц пропускается.
+    if (back.month === wanted.month && back.day === wanted.day) return at;
+  }
+
+  return undefined;
+}
+
+/**
  * Проверяет и привязывает к поясу то, что вернула модель.
  *
  * Пустой срок — не ошибка: у большинства мыслей срока нет. А вот срок в
@@ -462,6 +504,15 @@ export function resolveDeadline(
   const today = startOfDayInZone(localDateParts(context.now, context.timeZone), context.timeZone);
 
   if (at.getTime() < today.getTime()) {
+    const ahead = aheadOnNamedDay(parts, accuracy, context);
+    if (ahead !== undefined) {
+      return {
+        ok: true,
+        deadline: { at: ahead, accuracy: 'day' },
+        corrected: 'month',
+        dayNamed: true,
+      };
+    }
     return { ok: false, reason: `срок «${text}» в прошлом` };
   }
 

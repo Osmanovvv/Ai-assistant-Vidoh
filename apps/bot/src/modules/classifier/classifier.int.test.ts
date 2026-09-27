@@ -1765,3 +1765,169 @@ describe('повтор по нескольким дням недели (Р4 ша
     });
   });
 });
+
+describe('повтор сведением не бывает (прогон Никиты 27.09.2026, 15:34)', () => {
+  /**
+   * «Каждый вторник и четверг у Сони бассейн в 6 вечера» — без глагола, и
+   * модель отдала сведение. Повтор она при этом услышала, но у сведения
+   * его нет — код снял и повтор, и час: ни напоминания, ни строки в «Моих
+   * делах». Ответы модели — из пробы стенда `docs/eval-run-27-09-b`.
+   */
+  const speech =
+    'Каждый вторник и четверг у Сони бассейн в 6 вечера позвонить в банк по кредиту в пятницу в субботу. День рождения у Иры подарок еще не купила.';
+  const recorded = [
+    {
+      text: 'Каждый вторник и четверг у Сони бассейн в 6 вечера',
+      type: 'INFO',
+      priority: 'NONE',
+      topic: 'семья',
+      deadline: '2026-10-06',
+      deadlineAccuracy: 'week',
+      deadlineText: 'Каждый вторник и четверг',
+      recurrenceKind: 'unclear',
+      recurrenceInterval: 1,
+      recurrenceText: 'Каждый вторник и четверг',
+    },
+    {
+      text: 'Позвонить в банк по кредиту в пятницу',
+      topic: 'финансовое',
+      deadline: '2026-09-29',
+      deadlineAccuracy: 'day',
+      deadlineText: 'в пятницу',
+    },
+    {
+      text: 'В субботу день рождения у Иры, подарок ещё не купила',
+      topic: 'семья',
+      isProject: true,
+      deadline: '2026-09-30',
+      deadlineAccuracy: 'day',
+      deadlineText: 'в субботу',
+    },
+  ];
+  const run = async (items: Parameters<typeof answer>[0], spoken = speech) => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [answer(items)] });
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(...items.map((one) => one.text ?? '')),
+      now: new Date('2026-09-27T12:34:00.000Z'),
+      spoken,
+      speech: spoken,
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+    return result;
+  };
+
+  it('бассейн — дело: правило вт и чт, 29.09, 18:00, в названии без правила и часа', async () => {
+    const result = await run(recorded);
+
+    const pool = result.items.find((item) => item.text.includes('бассейн'));
+    expect(pool?.type).toBe('TASK');
+    expect(pool?.text).toBe('У Сони бассейн');
+    expect(pool?.deadline?.at.toISOString()).toBe('2026-09-28T21:00:00.000Z');
+    expect(pool?.deadline?.time).toBe(18 * 60);
+    expect(pool?.recurrence?.rule).toEqual({
+      kind: 'weekly',
+      interval: 1,
+      anchor: '2026-09-29',
+      days: [2, 4],
+    });
+    expect(result.corrections.type).toBe(1);
+    // Соседи — как были.
+    const bank = result.items.find((item) => item.text.includes('банк'));
+    const gift = result.items.find((item) => item.text.includes('Иры'));
+    expect(bank?.deadline?.at.toISOString()).toBe('2026-10-01T21:00:00.000Z');
+    expect(gift?.deadline?.at.toISOString()).toBe('2026-10-02T21:00:00.000Z');
+  });
+
+  describe('чего не трогать', () => {
+    it('сведение без повтора остаётся сведением', async () => {
+      const result = await run(
+        [{ text: 'Код от домофона 1234', type: 'INFO', priority: 'NONE', topic: 'личное' }],
+        'Код от домофона 1234.',
+      );
+
+      expect(result.items[0]?.type).toBe('INFO');
+      expect(result.corrections.type).toBe(0);
+    });
+
+    it('повтора нет в словах человека — модель его придумала: сведение', async () => {
+      const result = await run(
+        [
+          {
+            text: 'У Сони бассейн',
+            type: 'INFO',
+            priority: 'NONE',
+            topic: 'семья',
+            // Срок есть — из него собралось бы правило, не будь проверки слов.
+            deadline: '2026-09-29',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'weekly',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждую неделю',
+          },
+        ],
+        'У Сони бассейн.',
+      );
+
+      expect(result.items[0]?.type).toBe('INFO');
+    });
+
+    it('желание с повтором остаётся желанием', async () => {
+      const result = await run(
+        [
+          {
+            text: 'Хочу каждый день бегать',
+            type: 'DESIRE',
+            priority: 'NONE',
+            topic: 'здоровье',
+            // Срок есть — правило собралось бы, будь это сведение.
+            deadline: '2026-09-28',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'daily',
+            recurrenceInterval: 1,
+            recurrenceText: 'каждый день',
+          },
+        ],
+        'Хочу каждый день бегать.',
+      );
+
+      expect(result.items[0]?.type).toBe('DESIRE');
+    });
+  });
+});
+
+describe('«финансовое» — это деньги (прогон Никиты 27.09.2026, 15:34)', () => {
+  /**
+   * Модель назвала сферу банка «финансовое», и бот завёл сферу с этим
+   * именем — без значка, «Финансовое — 1». Для денег в боте есть своя
+   * сфера со значком 💰; своя у человека («финансы», «деньги») — она.
+   */
+  const run = async (topics: readonly string[]) => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ responses: [answer([{ topic: 'финансовое' }])] });
+    const result = await classifyUnits(deps(provider, prompts), { ...params('дело'), topics });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+    return result.items[0];
+  };
+
+  it('своей нет — просится «деньги», а не «финансовое»', async () => {
+    const item = await run(TOPICS);
+
+    expect(item?.topic).toBe('личное');
+    expect(item?.wantedTopic).toBe('деньги');
+  });
+
+  it('своя «деньги» — она', async () => {
+    const item = await run([...TOPICS, 'деньги']);
+
+    expect(item?.topic).toBe('деньги');
+    expect(item?.wantedTopic).toBeUndefined();
+  });
+
+  it('своя «финансы» — она', async () => {
+    const item = await run([...TOPICS, 'финансы']);
+
+    expect(item?.topic).toBe('финансы');
+    expect(item?.wantedTopic).toBeUndefined();
+  });
+});

@@ -65,7 +65,28 @@ function stemsOf(name: string): ReadonlySet<string> {
   return stems;
 }
 
+/**
+ * Деньги под разными именами (прогон Никиты 27.09.2026, 15:34): модель
+ * назвала сферу банка «финансовое», и бот завёл её — без значка, рядом
+ * с тем, что у человека могло уже быть «деньгами» или «финансами».
+ * Закрытый список: «финанс…» — любое слово с этой основой, и «деньги».
+ */
+function aboutMoney(name: string): boolean {
+  const word = normalized(name);
+  return !word.includes(' ') && (word.startsWith('финанс') || stemsOf(word).has('деньг'));
+}
+
+/** Имя, под которым бот заводит сферу денег: у него есть значок 💰. */
+export const MONEY_TOPIC = 'деньги';
+
+/** Имя сферы из ответа модели, приведённое к известному боту, если оно о деньгах. */
+export function knownTopicName(name: string): string {
+  return aboutMoney(name) ? MONEY_TOPIC : name;
+}
+
 export function sameTopicName(one: string, other: string): boolean {
+  if (aboutMoney(one) && aboutMoney(other)) return true;
+
   const theirs = stemsOf(other);
   for (const stem of stemsOf(one)) {
     if (theirs.has(stem)) return true;

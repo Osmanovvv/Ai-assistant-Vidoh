@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CARD_LABELS, withCapital, withoutCardFields } from './item-text.js';
+import { CARD_LABELS, storedTitle, withCapital, withoutCardFields } from './item-text.js';
 import { defaultTexts } from '../../texts/index.js';
 
 /**
@@ -150,4 +150,26 @@ describe('поля карточки в заголовке', () => {
       [card.deadlineLabel, card.statusLabel, card.topicLabel, card.recurrenceLabel].sort(),
     );
   });
+});
+
+describe('точка в конце названия (прогон Никиты 27.09.2026)', () => {
+  /**
+   * «Забрать куртку из химчистки.» — модель вернула название с точкой, и
+   * она стояла в списках («…химчистки. · завтра, 19:00») и в вопросах
+   * («Во сколько «…химчистки.»…»). Название — не предложение.
+   */
+  it.each([
+    ['Забрать куртку из химчистки.', 'Забрать куртку из химчистки'],
+    ['Записать Мишу к ортодонту в понедельник..', 'Записать Мишу к ортодонту в понедельник'],
+    ['позвонить в 10.', 'Позвонить в 10'],
+  ])('«%s» → «%s»', (text, stored) => {
+    expect(storedTitle(text)).toBe(stored);
+  });
+
+  it.each(['Купить тетради, ручки и т.д.', 'Съездить в г.', 'Подумать о…', 'Купить хлеб'])(
+    'сокращение и многоточие остаются: «%s»',
+    (text) => {
+      expect(storedTitle(text)).toBe(text);
+    },
+  );
 });

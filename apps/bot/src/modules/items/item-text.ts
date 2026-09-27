@@ -151,7 +151,20 @@ export function withoutCardFields(text: string): string {
  * заглавная встала бы у мусора, а не у дела.
  */
 export function storedTitle(text: string): string {
-  return withCapital(withoutCardFields(text));
+  return withoutFinalStop(withCapital(withoutCardFields(text)));
+}
+
+/**
+ * Точка в конце — не часть названия (прогон Никиты 27.09.2026).
+ *
+ * «Забрать куртку из химчистки.» — модель вернула название с точкой, и
+ * она стояла в списках («…химчистки. · завтра, 19:00») и в вопросах
+ * («Во сколько «…химчистки.»…»). Название — не предложение. Сокращение
+ * в конце («и т.д.», «в г.») — часть названия, многоточие — тоже.
+ */
+function withoutFinalStop(text: string): string {
+  if (/(?:^|[\s.])\p{L}{1,2}\.$/u.test(text)) return text;
+  return text.replace(/\s*\.+$/u, '');
 }
 
 /**
