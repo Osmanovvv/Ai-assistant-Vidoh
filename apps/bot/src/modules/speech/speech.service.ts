@@ -9,6 +9,7 @@ import { meterEachSend } from '../metering/metered-send.js';
 import { SPEECH_BILLING_BLOCK_SEC, type ModelPricing } from '../metering/pricing.js';
 import type { SpendGuard } from '../metering/spend-guard.js';
 import { AttributionError, attribute } from './attribution.js';
+import { withDaysAfterPauses } from './day-pauses.js';
 import { pauseStats } from './pauses.js';
 import { groupVoices } from './grouping.js';
 import {
@@ -129,8 +130,9 @@ async function sendPart(
 ): Promise<TranscriptionResult> {
   let paidSeconds: number | undefined;
 
+  let result: TranscriptionResult;
   try {
-    return await withTimeout(
+    result = await withTimeout(
       () =>
         deps.provider.transcribe({
           filePath: part.path,
@@ -157,6 +159,18 @@ async function sendPart(
 
     throw markAlreadyPaid(error, { audioSeconds: paidSeconds });
   }
+
+  /**
+   * День после паузы — следующему делу (задача 3.68, прогон Никиты
+   * 27.09.2026): точку по паузам переставляем здесь, в одной точке на оба
+   * пути — одиночное голосовое и склейку. Условия — в `day-pauses.ts`.
+   * В журнал — только число: слова человека туда не идут.
+   */
+  const { result: heard, moved } = withDaysAfterPauses(result);
+  if (moved > 0) {
+    deps.logger?.info({ фраз: moved }, 'День после паузы отдан следующему делу (задача 3.68)');
+  }
+  return heard;
 }
 
 export async function transcribeMessage(
