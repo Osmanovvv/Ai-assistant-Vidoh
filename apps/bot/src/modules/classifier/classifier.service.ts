@@ -32,6 +32,7 @@ import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
 import { sameTopicName } from '../topics/topic-key.js';
+import { handOffTrailingDay } from './day-handoff.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
 /**
@@ -347,8 +348,25 @@ export function correctItems(
       'Дело, разрезанное моделью по дням, собрано в одно',
     );
   }
-  const modelItems = rejoined.items;
-  const said = rejoined.said;
+  /**
+   * День в конце предложения — следующему делу (стенд 27.09.2026,
+   * voice-27-08): «в банк … в пятницу в субботу. День рождения у Иры…» —
+   * модель отдала банку «в пятницу или в субботу». См. `day-handoff.ts`.
+   */
+  const handed = handOffTrailingDay(
+    rejoined.items,
+    rejoined.said,
+    whole === undefined ? undefined : withoutDayQuestions(whole),
+  );
+  if (handed.moved > 0) {
+    corrections.deadline += handed.moved;
+    logger?.info(
+      { promptVersion, отдано: handed.moved },
+      'День в конце предложения отдан следующему делу',
+    );
+  }
+  const modelItems = handed.items;
+  const said = handed.said;
 
   // Входные тексты годятся только при совпадении числа записей.
   const aligned = said?.length === modelItems.length;
