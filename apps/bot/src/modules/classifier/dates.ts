@@ -1,5 +1,6 @@
 import type { DeadlineAccuracy } from '../ai/schemas/classifier.js';
 import {
+  dayOfMonthIn,
   dayWordsIn,
   hasTimeWord,
   monthsIn,
@@ -548,7 +549,9 @@ export function resolveDeadline(
      */
     const words = quote === '' ? context.said : `${context.said} ${quote}`;
     const named = weekdaysIn(words);
-    dayInWords = dayWordsIn(words).length > 0;
+    // Число месяца словами — тоже названный день (стенд 27.09.2026).
+    const ordinals = dayOfMonthIn(words);
+    dayInWords = dayWordsIn(words).length > 0 || ordinals.length > 0;
 
     /**
      * Назван день недели — это день, даже если модель сказала «неделя»
@@ -593,6 +596,21 @@ export function resolveDeadline(
      */
     const weekend = /(?<!\p{L})выходн/u.test(words.toLowerCase());
     const shifts = relativeDaysIn(words);
+
+    /**
+     * «До десятого» — число в дате обязано совпасть (стенд 27.09.2026,
+     * voice-27-03). Не совпало — срока нет, как было до того, как число
+     * словами стали признавать: худший случай равен прежнему.
+     */
+    if (
+      accuracy === 'day' &&
+      ordinals.length > 0 &&
+      named.length === 0 &&
+      shifts.length === 0 &&
+      !ordinals.includes(localDateParts(at, context.timeZone).day)
+    ) {
+      return { ok: false, reason: `срок «${text}» не совпал с числом, названным человеком` };
+    }
 
     if (accuracy === 'day' && weekend && named.length === 0 && shifts.length === 0) {
       return {

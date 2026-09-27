@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveDeadline } from './dates.js';
-import { hasTimeWord, relativeDaysIn, timeQuoteInSpeech, weekdayIn } from './time-words.js';
+import {
+  dayOfMonthIn,
+  hasTimeWord,
+  relativeDaysIn,
+  timeQuoteInSpeech,
+  weekdayIn,
+} from './time-words.js';
 
 /**
  * Проверка сроков словами человека (задача 2.7).
@@ -763,6 +769,72 @@ describe('срок «ГГГГ-ММ» от модели (бой 17.09.2026)', () 
     const outcome = resolveDeadline(
       { deadline: '2026-13', accuracy: 'month' },
       { ...thursday, said: 'в октябре пройти диспансеризацию' },
+    );
+
+    expect(outcome.ok).toBe(false);
+  });
+});
+
+describe('число месяца словами — «до десятого» (стенд 27.09.2026, voice-27-03)', () => {
+  /**
+   * «Еще оплатить квартплату до десятого» — модель дала 10.10 с цитатой
+   * «до десятого», а код её отбросил: число словами он словом о времени
+   * не считал, цифрой «до 10» прошло бы. Признаётся только число после
+   * предлога и без своего существительного за ним: «к пятому уроку» и
+   * «до десятого класса» — не даты.
+   */
+  const SPEECH =
+    'Значит так, в понедельник надо отправить договор юристу. Хотя нет, давай во вторник, в понедельник я не успею. Еще оплатить квартплату до десятого и купить корм собаке, он заканчивается.';
+  const SUNDAY_EVENING = new Date('2026-09-27T16:40:00.000Z');
+
+  it.each([
+    ['до десятого', [10]],
+    ['к пятнадцатому числу', [15]],
+    ['до двадцать пятого', [25]],
+    ['до тридцать первого', [31]],
+    ['с третьего', [3]],
+    ['к пятому уроку', []],
+    ['до десятого класса', []],
+    ['в десятом классе', []],
+    ['десятого', []],
+  ])('«%s» → %j', (text, days) => {
+    expect(dayOfMonthIn(text)).toEqual(days);
+  });
+
+  it('цитата «до десятого», сказанная дословно, — о времени', () => {
+    expect(timeQuoteInSpeech('до десятого', SPEECH)).toBe(true);
+  });
+
+  it('«к пятому уроку» — нет, даже дословно', () => {
+    expect(timeQuoteInSpeech('к пятому уроку', 'Отвести сына к пятому уроку')).toBe(false);
+  });
+
+  it('срок модели 10.10 по цитате «до десятого» принимается', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-10-10', accuracy: 'day' },
+      {
+        now: SUNDAY_EVENING,
+        timeZone: ZONE,
+        said: 'Оплатить квартплату до десятого',
+        quoted: 'до десятого',
+        spoken: SPEECH,
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.deadline?.at.toISOString()).toBe('2026-10-09T21:00:00.000Z');
+  });
+
+  it('число в дате модели не то, что сказано, — срока нет, как было', () => {
+    const outcome = resolveDeadline(
+      { deadline: '2026-10-11', accuracy: 'day' },
+      {
+        now: SUNDAY_EVENING,
+        timeZone: ZONE,
+        said: 'Оплатить квартплату до десятого',
+        quoted: 'до десятого',
+        spoken: SPEECH,
+      },
     );
 
     expect(outcome.ok).toBe(false);
