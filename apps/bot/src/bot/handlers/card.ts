@@ -370,7 +370,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     }
 
     await setAwaiting(db, active.userId, `${AWAITING.retimePrefix}${active.item.id}`);
-    await ctx.reply(active.texts.card.retimeHint, {
+    await ctx.reply(active.texts.card.retimeHintAbout(active.item.text), {
       reply_markup: fitKeyboard([
         [
           {

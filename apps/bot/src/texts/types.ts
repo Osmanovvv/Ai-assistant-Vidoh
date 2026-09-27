@@ -328,7 +328,8 @@ export interface TextProfile {
      * час — просьба повторить, ожидание остаётся; «Не менять» — выход.
      */
     readonly buttonRetime: string;
-    readonly retimeHint: string;
+    /** «Изменить время»: вопрос с названием дела — видно, чей час меняется. */
+    readonly retimeHintAbout: (title: string) => string;
     readonly retimeNotUnderstood: string;
     readonly buttonKeepTime: string;
     readonly retimeKept: string;

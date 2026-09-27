@@ -131,6 +131,33 @@ function datelessWithDay(key: string, known: KnownItems): Item | undefined {
   return bare === key || bare === '' ? undefined : known.dateless.get(bare);
 }
 
+/**
+ * Двойник без срока внутри одной выгрузки (прогон Никиты 27.09.2026, 18:16).
+ *
+ * Два голосовых подряд — «Записать Мишу к стоматологу.» и «Записать Мишу к
+ * стоматологу в среду.» — попали в одну выгрузку, и завелись два дела. Отсев
+ * повтора внутри выгрузки (`splitKnown`) сравнивает дословно и оставляет
+ * первое — а первым было то, что без дня. Здесь уступает запись без срока:
+ * её слова — те же, что у записи с днём, без названного дня («в среду»,
+ * «завтра»). Возвращает номера уступающих. Обе с днями — не трогаются: «в
+ * четверг» и «в пятницу» могут быть двумя делами.
+ */
+export function datelessTwins(
+  items: readonly { readonly text: string; readonly deadline?: unknown }[],
+): ReadonlySet<number> {
+  const withDay = new Set(
+    items
+      .filter((item) => item.deadline !== undefined)
+      .map((item) => withoutWeekday(sameTextKey(item.text))),
+  );
+
+  const twins = new Set<number>();
+  for (const [index, item] of items.entries()) {
+    if (item.deadline === undefined && withDay.has(sameTextKey(item.text))) twins.add(index);
+  }
+  return twins;
+}
+
 export interface SplitResult<T> {
   /** Чего у человека ещё нет — это и надо завести. */
   readonly fresh: readonly T[];
