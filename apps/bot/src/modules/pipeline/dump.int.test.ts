@@ -10300,3 +10300,119 @@ describe('«Напомнишь?» о только что обсуждённом 
     expect(stages).toEqual(['router']);
   });
 });
+
+/**
+ * Прогон Никиты 27.09.2026, 15:22: «Записать Мишу к ортодонту» легло без
+ * даты — распознавание прилепило «в понедельник» к соседнему предложению.
+ * Человек сказал ещё раз с днём, и бот завёл второе дело вместо того,
+ * чтобы дать день первому; в ответе стояло «…в понедельник..».
+ */
+describe('день к делу без срока — тому же делу, а не второму (27.09.2026)', () => {
+  const spoken = 'Мишу записать к ортодонту в среду.';
+  const title = 'Записать Мишу к ортодонту в среду.';
+
+  const wednesdayDump = () =>
+    echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
+      extractor: () =>
+        JSON.stringify({ units: [{ text: title, isProject: false, isEmotion: false }] }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text: title,
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'здоровье',
+              isProject: false,
+              // Часы теста — понедельник 24.08, среда — 26.08.
+              deadline: '2026-08-26',
+              deadlineAccuracy: 'day',
+              deadlineText: 'в среду',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
+          ],
+        }),
+    });
+
+  async function liveItems(): Promise<(typeof items.$inferSelect)[]> {
+    return await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+  }
+
+  it('«…в среду» при записанном без даты — день встаёт тому делу, второго нет', async () => {
+    const prompts = await seedPrompts();
+    const [orthodontist] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать Мишу к ортодонту',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        updatedAt: at(-60 * 60_000),
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: wednesdayDump(),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => row.id)).toEqual([orthodontist?.id]);
+    expect(rows[0]?.deadlineAt?.toISOString()).toBe('2026-08-25T21:00:00.000Z');
+    expect(all.some((text) => text.includes('«Записать Мишу к ортодонту»'))).toBe(true);
+    expect(all.some((text) => text.startsWith('Записала'))).toBe(false);
+    expect(all.some((text) => text.includes('..'))).toBe(false);
+  });
+
+  it('у записанного свой день — другой день заводит новое дело, как раньше', async () => {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Записать Мишу к ортодонту',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        deadlineAt: new Date('2026-08-27T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        updatedAt: at(-60 * 60_000),
+      });
+    const { sender } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: wednesdayDump(),
+        }),
+      },
+      userId,
+    );
+
+    expect(await liveItems()).toHaveLength(2);
+  });
+});

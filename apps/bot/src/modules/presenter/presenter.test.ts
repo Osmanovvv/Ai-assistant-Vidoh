@@ -695,6 +695,18 @@ describe('presentDump — ответ на выгрузку целиком', () =
     expect(countQuestions(result.reply.text)).toBe(0);
   });
 
+  it('точка в конце названия не удваивается (прогон Никиты 27.09.2026, 15:22)', () => {
+    // Модель вернула название с точкой, шаблон поставил свою: «…в понедельник..».
+    const result = presentDump({
+      ...params,
+      quickAdd: { topic: 'Здоровье', title: 'Записать Мишу к ортодонту в понедельник.' },
+    });
+
+    expect(result.reply.text).toBe(
+      'Записала в «Здоровье»: Записать Мишу к ортодонту в понедельник.',
+    );
+  });
+
   it('неизвестный профиль берёт словарь по умолчанию', () => {
     expect(presentDump({ ...params, profile: 'тёплый-которого-нет' }).reply.text).toContain(
       texts.answer.keepOrPick,
