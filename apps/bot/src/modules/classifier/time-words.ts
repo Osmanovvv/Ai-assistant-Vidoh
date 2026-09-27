@@ -412,6 +412,47 @@ export function dayOfMonthIn(text: string): readonly number[] {
   return [...found];
 }
 
+/**
+ * Число месяца цифрами — «до 10», «к 5 числа» (прогон Никиты 27.09.2026).
+ *
+ * Отдельно от `dayOfMonthIn` намеренно: «позвонить до 12» чаще час, чем
+ * число, и сделать из цифр вето на срок «на сегодня» было бы худшим
+ * обменом. Годится только в подтверждение уже данной моделью даты
+ * (`resolveDeadline`, ветка «в прошлом»). Только после «до/к/ко», только
+ * со свободным словом следом и не вторым концом промежутка: «до 10
+ * часов», «до 10:30», «с 10 до 12» — часы.
+ */
+const DIGIT_DAY_PREPOSITIONS = new Set(['до', 'к', 'ко']);
+
+export function dayOfMonthDigitsIn(text: string): readonly number[] {
+  const all = normalize(text)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(' ')
+    .filter((word) => word.length > 0);
+  const found = new Set<number>();
+
+  for (let at = 0; at < all.length; at++) {
+    if (!DIGIT_DAY_PREPOSITIONS.has(all[at] ?? '')) continue;
+
+    const digits = all[at + 1] ?? '';
+    if (!/^\d{1,2}$/u.test(digits)) continue;
+    if (/^\d+$/u.test(all[at - 1] ?? '')) continue;
+
+    const next = all[at + 2];
+    const free =
+      next === undefined ||
+      AFTER_DAY.has(next) ||
+      monthsIn(next).length > 0 ||
+      /(?:ть|ти|чь)(?:ся|сь)?$/u.test(next);
+    const day = Number(digits);
+
+    if (free && day >= 1 && day <= 31) found.add(day);
+  }
+
+  return [...found];
+}
+
 export function dayWordsIn(text: string): readonly string[] {
   const found = new Set<string>();
   const normalized = normalize(text)
