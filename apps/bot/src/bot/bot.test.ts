@@ -103,6 +103,32 @@ describe('createBot', () => {
     await expect(bot.api.editMessageText(1, 2, 'текст')).rejects.toBeInstanceOf(GrammyError);
   });
 
+  it('обрыв ответа на нажатие кнопки не роняет обработчик (боевой журнал 27.09.2026)', async () => {
+    /**
+     * Логика — в `callback-answer.test.ts`; здесь — что она подключена.
+     * Telegram рвёт соединение, не ответив, — ровно `ECONNRESET` из
+     * журнала, на котором «Согласна» осталась без первого вопроса.
+     */
+    const listener = createServer((request) => {
+      request.socket.destroy();
+    });
+    server = listener;
+    await new Promise<void>((resolve) => {
+      listener.listen(0, '127.0.0.1', resolve);
+    });
+    const address = listener.address();
+    if (address === null || typeof address === 'string') throw new Error('порт не занят');
+
+    const bot = createBot(FAKE_TOKEN, {
+      botInfo: BOT_INFO,
+      apiRoot: `http://127.0.0.1:${String(address.port)}`,
+    });
+
+    await expect(bot.api.answerCallbackQuery('1')).resolves.toBe(true);
+    // Реплика при том же обрыве по-прежнему поднимается: её сбой прятать нельзя.
+    await expect(bot.api.sendMessage(1, 'вопрос')).rejects.toThrow();
+  });
+
   it('реплики бота уходят в хвост разговора, если хранилище передано (план docs/26)', async () => {
     /**
      * Логика перехвата проверена в `capture.test.ts`; здесь — что строка

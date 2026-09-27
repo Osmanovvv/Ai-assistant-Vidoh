@@ -227,26 +227,31 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
       'Нажата «Согласна»',
     );
 
-    // Повторное нажатие: согласие уже записано, говорить второй раз нечего.
-    if (!confirmed) return;
-
     /**
      * После согласия — то, что раньше было первым экраном: первый вопрос
      * опроса, если он ещё не начинался; иначе короткое «можно говорить».
      * Приветствие второй раз не повторяется — оно уже над кнопкой.
+     *
+     * **Повторное нажатие тоже присылает вопрос, если опрос так и не
+     * начался** (боевой журнал 27.09.2026, 14:48). Первое нажатие записало
+     * согласие и оборвалось раньше вопроса; второе снимало кнопку и
+     * молчало — человек оставался без кнопки и без вопроса. Вопрос уйдёт
+     * один раз: он же и начинает опрос. «Спасибо» второй раз не приходит
+     * (проджект, 20.09.2026) — его говорит только первое нажатие.
      */
     const question = await firstQuestion(ctx.from.id);
-    if (question === undefined) {
-      await ctx.reply(texts.consent.accepted);
-    } else {
+    if (question !== undefined) {
       await ctx.reply(question.text, {
         reply_markup: fitKeyboard(question.rows.map((row) => [...row])),
         parse_mode: 'Markdown',
         link_preview_options: { is_disabled: true },
       });
+    } else if (confirmed) {
+      await ctx.reply(texts.consent.accepted);
     }
 
     // Сказанное до кнопки — в выгрузку, как только что присланное (§16).
+    // И на повторном нажатии: оборванное первое могло не дойти до выпуска.
     if (deps.release !== undefined) {
       const released = await deps.release(user.id, ctx.chat?.id);
       if (released > 0) logger.info({ userId: user.id, released }, 'Выпущены ждавшие согласия');
