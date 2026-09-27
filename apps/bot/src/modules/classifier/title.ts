@@ -52,6 +52,17 @@ const LEADING_RULE = new RegExp(
   'iu',
 );
 
+/**
+ * То же правило повторения в конце названия (прогон Никиты 27.09.2026,
+ * 16:44): «Каждую среду и пятницу у Димы футбол в 5» модель переписала в
+ * «У Димы футбол каждую среду и пятницу», и срез с начала его не видел.
+ * Только целой фразой в самом конце, после пробела или запятой.
+ */
+const TRAILING_RULE = new RegExp(
+  String.raw`(?:\s*,\s*|\s+)(?:каждый|каждую|каждое|по)\s+(?:(?:${RULE_DAYS})(?:(?:\s*,\s*|\s+и\s+)(?:${RULE_DAYS}))*|день|неделю|месяц|утро|вечер|будни|выходные)[.!]?$`,
+  'iu',
+);
+
 /** Остаток, который делом не является: одно слово о времени. */
 const ONLY_TIME = new RegExp(
   String.raw`^(?:сегодня|завтра|послезавтра|(?:в|во)\s+(?:${WEEKDAYS})|в\s+(?:${MONTHS}))$`,
@@ -82,7 +93,7 @@ export function cleanTitle(
     const before = rest;
     rest = rest.replace(LEADING_MODAL, '');
     if (item.hasDeadline) rest = rest.replace(LEADING_DAY, '');
-    if (item.hasRule === true) rest = rest.replace(LEADING_RULE, '');
+    if (item.hasRule === true) rest = rest.replace(LEADING_RULE, '').replace(TRAILING_RULE, '');
     if (rest === before) break;
   }
 
