@@ -342,6 +342,8 @@ async function main(): Promise<void> {
       ? []
       : (JSON.parse(await readFile(resumePath, 'utf8')) as { readonly calls: Recorded[] }).calls;
   let paid = 0;
+  // Дошли бы до модели на бою, а её ответа нет (потолок, `--limit`).
+  const unasked: string[] = [];
   const withModel = replayed !== undefined || live !== undefined;
 
   const total: Record<Verdict, number> = { верно: 0, 'не понял': 0, 'не так': 0 };
@@ -383,6 +385,7 @@ async function main(): Promise<void> {
             stopped = error instanceof Error ? error.message : String(error);
           }
         }
+        if (recorded === undefined) unasked.push(`${section.title.slice(0, 2)} «${one.say}»`);
         if (recorded !== undefined) {
           calls.push(recorded);
           const meaning: ReplyMeaning =
@@ -421,6 +424,10 @@ async function main(): Promise<void> {
     say(
       `Ответов модели: ${String(calls.length)}${live === undefined ? '' : `, из них новых вызовов ${String(paid)}`}`,
     );
+  }
+  if (withModel && unasked.length > 0) {
+    say(`Без ответа модели (судил код): ${String(unasked.length)}`);
+    if (process.argv.includes('--missed')) say(unasked.map((one) => `  ${one}`).join('\n'));
   }
   if (stopped !== undefined) say(`Остановлено: ${stopped}`);
 
