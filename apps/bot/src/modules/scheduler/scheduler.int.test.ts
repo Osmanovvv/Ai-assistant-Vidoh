@@ -2034,3 +2034,51 @@ describe('раскладка доходит до всех, а не до перв
     expect(tail?.total ?? 0).toBe(1);
   }, 120_000);
 });
+
+describe('бассейн по вторникам и четвергам: после «Сделано» напоминание — в четверг (Р4 шаг 5)', () => {
+  it('«Сделано» во вторник 18:05 → срок четверг 18:00 → напоминание о часе в четверг 17:30', async () => {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Бассейн у Сони',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        deadlineAt: new Date('2026-08-31T21:00:00.000Z'), // вторник 01.09
+        deadlineAccuracy: 'day',
+        deadlineTime: 18 * 60,
+        recurrenceRule: { kind: 'weekly', interval: 1, anchor: '2026-09-01', days: [2, 4] },
+        recurrenceText: 'Каждый вторник и четверг',
+        recurrenceSource: 'stated',
+      })
+      .returning({ id: items.id });
+    const id = row?.id ?? '';
+
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: id,
+        action: 'complete',
+        changes: emptyChanges(),
+        timeZone: 'Europe/Moscow',
+        now: new Date('2026-09-01T15:05:00.000Z'),
+      }),
+    );
+
+    // Среда, полдень: горизонт раскладки видит четверг целиком.
+    await planReminders(deps(), { now: new Date('2026-09-02T09:00:00.000Z') });
+
+    const hour = await testDb()
+      .select({ dueAt: reminders.dueAt })
+      .from(reminders)
+      .where(
+        and(
+          eq(reminders.userId, userId),
+          eq(reminders.itemId, id),
+          eq(reminders.kind, 'deadline_hour'),
+        ),
+      );
+    expect(hour.map((one) => one.dueAt.toISOString())).toContain('2026-09-03T14:30:00.000Z');
+  });
+});

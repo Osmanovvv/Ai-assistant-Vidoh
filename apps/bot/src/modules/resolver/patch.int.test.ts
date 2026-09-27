@@ -1948,6 +1948,50 @@ describe('правило на закрытой записи оживляет е�
     expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
   });
 
+  it('«Сделано» у бассейна по вт и чт: вторник → четверг, четверг → следующий вторник; час 18:00 остаётся (Р4 шаг 5)', async () => {
+    const TUESDAY_0109 = new Date('2026-08-31T21:00:00.000Z');
+    const item = await sow({
+      text: 'Бассейн у Сони',
+      deadlineAt: TUESDAY_0109,
+      deadlineTime: 18 * 60,
+      recurrenceRule: { kind: 'weekly', interval: 1, anchor: '2026-09-01', days: [2, 4] },
+      recurrenceText: 'Каждый вторник и четверг',
+      recurrenceSource: 'stated',
+    });
+
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: new Date('2026-09-01T15:05:00.000Z'), // вторник, 18:05
+      }),
+    );
+
+    const onThursday = await reread(item.id);
+    expect(onThursday.status).toBe('new');
+    expect(onThursday.deadlineAt?.toISOString()).toBe('2026-09-02T21:00:00.000Z');
+    expect(onThursday.deadlineTime).toBe(18 * 60);
+
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'complete',
+        changes: NO_CHANGES,
+        timeZone: MOSCOW,
+        now: new Date('2026-09-03T15:35:00.000Z'), // четверг, 18:35
+      }),
+    );
+
+    const nextTuesday = await reread(item.id);
+    expect(nextTuesday.status).toBe('new');
+    expect(nextTuesday.deadlineAt?.toISOString()).toBe('2026-09-07T21:00:00.000Z');
+    expect(nextTuesday.deadlineTime).toBe(18 * 60);
+  });
+
   it('«теперь по вторникам и четвергам» голосом — правило со списком дней (Р4 шаг 4)', async () => {
     // Модель на такую фразу отвечает «не поняла»; дни достаёт код, якорь —
     // срок дела, четверг 03.09.
