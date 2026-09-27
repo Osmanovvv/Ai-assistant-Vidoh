@@ -348,8 +348,10 @@ function periodInDays(rule: RecurrenceRule): number {
     case 'daily':
       return rule.interval;
 
+    // Со списком дней шаг неделе не равен, но неделя постоянна, как у «по
+    // будням»: прыжок целыми неделями от якоря приходит на его же день.
     case 'weekly':
-      return 7 * rule.interval;
+      return rule.days === undefined ? 7 * rule.interval : 7;
 
     // Пять шагов «по будням» — это ровно неделя, каким бы днём ни был
     // якорь: `interval` у этого вида не участвует и в `advance`.
@@ -375,8 +377,16 @@ function advance(rule: RecurrenceRule, anchor: DateParts, from: DateParts): Date
       return next;
     }
 
-    case 'weekly':
-      return addDays(from, 7 * rule.interval);
+    case 'weekly': {
+      if (rule.days === undefined) return addDays(from, 7 * rule.interval);
+
+      // «Каждый вторник и четверг» (Р4): ближайший следующий день из
+      // списка — за неделю он найдётся всегда, в списке от двух дней.
+      const days = rule.days;
+      let next = addDays(from, 1);
+      while (!days.includes(weekdayOf(next))) next = addDays(next, 1);
+      return next;
+    }
 
     case 'monthly':
       return monthsFromAnchor(anchor, from, rule.interval);
