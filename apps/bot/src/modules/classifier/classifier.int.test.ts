@@ -1753,6 +1753,8 @@ describe('повтор по нескольким дням недели (Р4 ша
     if (!result.ok) throw new Error('разбор должен был удаться');
 
     const pool = result.items.find((item) => item.text.includes('бассейн'));
+    // Повтор — своей строкой в карточке; в названии не «И четверг…» (Р4 шаг 6).
+    expect(pool?.text).toBe('У Сони бассейн, надо не забывать собирать сумку.');
     expect(pool?.deadline?.at.toISOString()).toBe('2026-09-28T21:00:00.000Z');
     expect(pool?.deadline?.time).toBe(18 * 60);
     expect(pool?.recurrence?.rule).toEqual({
