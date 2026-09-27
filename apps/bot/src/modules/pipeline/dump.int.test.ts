@@ -8531,33 +8531,51 @@ describe('сферы по содержанию (правка заказчицы 
     );
   }
 
-  it('модель назвала сферу, которой нет, — сфера заводится, запись в ней, ветка в чате', async () => {
+  it('модель назвала известную сферу, которой у человека нет, — сфера заводится, запись в ней, ветка в чате', async () => {
     const gateway = await ownTopics(['личное', 'дом']);
-    await queuedBatchOf([{ kind: 'text', text: 'прочитать книгу по саморазвитию', offsetMs: 0 }]);
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына на футбол', offsetMs: 0 }]);
 
-    await run(gateway, () => 'саморазвитие');
+    await run(gateway, () => 'дети');
 
     const mine = await listTopics(testDb(), userId);
-    expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дом', 'саморазвитие']);
+    expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дом', 'дети']);
 
     const saved = await testDb().select().from(items);
-    expect(saved.map((item) => item.topic)).toEqual(['саморазвитие']);
+    expect(saved.map((item) => item.topic)).toEqual(['дети']);
 
     // Ветка и сводка появились сразу — человек видит сферу, а не строку в базе.
-    expect(gateway.created.map((thread) => thread.name)).toContain('саморазвитие');
-    const created = mine.find((topic) => topic.name === 'саморазвитие');
+    expect(gateway.created.map((thread) => thread.name)).toContain('дети');
+    const created = mine.find((topic) => topic.name === 'дети');
     expect(created?.tgThreadId).not.toBeNull();
   });
+
+  it.each(['саморазвитие', 'личные вещи'])(
+    'сфера не из известных боту («%s») не заводится — дело в общей (решение Никиты 27.09.2026)',
+    async (named) => {
+      // Прогон 27.09.2026, 18:05: под куртку завелась «Личные вещи» — без
+      // значка, рядом с «Личным». «Если не уверен — лучше без новой сферы».
+      const gateway = await ownTopics(['личное', 'дом']);
+      await queuedBatchOf([{ kind: 'text', text: 'забрать куртку', offsetMs: 0 }]);
+
+      await run(gateway, () => named);
+
+      const mine = await listTopics(testDb(), userId);
+      expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дом']);
+      const saved = await testDb().select().from(items);
+      expect(saved.map((item) => item.topic)).toEqual(['личное']);
+      expect(gateway.created.map((thread) => thread.name)).not.toContain(named);
+    },
+  );
 
   it('предел сфер из настроек держится: сверх него запись остаётся в общей', async () => {
     const names = Array.from({ length: MAX_TOPICS }, (_none, index) => `сфера${String(index)}`);
     const gateway = await ownTopics(['личное', ...names.slice(1)]);
-    await queuedBatchOf([{ kind: 'text', text: 'прочитать книгу', offsetMs: 0 }]);
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына на футбол', offsetMs: 0 }]);
 
-    await run(gateway, () => 'саморазвитие');
+    await run(gateway, () => 'дети');
 
     const mine = await listTopics(testDb(), userId);
-    expect(mine.map((topic) => topic.name)).not.toContain('саморазвитие');
+    expect(mine.map((topic) => topic.name)).not.toContain('дети');
     expect(mine).toHaveLength(MAX_TOPICS);
 
     const saved = await testDb().select().from(items);
@@ -8584,14 +8602,19 @@ describe('сферы по содержанию (правка заказчицы 
 
   it('из ветки новая сфера не заводится: человек уже выбрал сферу сам', async () => {
     // «Если не уверен — лучше без новой сферы»: в ветке «дом» контекст
-    // задал человек, и догадка модели о «саморазвитии» его не перебивает.
+    // задал человек, и догадка модели о «детях» его не перебивает.
     const gateway = await ownTopics(['личное', 'дом']);
     const [home] = await testDb().select().from(topics).where(eq(topics.name, 'дом'));
     await queuedBatchOf([
-      { kind: 'text', text: 'прочитать книгу', offsetMs: 0, threadId: home?.tgThreadId ?? 0 },
+      {
+        kind: 'text',
+        text: 'собрать детскую кровать',
+        offsetMs: 0,
+        threadId: home?.tgThreadId ?? 0,
+      },
     ]);
 
-    await run(gateway, () => 'саморазвитие');
+    await run(gateway, () => 'дети');
 
     const mine = await listTopics(testDb(), userId);
     expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дом']);
@@ -8631,17 +8654,17 @@ describe('сферы по содержанию (правка заказчицы 
     expect(saved.map((item) => item.topic)).toEqual(['личное']);
   });
 
-  it('и своя, не базовая: выключенное «саморазвитие» не возвращается как «саморазвития»', async () => {
+  it('и не из списка человека: выключенные «дети» не возвращаются как «детей»', async () => {
     // Базовые имена («покупки») модель видит в списке всегда, и форму
-    // «покупка» ловит сверка в классификации. Своей сферы вне набора в
-    // списке нет — форму её имени держит заведение сфер (`adopt.ts`).
+    // «покупка» ловит сверка в классификации. Выключенной сферы в списке
+    // нет — форму её имени держит заведение сфер (`adopt.ts`).
     const gateway = await ownTopics(['личное']);
     await testDb()
       .insert(topics)
-      .values({ userId, name: 'саморазвитие', sortOrder: 5, isDefault: false, isArchived: true });
-    await queuedBatchOf([{ kind: 'text', text: 'прочитать книгу', offsetMs: 0 }]);
+      .values({ userId, name: 'дети', sortOrder: 5, isDefault: false, isArchived: true });
+    await queuedBatchOf([{ kind: 'text', text: 'записать сына на футбол', offsetMs: 0 }]);
 
-    await run(gateway, () => 'саморазвития');
+    await run(gateway, () => 'детей');
 
     const mine = await listTopics(testDb(), userId);
     expect(mine.map((topic) => topic.name)).toEqual(['личное']);
@@ -8653,17 +8676,19 @@ describe('сферы по содержанию (правка заказчицы 
   it('две записи в одну новую сферу — сфера одна', async () => {
     const gateway = await ownTopics(['личное']);
     // Две единицы: извлечение-заглушка делит по строкам.
-    await queuedBatchOf([{ kind: 'text', text: 'прочитать книгу\nпройти курс', offsetMs: 0 }]);
+    await queuedBatchOf([
+      { kind: 'text', text: 'записать сына на футбол\nкупить дочке краски', offsetMs: 0 },
+    ]);
 
-    await run(gateway, () => 'Саморазвитие');
+    await run(gateway, () => 'Дети');
 
     const mine = await listTopics(testDb(), userId);
-    expect(mine.map((topic) => topic.name)).toEqual(['личное', 'саморазвитие']);
+    expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дети']);
 
     const saved = await testDb().select().from(items);
     expect(saved).toHaveLength(2);
-    expect(saved.every((item) => item.topic === 'саморазвитие')).toBe(true);
-    expect(gateway.created.filter((thread) => thread.name === 'саморазвитие')).toHaveLength(1);
+    expect(saved.every((item) => item.topic === 'дети')).toBe(true);
+    expect(gateway.created.filter((thread) => thread.name === 'дети')).toHaveLength(1);
   });
 });
 

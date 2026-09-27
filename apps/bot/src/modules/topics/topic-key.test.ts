@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sameTopicName } from './topic-key.js';
+import { catalogueTopic, sameTopicName } from './topic-key.js';
 
 /**
  * Одна сфера под разными формами имени (бой 26.09.2026, 02:03): модель
@@ -68,5 +68,33 @@ describe('деньги под разными именами — одна сфе�
     ] as const) {
       expect(sameTopicName(one, other), `${one} ≠ ${other}`).toBe(false);
     }
+  });
+});
+
+describe('каталог известных сфер (решение Никиты 27.09.2026)', () => {
+  const catalogue = [
+    'семья',
+    'здоровье',
+    'работа',
+    'покупки',
+    'дом',
+    'дети',
+    'деньги',
+    'учёба',
+    'личное',
+  ];
+
+  it.each([
+    ['дети', 'дети'],
+    ['детей', 'дети'],
+    ['Покупка', 'покупки'],
+    ['учеба', 'учёба'],
+    ['финансовое', 'деньги'],
+  ])('«%s» → «%s»', (name, known) => {
+    expect(catalogueTopic(name, catalogue)).toBe(known);
+  });
+
+  it.each(['личные вещи', 'саморазвитие', 'хобби', 'рабочее'])('«%s» — не из каталога', (name) => {
+    expect(catalogueTopic(name, catalogue)).toBeUndefined();
   });
 });

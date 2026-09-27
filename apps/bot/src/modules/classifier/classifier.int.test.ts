@@ -270,7 +270,7 @@ describe('желание не становится задачей', () => {
 });
 
 describe('темы', () => {
-  it('незнакомая тема заменяется темой по умолчанию, а названное моделью имя отдаётся отдельно', async () => {
+  it('незнакомая, но известная боту тема — запись в теме по умолчанию, имя отдаётся отдельно', async () => {
     /**
      * Классификация тем не заводит — это запись в базу, а она чистая.
      * Но и не теряет названное: с правки заказчицы 14.09.2026 (п. 1.1)
@@ -279,7 +279,7 @@ describe('темы', () => {
      */
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [answer([{ topic: 'саморазвитие' }])],
+      responses: [answer([{ topic: 'дети' }])],
     });
 
     const result = await classifyUnits(deps(provider, prompts), params('дело'));
@@ -287,9 +287,24 @@ describe('темы', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items[0]?.topic).toBe('личное');
-    expect(result.items[0]?.wantedTopic).toBe('саморазвитие');
+    expect(result.items[0]?.wantedTopic).toBe('дети');
     expect(result.corrections.topic).toBe(1);
   });
+
+  it.each(['саморазвитие', 'личные вещи', 'хобби'])(
+    'тема не из известных боту («%s») новой сферой не просится (решение Никиты 27.09.2026)',
+    async (named) => {
+      const prompts = await prepare();
+      const provider = new MockLlmProvider({ responses: [answer([{ topic: named }])] });
+
+      const result = await classifyUnits(deps(provider, prompts), params('дело'));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.items[0]?.topic).toBe('личное');
+      expect(result.items[0]?.wantedTopic).toBeUndefined();
+    },
+  );
 
   it('другая форма своей сферы — это она: «покупка» при «покупки» (бой 26.09.2026, 02:03)', async () => {
     // Модель назвала сферу машины «покупка», у человека своя «покупки»:
@@ -309,7 +324,7 @@ describe('темы', () => {
     expect(result.corrections.topic).toBe(1);
   });
 
-  it('две свои сферы с одним ключом — не угадываем, какая: имя уходит, как незнакомое', async () => {
+  it('две свои сферы с одним ключом — не угадываем, какая: просится известное имя', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
       responses: [answer([{ topic: 'домах' }])],
@@ -323,20 +338,20 @@ describe('темы', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items[0]?.topic).toBe('личное');
-    expect(result.items[0]?.wantedTopic).toBe('домах');
+    expect(result.items[0]?.wantedTopic).toBe('дом');
   });
 
   it('названное имя приводится к виду записи: без краёв и лишних пробелов, строчными', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
-      responses: [answer([{ topic: '  Само Развитие ' }])],
+      responses: [answer([{ topic: '  ДЕТИ ' }])],
     });
 
     const result = await classifyUnits(deps(provider, prompts), params('дело'));
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.items[0]?.wantedTopic).toBe('само развитие');
+    expect(result.items[0]?.wantedTopic).toBe('дети');
   });
 
   it('пустое или мусорное имя темы не предлагается вовсе', async () => {
