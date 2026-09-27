@@ -2418,6 +2418,119 @@ describe('«уже сделала» без такой записи (прогон
       THOUGHT,
     );
   });
+
+  describe('«И в пятницу. Забрать документы из МФЦ, они уже готовы» (стенд 27.09.2026, voice-27-02)', () => {
+    /**
+     * Маршрутизатор принял отрезок за закрытие — из-за «они уже готовы».
+     * Резка закрытий отдала резолверу голое «И в пятницу.», и он, как
+     * велит правило «короткая поправка — про последнее обсуждённое»,
+     * перенёс на пятницу шиномонтаж — чужое дело. «Забрать документы»
+     * резолвер честно назвал новым делом, но закрытие без записи ушло в
+     * черновик: дело пропало из списков. Резолвер отвечает здесь так же,
+     * как на стенде.
+     */
+    const CAR = 'Завтра надо отвезти машину на шиномонтаж, пора резину менять.';
+    const DOCS = 'И в пятницу. Забрать документы из МФЦ, они уже готовы.';
+    const MOM = 'Кстати, маме позвонить не забыть, у нее давление опять.';
+
+    function standResolver(heard: string[]) {
+      return (request: CompletionRequest): string => {
+        const said = request.input.split('Человек сказал:\n').at(-1)?.trim() ?? '';
+        heard.push(said);
+        if (said !== 'И в пятницу.') return NOTHING_FOUND;
+        return JSON.stringify({
+          action: 'update',
+          mode: 'replace',
+          itemId: '1',
+          confidence: 1,
+          changes: {
+            note: '',
+            text: '',
+            deadline: new Date(Date.now() + 5 * 24 * 60 * 60_000).toISOString().slice(0, 10),
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          reason: 'Поправка срока к записи про шиномонтаж',
+        });
+      };
+    }
+
+    it('голый день не уходит резолвером на чужое дело, а «забрать документы» — дело, не черновик', async () => {
+      const prompts = await seedPrompts();
+      const { sender } = recordingSender();
+      const heard: string[] = [];
+
+      await queuedBatchOf([{ kind: 'text', text: `${CAR} ${DOCS} ${MOM}`, offsetMs: 0 }]);
+      const llm = echoingLlm({
+        router: JSON.stringify({
+          crisis: false,
+          segments: [
+            { intent: 'DUMP', text: CAR },
+            { intent: 'COMPLETE', text: DOCS },
+            { intent: 'DUMP', text: MOM },
+          ],
+        }),
+        resolver: standResolver(heard),
+      });
+
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+        },
+        userId,
+      );
+
+      expect(heard).not.toContain('И в пятницу.');
+      const rows = await rowsOfUser();
+      expect(rows.some((row) => !row.isDraft && row.text.toLowerCase().includes('мфц'))).toBe(true);
+      expect(rows.some((row) => row.isDraft && row.text.toLowerCase().includes('мфц'))).toBe(false);
+      // Шиномонтаж никто не правил.
+      const revisions = await testDb()
+        .select()
+        .from(itemRevisions)
+        .where(eq(itemRevisions.userId, userId));
+      expect(revisions).toEqual([]);
+    });
+
+    it('с глагола дела, но о сделанном — «Позвонить маме, уже позвонил» — по-прежнему не дело', async () => {
+      const prompts = await seedPrompts();
+      const { sender, all } = recordingSender();
+      await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: 'Оплатить садик',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'личное',
+        });
+      const DONE = 'Позвонить маме, уже позвонил';
+
+      await queuedBatchOf([{ kind: 'text', text: DONE, offsetMs: 0 }]);
+      const llm = echoingLlm({
+        router: JSON.stringify({ crisis: false, segments: [{ intent: 'COMPLETE', text: DONE }] }),
+        resolver: NOTHING_FOUND,
+      });
+
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+        },
+        userId,
+      );
+
+      const rows = await rowsOfUser();
+      expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual(['Оплатить садик']);
+      expect(rows.filter((row) => row.isDraft).map((row) => row.text)).toEqual([DONE]);
+      expect(all.at(-1) ?? '').toContain(defaultTexts.resolver.nothingToClose);
+    });
+  });
 });
 
 describe('ветки тем в разборе', () => {
