@@ -57,9 +57,41 @@ export function sameTextKey(text: string): string {
     .trim();
 }
 
+/**
+ * День недели словом — «в понедельник», «до среды», «к пятнице».
+ *
+ * В общий ключ он не входит намеренно: «позвонить маме в четверг» и «в
+ * пятницу» могут быть двумя делами. Но у записи **без срока** своего дня
+ * нет, и спорить не с чем (прогон Никиты 27.09.2026, 15:22):
+ * «Записать Мишу к ортодонту» легло без даты — распознавание прилепило
+ * «в понедельник» к соседнему предложению, — а «Мишу записать к
+ * ортодонту в понедельник» следом завело второе дело вместо того, чтобы
+ * дать день первому. Закрытый список, целыми словами, по ключу — то есть
+ * в нижнем регистре и с «е» вместо «ё».
+ */
+const WEEKDAY_PHRASE = new RegExp(
+  String.raw`(?<!\p{L})(?:(?:в|во)\s+(?:(?:этот|эту|это|следующий|следующую|следующее|ближайший|ближайшую|ближайшее)\s+)?(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)|до\s+(?:понедельника|вторника|среды|четверга|пятницы|субботы|воскресенья)|(?:к|ко)\s+(?:понедельнику|вторнику|среде|четвергу|пятнице|субботе|воскресенью))(?!\p{L})`,
+  'gu',
+);
+
+/** Ключ без дня недели; запятые и пробелы по краям вырезанного — тоже. */
+function withoutWeekday(key: string): string {
+  return key
+    .replace(WEEKDAY_PHRASE, ' ')
+    .replace(/\s+/gu, ' ')
+    .replace(/^[\s,;:—-]+|[\s,;:—-]+$/gu, '')
+    .replace(/\s+,/gu, ',')
+    .trim();
+}
+
 export interface KnownItems {
   /** Уже открытые записи с таким же текстом: ключ — `sameTextKey`. */
   readonly byText: ReadonlyMap<string, Item>;
+  /**
+   * Те же записи, но только без срока: к ним сказанное с днём недели —
+   * повтор, а день — новый срок (27.09.2026).
+   */
+  readonly dateless: ReadonlyMap<string, Item>;
 }
 
 /**
@@ -71,17 +103,32 @@ export interface KnownItems {
  */
 export function knownByText(open: readonly Item[]): KnownItems {
   const byText = new Map<string, Item>();
+  const dateless = new Map<string, Item>();
+
+  const earliest = (map: Map<string, Item>, key: string, item: Item): void => {
+    const seen = map.get(key);
+    if (seen === undefined || item.createdAt.getTime() < seen.createdAt.getTime()) {
+      map.set(key, item);
+    }
+  };
 
   for (const item of open) {
     const key = sameTextKey(item.text);
-    const seen = byText.get(key);
-
-    if (seen === undefined || item.createdAt.getTime() < seen.createdAt.getTime()) {
-      byText.set(key, item);
-    }
+    earliest(byText, key, item);
+    if (item.deadlineAt === null) earliest(dateless, key, item);
   }
 
-  return { byText };
+  return { byText, dateless };
+}
+
+/**
+ * Повтор записи без срока с названным днём недели: «…в понедельник» при
+ * записанном «…» без даты. Сказанное без дня сюда не доходит — его уже
+ * нашло дословное сравнение.
+ */
+function datelessWithDay(key: string, known: KnownItems): Item | undefined {
+  const bare = withoutWeekday(key);
+  return bare === key || bare === '' ? undefined : known.dateless.get(bare);
 }
 
 export interface SplitResult<T> {
@@ -118,7 +165,7 @@ export function splitKnown<T extends { readonly text: string }>(
     if (taken.has(key)) continue;
     taken.add(key);
 
-    const existing = known.byText.get(key);
+    const existing = known.byText.get(key) ?? datelessWithDay(key, known);
     if (existing === undefined) {
       fresh.push(unit);
       continue;

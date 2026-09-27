@@ -439,7 +439,12 @@ export function presentDump(params: PresentParams): PresentResult {
   if (params.quickAdd !== undefined) {
     return {
       reply: {
-        text: texts.answer.added(params.quickAdd.topic, params.quickAdd.title),
+        // Точку ставит шаблон; своя у названия дала бы «…в понедельник..»
+        // (прогон Никиты 27.09.2026, 15:22).
+        text: texts.answer.added(
+          params.quickAdd.topic,
+          params.quickAdd.title.replace(/\s*\.+$/u, ''),
+        ),
         buttons: [],
       },
       reason: 'быстрое добавление',
