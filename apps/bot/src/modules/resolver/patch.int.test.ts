@@ -1947,6 +1947,38 @@ describe('правило на закрытой записи оживляет е�
     expect(after.status).toBe('new');
     expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
   });
+
+  it('«теперь по вторникам и четвергам» голосом — правило со списком дней (Р4 шаг 4)', async () => {
+    // Модель на такую фразу отвечает «не поняла»; дни достаёт код, якорь —
+    // срок дела, четверг 03.09.
+    const item = await sow();
+
+    appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        changes: {
+          ...NO_CHANGES,
+          recurrenceKind: 'unclear',
+          recurrenceInterval: 0,
+          recurrenceText: 'по вторникам и четвергам',
+        },
+        timeZone: MOSCOW,
+        now: NOW,
+      }),
+    );
+
+    const after = await reread(item.id);
+    expect(after.recurrenceRule).toEqual({
+      kind: 'weekly',
+      interval: 1,
+      anchor: '2026-09-03',
+      days: [2, 4],
+    });
+    expect(after.recurrenceText).toBe('по вторникам и четвергам');
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
 });
 
 describe('просьба запомнить у существующего дела (задача 3.8б)', () => {

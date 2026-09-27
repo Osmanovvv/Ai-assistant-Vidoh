@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { localDateParts, startOfDayInZone, type DateParts } from '../classifier/dates.js';
+import { weekdaysOfPhrase } from './weekdays-phrase.js';
 
 /**
  * Правило повторения (задача 2.18а, запрос на изменение №1).
@@ -134,6 +135,32 @@ export function resolveRecurrence(raw: RecurrenceFromModel): ResolvedRecurrence 
     // Вид без фразы — рассогласование в ответе. Показывать человеку
     // «регулярное» без того, что он сказал, нельзя: он не узнает своих слов.
     return { problem: 'вид повторения без фразы человека' };
+  }
+
+  /**
+   * «Каждый вторник и четверг» (Р4 шаг 4, стенд 27.09.2026,
+   * `voice-27-07`): модель отвечает «не поняла» или «раз в неделю», а дни
+   * называет фраза человека (`weekdays-phrase.ts`, узко). Правило со
+   * списком дней — только когда срок, на который оно опирается, стоит на
+   * одном из названных дней; иначе — прежний путь, как было.
+   */
+  const listed =
+    raw.kind === 'unclear' || (raw.kind === 'weekly' && raw.interval <= 1)
+      ? weekdaysOfPhrase(text)
+      : undefined;
+  if (
+    listed !== undefined &&
+    /^\d{4}-\d{2}-\d{2}$/u.test(raw.deadline) &&
+    isRealDate(raw.deadline) &&
+    listed.includes(weekdayOf(partsFromIso(raw.deadline)))
+  ) {
+    const parsed = recurrenceRuleSchema.safeParse({
+      kind: 'weekly',
+      interval: 1,
+      anchor: raw.deadline,
+      days: [...listed],
+    });
+    if (parsed.success) return { rule: parsed.data, text, source: 'stated' };
   }
 
   if (raw.kind === 'unclear') {
