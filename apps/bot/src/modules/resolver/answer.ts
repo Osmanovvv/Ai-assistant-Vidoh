@@ -116,6 +116,9 @@ const SEPARATE_PHRASES = [
   'не связано',
 ];
 
+/** Отрицание направления «к прошлой»: «не про то», «это не то». */
+const NEGATED_SEPARATE = SEPARATE_PHRASES.filter((phrase) => phrase.startsWith('не '));
+
 /** Короткое согласие без указания направления. */
 const YES = ['да', 'ага', 'угу', 'верно', 'точно', 'именно', 'конечно'];
 
@@ -212,6 +215,19 @@ export function readAnswer(text: string, context: AnswerContext = {}): AnswerRea
   if (words.length === 0) return 'unclear';
 
   if (UNSURE.some((phrase) => hasPhrase(words, phrase))) return 'unclear';
+
+  /**
+   * Вопрос — не ответ (замер docs/eval-dialog, 28.09.2026): «Что значит
+   * отдельная?» читалось ответом «отдельно». Со словами сверх словаря это
+   * мысль или вопрос боту — в разбор; без них — непонятый ответ.
+   */
+  if (text.includes('?')) return answerRemainder(text) === '' ? 'unclear' : 'content';
+
+  /**
+   * «Не про то», «не про неё» — отдельная история (там же): «про то» внутри
+   * читалось «к прошлой». Отрицание направления проверяется раньше него.
+   */
+  if (NEGATED_SEPARATE.some((phrase) => hasPhrase(words, phrase))) return 'separate';
 
   /**
    * Направление важнее согласия.

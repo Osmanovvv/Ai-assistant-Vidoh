@@ -191,12 +191,32 @@ function single(minutes: number | undefined): ClockTime | undefined {
   return minutes === undefined ? undefined : [minutes];
 }
 
+/**
+ * «Дня» и «ночи» у часов около полудня и полуночи (замер docs/eval-dialog,
+ * 28.09.2026): на «11:30 или 23:30?» «днём» ставило 23:30, «ночью» — 11:30.
+ * В речи «11 дня», «пол 12 дня» — ещё до полудня, а «11 ночи», «10 ночи» —
+ * поздний вечер; «2 ночи», «12 ночи» — после полуночи, как и было.
+ */
+const LATE_MORNING_FROM = 10;
+const LATE_NIGHT_FROM = 9;
+
+/** Час суток по часу на циферблате (1–12) и части суток. */
+function hourOfDay(hour: number, daypart: string): number {
+  if (daypart === 'утра') return hour;
+  if (daypart === 'ночи') {
+    if (hour === NOON) return 0;
+    return hour >= LATE_NIGHT_FROM ? hour + NOON : hour;
+  }
+  // «дня» и «вечера»: «12 дня» — полдень, «6 вечера» — 18.
+  if (hour === NOON) return NOON;
+  if (daypart === 'дня' && hour >= LATE_MORNING_FROM) return hour;
+  return hour + NOON;
+}
+
 function withDaypart(hour: number, daypart: string): ClockTime | undefined {
   if (hour > NOON) return undefined;
-  if (daypart === 'утра') return hour === NOON ? undefined : single(minutesOf(hour, 0));
-  if (daypart === 'ночи') return single(minutesOf(hour === NOON ? 0 : hour, 0));
-  // «дня» и «вечера»: «12 дня» — полдень, «6 вечера» — 18.
-  return single(minutesOf(hour === NOON ? NOON : hour + NOON, 0));
+  if (daypart === 'утра' && hour === NOON) return undefined;
+  return single(minutesOf(hourOfDay(hour, daypart), 0));
 }
 
 /**
@@ -356,10 +376,10 @@ function readingsOf(hour: number, minute: number, daypart: string | undefined): 
   const evening = minutesOf((hour + NOON) % HOURS_IN_DAY, minute);
   if (morning === undefined || evening === undefined) return [];
 
-  if (daypart === 'утра' || daypart === 'ночи') return [morning];
-  if (daypart === 'дня' || daypart === 'вечера') return [hour >= NOON ? morning : evening];
-
-  return [morning, evening];
+  if (daypart === undefined) return [morning, evening];
+  if (hour >= NOON) return [morning];
+  const read = minutesOf(hourOfDay(hour, daypart), minute);
+  return read === undefined ? [] : [read];
 }
 
 /** Часы, названные в тексте, по чтениям; порядок — по тексту. */
@@ -386,7 +406,17 @@ export function clockTimesIn(text: string): readonly ClockTime[] {
     add(numberAt(match, 1), withDaypart(Number(match[1]), match[2] ?? ''));
   }
   for (const match of normalized.matchAll(COLON)) {
-    add(numberAt(match, 1), single(minutesOf(Number(match[1]), Number(match[2]))));
+    // «7:30 вечера» — 19:30, «11:30 ночи» — 23:30 (28.09.2026): часть суток
+    // после цифр читается, как у часа словом; «19:30» — как написано.
+    const daypart = daypartAfter(normalized, match.index + match[0].length);
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    add(
+      numberAt(match, 1),
+      daypart === undefined || hour > NOON
+        ? single(minutesOf(hour, minute))
+        : readingsOf(hour, minute, daypart),
+    );
   }
   for (const match of normalized.matchAll(DOT)) {
     const minute = Number(match[2]);
