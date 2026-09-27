@@ -62,12 +62,34 @@ export type RecurrenceSource = (typeof RECURRENCE_SOURCES)[number];
  * берутся день недели, число месяца и месяц: отдельных полей под них нет
  * намеренно.
  */
-export const recurrenceRuleSchema = z.object({
-  kind: z.enum(['daily', 'weekdays', 'weekly', 'monthly', 'yearly']),
-  /** Через сколько периодов повторять: «раз в две недели» — это два. */
-  interval: z.number().int().min(1).max(99),
-  anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
-});
+export const recurrenceRuleSchema = z
+  .object({
+    kind: z.enum(['daily', 'weekdays', 'weekly', 'monthly', 'yearly']),
+    /** Через сколько периодов повторять: «раз в две недели» — это два. */
+    interval: z.number().int().min(1).max(99),
+    anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+    /**
+     * Дни недели повтора — «каждый вторник и четверг» (Р4, стенд
+     * 27.09.2026, `voice-27-07`). Понедельник — 1, воскресенье — 7; от
+     * двух дней, без повторов, по возрастанию. Только у «раз в неделю» с
+     * шагом в одну неделю: «раз в две недели по вторникам и четвергам»
+     * набор не выражает, и такая фраза остаётся словами без правила.
+     *
+     * Необязательное: у правил без него всё как было — день берётся из
+     * якоря. Старый код такое поле отбрасывает при чтении, и дело
+     * повторяется по дню якоря: хуже, чем надо, но без поломки.
+     */
+    days: z.array(z.number().int().min(1).max(7)).min(2).max(7).optional(),
+  })
+  .refine((rule) => rule.days === undefined || (rule.kind === 'weekly' && rule.interval === 1), {
+    message: 'дни недели — только у правила «раз в неделю» с шагом в неделю',
+  })
+  .refine(
+    (rule) =>
+      rule.days === undefined ||
+      rule.days.every((day, index, all) => index === 0 || day > (all[index - 1] ?? 0)),
+    { message: 'дни недели — без повторов и по возрастанию' },
+  );
 
 export type RecurrenceRule = z.infer<typeof recurrenceRuleSchema>;
 
