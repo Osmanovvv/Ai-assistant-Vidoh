@@ -24,10 +24,20 @@ import { namesNoDeed } from './deixis.js';
 
 export type ClarifyKind = 'which' | 'time';
 
+/** Начало причины у всех переспросов — и открытых, и закрытых («… → уточнено»). */
+export const CLARIFY_PREFIX = 'ждёт уточнения:';
+
 export const CLARIFY_REASON: Readonly<Record<ClarifyKind, string>> = {
-  which: 'ждёт уточнения: какое дело',
-  time: 'ждёт уточнения: утро или вечер',
+  which: `${CLARIFY_PREFIX} какое дело`,
+  time: `${CLARIFY_PREFIX} утро или вечер`,
 };
+
+/**
+ * Вопрос о часе, который пережил чужую реплику и ждёт дальше (28.09.2026):
+ * ответ узнаётся так же, но короткое голосовое после чужой реплики — уже
+ * не «почти всегда ответ» (`answersNow`).
+ */
+export const CLARIFY_TIME_WAITING = `${CLARIFY_PREFIX} утро или вечер, после других слов`;
 
 /** Сколько бот помнит переспрос. */
 export const CLARIFY_TTL_MS = 15 * 60_000;
@@ -98,7 +108,58 @@ const FILLERS = new Set([
   'будет',
   'тогда',
   'пожалуй',
+  /**
+   * Присказки вокруг ответа (прогон Никиты 28.09.2026, 23:59): «Туфли
+   * забрать вечером если что» бот не узнал из-за «если что» и завёл второе
+   * дело. Здесь только слова, которые сами ничего не делают и ни о чём не
+   * говорят; «купить», «хлеб», «после работы» — уже своя мысль, не ответ.
+   */
+  'если',
+  'что',
+  'а',
+  'но',
+  'же',
+  'уж',
+  'бы',
+  'вот',
+  'так',
+  'там',
+  'уже',
+  'тоже',
+  'всё',
+  'все',
+  'таки',
+  'короче',
+  'значит',
+  'получается',
+  'ладно',
+  'хорошо',
+  'окей',
+  'ок',
+  'можно',
+  'наверно',
+  'думаю',
+  'точно',
+  'просто',
+  'мне',
+  'поставь',
+  'ставь',
+  'сделай',
+  'запиши',
+  'пожалуйста',
 ]);
+
+/**
+ * «Не утром, а вечером»: отвергнутая часть суток — не ответ, выбрана
+ * оставшаяся. Одно «не вечером» ответом не становится: выбора в нём нет.
+ */
+function withoutRejected(spoken: readonly string[]): readonly string[] {
+  return spoken.filter(
+    (word, index) =>
+      !(word === 'не' && DAYPARTS[spoken[index + 1] ?? ''] !== undefined) &&
+      !(spoken[index - 1] === 'не' && DAYPARTS[word] !== undefined),
+  );
+}
 
 function trimmed(text: string): string {
   return text.trim().replace(/[.!…\s]+$/u, '');
@@ -156,10 +217,33 @@ function titleWords(command: string): readonly string[] {
   return title === undefined ? [] : words(title.replace(/ё/gu, 'е'));
 }
 
-/** Слово то же, что в названии: целиком или общее начало из четырёх букв. */
+/**
+ * Слово то же, что в названии: целиком, общее начало из четырёх букв или
+ * из трёх, если это не меньше половины короче из слов — «заберу» при
+ * «забрать», «куплю» при «купить», но не «заболел» при «забрать».
+ */
 function sameWord(one: string, other: string): boolean {
   if (one === other) return true;
-  return one.length >= 4 && other.length >= 4 && one.slice(0, 4) === other.slice(0, 4);
+  let common = 0;
+  while (common < one.length && one[common] === other[common]) common++;
+  if (one.length >= 4 && other.length >= 4 && common >= 4) return true;
+  return common >= 3 && common * 2 >= Math.min(one.length, other.length);
+}
+
+/**
+ * Говорит ли реплика о деле из переспроса — хоть одним значимым словом его
+ * названия (от четырёх букв: «из», «в» не в счёт).
+ *
+ * Вопрос о часе ждёт ответа, пока человек говорит о другом (прогон Никиты
+ * 28.09.2026): «Купить молоко» отдельным сообщением закрывало вопрос, и
+ * ответ следом заводил второе дело. Заговорил о самом деле и не ответил —
+ * «перенеси туфли на пятницу», «туфли уже забрала» — вопрос снят, как и
+ * было: доделывать его потом значило бы спорить с тем, что сказано после.
+ */
+export function mentionsDeed(command: string, text: string): boolean {
+  const title = titleWords(command).filter((word) => word.length >= 4);
+  if (title.length === 0) return false;
+  return words(text.replace(/ё/gu, 'е')).some((word) => title.some((own) => sameWord(word, own)));
 }
 
 function withoutTitleWords(said: string, command: string): string {
@@ -174,7 +258,7 @@ function withoutTitleWords(said: string, command: string): string {
 /** Ответ о части суток или часе — или ничего. */
 function timeAnswer(command: string, said: string): string | undefined {
   const spoken = words(said);
-  const content = spoken.filter((word) => !FILLERS.has(word));
+  const content = withoutRejected(spoken).filter((word) => !FILLERS.has(word));
   const daypart = content.length === 1 ? DAYPARTS[content[0] ?? ''] : undefined;
   if (daypart !== undefined) return `${trimmed(command)} ${daypart}`;
 

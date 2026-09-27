@@ -1,10 +1,17 @@
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, like } from 'drizzle-orm';
 
 import { batches, items, type Item } from '../../db/schema.js';
 import type { Executor } from '../../infra/db.js';
 import { openItemsWhere } from '../items/items.repo.js';
 import { sameTextKey } from '../items/same-text.js';
-import { CLARIFY_REASON, CLARIFY_TTL_MS, hourClarifyTitle, type ClarifyKind } from './clarify.js';
+import {
+  CLARIFY_PREFIX,
+  CLARIFY_REASON,
+  CLARIFY_TIME_WAITING,
+  CLARIFY_TTL_MS,
+  hourClarifyTitle,
+  type ClarifyKind,
+} from './clarify.js';
 
 /** Переспрос, который ждёт ответа: черновик невыполненной команды. */
 export interface OpenClarification {
@@ -14,16 +21,25 @@ export interface OpenClarification {
   readonly command: string;
   /** Выгрузка, в которой бот переспросил: о каких делах тогда говорили. */
   readonly batchId: string | null;
+  /** Вопрос о часе уже пережил чужую реплику (`keepWaiting`). */
+  readonly waited?: boolean | undefined;
 }
 
-const KIND_BY_REASON = new Map(
-  (Object.entries(CLARIFY_REASON) as [ClarifyKind, string][]).map(([kind, reason]) => [
-    reason,
-    kind,
-  ]),
-);
+const KIND_BY_REASON = new Map<string, ClarifyKind>([
+  ...(Object.entries(CLARIFY_REASON) as [ClarifyKind, string][]).map(
+    ([kind, reason]) => [reason, kind] as const,
+  ),
+  [CLARIFY_TIME_WAITING, 'time'],
+]);
 
-/** Последний переспрос за четверть часа, ещё без ответа. */
+/**
+ * Последний переспрос за четверть часа, если он ещё без ответа.
+ *
+ * Именно последний, открытый или закрытый: вопрос о часе ждёт ответа и
+ * через чужие реплики (`mentionsDeed`), и новый вопрос вытесняет прежний.
+ * Иначе после ответа на новый «вечером» следом доделало бы старый, о
+ * котором бот уже не спрашивает.
+ */
 export async function openClarification(
   db: Executor,
   userId: string,
@@ -41,7 +57,7 @@ export async function openClarification(
       and(
         eq(items.userId, userId),
         eq(items.isDraft, true),
-        inArray(items.draftReason, [...KIND_BY_REASON.keys()]),
+        like(items.draftReason, `${CLARIFY_PREFIX}%`),
         gte(items.createdAt, new Date(now.getTime() - CLARIFY_TTL_MS)),
       ),
     )
@@ -52,7 +68,21 @@ export async function openClarification(
     row?.reason === null || row === undefined ? undefined : KIND_BY_REASON.get(row.reason);
   return row === undefined || kind === undefined
     ? undefined
-    : { id: row.id, kind, command: row.text, batchId: row.batchId };
+    : {
+        id: row.id,
+        kind,
+        command: row.text,
+        batchId: row.batchId,
+        ...(row.reason === CLARIFY_TIME_WAITING ? { waited: true } : {}),
+      };
+}
+
+/** Вопрос о часе ждёт дальше: реплика была о другом (`mentionsDeed`). */
+export async function keepWaiting(db: Executor, clarification: OpenClarification): Promise<void> {
+  await db
+    .update(items)
+    .set({ draftReason: CLARIFY_TIME_WAITING })
+    .where(eq(items.id, clarification.id));
 }
 
 /**

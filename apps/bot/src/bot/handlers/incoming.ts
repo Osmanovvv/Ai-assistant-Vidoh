@@ -420,7 +420,12 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
 async function openAskOf(db: Database, userId: string, now: Date): Promise<OpenAsk | undefined> {
   const clarification = await openClarification(db, userId, now);
   if (clarification !== undefined) {
-    return { kind: 'clarify', clarifyKind: clarification.kind, command: clarification.command };
+    return {
+      kind: 'clarify',
+      clarifyKind: clarification.kind,
+      command: clarification.command,
+      ...(clarification.waited === true ? { waited: true } : {}),
+    };
   }
   // Только посмотреть: протухший вопрос закрывает уборка, сохраняя слова.
   const question = await peekOpenQuestion(db, userId, now);

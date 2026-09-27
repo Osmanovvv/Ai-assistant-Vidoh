@@ -66,6 +66,15 @@ describe('голосовое после вопроса — по длине: ко
     expect(answersNow(hour, { voiceSeconds: SHORT_VOICE_SECONDS + 1 })).toBe(false);
   });
 
+  it('вопрос о часе уже пережил чужую реплику — голосовое ждёт тишины, текст-ответ сразу', () => {
+    // Вопрос ждёт ответа и через другие сообщения (28.09.2026). Короткое
+    // голосовое первым после вопроса — почти всегда ответ; после чужой
+    // реплики — уже нет: серия коротких мыслей склеивается, как прежде.
+    const waited: OpenAsk = { ...hour, waited: true };
+    expect(answersNow(waited, { voiceSeconds: 2 })).toBe(false);
+    expect(answersNow(waited, { text: 'Вечером' })).toBe(true);
+  });
+
   it('вопроса нет — ждём тишины, что бы ни пришло', () => {
     expect(answersNow(undefined, { voiceSeconds: 2 })).toBe(false);
     expect(answersNow(undefined, { text: 'Вечером' })).toBe(false);

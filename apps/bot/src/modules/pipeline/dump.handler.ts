@@ -49,11 +49,19 @@ import {
   unchangedText,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
-import { CLARIFY_REASON, answerInBatch, hourClarifyCommand } from '../resolver/clarify.js';
+import {
+  CLARIFY_REASON,
+  answerInBatch,
+  clarifiedCommand,
+  hourClarifyCommand,
+  mentionsDeed,
+} from '../resolver/clarify.js';
 import {
   closeClarification,
   hourClarifyTarget,
+  keepWaiting,
   openClarification,
+  type OpenClarification,
 } from '../resolver/clarify.repo.js';
 import { datesInWords, rhythmInWords, suggestButtons } from '../recurrence/suggest-text.js';
 import { suggestRecurrence } from '../recurrence/suggest.service.js';
@@ -1100,9 +1108,27 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     let parseText = combined;
     let clarifiedLeft = clarified;
     if (clarification !== undefined) {
-      await closeClarification(db, clarification, clarified !== undefined);
+      /**
+       * Вопрос о часе ждёт ответа, пока человек говорит о другом (прогон
+       * Никиты 28.09.2026): «Купить молоко» отдельным сообщением его
+       * закрывало, и ответ следом заводил второе дело. Заговорил о самом
+       * деле, не ответив, — вопрос снят (`mentionsDeed`). «Какое дело?»
+       * ждёт по-прежнему одну реплику: ответом на него выглядит любая
+       * короткая фраза.
+       */
+      const waits =
+        clarified === undefined &&
+        clarification.kind === 'time' &&
+        !mentionsDeed(clarification.command, combined);
+      if (waits) await keepWaiting(db, clarification);
+      else await closeClarification(db, clarification, clarified !== undefined);
       deps.logger?.info(
-        { batchId: batch.id, kind: clarification.kind, answered: clarified !== undefined },
+        {
+          batchId: batch.id,
+          kind: clarification.kind,
+          answered: clarified !== undefined,
+          ...(waits ? { waits } : {}),
+        },
         'Реплика после переспроса',
       );
     }
@@ -1118,32 +1144,41 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * совпало несколько — о котором говорили в той выгрузке, иначе
      * последнее. В словах для правки только час: день у дела остаётся.
      */
+    const applyHourAnswer = async (
+      asked: OpenClarification,
+      command: string,
+    ): Promise<Applied | undefined> => {
+      const target = await hourClarifyTarget(db, batch.userId, asked);
+      if (target === undefined) return undefined;
+
+      const spoken = command.replace(/«[^»]*»\s*/u, '');
+      const outcome = await applyDecision(db, {
+        userId: batch.userId,
+        itemId: target.id,
+        action: 'update',
+        changes: emptyChanges(),
+        spoken,
+        timeZone: context.timeZone,
+        now,
+        reason: 'час по переспросу «утро или вечер»',
+        changedBy: 'user',
+      });
+      if (outcome.kind !== 'applied') return undefined;
+
+      await tell(
+        describeChange(outcome.applied, texts, context.timeZone, spoken, now),
+        changeButtons(outcome.applied, texts, spoken),
+      );
+      await rememberMentioned(db, batch.id, [target.id]);
+      return outcome.applied;
+    };
+
     if (clarification?.kind === 'time' && clarified !== undefined) {
-      const target = await hourClarifyTarget(db, batch.userId, clarification);
-      if (target !== undefined) {
-        const spoken = clarified.replace(/«[^»]*»\s*/u, '');
-        const outcome = await applyDecision(db, {
-          userId: batch.userId,
-          itemId: target.id,
-          action: 'update',
-          changes: emptyChanges(),
-          spoken,
-          timeZone: context.timeZone,
-          now,
-          reason: 'час по переспросу «утро или вечер»',
-          changedBy: 'user',
-        });
-        if (outcome.kind === 'applied') {
-          await tell(
-            describeChange(outcome.applied, texts, context.timeZone, spoken, now),
-            changeButtons(outcome.applied, texts, spoken),
-          );
-          await rememberMentioned(db, batch.id, [target.id]);
-          if (answered === undefined || answered.besides === '') return;
-          // Час поставлен; остальные сообщения выгрузки — разбору.
-          parseText = answered.besides;
-          clarifiedLeft = undefined;
-        }
+      if ((await applyHourAnswer(clarification, clarified)) !== undefined) {
+        if (answered === undefined || answered.besides === '') return;
+        // Час поставлен; остальные сообщения выгрузки — разбору.
+        parseText = answered.besides;
+        clarifiedLeft = undefined;
       }
     }
 
@@ -2471,6 +2506,39 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const split = splitKnown(units, knownByText(before));
 
     /**
+     * Ответ на «утро или вечер», узнанный только в названии от модели
+     * (прогон Никиты 28.09.2026, 23:59). Реплика сама ответом не читалась,
+     * а модель выделила из неё «Забрать туфли вечером» — то же дело с частью
+     * суток. Это ответ на вопрос бота, а не второе дело: час ставится делу
+     * из переспроса, новой записи нет. Условия ответа — те же, что у
+     * реплики (`clarifiedCommand`); узналось больше одного — не угадываем.
+     */
+    const hourAnswers =
+      clarification?.kind === 'time' && clarified === undefined
+        ? split.fresh.filter(
+            (unit) => clarifiedCommand('time', clarification.command, unit.text) !== undefined,
+          )
+        : [];
+    const hourAnswer = hourAnswers.length === 1 ? hourAnswers[0] : undefined;
+    const hourCommand =
+      hourAnswer === undefined || clarification === undefined
+        ? undefined
+        : clarifiedCommand('time', clarification.command, hourAnswer.text);
+    const hourApplied =
+      hourCommand === undefined || clarification === undefined
+        ? undefined
+        : await applyHourAnswer(clarification, hourCommand);
+    const fresh =
+      hourApplied === undefined ? split.fresh : split.fresh.filter((unit) => unit !== hourAnswer);
+    if (hourApplied !== undefined && clarification !== undefined) {
+      await closeClarification(db, clarification, true);
+      deps.logger?.info(
+        { batchId: batch.id },
+        'Ответ на переспрос часа узнан в названии от модели: час делу, записи нет',
+      );
+    }
+
+    /**
      * Вектор — только тому, что будет сохранено, и потому **после**
      * отсева, а не до.
      *
@@ -2484,7 +2552,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * при этом был верен, деньги просто уходили в никуда. Платит
      * отправка, а не результат: где черта оплаты, там и граница отсева.
      */
-    const toSave = await withEmbeddings(db, deps, batch, split.fresh);
+    const toSave = await withEmbeddings(db, deps, batch, fresh);
 
     const saved = await saveItems(db, {
       userId: batch.userId,
@@ -2504,6 +2572,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * день прежний, с кнопкой отмены. Повтор без срока — просто повтор.
      */
     const movedRepeats = new Set<unknown>();
+    if (hourApplied !== undefined) {
+      movedRepeats.add(hourAnswer);
+      happened.said = true;
+      rememberTopics(touchedTopics, hourApplied);
+      mentioned.add(hourApplied.after.id);
+    }
     for (const { unit, item } of split.repeats) {
       const others = units.filter((one) => one !== unit).map((one) => one.text);
       const spoken =
@@ -2795,7 +2869,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * противоречила другой. Уже имеющееся называет живая строка, счёт и
      * сферы — только заведённое сейчас.
      */
-    const freshUnits = [...split.fresh, ...late.fresh];
+    const freshUnits = [...fresh, ...late.fresh];
     // Всё сказанное — повторы с новым сроком: ответ уже дан строкой
     // переноса, признание разбора сверху было бы лишним (23.09.2026).
     const onlyMovedRepeats =
@@ -3074,7 +3148,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         segments: routed.segments.length,
         deferred: deferred.length,
         units: extracted.units.length,
-        saved: split.fresh.length,
+        saved: fresh.length,
         known: split.known.length,
         late: late.saved.length,
         shown: selection.shown.length,
