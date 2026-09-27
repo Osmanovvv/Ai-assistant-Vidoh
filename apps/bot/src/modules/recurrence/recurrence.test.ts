@@ -219,6 +219,42 @@ describe('схема правила', () => {
   });
 });
 
+describe('правило на несколько дней недели (Р4, стенд 27.09.2026, voice-27-07)', () => {
+  /**
+   * «Каждый вторник и четверг у Сони бассейн» — одно дело, повтор по двум
+   * дням. Список дней — необязательное поле правила «раз в неделю»: у
+   * правил без него всё как было.
+   */
+  const tueThu = { ...rule({ anchor: '2026-09-29' }), days: [2, 4] };
+
+  it('«каждый вторник и четверг» — раз в неделю со списком дней; из базы читается целиком', () => {
+    expect(recurrenceRuleSchema.safeParse(tueThu).success).toBe(true);
+    expect(parseStoredRule(tueThu)).toEqual(tueThu);
+  });
+
+  it('все семь дней — допустимо', () => {
+    expect(recurrenceRuleSchema.safeParse({ ...tueThu, days: [1, 2, 3, 4, 5, 6, 7] }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['один день — это обычное «раз в неделю»', { days: [2] }],
+    ['дни с повтором', { days: [2, 2] }],
+    ['дни вне недели', { days: [0, 8] }],
+    ['не по возрастанию', { days: [4, 2] }],
+    ['у ежемесячного', { kind: 'monthly', days: [2, 4] }],
+    ['раз в две недели', { interval: 2, days: [2, 4] }],
+  ])('отвергает: %s', (_why, over) => {
+    expect(recurrenceRuleSchema.safeParse({ ...tueThu, ...over }).success).toBe(false);
+  });
+
+  it('правило без дней — как раньше: лишнего поля не появляется', () => {
+    expect(parseStoredRule(rule())).toEqual(rule());
+    expect(parseStoredRule(rule())).not.toHaveProperty('days');
+  });
+});
+
 describe('следующее повторение', () => {
   it('якорь в будущем и есть следующее повторение', () => {
     const at = nextOccurrence(rule({ anchor: '2026-09-08' }), {
