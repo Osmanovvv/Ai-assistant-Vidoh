@@ -1598,3 +1598,72 @@ describe('дело, разрезанное моделью по дням, — с�
     expect(result.corrections.split).toBe(2);
   });
 });
+
+describe('число месяца словами — срок (стенд 27.09.2026, voice-27-03)', () => {
+  const SUNDAY_EVENING = new Date('2026-09-27T16:40:00.000Z');
+
+  it('«Еще оплатить квартплату до десятого…» — 10.10, как дала модель', async () => {
+    const prompts = await prepare();
+    const recorded = [
+      {
+        text: 'Отправить договор юристу во вторник',
+        topic: 'работа',
+        deadline: '2026-09-29',
+        deadlineAccuracy: 'day',
+        deadlineText: 'во вторник',
+      },
+      {
+        text: 'Оплатить квартплату до десятого',
+        topic: 'семья',
+        deadline: '2026-10-10',
+        deadlineAccuracy: 'day',
+        deadlineText: 'до десятого',
+      },
+      { text: 'Купить корм собаке', topic: 'покупки' },
+    ];
+    const provider = new MockLlmProvider({ responses: [answer(recorded)] });
+    const speech =
+      'Значит так, в понедельник надо отправить договор юристу. Хотя нет, давай во вторник, в понедельник я не успею. Еще оплатить квартплату до десятого и купить корм собаке, он заканчивается.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(...recorded.map((one) => one.text)),
+      now: SUNDAY_EVENING,
+      spoken: [
+        'Значит так, в понедельник надо отправить договор юристу.',
+        'Еще оплатить квартплату до десятого и купить корм собаке, он заканчивается.',
+      ].join('\n'),
+      speech,
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    const rent = result.items.find((item) => item.text.includes('квартплат'));
+    expect(rent?.deadline?.at.toISOString()).toBe('2026-10-09T21:00:00.000Z');
+    expect(rent?.deadline?.accuracy).toBe('day');
+  });
+
+  it('«В субботу у нас гости, оплатить квартплату до десятого» — суббота квартплате не достаётся', async () => {
+    // Число — тоже названный день: правило «день без слова о дне уступает
+    // своему предложению» иначе отдало бы квартплате субботу гостей.
+    const prompts = await prepare();
+    const recorded = [
+      {
+        text: 'Оплатить квартплату до десятого',
+        deadline: '2026-10-10',
+        deadlineAccuracy: 'day',
+        deadlineText: 'до десятого',
+      },
+    ];
+    const provider = new MockLlmProvider({ responses: [answer(recorded)] });
+    const speech = 'В субботу у нас гости, оплатить квартплату до десятого.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Оплатить квартплату до десятого'),
+      now: SUNDAY_EVENING,
+      spoken: speech,
+      speech,
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.deadline?.at.toISOString()).toBe('2026-10-09T21:00:00.000Z');
+  });
+});

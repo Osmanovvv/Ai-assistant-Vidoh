@@ -161,7 +161,10 @@ function namesTime(text: string): boolean {
   const normalized = withoutEvents(normalize(text));
 
   return (
-    hasTimeRoot(normalized) || CLOCK_WORDS.some((word) => normalized.includes(normalize(word)))
+    hasTimeRoot(normalized) ||
+    CLOCK_WORDS.some((word) => normalized.includes(normalize(word))) ||
+    // «до десятого» — число месяца словами (см. `dayOfMonthIn`).
+    dayOfMonthIn(text).length > 0
   );
 }
 
@@ -312,6 +315,102 @@ const DAY_WORDS = [
   'ноября',
   'декабря',
 ] as const;
+
+/**
+ * Число месяца словами — «до десятого», «к пятнадцатому числу», «до
+ * двадцать пятого» (стенд 27.09.2026, voice-27-03).
+ *
+ * Модель дала 10.10 с цитатой «до десятого», а проверка цитаты её
+ * отбросила: число словами словом о времени не считалось, цифрой «до 10»
+ * прошло бы. Распознавание пишет числа то цифрами, то словами — дата не
+ * должна зависеть от этого.
+ *
+ * **Узко, как и весь этот файл.** Только после предлога срока и только
+ * если за числом не стоит своё существительное: «к пятому уроку», «до
+ * десятого класса» — не даты. Разрешено после числа: конец, союз, «числа»,
+ * месяц, глагол дела.
+ */
+const ORDINALS: readonly (readonly [string, number])[] = [
+  ['одиннадцат', 11],
+  ['двенадцат', 12],
+  ['тринадцат', 13],
+  ['четырнадцат', 14],
+  ['пятнадцат', 15],
+  ['шестнадцат', 16],
+  ['семнадцат', 17],
+  ['восемнадцат', 18],
+  ['девятнадцат', 19],
+  ['двадцат', 20],
+  ['тридцат', 30],
+  ['четверт', 4],
+  ['перв', 1],
+  ['втор', 2],
+  ['пят', 5],
+  ['шест', 6],
+  ['седьм', 7],
+  ['восьм', 8],
+  ['девят', 9],
+  ['десят', 10],
+];
+
+const ORDINAL_ENDINGS = ['ого', 'ому', 'ое'];
+const THIRD = /^треть(?:его|ему|е)$/u;
+const TENS = new Map([
+  ['двадцать', 20],
+  ['тридцать', 30],
+]);
+const DAY_PREPOSITIONS = new Set(['до', 'к', 'ко', 'с', 'со', 'по', 'после', 'на']);
+const AFTER_DAY = new Set([
+  'и',
+  'а',
+  'но',
+  'или',
+  'числа',
+  'числу',
+  'число',
+  'включительно',
+  'месяца',
+  'надо',
+  'нужно',
+  'обязательно',
+]);
+
+function ordinalOf(word: string): number | undefined {
+  if (THIRD.test(word)) return 3;
+  for (const [stem, value] of ORDINALS) {
+    if (word.startsWith(stem) && ORDINAL_ENDINGS.includes(word.slice(stem.length))) return value;
+  }
+  return undefined;
+}
+
+export function dayOfMonthIn(text: string): readonly number[] {
+  const all = normalize(text)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(' ')
+    .filter((word) => word.length > 0);
+  const found = new Set<number>();
+
+  for (let at = 0; at < all.length; at++) {
+    if (!DAY_PREPOSITIONS.has(all[at] ?? '')) continue;
+
+    const tens = TENS.get(all[at + 1] ?? '');
+    const unit = ordinalOf(all[at + (tens === undefined ? 1 : 2)] ?? '');
+    if (unit === undefined || (tens !== undefined && unit > 9)) continue;
+
+    const day = (tens ?? 0) + unit;
+    const next = all[at + (tens === undefined ? 2 : 3)];
+    const free =
+      next === undefined ||
+      AFTER_DAY.has(next) ||
+      monthsIn(next).length > 0 ||
+      /(?:ть|ти|чь)(?:ся|сь)?$/u.test(next);
+
+    if (free && day >= 1 && day <= 31) found.add(day);
+  }
+
+  return [...found];
+}
 
 export function dayWordsIn(text: string): readonly string[] {
   const found = new Set<string>();
