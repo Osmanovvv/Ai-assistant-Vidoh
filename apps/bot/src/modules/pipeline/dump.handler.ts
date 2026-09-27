@@ -39,7 +39,7 @@ import {
   saveItems,
   type ItemToSave,
 } from '../items/items.repo.js';
-import { knownByText, splitKnown } from '../items/same-text.js';
+import { datelessTwins, knownByText, splitKnown } from '../items/same-text.js';
 import {
   aboutPending,
   changeButtons,
@@ -133,7 +133,7 @@ import {
 } from '../topics/summary.service.js';
 import { asksForRest } from '../topics/rest-request.js';
 import { clockOf } from '../scheduler/plan.js';
-import { asksToRemind, remindAnswer } from '../scheduler/remind-request.js';
+import { asksToRemind, asksWillRemind, remindAnswer } from '../scheduler/remind-request.js';
 import { planSettingsOf } from '../scheduler/scheduler.service.js';
 import { lastDiscussed } from '../resolver/deixis.repo.js';
 import { settleTopics } from '../topics/ensure.js';
@@ -1829,6 +1829,34 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       /**
+       * «Про ортодонта напомнишь?» (прогон Никиты 27.09.2026, 17:59): дело
+       * найдено одно — отвечает раскладка напоминаний, как на «Напомнишь?»
+       * о только что обсуждённом, а не строка дела. Иначе было «Вот что у
+       * меня про это записано: — …» — ни да, ни нет.
+       */
+      const [onlyFound] = answer.kind === 'about' ? answer.items : [];
+      const remindAbout =
+        answer.kind === 'about' &&
+        answer.items.length === 1 &&
+        onlyFound !== undefined &&
+        asksWillRemind(asked)
+          ? await planSettingsOf(db, batch.userId, deps.settings)
+          : undefined;
+      if (onlyFound !== undefined && remindAbout !== undefined) {
+        await tell(
+          remindAnswer({
+            item: onlyFound,
+            settings: remindAbout,
+            now,
+            timeZone: context.timeZone,
+            texts,
+          }),
+        );
+        await rememberMentioned(db, batch.id, [onlyFound.id]);
+        continue;
+      }
+
+      /**
        * Живой ответ на вопрос (слой B, 22.09.2026; §13.4 ТЗ — прозой, не
        * списком). Записи нашёл код выше; модель говорит о найденном по
        * закрытому списку фактов (`questionFacts`) под стражем
@@ -2348,12 +2376,27 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       classified.items.map((item) => item.text),
       combined,
     );
-    const kept = classified.items.filter((_, index) => !echoes.has(index));
+    const unechoed = classified.items.filter((_, index) => !echoes.has(index));
 
     if (echoes.size > 0) {
       deps.logger?.info(
         { batchId: batch.id, count: echoes.size },
         'Эхо самопоправки среди единиц: записью не становится',
+      );
+    }
+
+    /**
+     * Двойник без срока внутри одной выгрузки (прогон Никиты 27.09.2026,
+     * 18:16): «Записать Мишу к стоматологу.» и «…к стоматологу в среду.» —
+     * одно дело с днём, а не два. Условия — в `same-text.ts`.
+     */
+    const twins = datelessTwins(unechoed);
+    const kept = unechoed.filter((_, index) => !twins.has(index));
+
+    if (twins.size > 0) {
+      deps.logger?.info(
+        { batchId: batch.id, count: twins.size },
+        'Двойник без срока уступил тому же делу с днём',
       );
     }
 

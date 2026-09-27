@@ -9197,6 +9197,85 @@ describe('живой ответ на вопрос о делах (слой B, 22.
     );
   });
 
+  it('«Про ортодонта напомнишь?» — ответ про напоминание, а не строка дела (прогон Никиты 27.09.2026, 17:59)', async () => {
+    // Пришло «Вот что у меня про это записано: — Записать Мишу к
+    // ортодонту»: спросили «напомнишь?», а ответ не сказал ни да, ни нет.
+    const prompts = await answeringPrompts();
+    await testDb().insert(items).values({
+      userId,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'здоровье',
+      text: 'Записать Мишу к ортодонту',
+      embedding: oneVector,
+    });
+    const llm = echoingLlm({
+      router: routerQuery('Про ортодонта напомнишь ?'),
+      answerer: JSON.stringify({ answer: '' }),
+    });
+
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies } = await ask('Про ортодонта напомнишь ?', llm, prompts, same);
+
+    expect(replies.at(-1)).toBe(
+      defaultTexts.reminders.remindNoDeadline('Записать Мишу к ортодонту'),
+    );
+  });
+
+  it('«Напомнишь про стоматолога?» при сроке — «Да, напомню про …» и когда', async () => {
+    const prompts = await answeringPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        text: 'Записаться к стоматологу',
+        deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 19 * 60,
+        embedding: oneVector,
+      });
+    const llm = echoingLlm({
+      router: routerQuery('Напомнишь про стоматолога?'),
+      answerer: JSON.stringify({ answer: '' }),
+    });
+
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies } = await ask('Напомнишь про стоматолога?', llm, prompts, same);
+
+    expect(replies.at(-1)).toMatch(/^Да, напомню про «Записаться к стоматологу»/u);
+  });
+
+  it('«Напомни, что там со стоматологом» — просьба рассказать, а не про напоминание: как раньше', async () => {
+    const prompts = await answeringPrompts();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'здоровье',
+        text: 'Записаться к стоматологу',
+        deadlineAt: new Date('2026-08-25T21:00:00.000Z'),
+        deadlineAccuracy: 'day',
+        deadlineTime: 19 * 60,
+        embedding: oneVector,
+      });
+    const llm = echoingLlm({
+      router: routerQuery('Напомни, что там со стоматологом'),
+      answerer: JSON.stringify({ answer: '' }),
+    });
+
+    const same = new MockEmbeddingProvider({ vectorFor: () => oneVector });
+    const { replies } = await ask('Напомни, что там со стоматологом', llm, prompts, same);
+
+    expect(replies.at(-1)).toBe(
+      `${defaultTexts.backlog.about}\n— Записаться к стоматологу · 26.08, 19:00`,
+    );
+  });
+
   it('словарный ответ «про это»: день — из срока, а не из названия; сегодняшний час — с днём', async () => {
     // Название хранит слово дня со дня записи («Позвонить маме завтра»,
     // перенесено на 26.08) — в строке ему не место. Час сегодняшнего дела
@@ -9707,6 +9786,58 @@ describe('час нового дела — утро или вечер (вари�
     const rows = await liveItems();
     expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 19 * 60]]);
     expect(all.some((text) => text.includes('19:00'))).toBe(true);
+  });
+
+  it('«Второе» на «07:00 или 19:00?» — 19:00, как «Вечером» (прогон Никиты 27.09.2026, 18:02)', async () => {
+    // Бот не понял «Второе», вопрос закрылся, и «Вечером» следом ушло
+    // подробностью к делу: «Добавила подробность к «В 7 забрать куртку…»».
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Завтра в 7 забрать куртку из химчистки.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'В 7 забрать куртку из химчистки', 'покупки'),
+        }),
+      },
+      userId,
+    );
+    expect(
+      all.some((text) =>
+        text.includes('Во сколько «Забрать куртку из химчистки» — 07:00 или 19:00?'),
+      ),
+    ).toBe(true);
+
+    const resolverCalls: string[] = [];
+    await queuedBatchOf([{ kind: 'text', text: 'Второе', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toEqual([]);
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime, row.body])).toEqual([
+      ['Забрать куртку из химчистки', 19 * 60, null],
+    ]);
+    expect(all.some((text) => text.startsWith('Добавила подробность'))).toBe(false);
   });
 
   it('час в начале названия — в вопросе и после ответа название с заглавной (живой прогон 26.09.2026, 02:06)', async () => {
@@ -10380,6 +10511,80 @@ describe('день к делу без срока — тому же делу, а 
     expect(all.some((text) => text.includes('«Записать Мишу к ортодонту»'))).toBe(true);
     expect(all.some((text) => text.startsWith('Записала'))).toBe(false);
     expect(all.some((text) => text.includes('..'))).toBe(false);
+  });
+
+  it('два сообщения в одной выгрузке — «…к стоматологу.» и «…к стоматологу в среду.» — одно дело на среду (18:16)', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const first = 'Записать Мишу к стоматологу.';
+    const second = 'Записать Мишу к стоматологу в среду.';
+    const item = (text: string, deadline: string, deadlineText: string) => ({
+      text,
+      type: 'TASK',
+      priority: 'SOON',
+      topic: 'здоровье',
+      isProject: false,
+      deadline,
+      deadlineAccuracy: deadline === '' ? 'none' : 'day',
+      deadlineText,
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    });
+
+    await queuedBatchOf([
+      { kind: 'text', text: first, offsetMs: 0 },
+      { kind: 'text', text: second, offsetMs: 3_000 },
+    ]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({
+              crisis: false,
+              segments: [
+                {
+                  intent: 'DUMP',
+                  text: `${first}
+${second}`,
+                },
+              ],
+            }),
+            extractor: () =>
+              JSON.stringify({
+                units: [
+                  { text: 'Записать Мишу к стоматологу', isProject: false, isEmotion: false },
+                  {
+                    text: 'Записать Мишу к стоматологу в среду',
+                    isProject: false,
+                    isEmotion: false,
+                  },
+                ],
+              }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  item('Записать Мишу к стоматологу', '', ''),
+                  // Часы теста — понедельник 24.08, среда — 26.08.
+                  item('Записать Мишу к стоматологу в среду', '2026-08-26', 'в среду'),
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.deadlineAt?.toISOString()).toBe('2026-08-25T21:00:00.000Z');
+    // Одно дело — и ответ про одно, без «Записала 2 дела».
+    expect(all).toEqual(['Записала в «Здоровье»: Записать Мишу к стоматологу в среду.']);
   });
 
   it('у записанного свой день — другой день заводит новое дело, как раньше', async () => {

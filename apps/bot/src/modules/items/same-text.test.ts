@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Item } from '../../db/schema.js';
-import { knownByText, sameTextKey, splitKnown } from './same-text.js';
+import { datelessTwins, knownByText, sameTextKey, splitKnown } from './same-text.js';
 
 /**
  * Отсев повторной выгрузки (случай с боевого 31.08.2026, задача 3.22).
@@ -282,5 +282,69 @@ describe('час во фразе не мешает узнать повтор (ж
 
     expect(split.fresh).toEqual([]);
     expect(split.repeats).toEqual([{ unit: said, item: parcel }]);
+  });
+});
+
+describe('двойник без срока внутри одной выгрузки (прогон Никиты 27.09.2026, 18:16)', () => {
+  /**
+   * Два голосовых подряд — «Записать Мишу к стоматологу.» и «Записать Мишу
+   * к стоматологу в среду.» — попали в одну выгрузку, и завелись два дела:
+   * без даты и на среду. Отсев повтора внутри выгрузки сравнивал дословно
+   * и оставлял первое — то, что без дня.
+   */
+  const dated = { at: new Date('2026-09-29T21:00:00.000Z'), accuracy: 'day' as const };
+
+  it('без срока уступает сказанному с днём — в любом порядке', () => {
+    expect([
+      ...datelessTwins([
+        { text: 'Записать Мишу к стоматологу' },
+        { text: 'Записать Мишу к стоматологу в среду', deadline: dated },
+      ]),
+    ]).toEqual([0]);
+    expect([
+      ...datelessTwins([
+        { text: 'Записать Мишу к стоматологу в среду', deadline: dated },
+        { text: 'Записать Мишу к стоматологу.' },
+      ]),
+    ]).toEqual([1]);
+  });
+
+  it('«купить хлеб» и «купить хлеб завтра» — остаётся тот, что с днём', () => {
+    expect([
+      ...datelessTwins([{ text: 'Купить хлеб' }, { text: 'Купить хлеб завтра', deadline: dated }]),
+    ]).toEqual([0]);
+  });
+
+  describe('чего не трогать', () => {
+    it('оба с днями — разные дни могут быть разными делами', () => {
+      expect(
+        datelessTwins([
+          { text: 'Позвонить маме в четверг', deadline: dated },
+          { text: 'Позвонить маме в пятницу', deadline: dated },
+        ]).size,
+      ).toBe(0);
+    });
+
+    it('разные дела', () => {
+      expect(
+        datelessTwins([
+          { text: 'Записать Машу к стоматологу' },
+          { text: 'Записать Мишу к стоматологу в среду', deadline: dated },
+        ]).size,
+      ).toBe(0);
+    });
+
+    it('оба без срока — это дословный повтор, его отсеивает splitKnown', () => {
+      expect(datelessTwins([{ text: 'Купить хлеб' }, { text: 'Купить хлеб' }]).size).toBe(0);
+    });
+
+    it('день в названии у того, что без срока, — не повод сливать с другим днём', () => {
+      expect(
+        datelessTwins([
+          { text: 'Позвонить маме в четверг' },
+          { text: 'Позвонить маме в пятницу', deadline: dated },
+        ]).size,
+      ).toBe(0);
+    });
   });
 });

@@ -425,7 +425,11 @@ describe('«Изменить время» — час словами (ТЗ про
     await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
     expect(await awaitingOfUser()).toBe(`retime:${itemId}`);
     const hint = calls.filter((call) => call.method === 'sendMessage').at(-1);
-    expect(textOf(hint)).toBe(defaultTexts.card.retimeHint);
+    // Вопрос называет дело (прогон Никиты 27.09.2026, 18:10): «Изменить время»
+    // под карточкой «Напомню вовремя» не говорило, про что, — и час встал
+    // не тому делу, о котором думал человек.
+    expect(textOf(hint)).toBe(defaultTexts.card.retimeHintAbout('Сходить к стоматологу'));
+    expect(textOf(hint)).toContain('«Сходить к стоматологу»');
 
     await bot.handleUpdate(textUpdate('10:30'));
 

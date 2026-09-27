@@ -46,6 +46,17 @@ export function asksToRemind(text: string): boolean {
   return said !== '' && PATTERNS.some((pattern) => pattern.test(said));
 }
 
+/**
+ * «Про ортодонта напомнишь?» — вопрос о напоминании про названное дело
+ * (прогон Никиты 27.09.2026, 17:59). Дело находит поиск по вопросу; здесь —
+ * только о чём спросили: «напомнишь», «не забудешь напомнить». Повелительное
+ * «напомни, что там со стоматологом» — просьба рассказать (§13.4), не это.
+ */
+export function asksWillRemind(text: string): boolean {
+  const said = normalized(text);
+  return /(?<!\p{L})(?:напомнишь|не забудешь(?: мне)? напомнить)(?!\p{L})/u.test(said);
+}
+
 /** Дело, о котором спросили: ровно то, что нужно раскладке. */
 export interface RemindItem {
   readonly id: string;
