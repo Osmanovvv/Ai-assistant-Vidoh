@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AiStage } from '../../../db/schema.js';
 
 import { answererSchema, ANSWERER_SCHEMA_NAME } from './answerer.js';
+import { readerSchema, READER_SCHEMA_NAME } from './reader.js';
 
 import {
   classifierSchema,
@@ -61,6 +62,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [PRESENTER_SCHEMA_NAME]: presenterSchema,
   [PRESENTER_V2_SCHEMA_NAME]: presenterV2Schema,
   [ANSWERER_SCHEMA_NAME]: answererSchema,
+  [READER_SCHEMA_NAME]: readerSchema,
   [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
@@ -81,7 +83,12 @@ export type SchemaName = keyof typeof SCHEMAS;
  * выгрузке»: неправду в выкладке перестанут читать вместе с настоящими
  * отказами. Остальные этапы обязательны — без них выгрузка гибнет.
  */
-export const OPTIONAL_STAGES: ReadonlySet<AiStage> = new Set<AiStage>(['presenter', 'answerer']);
+export const OPTIONAL_STAGES: ReadonlySet<AiStage> = new Set<AiStage>([
+  'presenter',
+  'answerer',
+  // Без промпта ответ на вопрос бота узнаёт только код, как до 28.09.2026.
+  'reader',
+]);
 
 /**
  * Какая схема действует на каком этапе сейчас.
@@ -99,6 +106,7 @@ export const SCHEMA_BY_STAGE: Readonly<Partial<Record<AiStage, string>>> = {
   resolver: RESOLVER_SCHEMA_NAME,
   decomposer: DECOMPOSER_SCHEMA_NAME,
   answerer: ANSWERER_SCHEMA_NAME,
+  reader: READER_SCHEMA_NAME,
 };
 
 export class UnknownSchemaError extends Error {
@@ -171,4 +179,6 @@ export type { ClassifiedItems, DeadlineAccuracy, ItemType, Priority } from './cl
 export type { PresenterAcknowledgement, PresenterLine } from './presenter.js';
 export type { ResolverAction, ResolverAnswer, ResolverMode } from './resolver.js';
 export { answererSchema, ANSWERER_SCHEMA_NAME };
+export { readerSchema, READER_SCHEMA_NAME, READER_KINDS } from './reader.js';
+export type { ReaderReading } from './reader.js';
 export type { LiveAnswer } from './answerer.js';

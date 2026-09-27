@@ -415,6 +415,17 @@ export interface TextProfile {
      * не остаётся молча без часа.
      */
     readonly newTimeUnclear: (title: string, morning: string, evening: string) => string;
+    /**
+     * Встречный вопрос на «утро или вечер» (docs/28, 28.09.2026): «В 7
+     * чего?» — бот объясняет свой вопрос другими словами и ждёт ответа.
+     */
+    readonly timeAskedAgain: (title: string, morning: string, evening: string) => string;
+    /** То же у переноса («11:30 или 23:30?»): названия в вопросе нет. */
+    readonly timeAskedAgainMove: (morning: string, evening: string) => string;
+    /** Встречный вопрос на «Какое дело?»: объяснить и подсказать, как ответить. */
+    readonly whichAskedAgain: string;
+    /** «Не знаю», «потом» на вопрос бота: ничего не меняет, вопрос снят. */
+    readonly leftAsIs: string;
     /** Сказан сдвиг («на час позже»), а у дела нет часа (23.09.2026). */
     readonly noTimeToShift: string;
     /** Срок отвергнут — в прошлом или не существует (A3). */

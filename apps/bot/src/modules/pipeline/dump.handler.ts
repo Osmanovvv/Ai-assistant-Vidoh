@@ -49,6 +49,7 @@ import {
   unchangedText,
 } from '../resolver/change-text.js';
 import { settlePendingQuestion } from '../resolver/pending.js';
+import { askedAgain, readReply, type ReaderQuestion } from '../resolver/answer-reader.js';
 import {
   CLARIFY_REASON,
   answerInBatch,
@@ -1096,11 +1097,69 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * 27.09.2026, 23:29): два голосовых про зубного и «Платье забрать
      * вечером» — одна выгрузка. Условия — в `answerInBatch`.
      */
-    const answered =
+    const byCode =
       clarification === undefined
         ? undefined
         : answerInBatch(clarification.kind, clarification.command, combined);
+    /**
+     * Код ответа не узнал — читает модель (шаг 3 плана docs/28, 28.09.2026):
+     * «После работы», «Утром не получится, вечером», «В 7 чего?». Её выбор
+     * сверяет код (`answer-reader.ts`); не прошло — как без неё. Только
+     * реплика из одного сообщения: в выгрузке из нескольких ответ ищет код
+     * по строкам, а модель могла бы молча уронить соседнюю мысль.
+     * Выключатель — `answer.reader` в панели.
+     */
+    const reading =
+      clarification !== undefined &&
+      byCode === undefined &&
+      !combined.trim().includes('\n') &&
+      (await deps.settings?.number('answerReader')) === 1
+        ? await readReply(ai, {
+            question: { kind: clarification.kind, command: clarification.command },
+            reply: combined,
+            texts,
+            userId: batch.userId,
+            batchId: batch.id,
+          })
+        : undefined;
+    if (reading !== undefined) {
+      deps.logger?.info(
+        {
+          batchId: batch.id,
+          kind: reading.kind,
+          ...(reading.kind === 'unread' ? { why: reading.why } : {}),
+        },
+        'Ответ на переспрос прочитан моделью',
+      );
+    }
+    const answered =
+      byCode ??
+      (reading?.kind === 'answer' && reading.command !== undefined
+        ? { command: reading.command, besides: reading.thought }
+        : undefined);
     const clarified = answered?.command;
+
+    /**
+     * Встречный вопрос («В 7 чего?»), двоякий ответ («давай в 8») — бот
+     * объясняет свой вопрос и ждёт дальше; «не знаю», «потом» — вопрос
+     * снят, ничего не меняется. Реплика из одного сообщения, мысли в ней
+     * нет (проверено кодом) — разбирать больше нечего.
+     */
+    if (
+      clarification !== undefined &&
+      (reading?.kind === 'counter_question' ||
+        reading?.kind === 'ambiguous' ||
+        reading?.kind === 'undecided')
+    ) {
+      if (reading.kind === 'undecided') {
+        await closeClarification(db, clarification, false);
+        await tell(texts.resolver.leftAsIs);
+      } else {
+        if (clarification.kind === 'time') await keepWaiting(db, clarification);
+        await tell(askedAgain(clarification, texts));
+      }
+      return;
+    }
     /**
      * Что разбирать дальше и доделывать ли команду переспроса правкой.
      * Час поставлен прямо — остальное выгрузки идёт обычным разбором.
@@ -1504,6 +1563,19 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       ...(answers.length === 0 ? {} : { answerText: answers.join(' ') }),
       now,
       ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+      // Словарь ответа не узнал — читает модель (docs/28), если включено.
+      ...((await deps.settings?.number('answerReader')) === 1
+        ? {
+            readByModel: async (reply: string, question: ReaderQuestion) =>
+              await readReply(ai, {
+                question,
+                reply,
+                texts,
+                userId: batch.userId,
+                batchId: batch.id,
+              }),
+          }
+        : {}),
     });
 
     if (settled.carryOver !== undefined) {

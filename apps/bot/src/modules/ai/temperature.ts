@@ -36,6 +36,8 @@ const BY_STAGE: Readonly<Partial<Record<AiStage, number>>> = {
   presenter: PRESENTER,
   // Живой ответ на вопрос — та же лёгкая свобода слова, что у строки.
   answerer: PRESENTER,
+  // Чтение ответа на вопрос бота — выбор из предложенного, без свободы.
+  reader: STRUCTURAL,
 };
 
 /**

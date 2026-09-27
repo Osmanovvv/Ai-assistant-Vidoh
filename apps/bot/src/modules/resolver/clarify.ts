@@ -194,7 +194,7 @@ const NOT_A_DEED = [
 
 const NEW_THOUGHT = new Set(['ещё', 'еще', 'кстати']);
 
-function notADeed(said: string): boolean {
+export function notADeed(said: string): boolean {
   if (onlyThanks(said) || moodOf(said) !== undefined) return true;
   const spoken = words(said);
   const joined = ` ${spoken.join(' ')} `;
@@ -207,7 +207,7 @@ function trimmed(text: string): string {
   return text.trim().replace(/[.!…\s]+$/u, '');
 }
 
-function words(text: string): readonly string[] {
+export function words(text: string): readonly string[] {
   return text
     .toLowerCase()
     .split(/[^\p{L}\d:]+/u)
@@ -255,7 +255,7 @@ export function clarifiedCommand(
 }
 
 /** Слова дела из команды переспроса: «Перенеси «Забрать платье из ателье» в 8». */
-function titleWords(command: string): readonly string[] {
+export function titleWords(command: string): readonly string[] {
   const title = /«([^»]+)»/u.exec(command)?.[1];
   return title === undefined ? [] : words(title.replace(/ё/gu, 'е'));
 }
@@ -265,7 +265,7 @@ function titleWords(command: string): readonly string[] {
  * из трёх, если это не меньше половины короче из слов — «заберу» при
  * «забрать», «куплю» при «купить», но не «заболел» при «забрать».
  */
-function sameWord(one: string, other: string): boolean {
+export function sameWord(one: string, other: string): boolean {
   if (one === other) return true;
   let common = 0;
   while (common < one.length && one[common] === other[common]) common++;

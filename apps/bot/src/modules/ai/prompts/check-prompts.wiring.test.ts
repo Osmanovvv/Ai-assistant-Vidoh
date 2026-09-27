@@ -94,7 +94,8 @@ describe('связка: сторож печатает причину и сове
      * выгрузке» — неправда, а неправду в выкладке читать перестанут
      * вместе с настоящими отказами.
      */
-    expect(OPTIONAL_STAGES).toEqual(new Set(['presenter', 'answerer']));
+    // `reader` (28.09.2026): без промпта ответ на вопрос бота узнаёт код.
+    expect(OPTIONAL_STAGES).toEqual(new Set(['presenter', 'answerer', 'reader']));
     expect(script, 'необязательные этапы не отделены от обязательных').toContain('OPTIONAL_STAGES');
     expect(script, 'необязательный этап не должен ронять выкладку').toMatch(
       /missing|необязательн/u,

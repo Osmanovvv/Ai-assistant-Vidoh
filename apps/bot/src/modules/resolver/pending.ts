@@ -1,9 +1,12 @@
+import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
+import { items } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import { hasDraft, saveDraft } from '../items/items.repo.js';
 import { answerRemainder, readAnswer } from './answer.js';
+import type { ReaderQuestion, ReplyMeaning } from './answer-reader.js';
 import { aboutPending, isMoveQuestion } from './change-text.js';
 import { applyDecision, type Applied } from './patch.js';
 import {
@@ -85,6 +88,19 @@ export interface SettleParams {
   readonly answerText?: string | undefined;
   readonly now?: Date | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Чтение ответа моделью, когда словарь его не узнал (шаг 3 плана
+   * docs/28, 28.09.2026). Нет — только словарь, как раньше.
+   */
+  readonly readByModel?:
+    ((reply: string, question: ReaderQuestion) => Promise<ReplyMeaning>) | undefined;
+}
+
+/** Название дела из вопроса — для чтения ответа моделью. */
+async function itemTitleOf(db: Database, itemId: string | null): Promise<string | undefined> {
+  if (itemId === null) return undefined;
+  const [row] = await db.select({ text: items.text }).from(items).where(eq(items.id, itemId));
+  return row?.text;
 }
 
 export async function settlePendingQuestion(
@@ -191,9 +207,35 @@ export async function settlePendingQuestion(
   }
 
   // У вопроса о переносе согласие шире: «давай», «ок» (24.09.2026).
-  const reading = readAnswer(params.answerText, {
-    move: isMoveQuestion(aboutPending(open, '')),
-  });
+  const move = isMoveQuestion(aboutPending(open, ''));
+  let reading = readAnswer(params.answerText, { move });
+
+  /**
+   * Словарь ответа не узнал — читает модель (шаг 3 плана docs/28,
+   * 28.09.2026): «Ну давай, переноси уже», «Это тоже про Мишу». Выбор
+   * сверяет код (`answer-reader.ts`); не прошло или не ответ — как без
+   * неё. Мысль из той же реплики уходит в разбор, а не в черновик.
+   */
+  let thought: string | undefined;
+  if ((reading === 'unclear' || reading === 'content') && params.readByModel !== undefined) {
+    const title = await itemTitleOf(db, open.itemId);
+    const meaning =
+      title === undefined
+        ? undefined
+        : await params.readByModel(
+            params.answerText,
+            move ? { kind: 'move', title } : { kind: 'attach', title },
+          );
+    if (meaning?.kind === 'answer') {
+      reading = meaning.choice === 'да' || meaning.choice === 'к прошлой' ? 'attach' : 'separate';
+      thought = meaning.thought;
+      params.logger?.info(
+        { userId: params.userId, choice: meaning.choice, thought: thought !== '' },
+        'Ответ на вопрос прочитан моделью',
+      );
+    }
+  }
+  const carriedThought = thought === undefined || thought === '' ? undefined : thought;
 
   if (reading === 'unclear') {
     // Ответ был, но что он значит — неизвестно. Переспрашивать §7.3
@@ -236,8 +278,11 @@ export async function settlePendingQuestion(
     return { kind: 'superseded', carryOver: params.answerText };
   }
 
-  /** Слова сверх ответа — в черновик, чтобы не пропали (§9.1, 3.44). */
-  const leftover = answerRemainder(params.answerText);
+  /**
+   * Слова сверх ответа — в черновик, чтобы не пропали (§9.1, 3.44). Ответ
+   * прочитала модель — мысль уже отделена и идёт в разбор.
+   */
+  const leftover = thought === undefined ? answerRemainder(params.answerText) : '';
   const keepLeftover = async (): Promise<boolean> => {
     if (leftover === '') return false;
     await saveDraft(db, {
@@ -266,7 +311,15 @@ export async function settlePendingQuestion(
     });
     if (marked.kind === 'stale') return await rescueOrphanAnswer();
 
-    return { kind: 'separate', carryOver: open.segment, leftoverSaved: await keepLeftover() };
+    return {
+      kind: 'separate',
+      carryOver:
+        carriedThought === undefined
+          ? open.segment
+          : `${open.segment}
+${carriedThought}`,
+      leftoverSaved: await keepLeftover(),
+    };
   }
 
   /**
@@ -309,12 +362,14 @@ export async function settlePendingQuestion(
 
   const leftoverSaved = await keepLeftover();
 
+  const carried = carriedThought === undefined ? {} : { carryOver: carriedThought };
   return applying.kind === 'applied'
-    ? { kind: 'applied', applied: applying.applied, leftoverSaved }
+    ? { kind: 'applied', applied: applying.applied, leftoverSaved, ...carried }
     : {
         kind: 'nothingToApply',
         why: applying.kind,
         leftoverSaved,
+        ...carried,
         ...(applying.kind === 'unchanged' && applying.timeUnclear !== undefined
           ? { timeUnclear: applying.timeUnclear }
           : {}),
