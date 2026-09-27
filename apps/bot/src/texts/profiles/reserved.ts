@@ -255,6 +255,13 @@ export const reserved: TextProfile = {
     timeUnclear: (morning, evening) => `Не поняла, ${morning} или ${evening}? Скажи — и перенесу.`,
     newTimeUnclear: (title, morning, evening) =>
       `Во сколько «${title}» — ${morning} или ${evening}? Скажи — и поставлю время.`,
+    timeAskedAgain: (title, morning, evening) =>
+      `Я про «${title}»: поставить на ${morning} или на ${evening}? Можно сказать «утром» или «вечером».`,
+    timeAskedAgainMove: (morning, evening) =>
+      `Я про время: перенести на ${morning} или на ${evening}? Можно сказать «первое» или «второе».`,
+    whichAskedAgain:
+      'Я про дело, о котором ты сказала. Назови его парой слов — например, «посылка» или «позвонить маме».',
+    leftAsIs: 'Хорошо, оставлю как есть.',
     noTimeToShift: 'У этого дела нет времени — сдвигать не от чего. Скажи, во сколько, и поставлю.',
     deadlineRefused: 'Срок не подошёл — не поменяла. Назови дату ещё раз.',
     rememberFailed:

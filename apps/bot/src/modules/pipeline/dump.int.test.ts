@@ -43,6 +43,7 @@ import {
   ANSWERER_SCHEMA_NAME,
   PRESENTER_SCHEMA_NAME,
   PRESENTER_V2_SCHEMA_NAME,
+  READER_SCHEMA_NAME,
   RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
@@ -143,6 +144,7 @@ const MARKERS = {
   presenter: 'ПРИЗНАНИЕ',
   resolver: 'РЕШЕНИЕ',
   answerer: 'ОТВЕТ',
+  reader: 'ЧТЕНИЕ',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -258,6 +260,8 @@ function echoingLlm(
         case 'answerer':
           // Пусто — «сказать нечего»: ответ словарный, как без модели.
           return JSON.stringify({ answer: '' });
+        case 'reader':
+          return JSON.stringify({ kind: 'not_answer', choice: '', thought: '' });
       }
     },
   });
@@ -4038,6 +4042,90 @@ describe('ответ на уточняющий вопрос голосом (§7.
     expect(after?.deadlineAt).not.toBeNull();
     // …и о том же деле «менять нечего» не звучит.
     expect(all.some((text) => text.includes('менять нечего'))).toBe(false);
+  });
+
+  /**
+   * Словарь ответа не узнал — читает модель (шаг 3 плана docs/28,
+   * 28.09.2026). «Это тоже про врача» словарь не знает: ни «к прошлой», ни
+   * «да». Выключатель `answer.reader`.
+   */
+  describe('ответ на вопрос с кнопками читает модель, когда словарь не узнал (docs/28)', () => {
+    async function readerOn(): Promise<void> {
+      await seedPrompt(testDb(), {
+        stage: 'reader',
+        version: 'reader@test',
+        prompt: MARKERS.reader,
+        schemaName: READER_SCHEMA_NAME,
+      });
+      await activatePrompt(testDb(), 'reader', 'reader@test');
+      await putSetting(testDb(), { name: 'answerReader', value: '1' });
+    }
+
+    async function answer(text: string, reader?: string): Promise<string[]> {
+      const prompts = await seedPrompts();
+      const { sender, all } = recordingSender();
+      await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider({}),
+            prompts,
+            sender,
+            llmLight: echoingLlm({
+              router: JSON.stringify({ crisis: false, segments: [{ intent: 'ANSWER', text }] }),
+            }),
+            llm: echoingLlm(reader === undefined ? {} : { reader }),
+          }),
+        },
+        userId,
+      );
+      return all;
+    }
+
+    it('«Это тоже про врача» — к прошлой: правка применена', async () => {
+      await readerOn();
+      const { itemId } = await itemAndQuestion();
+
+      await answer(
+        'Это тоже про врача',
+        JSON.stringify({ kind: 'answer', choice: 'к прошлой', thought: '' }),
+      );
+
+      const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+      expect(after?.deadlineAt).not.toBeNull();
+    });
+
+    it('«Это тоже про врача. И ещё хлеб купить» — правка применена, хлеб — делом', async () => {
+      await readerOn();
+      const { itemId } = await itemAndQuestion();
+
+      await answer(
+        'Это тоже про врача. И ещё хлеб купить',
+        JSON.stringify({ kind: 'answer', choice: 'к прошлой', thought: 'И ещё хлеб купить' }),
+      );
+
+      const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+      expect(after?.deadlineAt).not.toBeNull();
+      const rows = await testDb()
+        .select()
+        .from(items)
+        .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+      expect(rows.some((row) => /хлеб/iu.test(row.text))).toBe(true);
+    });
+
+    it('выключено — как раньше: «Это тоже про врача» не прочитано, запись не тронута', async () => {
+      const { itemId } = await itemAndQuestion();
+
+      await answer(
+        'Это тоже про врача',
+        JSON.stringify({ kind: 'answer', choice: 'к прошлой', thought: '' }),
+      );
+
+      const [after] = await testDb().select().from(items).where(eq(items.id, itemId));
+      expect(after?.deadlineAt).toBeNull();
+    });
   });
 
   it('«давай» на «Перенести «X»?» — перенос применён', async () => {
@@ -10164,6 +10252,144 @@ describe('час нового дела — утро или вечер (вари�
       expect(
         rows.filter((row) => row.text.includes('ремонта')).map((row) => row.deadlineTime),
       ).toEqual([null]);
+    });
+
+    /**
+     * Шаг 3 плана docs/28: код ответа не узнал — читает модель, её выбор
+     * сверяет код. Выключатель `answer.reader`, по умолчанию выключено.
+     */
+    describe('ответ читает модель, когда код не узнал (docs/28, 28.09.2026)', () => {
+      async function readerOn(): Promise<void> {
+        await seedPrompt(testDb(), {
+          stage: 'reader',
+          version: 'reader@test',
+          prompt: MARKERS.reader,
+          schemaName: READER_SCHEMA_NAME,
+        });
+        await activatePrompt(testDb(), 'reader', 'reader@test');
+        await putSetting(testDb(), { name: 'answerReader', value: '1' });
+      }
+
+      const said = (kind: string, choice = '', thought = ''): string =>
+        JSON.stringify({ kind, choice, thought });
+
+      async function shoesHour(): Promise<readonly (number | null)[]> {
+        return (await liveItems())
+          .filter((row) => row.text.includes('ремонта'))
+          .map((row) => row.deadlineTime);
+      }
+
+      it('«После работы» — 19:00 туфлям, новой записи нет', async () => {
+        await readerOn();
+        const { prompts, sender, all } = await askAboutShoes();
+        const inputs: string[] = [];
+        const before = (await liveItems()).length;
+
+        await send(
+          prompts,
+          sender,
+          'После работы',
+          1,
+          echoingLlm({
+            reader: (request: { readonly input: string }) => {
+              inputs.push(request.input);
+              return said('answer', '19:00');
+            },
+          }),
+        );
+
+        expect(inputs).toHaveLength(1);
+        expect(inputs[0]).toContain('Ответ: После работы');
+        expect(await shoesHour()).toEqual([19 * 60]);
+        expect(await liveItems()).toHaveLength(before);
+        expect(all.at(-1)).toBe('Напомню про «Забрать туфли из ремонта» завтра в 19:00.');
+      });
+
+      it('выключено в панели — модель не зовётся, реплика разбирается как раньше', async () => {
+        const { prompts, sender } = await askAboutShoes();
+        const inputs: string[] = [];
+
+        await send(
+          prompts,
+          sender,
+          'После работы',
+          1,
+          echoingLlm({
+            reader: (request: { readonly input: string }) => {
+              inputs.push(request.input);
+              return said('answer', '19:00');
+            },
+          }),
+        );
+
+        expect(inputs).toEqual([]);
+        expect(await shoesHour()).toEqual([null]);
+      });
+
+      it('«В 7 чего» — бот объясняет вопрос и ждёт: «Вечером» следом ставит 19:00', async () => {
+        await readerOn();
+        const { prompts, sender, all } = await askAboutShoes();
+
+        await send(
+          prompts,
+          sender,
+          'В 7 чего',
+          1,
+          echoingLlm({ reader: said('counter_question') }),
+        );
+        expect(all.at(-1)).toBe(
+          'Я про «Забрать туфли из ремонта»: поставить на 07:00 или на 19:00? Можно сказать «утром» или «вечером».',
+        );
+
+        await send(prompts, sender, 'Вечером', 3);
+        expect(await shoesHour()).toEqual([19 * 60]);
+      });
+
+      it('«Не знаю пока» — «оставлю как есть», вопрос снят, записи нет', async () => {
+        await readerOn();
+        const { prompts, sender, all } = await askAboutShoes();
+        const before = (await liveItems()).length;
+
+        await send(prompts, sender, 'Не знаю пока', 1, echoingLlm({ reader: said('undecided') }));
+        expect(all.at(-1)).toBe('Хорошо, оставлю как есть.');
+        expect(await liveItems()).toHaveLength(before);
+
+        // Вопрос снят: «Вечером» потом час не ставит.
+        await send(prompts, sender, 'Вечером', 3);
+        expect(await shoesHour()).toEqual([null]);
+      });
+
+      it('«Вечером. И купить хлеб» — час туфлям и хлеб делом', async () => {
+        await readerOn();
+        const { prompts, sender } = await askAboutShoes();
+
+        await send(
+          prompts,
+          sender,
+          'Вечером. И купить хлеб',
+          1,
+          echoingLlm({ reader: said('answer', '19:00', 'И купить хлеб') }),
+        );
+
+        expect(await shoesHour()).toEqual([19 * 60]);
+        expect((await liveItems()).some((row) => /хлеб/iu.test(row.text))).toBe(true);
+      });
+
+      it('модель назвала ответом новое дело — код не верит: «Вечером позвонить маме» — дело, час туфлям не ставится', async () => {
+        await readerOn();
+        const { prompts, sender } = await askAboutShoes();
+
+        await send(
+          prompts,
+          sender,
+          'Вечером позвонить маме',
+          1,
+          echoingLlm({ reader: said('answer', '19:00') }),
+        );
+
+        expect(await shoesHour()).toEqual([null]);
+        expect((await liveItems()).some((row) => /маме/iu.test(row.text))).toBe(true);
+      });
     });
 
     it('новый вопрос о часе заменяет прежний: ответ на него не доделывает старый', async () => {
