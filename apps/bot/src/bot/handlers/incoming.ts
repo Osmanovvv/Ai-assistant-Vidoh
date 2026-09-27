@@ -8,9 +8,11 @@ import {
   DEFAULT_LIMITS,
   attachMessageToBatch,
   closeBatchOnSilence,
+  hasBatchInFlight,
   isOverDumpLimit,
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
+import { onlyThanks } from '../../modules/presenter/thanks.js';
 import { looksLikeQuestion } from '../../modules/buffer/question.js';
 import { answersNow, asksDirectly, type OpenAsk } from '../../modules/buffer/answer-now.js';
 import { openClarification } from '../../modules/resolver/clarify.repo.js';
@@ -249,6 +251,34 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
         parse_mode: 'Markdown',
         link_preview_options: { is_disabled: true },
       });
+      return;
+    }
+
+    /**
+     * Чистая благодарность — ответ сразу (Никита, 27.09.2026).
+     *
+     * «Спасибо» шло общим путём: полминуты тишины — вдруг допишет — и
+     * вызов маршрутизатора, чтобы узнать то, что видно по словам. Ответ
+     * при этом один и тот же, кодом (`texts.answer.thanks`). Теперь он
+     * уходит сразу: без «Слушаю», без выгрузки и без модели.
+     *
+     * Только когда отвечать больше нечего. Слова сверх благодарности —
+     * в разбор (`onlyThanks`, закрытый список). Выгрузка в пути — туда
+     * же: иначе «Я всё помню» обогнало бы итог ещё не записанного. Бот
+     * ждёт ответа на свой вопрос — тоже прежним путём: там «спасибо»
+     * может быть ответом. После согласия, но раньше гейта доступа:
+     * благодарность ничего не стоит, и «пробный период кончился» в ответ
+     * на неё звучало бы грубо.
+     */
+    if (
+      onlyThanks(ctx.message?.text) &&
+      !(await hasBatchInFlight(deps.db, outcome.userId)) &&
+      (await openAskOf(deps.db, outcome.userId, new Date())) === undefined
+    ) {
+      const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
+      await ctx.reply(texts.answer.thanks);
+      // Съедено, как ответ словами: иначе строка без выгрузки — сирота.
+      await markConsumed(deps.db, outcome.messageId);
       return;
     }
 

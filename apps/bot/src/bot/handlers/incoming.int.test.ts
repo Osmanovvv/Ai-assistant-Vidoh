@@ -1625,3 +1625,112 @@ describe('вопрос разбирается сразу, не дожидаяс�
     expect(await lastBatchStatus()).toBe('queued');
   });
 });
+
+describe('чистая благодарность — ответ сразу (Никита, 27.09.2026)', () => {
+  /**
+   * «Спасибо» шло общим путём: полминуты тишины — вдруг допишет — и
+   * вызов модели. Благодарность — не мысль для разбора: бот отвечает
+   * сразу, без «Слушаю», без выгрузки и без модели. Только когда
+   * отвечать больше нечего: выгрузка не собирается и бот не ждёт ответа
+   * на свой вопрос — иначе как раньше.
+   */
+  const thanksSent = (calls: readonly ApiCall[]): number =>
+    calls.filter(
+      (call) =>
+        call.method === 'sendMessage' && call.payload['text'] === defaultTexts.answer.thanks,
+    ).length;
+
+  it.each(['Спасибо', 'Спасибо тебе большое!'])(
+    '«%s» — «Пожалуйста 🤍 Я всё помню.» сразу, без выгрузки и без «Слушаю»',
+    async (text) => {
+      const { sender, said } = recordingStatus();
+      const { bot, calls } = createTestBot({ sender });
+
+      await bot.handleUpdate(textUpdate(text));
+
+      expect(thanksSent(calls)).toBe(1);
+      expect(said).toEqual([]);
+      expect(await dumpCount()).toBe(0);
+      // Съедено — не сирота в панели.
+      const [row] = await testDb()
+        .select({ consumedAt: messagesRaw.consumedAt })
+        .from(messagesRaw)
+        .where(eq(messagesRaw.userId, userId));
+      expect(row?.consumedAt).not.toBeNull();
+    },
+  );
+
+  describe('как раньше', () => {
+    it('благодарность с делом — в разбор', async () => {
+      const { sender } = recordingStatus();
+      const { bot, calls } = createTestBot({ sender });
+
+      await bot.handleUpdate(textUpdate('Спасибо, и купи хлеб'));
+
+      expect(thanksSent(calls)).toBe(0);
+      expect(await dumpCount()).toBe(1);
+    });
+
+    it('выгрузка ещё собирается — «спасибо» идёт в неё, а не обгоняет итог', async () => {
+      const { sender } = recordingStatus();
+      const { bot, calls } = createTestBot({ sender });
+
+      await bot.handleUpdate(textUpdate('купить продукты'));
+      await bot.handleUpdate(textUpdate('Спасибо'));
+
+      expect(thanksSent(calls)).toBe(0);
+      expect(await dumpCount()).toBe(1);
+      const rows = await testDb()
+        .select({ batchId: messagesRaw.batchId })
+        .from(messagesRaw)
+        .where(eq(messagesRaw.userId, userId));
+      expect(rows.every((row) => row.batchId !== null)).toBe(true);
+    });
+
+    it('бот ждёт ответа на свой вопрос — «спасибо» разбирается как раньше', async () => {
+      const [item] = await testDb()
+        .insert(items)
+        .values({ userId, text: 'Забрать ребенка', type: 'TASK', priority: 'SOON', topic: 'семья' })
+        .returning({ id: items.id });
+      const [batch] = await testDb()
+        .insert(batches)
+        .values({ userId, status: 'done', openedAt: new Date(), closedAt: new Date() })
+        .returning({ id: batches.id });
+      await askQuestion(testDb(), {
+        userId,
+        itemId: item!.id,
+        batchId: batch!.id,
+        segment: 'перенеси ребенка на вечер',
+        action: 'update',
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+      });
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender });
+
+      await bot.handleUpdate(textUpdate('Спасибо'));
+
+      expect(thanksSent(calls)).toBe(0);
+      expect(await dumpCount()).toBe(2);
+    });
+
+    it('без согласия — экран согласия, а не благодарность', async () => {
+      await testDb()
+        .update(users)
+        .set({ consentConfirmedAt: null, consentEdition: null, consentAt: null })
+        .where(eq(users.id, userId));
+      const { bot, calls } = createTestBot();
+
+      await bot.handleUpdate(textUpdate('Спасибо'));
+
+      expect(thanksSent(calls)).toBe(0);
+      expect(calls.some((call) => call.method === 'sendMessage')).toBe(true);
+    });
+  });
+});

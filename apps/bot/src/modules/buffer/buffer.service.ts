@@ -125,6 +125,31 @@ async function openBatchFor(tx: Executor, userId: string, now: Date): Promise<Ba
 }
 
 /**
+ * Есть ли у человека выгрузка в пути: собирается, ждёт разбора, в разборе
+ * или ждёт его ответа. Тогда реплика вне очереди обогнала бы её итог —
+ * «Пожалуйста 🤍 Я всё помню» над ещё не записанным (27.09.2026).
+ */
+export async function hasBatchInFlight(db: Executor, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: batches.id })
+    .from(batches)
+    .where(
+      and(
+        eq(batches.userId, userId),
+        or(
+          eq(batches.status, 'open'),
+          eq(batches.status, 'queued'),
+          eq(batches.status, 'processing'),
+          eq(batches.status, 'awaiting_answer'),
+        ),
+      ),
+    )
+    .limit(1);
+
+  return row !== undefined;
+}
+
+/**
  * Присоединяет сообщение к открытой выгрузке. Закрывает её, если достигнут
  * потолок по числу сообщений или по возрасту.
  */
