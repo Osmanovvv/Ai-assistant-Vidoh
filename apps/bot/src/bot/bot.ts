@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 
 import { rememberBotReplies } from '../modules/dialog/capture.js';
 import type { DialogStore } from '../modules/dialog/dialog.store.js';
+import { quietCallbackAnswer } from './callback-answer.js';
 import { retryOnConnectFailure } from './retry.js';
 import { tolerateSameContent } from './same-content.js';
 
@@ -37,7 +38,7 @@ export interface BotOptions {
 }
 
 /** Защиты, общие для любого канала к Telegram. */
-function installTransport(api: Api): void {
+function installTransport(api: Api, logger?: Logger): void {
   // Отказ соединения с Telegram повторяется один раз (задача 3.60):
   // иначе ответ пропадает молча, а человек видит свою команду и тишину.
   api.config.use(retryOnConnectFailure());
@@ -45,6 +46,11 @@ function installTransport(api: Api): void {
   // Правка тем же содержимым — не ошибка (задача 3.73): кнопка с номером
   // страницы ведёт на ту же страницу, и Telegram отвергает такую правку.
   api.config.use(tolerateSameContent());
+
+  // Сбой ответа на нажатие не роняет обработчик (27.09.2026): «Согласна»
+  // осталась без первого вопроса из-за обрыва на этом вызове. Снаружи
+  // повтора — чтобы отказ соединения сперва повторился.
+  api.config.use(quietCallbackAnswer({ logger }));
 }
 
 /** Экземпляр бота (задача 1.7). */
@@ -54,7 +60,7 @@ export function createBot(token: string, options: BotOptions = {}): Bot {
     ...(options.apiRoot === undefined ? {} : { client: { apiRoot: options.apiRoot } }),
   });
 
-  installTransport(bot.api);
+  installTransport(bot.api, options.logger);
 
   // Реплика бота — в хвост разговора; сбой хранилища отправку не трогает.
   if (options.dialog !== undefined) {

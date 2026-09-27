@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 
 import type { Queue } from 'bullmq';
 import { desc, eq } from 'drizzle-orm';
-import { Bot, GrammyError } from 'grammy';
+import { Bot, GrammyError, HttpError } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import type { Logger } from 'pino';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -24,6 +24,7 @@ import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
 import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
 import { defaultTexts } from '../../texts/index.js';
+import { quietCallbackAnswer } from '../callback-answer.js';
 import { consumeAwaited, type AwaitingDeps } from './awaiting.js';
 import type { CardSender } from '../../modules/cards/cards.js';
 import { createPromoConsumer } from './billing.js';
@@ -383,6 +384,75 @@ describe('согласие кнопкой «Согласна» (§16, решен
 
     const [after] = await testDb().select().from(messagesRaw).where(eq(messagesRaw.userId, userId));
     expect(after?.batchId).not.toBeNull();
+  });
+
+  describe('первое нажатие оборвалось (боевой журнал 27.09.2026, 14:48)', () => {
+    /**
+     * Согласие записалось, а ответ Telegram «нажатие принято» оборвался
+     * (`ECONNRESET`): обработчик упал и не прислал первый вопрос. Второе
+     * нажатие сняло кнопку и промолчало — согласие уже было. Человек
+     * остался без кнопки и без вопроса.
+     */
+    function connectionReset(): HttpError {
+      const inner = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      return new HttpError(`Network request for 'answerCallbackQuery' failed!`, inner);
+    }
+
+    it('сбой ответа на нажатие не мешает прислать первый вопрос', async () => {
+      await withoutConsent();
+      const questions = recordingQuestions();
+      const { bot, calls } = createTestBot(questions.sender);
+      // Обрыв — ближе к Telegram, защита — снаружи, как в `createBot`.
+      bot.api.config.use((prev, method, payload, signal) =>
+        method === 'answerCallbackQuery'
+          ? Promise.reject(connectionReset())
+          : prev(method, payload, signal),
+      );
+      bot.api.config.use(quietCallbackAnswer());
+      await bot.handleUpdate(textUpdate('/start'));
+
+      await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+      const [row] = await testDb().select().from(users).where(eq(users.id, userId));
+      expect(row?.consentConfirmedAt).not.toBeNull();
+      const sent = calls.filter((call) => call.method === 'sendMessage');
+      expect(sent).toHaveLength(2);
+      expect(textOf(sent[1])).toContain(defaultTexts.onboarding.nameConfirm('Аня'));
+    });
+
+    it('повторное нажатие присылает первый вопрос, если опрос так и не начался — один раз', async () => {
+      // Состояние после оборванного нажатия: согласие есть, опрос на нуле.
+      expect((await settingsOf())?.onboardingStep).toBe(0);
+      const questions = recordingQuestions();
+      const { bot, calls } = createTestBot(questions.sender);
+
+      await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+      await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+      await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+      const sent = calls.filter((call) => call.method === 'sendMessage').map(textOf);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain(defaultTexts.onboarding.nameConfirm('Аня'));
+      // «Спасибо» второй раз не приходит: согласие было дано раньше.
+      expect(sent).not.toContain(defaultTexts.consent.accepted);
+      expect((await settingsOf())?.onboardingStep).not.toBe(0);
+    });
+
+    it('повторное нажатие выпускает слова, ждавшие согласия', async () => {
+      await withoutConsent();
+      const { bot } = createTestBot(recordingQuestions().sender);
+      await bot.handleUpdate(textUpdate('записать сына к врачу'));
+      // Оборванное нажатие: согласие записано, а до выпуска дело не дошло.
+      await confirmConsent(testDb(), userId, { edition: EDITION });
+
+      await bot.handleUpdate(callbackUpdate(CONSENT_ACTION.accept));
+
+      const [after] = await testDb()
+        .select()
+        .from(messagesRaw)
+        .where(eq(messagesRaw.userId, userId));
+      expect(after?.batchId).not.toBeNull();
+    });
   });
 });
 
