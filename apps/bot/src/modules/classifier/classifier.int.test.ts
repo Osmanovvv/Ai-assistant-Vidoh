@@ -702,7 +702,9 @@ describe('регулярность (задача 2.18а)', () => {
             deadlineAccuracy: 'day',
             recurrenceKind: 'unclear',
             recurrenceInterval: 1,
-            recurrenceText: 'каждый вторник и четверг',
+            // До Р4 здесь стояло «каждый вторник и четверг» — теперь оно
+            // выражается правилом со списком дней (тест ниже, voice-27-07).
+            recurrenceText: 'раз в три месяца по чётным',
           },
         ]),
       ],
@@ -712,7 +714,7 @@ describe('регулярность (задача 2.18а)', () => {
     if (!result.ok) throw new Error('разбор должен был удаться');
 
     expect(result.items[0]?.recurrence?.rule).toBeUndefined();
-    expect(result.items[0]?.recurrence?.text).toBe('каждый вторник и четверг');
+    expect(result.items[0]?.recurrence?.text).toBe('раз в три месяца по чётным');
     // Ненулевой счётчик — повод посмотреть промпт, а не тихая норма.
     expect(result.corrections.recurrence).toBe(1);
   });
@@ -1706,5 +1708,58 @@ describe('день в конце предложения — следующему
     expect(bank?.deadline?.at.toISOString()).toBe('2026-10-01T21:00:00.000Z');
     expect(bank?.text).not.toContain('или');
     expect(gift?.deadline?.at.toISOString()).toBe('2026-10-02T21:00:00.000Z');
+  });
+});
+
+describe('повтор по нескольким дням недели (Р4 шаг 4, стенд 27.09.2026, voice-27-07)', () => {
+  it('«Каждый вторник и четверг у Сони бассейн в 6 вечера» — одно дело, правило вт и чт, срок 29.09, 18:00', async () => {
+    // Ответ модели — из записи стенда: повтор «не поняла», срок 06.10 с
+    // точностью «неделя»; код ставит ближайший вторник, 29.09.
+    const prompts = await prepare();
+    const recorded = [
+      {
+        text: 'Каждый вторник и четверг у Сони бассейн в 6 вечера, надо не забывать собирать сумку.',
+        topic: 'семья',
+        deadline: '2026-10-06',
+        deadlineAccuracy: 'week',
+        deadlineText: 'Каждый вторник и четверг',
+        recurrenceKind: 'unclear',
+        recurrenceInterval: 1,
+        recurrenceText: 'Каждый вторник и четверг',
+      },
+      {
+        text: 'Завтра в 9 утра созвон с заказчиком.',
+        topic: 'работа',
+        deadline: '2026-09-28',
+        deadlineAccuracy: 'day',
+        deadlineText: 'Завтра',
+      },
+      {
+        text: 'Хочу наконец разобрать гардероб, но это когда-нибудь.',
+        type: 'DESIRE',
+        priority: 'NONE',
+      },
+    ];
+    const provider = new MockLlmProvider({ responses: [answer(recorded)] });
+    const speech =
+      'Каждый вторник и четверг у Сони бассейн в 6 вечера, надо не забывать собирать сумку. Завтра в 9 утра созвон с заказчиком. Еще хочу наконец разобрать гардероб, но это когда нибудь.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(...recorded.map((one) => one.text)),
+      now: new Date('2026-09-27T16:40:00.000Z'),
+      spoken: speech,
+      speech,
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    const pool = result.items.find((item) => item.text.includes('бассейн'));
+    expect(pool?.deadline?.at.toISOString()).toBe('2026-09-28T21:00:00.000Z');
+    expect(pool?.deadline?.time).toBe(18 * 60);
+    expect(pool?.recurrence?.rule).toEqual({
+      kind: 'weekly',
+      interval: 1,
+      anchor: '2026-09-29',
+      days: [2, 4],
+    });
   });
 });

@@ -70,17 +70,19 @@ describe('приведение ответа модели к правилу', () 
   });
 
   it('непонятая регулярность сохраняется фразой без правила', () => {
-    // «Каждый вторник и четверг» закрытым набором не выражается. Выдумать
+    // «Раз в три месяца по чётным» закрытым набором не выражается. Выдумать
     // правило, которого мы не умеем воспроизвести, хуже, чем признаться.
+    // (До Р4 здесь стояло «каждый вторник и четверг» — теперь оно
+    // выражается списком дней, см. ниже.)
     const resolved = resolveRecurrence({
       kind: 'unclear',
       interval: 1,
-      text: 'каждый вторник и четверг',
+      text: 'раз в три месяца по чётным',
       deadline: '2026-09-01',
     });
 
     expect(resolved.rule).toBeUndefined();
-    expect(resolved.text).toBe('каждый вторник и четверг');
+    expect(resolved.text).toBe('раз в три месяца по чётным');
     expect(resolved.source).toBe('stated');
     expect(resolved.problem).toContain('закрытым набором');
   });
@@ -151,6 +153,96 @@ describe('приведение ответа модели к правилу', () 
       expect(resolved.rule, deadline).toBeUndefined();
       expect(resolved.text, deadline).toBe('каждый вторник');
     }
+  });
+});
+
+describe('правило по нескольким дням из фразы (Р4 шаг 4)', () => {
+  /** Вторник 29.09.2026, среда 30.09, четверг 01.10. */
+  const TUESDAY = '2026-09-29';
+  const WEDNESDAY = '2026-09-30';
+  const THURSDAY = '2026-10-01';
+  const phrase = 'Каждый вторник и четверг';
+
+  it('модель «не поняла» «каждый вторник и четверг» — правило со списком дней, якорь — вторник', () => {
+    const resolved = resolveRecurrence({
+      kind: 'unclear',
+      interval: 0,
+      text: phrase,
+      deadline: TUESDAY,
+    });
+
+    expect(resolved.rule).toEqual({ kind: 'weekly', interval: 1, anchor: TUESDAY, days: [2, 4] });
+    expect(resolved.text).toBe(phrase);
+    expect(resolved.source).toBe('stated');
+    expect(resolved.problem).toBeUndefined();
+  });
+
+  it('модель сказала «раз в неделю» на «по вторникам и четвергам» — тоже список', () => {
+    const resolved = resolveRecurrence({
+      kind: 'weekly',
+      interval: 1,
+      text: 'по вторникам и четвергам',
+      deadline: THURSDAY,
+    });
+
+    expect(resolved.rule).toEqual({ kind: 'weekly', interval: 1, anchor: THURSDAY, days: [2, 4] });
+  });
+
+  it('срок не на названном дне — правила нет, как было у «не поняла»', () => {
+    const resolved = resolveRecurrence({
+      kind: 'unclear',
+      interval: 0,
+      text: phrase,
+      deadline: WEDNESDAY,
+    });
+
+    expect(resolved.rule).toBeUndefined();
+    expect(resolved.text).toBe(phrase);
+  });
+
+  it('срок не на названном дне у «раз в неделю» — как было: правило по дню срока', () => {
+    const resolved = resolveRecurrence({
+      kind: 'weekly',
+      interval: 1,
+      text: phrase,
+      deadline: WEDNESDAY,
+    });
+
+    expect(resolved.rule).toEqual({ kind: 'weekly', interval: 1, anchor: WEDNESDAY });
+  });
+
+  it('«раз в две недели» от модели — как было: список дней только при шаге в неделю', () => {
+    const resolved = resolveRecurrence({
+      kind: 'weekly',
+      interval: 2,
+      text: phrase,
+      deadline: TUESDAY,
+    });
+
+    expect(resolved.rule).toEqual({ kind: 'weekly', interval: 2, anchor: TUESDAY });
+  });
+
+  it('без срока — правила нет, фраза есть', () => {
+    const resolved = resolveRecurrence({
+      kind: 'unclear',
+      interval: 0,
+      text: phrase,
+      deadline: '',
+    });
+
+    expect(resolved.rule).toBeUndefined();
+    expect(resolved.text).toBe(phrase);
+  });
+
+  it('один день — прежний путь: «каждый вторник» без списка', () => {
+    const resolved = resolveRecurrence({
+      kind: 'weekly',
+      interval: 1,
+      text: 'каждый вторник',
+      deadline: TUESDAY,
+    });
+
+    expect(resolved.rule).toEqual({ kind: 'weekly', interval: 1, anchor: TUESDAY });
   });
 });
 
