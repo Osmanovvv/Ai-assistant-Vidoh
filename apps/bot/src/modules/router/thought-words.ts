@@ -22,6 +22,8 @@
  * намеренно: такой отрезок — работа резолвера, а не разбора.
  */
 
+import { namesDay } from '../classifier/own-sentence.js';
+
 /** Слова долга: за ними в речи стоит дело. */
 const OBLIGATION = [
   'надо',
@@ -135,4 +137,47 @@ export function looksLikeThought(text: string): boolean {
     OBLIGATION.some((phrase) => hasPhrase(words, phrase)) ||
     ACTIONS.some((verb) => hasPhrase(words, verb))
   );
+}
+
+/** Что может стоять перед глаголом дела: союз, предлог, «ещё», «кстати». */
+const LEAD = new Set([
+  'и',
+  'а',
+  'но',
+  'еще',
+  'так',
+  'потом',
+  'вот',
+  'ну',
+  'короче',
+  'значит',
+  'кстати',
+  'также',
+  'тоже',
+  'в',
+  'во',
+  'на',
+  'до',
+  'к',
+  'ко',
+  'по',
+  'с',
+  'со',
+]);
+
+/**
+ * Реплика начинается с глагола дела — «И в пятницу. Забрать документы из
+ * МФЦ…» (стенд 27.09.2026, voice-27-02).
+ *
+ * Впереди допускаются только союзы, предлоги, «ещё», «кстати» и слова
+ * дня: «мусор я уже вынес, можно убрать» начинается с предмета и под
+ * признак не попадает.
+ */
+export function opensWithAction(text: string): boolean {
+  for (const word of wordsOf(text).slice(0, 6)) {
+    if (ACTIONS.includes(word)) return true;
+    if (!LEAD.has(word) && !namesDay(word)) return false;
+  }
+
+  return false;
 }

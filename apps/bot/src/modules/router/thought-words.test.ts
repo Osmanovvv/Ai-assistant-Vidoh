@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { looksLikeThought } from './thought-words.js';
+import { looksLikeThought, opensWithAction } from './thought-words.js';
 
 /**
  * Разговор с делами внутри (бой 21.09.2026, выгрузка Никиты).
@@ -55,5 +55,25 @@ describe('разговор с делами внутри — мысль', () => {
     for (const text of ['отменить стоматолога', 'перенести врача на пятницу']) {
       expect(looksLikeThought(text), text).toBe(false);
     }
+  });
+});
+
+describe('реплика начинается с глагола дела (стенд 27.09.2026, voice-27-02)', () => {
+  it.each([
+    'И в пятницу. Забрать документы из МФЦ, они уже готовы.',
+    'Забрать посылку с почты',
+    'Кстати, еще позвонить маме',
+    'Завтра оплатить садик',
+  ])('«%s» — да', (text) => {
+    expect(opensWithAction(text)).toBe(true);
+  });
+
+  it.each([
+    'Мусор я уже вынес, можно убрать',
+    'убери стоматолога',
+    'Документы забрать надо',
+    'Продукты купила',
+  ])('«%s» — нет: впереди предмет или не глагол дела', (text) => {
+    expect(opensWithAction(text)).toBe(false);
   });
 });

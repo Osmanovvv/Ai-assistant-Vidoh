@@ -19,7 +19,8 @@ import { mentionedPeriod } from './period.js';
 import { askQuestion } from './questions.repo.js';
 import { resolveSegment } from './resolver.service.js';
 import { looksLikeAppend, startsWithReplacement } from '../router/append.js';
-import { looksLikeThought } from '../router/thought-words.js';
+import { saidAsDone } from '../router/closing.js';
+import { looksLikeThought, opensWithAction } from '../router/thought-words.js';
 
 /**
  * Разбор одной правки: от сегмента до последствия (§7 ТЗ, задача 3.6а).
@@ -474,6 +475,23 @@ export async function resolvePatchSegment(
      * про балкон): конвейер попробует ещё раз после сохранения.
      */
     if (decision.newThought && (params.intent === 'COMPLETE' || params.intent === 'CANCEL')) {
+      /**
+       * Закрытием его назвал маршрутизатор, а это дело (стенд 27.09.2026,
+       * voice-27-02): «И в пятницу. Забрать документы из МФЦ, они уже
+       * готовы» — закрытие из-за «уже готовы». Модель резолвера сама
+       * сказала «новое»; реплика начинается с глагола дела, и ни «сделал»,
+       * ни «не надо» в ней нет — значит, в разбор, а не в черновик.
+       * «Мусор я уже вынес» и «позвонить маме, уже позвонил» остаются как
+       * были (находка 5).
+       */
+      if (opensWithAction(params.text) && !saidAsDone(params.text)) {
+        deps.logger?.info(
+          { userId: params.userId, batchId: params.batchId },
+          'Закрытие без записи начинается с дела — разбираем как мысль',
+        );
+        return { kind: 'newThought' };
+      }
+
       return {
         kind: 'parked',
         reason: 'сказано как о сделанном или отменённом, а такой записи нет',

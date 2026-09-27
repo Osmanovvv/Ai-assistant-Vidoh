@@ -1,3 +1,4 @@
+import { namesDay } from '../classifier/own-sentence.js';
 import type { Segment } from './router.service.js';
 
 /**
@@ -61,14 +62,38 @@ function intentOf(part: string, parent: Segment['intent']): Segment['intent'] {
   return parent;
 }
 
+/**
+ * Обрывок «И в пятницу.» — начало следующей части, а не хвост
+ * предыдущей (стенд 27.09.2026, voice-27-02): «И в пятницу. Забрать
+ * документы из МФЦ, они уже готовы.» резалось на две, и резолвер,
+ * получив голое «И в пятницу.», переносил на пятницу чужое дело. Короткая
+ * часть без сказуемого, в которой назван день, идёт вперёд.
+ */
+function leadsIntoNext(piece: string): boolean {
+  const words = piece.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 0);
+  return words.length <= 4 && namesDay(piece);
+}
+
 function splitSegment(segment: Segment): readonly Segment[] {
   const parts: string[] = [];
+  // Часть, которой своей быть нельзя, — к следующей: первая без
+  // сказуемого (прицепиться назад не к чему) и обрывок дня.
+  let carry = '';
   for (const raw of segment.text.split(BOUNDARY)) {
     const piece = raw.trim();
     if (piece.length === 0) continue;
+    const joined = carry === '' ? piece : `${carry} ${piece}`;
+    carry = '';
     const last = parts.length - 1;
-    if (last >= 0 && !hasPredicate(piece)) parts[last] = `${parts[last] ?? ''} ${piece}`;
-    else parts.push(piece);
+    if (hasPredicate(joined)) parts.push(joined);
+    else if (last < 0 || leadsIntoNext(joined)) carry = joined;
+    else parts[last] = `${parts[last] ?? ''} ${joined}`;
+  }
+  // Вперёд идти некуда — хвост последней части.
+  if (carry !== '') {
+    const last = parts.length - 1;
+    if (last < 0) parts.push(carry);
+    else parts[last] = `${parts[last] ?? ''} ${carry}`;
   }
 
   if (parts.length <= 1) return [segment];
@@ -77,6 +102,25 @@ function splitSegment(segment: Segment): readonly Segment[] {
     intent: intentOf(part, segment.intent),
     text: part.replace(/,\s*$/u, ''),
   }));
+}
+
+/** Прошедшее мужского рода: «позвонил», «сделал», «забрал» (с «-ся» тоже). */
+const DONE_HE = /(?<!\p{L})(?<!не\s)\p{L}{2,}(?:ал|ял|ил|ел|ёл|ыл|ул)(?:ся)?(?!\p{L})/iu;
+
+/** Прошедшее без «-л»: «вынес», «принёс», «отвёз», «пришёл», «смог». */
+const DONE_IRREGULAR =
+  /(?<!\p{L})(?<!не\s)(?:вынес|внес|внёс|принес|принёс|отнес|отнёс|занес|занёс|унес|унёс|привез|привёз|отвез|отвёз|увез|увёз|завез|завёз|довез|довёз|пришел|пришёл|ушел|ушёл|зашел|зашёл|нашел|нашёл|прошел|прошёл|дошел|дошёл|смог|помог|сделано|готово)(?!\p{L})/iu;
+
+/**
+ * Сказано как о сделанном или отменённом — любым родом (стенд 27.09.2026).
+ *
+ * Признак для развилки «закрытие без записи»: такая реплика делом стать
+ * не может (прогон 15.09.2026, находка 5 — «мусор я уже вынес»). Шире,
+ * чем признак резки: лишнее «сделано» здесь оставляет слова в черновике,
+ * как и было, а пропущенное завело бы дело из сделанного.
+ */
+export function saidAsDone(text: string): boolean {
+  return isDone(text) || isCancel(text) || DONE_HE.test(text) || DONE_IRREGULAR.test(text);
 }
 
 export function splitClosings(segments: readonly Segment[]): readonly Segment[] {
