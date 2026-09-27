@@ -31,7 +31,8 @@ import {
 import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
-import { knownTopicName, sameTopicName } from '../topics/topic-key.js';
+import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-key.js';
+import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
@@ -248,7 +249,9 @@ export function topicNameFrom(raw: string): string | undefined {
   if (!/^[а-яё]+(?: [а-яё]+)?$/u.test(name)) return undefined;
 
   // «Финансовое» — это «деньги» со значком 💰 (прогон Никиты 27.09.2026).
-  return knownTopicName(name);
+  // Новая сфера — только из каталога известных боту, со значком (решение
+  // Никиты 27.09.2026: «личные вещи» под куртку заводиться не должны).
+  return catalogueTopic(knownTopicName(name), Object.keys(TOPIC_ICONS));
 }
 
 function normalizeTopic(text: string): string {

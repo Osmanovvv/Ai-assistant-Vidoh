@@ -84,6 +84,21 @@ export function knownTopicName(name: string): string {
   return aboutMoney(name) ? MONEY_TOPIC : name;
 }
 
+/**
+ * Имя из каталога известных боту сфер — или ничего (решение Никиты
+ * 27.09.2026).
+ *
+ * Прогон 27.09.2026, 18:05: под «куртку забрать» модель назвала сферу
+ * «личные вещи», и бот завёл её — без значка, рядом с «Личным». Правило
+ * заказчицы (14.09.2026, п. 1.1) — «явно нужна новая — завести; не уверен —
+ * лучше без новой сферы». «Явно» теперь значит: из каталога, где у каждой
+ * сферы есть значок. Сравнение — с учётом формы («детей» — «дети»,
+ * «финансовое» — «деньги»); отдаётся имя каталога.
+ */
+export function catalogueTopic(name: string, catalogue: readonly string[]): string | undefined {
+  return catalogue.find((known) => sameTopicName(known, name));
+}
+
 export function sameTopicName(one: string, other: string): boolean {
   if (aboutMoney(one) && aboutMoney(other)) return true;
 
