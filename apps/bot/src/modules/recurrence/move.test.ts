@@ -114,3 +114,50 @@ describe('края', () => {
     expect(nextDeadlineAfterDone(plain, { now: MONDAY, timeZone: MOSCOW })).toBeUndefined();
   });
 });
+
+describe('«Сделано» у дела по вторникам и четвергам (Р4 шаг 2)', () => {
+  /** Бассейн: вторник и четверг, якорь — вторник 29.09.2026. */
+  function tueThu(deadline: string): Pick<Item, 'recurrenceRule' | 'deadlineAt'> {
+    return {
+      recurrenceRule: { kind: 'weekly', interval: 1, anchor: '2026-09-29', days: [2, 4] },
+      deadlineAt: new Date(deadline),
+    };
+  }
+
+  /** Полночь вторника 29.09 по Москве — так срок и хранится. */
+  const TUESDAY = '2026-09-28T21:00:00.000Z';
+  /** Полночь четверга 01.10 по Москве. */
+  const THURSDAY = '2026-09-30T21:00:00.000Z';
+
+  it('сделано во вторник — срок уезжает на четверг', () => {
+    const now = new Date('2026-09-29T15:00:00.000Z');
+
+    expect(dayOf(nextDeadlineAfterDone(tueThu(TUESDAY), { now, timeZone: MOSCOW }))).toBe(
+      '2026-10-01',
+    );
+  });
+
+  it('сделано раньше срока, в понедельник, — тоже четверг, а не пустой перенос на тот же вторник', () => {
+    const now = new Date('2026-09-28T09:00:00.000Z');
+
+    expect(dayOf(nextDeadlineAfterDone(tueThu(TUESDAY), { now, timeZone: MOSCOW }))).toBe(
+      '2026-10-01',
+    );
+  });
+
+  it('сделано в четверг — следующий вторник', () => {
+    const now = new Date('2026-10-01T15:00:00.000Z');
+
+    expect(dayOf(nextDeadlineAfterDone(tueThu(THURSDAY), { now, timeZone: MOSCOW }))).toBe(
+      '2026-10-06',
+    );
+  });
+
+  it('четверг пропущен, сделано в пятницу — ближайший вторник, без догоняющей очереди', () => {
+    const now = new Date('2026-10-02T15:00:00.000Z');
+
+    expect(dayOf(nextDeadlineAfterDone(tueThu(THURSDAY), { now, timeZone: MOSCOW }))).toBe(
+      '2026-10-06',
+    );
+  });
+});
