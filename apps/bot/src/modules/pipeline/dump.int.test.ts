@@ -31,6 +31,7 @@ import { MockLlmProvider } from '../ai/providers/mock.js';
 import type { CardSender } from '../cards/cards.js';
 import { withCapital } from '../items/item-text.js';
 import { answerQuestion, askQuestion } from '../resolver/questions.repo.js';
+import { openClarification } from '../resolver/clarify.repo.js';
 import { QUESTION_ACTION } from '../resolver/change-text.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
 import { toShortId } from '../shared/short-id.js';
@@ -9963,6 +9964,232 @@ describe('час нового дела — утро или вечер (вари�
     expect(dental).toHaveLength(1);
     expect(dental[0]?.deadlineAt?.toISOString()).toBe('2026-08-25T21:00:00.000Z');
     expect(all.some((text) => text.includes('20:00'))).toBe(true);
+  });
+
+  describe('ответ на «07:00 или 19:00?» про туфли (прогон Никиты 28.09.2026, 23:59)', () => {
+    // Было: «Купить молоко» голосом и «Туфли забрать вечером если что»
+    // текстом — одна выгрузка; ответ не узнан из-за «если что», и завелось
+    // второе дело «Забрать туфли вечером» на сегодня.
+    const spoken = 'Завтра в 7 забрать туфли из ремонта.';
+
+    async function askAboutShoes(): Promise<{
+      prompts: Awaited<ReturnType<typeof seedPrompts>>;
+      sender: ReturnType<typeof recordingSender>['sender'];
+      all: string[];
+    }> {
+      const prompts = await seedPrompts();
+      const { sender, all } = recordingSender();
+      await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            llm: tomorrowDump(spoken, 'В 7 забрать туфли из ремонта', 'покупки'),
+          }),
+        },
+        userId,
+      );
+      expect(
+        all.some((text) =>
+          text.includes('Во сколько «Забрать туфли из ремонта» — 07:00 или 19:00?'),
+        ),
+      ).toBe(true);
+      return { prompts, sender, all };
+    }
+
+    async function shoesAndMilk(): Promise<readonly (string | number | null)[][]> {
+      const rows = await liveItems();
+      return rows
+        .filter((row) => /туфл|молок/iu.test(row.text))
+        .map((row) => [row.text, row.deadlineTime])
+        .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+    }
+
+    it('«Туфли забрать вечером если что» после «Купить молоко» — час туфлям, молоко — делом', async () => {
+      const { prompts, sender, all } = await askAboutShoes();
+
+      await queuedBatchOf([
+        { kind: 'text', text: 'Купить молоко', offsetMs: 60_000 },
+        { kind: 'text', text: 'Туфли забрать вечером если что', offsetMs: 63_000 },
+      ]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at(2 * 60_000),
+            llm: echoingLlm(),
+          }),
+        },
+        userId,
+      );
+
+      expect(await shoesAndMilk()).toEqual([
+        ['Забрать туфли из ремонта', 19 * 60],
+        ['Купить молоко', null],
+      ]);
+      expect(all.some((text) => text.includes('19:00'))).toBe(true);
+    });
+
+    it('ответ узнан только в названии от модели — «Забрать туфли вечером» ставит час, второго дела нет', async () => {
+      // «после работы» — не присказка: сама реплика ответом не читается. Но
+      // модель выделила из неё «Забрать туфли вечером» — это то же дело с
+      // частью суток, то есть ответ на вопрос, а не новая запись.
+      const { prompts, sender, all } = await askAboutShoes();
+
+      await queuedBatchOf([
+        { kind: 'text', text: 'Купить молоко', offsetMs: 60_000 },
+        { kind: 'text', text: 'Туфли вечером, после работы', offsetMs: 63_000 },
+      ]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at(2 * 60_000),
+            llm: echoingLlm({
+              extractor: () =>
+                JSON.stringify({
+                  units: [
+                    { text: 'Купить молоко', isProject: false, isEmotion: false },
+                    { text: 'Забрать туфли вечером', isProject: false, isEmotion: false },
+                  ],
+                }),
+            }),
+          }),
+        },
+        userId,
+      );
+
+      expect(await shoesAndMilk()).toEqual([
+        ['Забрать туфли из ремонта', 19 * 60],
+        ['Купить молоко', null],
+      ]);
+      expect(all.some((text) => text.includes('19:00'))).toBe(true);
+      expect(all.at(-1)).toContain('Записала 1 дело');
+    });
+
+    it('ответ — единственное, что модель выделила: итога разбора нет, только строка про час', async () => {
+      const { prompts, sender, all } = await askAboutShoes();
+      const sentBefore = all.length;
+
+      await queuedBatchOf([
+        { kind: 'text', text: 'Туфли вечером, после работы', offsetMs: 60_000 },
+      ]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at(2 * 60_000),
+            llm: echoingLlm({
+              extractor: () =>
+                JSON.stringify({
+                  units: [{ text: 'Забрать туфли вечером', isProject: false, isEmotion: false }],
+                }),
+            }),
+          }),
+        },
+        userId,
+      );
+
+      expect(await shoesAndMilk()).toEqual([['Забрать туфли из ремонта', 19 * 60]]);
+      // Одна строка про час — без «Всё, забрала» и вопроса о главном сверху.
+      expect(all.slice(sentBefore)).toEqual([
+        'Напомню про «Забрать туфли из ремонта» завтра в 19:00.',
+      ]);
+    });
+
+    async function send(
+      prompts: Awaited<ReturnType<typeof seedPrompts>>,
+      sender: ReturnType<typeof recordingSender>['sender'],
+      text: string,
+      minute: number,
+      llm = echoingLlm(),
+    ): Promise<void> {
+      await queuedBatchOf([{ kind: 'text', text, offsetMs: minute * 60_000 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            now: at((minute + 1) * 60_000),
+            llm,
+          }),
+        },
+        userId,
+      );
+    }
+
+    it('ответ отдельным сообщением после другого — вопрос о часе ждёт, пока о деле не заговорят', async () => {
+      // «Купить молоко» отдельной выгрузкой закрывало вопрос: ответ следом
+      // заводил второе дело. Вопрос о часе ждёт четверть часа, пока
+      // человек говорит о другом.
+      const { prompts, sender } = await askAboutShoes();
+
+      await send(prompts, sender, 'Купить молоко', 1);
+      // Ждёт с пометкой: голосовое после чужой реплики — уже не «сразу».
+      expect((await openClarification(testDb(), userId, at(3 * 60_000)))?.waited).toBe(true);
+      await send(prompts, sender, 'Туфли забрать вечером', 3);
+
+      expect(await shoesAndMilk()).toEqual([
+        ['Забрать туфли из ремонта', 19 * 60],
+        ['Купить молоко', null],
+      ]);
+    });
+
+    it('о деле заговорили, не ответив, — вопрос снят: «Вечером» потом его не доделывает', async () => {
+      const { prompts, sender } = await askAboutShoes();
+
+      await send(prompts, sender, 'Туфли пусть полежат пока', 1);
+      await send(prompts, sender, 'Вечером', 3);
+
+      const rows = await liveItems();
+      expect(
+        rows.filter((row) => row.text.includes('ремонта')).map((row) => row.deadlineTime),
+      ).toEqual([null]);
+    });
+
+    it('новый вопрос о часе заменяет прежний: ответ на него не доделывает старый', async () => {
+      const { prompts, sender, all } = await askAboutShoes();
+      const bank = 'Завтра в 9 позвонить в банк.';
+
+      await send(prompts, sender, bank, 1, tomorrowDump(bank, 'В 9 позвонить в банк', 'работа'));
+      expect(
+        all.some((text) => text.includes('Во сколько «Позвонить в банк» — 09:00 или 21:00?')),
+      ).toBe(true);
+      await send(prompts, sender, 'Вечером', 3);
+      // Вопрос про банк закрыт ответом; про туфли — вытеснен им, а не ждёт.
+      await send(prompts, sender, 'Утром', 5);
+
+      const rows = await liveItems();
+      expect(
+        rows
+          .filter((row) => /туфл|банк/iu.test(row.text))
+          .map((row) => [row.text, row.deadlineTime])
+          .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+      ).toEqual([
+        // Без ответа час остаётся словами в названии, как было.
+        ['В 7 забрать туфли из ремонта', null],
+        ['Позвонить в банк', 21 * 60],
+      ]);
+    });
   });
 
   it('час в начале названия — в вопросе и после ответа название с заглавной (живой прогон 26.09.2026, 02:06)', async () => {

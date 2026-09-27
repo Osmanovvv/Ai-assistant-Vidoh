@@ -15,7 +15,7 @@ import {
   users,
 } from '../../db/schema.js';
 import { askQuestion } from '../../modules/resolver/questions.repo.js';
-import { CLARIFY_REASON } from '../../modules/resolver/clarify.js';
+import { CLARIFY_REASON, CLARIFY_TIME_WAITING } from '../../modules/resolver/clarify.js';
 import { BILLING_ACTION, registerBillingHandlers, registerPaySupportCommands } from './billing.js';
 import type { Rail } from '../../modules/billing/tariffs.js';
 import { createLogger } from '../../infra/logger.js';
@@ -1538,6 +1538,21 @@ describe('вопрос разбирается сразу, не дожидаяс�
     await botAskedHour();
     const long = watchingQueue();
     await botWith(long.queue).handleUpdate(voiceUpdate(12));
+    expect(await lastBatchStatus()).toBe('open');
+  });
+
+  it('вопрос о часе пережил чужую реплику — короткое голосовое ждёт тишины, «Вечером» текстом сразу (28.09.2026)', async () => {
+    await testDb().insert(items).values({
+      userId,
+      text: 'Перенеси «Позвонить маме» в 9',
+      isDraft: true,
+      draftReason: CLARIFY_TIME_WAITING,
+    });
+    await botWith(watchingQueue().queue).handleUpdate(textUpdate('Вечером'));
+    expect(await lastBatchStatus()).toBe('queued');
+
+    // Следующая выгрузка: короткое голосовое первым — ждёт тишины.
+    await botWith(watchingQueue().queue).handleUpdate(voiceUpdate(2));
     expect(await lastBatchStatus()).toBe('open');
   });
 

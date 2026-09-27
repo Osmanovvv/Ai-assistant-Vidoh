@@ -26,7 +26,13 @@ export const SHORT_VOICE_SECONDS = 5;
 /** Что бот сейчас спросил и ждёт. */
 export type OpenAsk =
   /** Переспрос без кнопок: «утро или вечер?», «Какое дело?» (`clarify.ts`). */
-  | { readonly kind: 'clarify'; readonly clarifyKind: ClarifyKind; readonly command: string }
+  | {
+      readonly kind: 'clarify';
+      readonly clarifyKind: ClarifyKind;
+      readonly command: string;
+      /** Вопрос о часе уже пережил чужую реплику: голосовое — не «почти всегда ответ». */
+      readonly waited?: boolean | undefined;
+    }
   /**
    * Вопрос с кнопками: «Перенести «X»?» (`move`) или «Это про «X» или
    * отдельная история?». У переноса согласие шире: «давай», «ок».
@@ -50,6 +56,7 @@ export function answersNow(open: OpenAsk | undefined, message: IncomingShape): b
     return reading === 'attach' || reading === 'separate';
   }
 
+  if (open.kind === 'clarify' && open.waited === true) return false;
   return message.voiceSeconds !== undefined && message.voiceSeconds <= SHORT_VOICE_SECONDS;
 }
 
