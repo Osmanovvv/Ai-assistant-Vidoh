@@ -11,7 +11,11 @@ import { testDb } from '../../test/db.js';
 import { upsertUser } from '../users/users.repo.js';
 import { run } from './ffmpeg.js';
 import { MockSpeechProvider } from './providers/mock.js';
-import { PermanentSpeechError, TransientSpeechError } from './providers/types.js';
+import {
+  PermanentSpeechError,
+  TransientSpeechError,
+  type SpeechProvider,
+} from './providers/types.js';
 import { transcribeMessage } from './speech.service.js';
 
 /**
@@ -406,5 +410,59 @@ describe('устойчивость', () => {
     // Сообщение на месте, ссылка на файл цела: расшифровку можно повторить.
     expect(row?.transcript).toBeNull();
     expect(row?.fileId).toBe('voice-file-1');
+  }, 60_000);
+});
+
+describe('день после паузы — следующему делу (задача 3.68, прогон Никиты 27.09.2026)', () => {
+  /**
+   * Распознавание вернуло «…подарок ей купить в пятницу, записать Мишу к
+   * Ортодонту», а по временам слов перед «в пятницу» пауза 650 мс и после —
+   * ноль. В базу ложится расшифровка с точкой по паузе.
+   */
+  const spoken = 'Надо еще подарок ей купить в пятницу, записать Мишу к Ортодонту.';
+  const words = [
+    ['надо', 0, 200],
+    ['еще', 240, 400],
+    ['подарок', 440, 800],
+    ['ей', 840, 950],
+    ['купить', 990, 1300],
+    // ‖650‖
+    ['в', 1950, 2000],
+    ['пятницу', 2040, 2400],
+    ['записать', 2440, 2800],
+    ['мишу', 2840, 3100],
+    ['к', 3140, 3180],
+    ['ортодонту', 3220, 3700],
+  ] as const;
+
+  const withTimes: SpeechProvider = {
+    name: 'mock',
+    timeline: true,
+    transcribe: (request) => {
+      request.onSent?.(Math.round(request.durationSec));
+      return Promise.resolve({
+        text: spoken,
+        model: 'mock',
+        audioSeconds: Math.round(request.durationSec),
+        utterances: [
+          {
+            text: spoken,
+            words: words.map(([text, startMs, endMs]) => ({ text, startMs, endMs })),
+          },
+        ],
+      });
+    },
+  };
+
+  it('в базе — «…купить. В пятницу записать Мишу…»', async () => {
+    const outcome = await transcribeMessage(
+      { db: testDb(), provider: withTimes, download: downloadFrom(shortAudio), pricing },
+      { messageId, fileId: 'voice-file-1', userId },
+    );
+
+    const fixed = 'Надо еще подарок ей купить. В пятницу записать Мишу к Ортодонту.';
+    expect(outcome.text).toBe(fixed);
+    const [row] = await testDb().select().from(messagesRaw).where(eq(messagesRaw.id, messageId));
+    expect(row?.transcript).toBe(fixed);
   }, 60_000);
 });
