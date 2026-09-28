@@ -68,18 +68,6 @@ export function onlyAck(text: string): boolean {
   return words.length === 1 && ACK_WORDS.has(words[0] ?? '') && !/[?]/u.test(text);
 }
 
-/**
- * Вопрос к самому боту, а не о её делах (бой 28.09.2026, 20:14): «Ты
- * вообще меня понимаешь?» маршрутизатор отдал вопросом о записях, поиск
- * ничего не нашёл — и бот ответил «Про это у меня ничего не записано».
- * Обращение на «ты» — к боту: про её дела она говорит «у меня», «я».
- */
-const TO_BOT = /(?<!\p{L})(ты|тебя|тебе|тобой|твой|твоя|твое|твоё|твои)(?!\p{L})/iu;
-
-export function addressesBot(text: string): boolean {
-  return TO_BOT.test(text);
-}
-
 const MOOD_WORDS: Readonly<Record<Mood, string>> = {
   heavy: 'сильное',
   tired: 'усталость',
@@ -99,7 +87,19 @@ export interface TalkFactsParams {
   readonly questionOpen?: boolean | undefined;
   /** Последние реплики за четверть часа — чтобы «Второе» было о чём. */
   readonly dialog?: readonly DialogTurn[] | undefined;
+  /**
+   * Что код искал и не нашёл (бой 29.09.2026): вопрос о записях — поиск
+   * пуст («Что приготовить на ужин?»); «сделала» — такого дела нет («Я
+   * сдала экзамен!»). Модель решает, о её ли это делах, и не выдаёт
+   * «отметила» за сделанное.
+   */
+  readonly context?: 'nothingFound' | 'noSuchDeed' | undefined;
 }
+
+const CONTEXT_LINES: Readonly<Record<'nothingFound' | 'noSuchDeed', string>> = {
+  nothingFound: 'Поиск по её записям: ничего не найдено',
+  noSuchDeed: 'Такого дела в её записях нет — ничего не закрыто и не отмечено',
+};
 
 const clip = (text: string): string =>
   text.length > DIALOG_TURN_MAX_CHARS ? `${text.slice(0, DIALOG_TURN_MAX_CHARS)}…` : text;
@@ -112,6 +112,7 @@ export function talkFacts(params: TalkFactsParams): string {
   if (params.questionOpen === true) {
     lines.push('Свой вопрос не задавай: вопрос бота уже открыт');
   }
+  if (params.context !== undefined) lines.push(CONTEXT_LINES[params.context]);
   const turns = recentDialog(params.dialog ?? [], now);
   if (turns.length > 0) {
     lines.push('Недавний разговор:');

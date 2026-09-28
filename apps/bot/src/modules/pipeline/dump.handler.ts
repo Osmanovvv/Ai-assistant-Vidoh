@@ -26,7 +26,7 @@ import {
   periodLabel,
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
-import { addressesBot, askTalk, onlyAck, talkFacts } from '../talk/talk.js';
+import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
@@ -883,6 +883,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       happened.statusTaken = true;
       await reply(db, deps, target, text, buttons);
     };
+
+    /**
+     * Живой ответ вместо реплики сдачи — тоже в журнал непонятого
+     * (заказчица 16.09.2026, п. 3): до docs/29 здесь уходила сдача, и
+     * журнал её видел; модель ответила — журнал узнаёт по пометке, иначе
+     * эти случаи из панели пропали бы. Журнал не мешает ответу.
+     */
+    const journalTalk = async (path: string, line: string): Promise<void> => {
+      try {
+        await recordMisunderstood(db, {
+          userId: batch.userId,
+          batchId: batch.id,
+          said: combined,
+          replied: line,
+          reason: `${path} — ответила модель`,
+          kind: 'meaning',
+        });
+      } catch (error: unknown) {
+        deps.logger?.warn({ err: error, batchId: batch.id }, 'Журнал непонятого не записался');
+      }
+    };
+
+    /** Живой ответ включён в панели (docs/29). */
+    const talkLiveOn = async (): Promise<boolean> =>
+      ((await deps.settings?.number('talkLive')) ?? 0) === 1;
 
     /**
      * Обычный ответ, к которому договаривается предупреждение об обрезке
@@ -2075,30 +2100,33 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           continue;
         }
         /**
-         * Вопрос к самому боту (бой 28.09.2026, 20:14): «Ты вообще меня
-         * понимаешь?» ушёл вопросом о записях, и бот ответил «Про это у
-         * меня ничего не записано». Обращение на «ты» — живой ответ
-         * (docs/29); не прошёл — словарь, как раньше.
+         * Ничего не нашлось, и ответчик о делах промолчал (бой 28.09.2026,
+         * 20:14 и 29.09.2026, 00:19): «Ты вообще меня понимаешь?», «Что
+         * приготовить на ужин?» ушли вопросом о записях, и бот отвечал
+         * «Про это у меня ничего не записано». Решает модель живого ответа
+         * (docs/29): вопрос не о её делах — отвечает по сути; о её делах —
+         * молчит, и остаётся честное «ничего не записано».
          */
-        const toBot =
-          addressesBot(asked) && ((await deps.settings?.number('talkLive')) ?? 0) === 1
-            ? (
-                await askTalk(ai, {
-                  facts: talkFacts({
-                    said: asked,
-                    now,
-                    timeZone: context.timeZone,
-                    texts,
-                    overview: await openItemsFor(db, batch.userId),
-                    dialog,
-                  }),
-                  userId: batch.userId,
-                  batchId: batch.id,
-                })
-              ).line
-            : undefined;
-        if (toBot !== undefined) {
-          await tell(toBot);
+        const talked = (await talkLiveOn())
+          ? (
+              await askTalk(ai, {
+                facts: talkFacts({
+                  said: asked,
+                  now,
+                  timeZone: context.timeZone,
+                  texts,
+                  overview: await openItemsFor(db, batch.userId),
+                  dialog,
+                  context: 'nothingFound',
+                }),
+                userId: batch.userId,
+                batchId: batch.id,
+              })
+            ).line
+          : undefined;
+        if (talked !== undefined) {
+          await journalTalk('backlog.nothing', talked);
+          await tell(talked);
           continue;
         }
       }
@@ -2369,7 +2397,41 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * читается как «я тебя не услышала».
          */
         const lines = parkedLines();
-        await answer(lines.length > 0 ? lines.join('\n') : texts.answer.savedUnparsed);
+        /**
+         * «Я сдала экзамен!» (бой 29.09.2026, 00:25): маршрутизатор отдал
+         * «сделано», такого дела нет, и весь ответ — «Такого дела у меня
+         * не было — убирать нечего». Когда это единственная строка —
+         * живой ответ (docs/29): порадоваться новости или спокойно сказать,
+         * что такого дела не было. Слова уже сохранены выше, модель ничего
+         * не закрывает — «отметила», «закрыла» страж не пропустит.
+         */
+        const onlyNoSuchDeed = lines.length === 1 && lines[0] === texts.resolver.nothingToClose;
+        const talked =
+          onlyNoSuchDeed && (await talkLiveOn())
+            ? (
+                await askTalk(ai, {
+                  facts: talkFacts({
+                    said: parseText.trim(),
+                    now,
+                    timeZone: context.timeZone,
+                    texts,
+                    overview: await openItemsFor(db, batch.userId),
+                    mood,
+                    dialog,
+                    context: 'noSuchDeed',
+                  }),
+                  mood,
+                  userId: batch.userId,
+                  batchId: batch.id,
+                })
+              ).line
+            : undefined;
+        if (talked !== undefined) {
+          await journalTalk('resolver.nothingToClose', talked);
+          await answer(talked);
+        } else {
+          await answer(lines.length > 0 ? lines.join('\n') : texts.answer.savedUnparsed);
+        }
       } else if (deferred.length === 0 && !happened.said) {
         /**
          * «Я здесь. Расскажешь, что в голове?» — только когда сказать
@@ -2425,6 +2487,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             ).line
           : undefined;
         if (talked !== undefined) {
+          await journalTalk('answer.nothingToParse', talked);
           await answer(talked);
           return;
         }

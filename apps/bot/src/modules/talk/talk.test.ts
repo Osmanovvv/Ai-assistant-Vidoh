@@ -11,7 +11,7 @@ import {
 import type { Item } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
 
-import { addressesBot, askTalk, checkTalk, onlyAck, talkFacts, type AskTalk } from './talk.js';
+import { askTalk, checkTalk, onlyAck, talkFacts, type AskTalk } from './talk.js';
 
 /**
  * Живой ответ там, где у бота нет своего (план docs/29, 28.09.2026):
@@ -109,24 +109,6 @@ describe('«ок» — смайлик, без модели (решение Ни�
   });
 });
 
-describe('вопрос к самому боту (бой 28.09.2026, 20:14)', () => {
-  it.each([
-    'Ты вообще меня понимаешь?',
-    'ты меня слушаешь вообще',
-    'А тебе не скучно?',
-    'Ты умная?',
-  ])('«%s» — к боту', (said) => {
-    expect(addressesBot(said)).toBe(true);
-  });
-
-  it.each(['Что там с котом?', 'Когда у меня отчёт?', 'Что я хотела купить?'])(
-    '«%s» — про её дела',
-    (said) => {
-      expect(addressesBot(said)).toBe(false);
-    },
-  );
-});
-
 describe('факты для живого ответа', () => {
   it('реплика, время суток и её ближайшие дела', () => {
     const facts = factsFor('Ты меня понимаешь?');
@@ -142,6 +124,20 @@ describe('факты для живого ответа', () => {
     expect(factsFor('Устала', { mood: 'tired' })).toContain('Чувство: усталость');
     expect(factsFor('Бесит', { mood: 'annoyed' })).toContain('Чувство: досада');
     expect(factsFor('Привет')).not.toContain('Чувство');
+  });
+
+  /**
+   * Что нашлось в записях (бой 29.09.2026): «Что приготовить на ужин?» и
+   * «Я сдала экзамен!» — модель должна знать, что искали и не нашли.
+   */
+  it('поиск ничего не нашёл, такого дела нет — строкой фактов', () => {
+    expect(factsFor('Что приготовить на ужин?', { context: 'nothingFound' })).toContain(
+      'Поиск по её записям: ничего не найдено',
+    );
+    expect(factsFor('Я сдала экзамен!', { context: 'noSuchDeed' })).toContain(
+      'Такого дела в её записях нет',
+    );
+    expect(factsFor('Привет')).not.toMatch(/Поиск по её записям|Такого дела/u);
   });
 
   it('вопрос уже открыт — сказано, что своего не задавать', () => {

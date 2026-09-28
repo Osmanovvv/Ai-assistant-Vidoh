@@ -33,6 +33,15 @@ interface Case {
   readonly say: string;
   readonly kind: string;
   readonly section: string;
+  /** Что код искал и не нашёл — по разделу набора: «nothingFound», «noSuchDeed». */
+  readonly context?: 'nothingFound' | 'noSuchDeed' | undefined;
+}
+
+/** Раздел задаёт, что код искал и не нашёл: `--context …` в его названии. */
+function contextOf(section: string): Case['context'] {
+  if (section.includes('nothingFound')) return 'nothingFound';
+  if (section.includes('noSuchDeed')) return 'noSuchDeed';
+  return undefined;
 }
 
 interface Recorded {
@@ -105,7 +114,7 @@ function standItems(): Item[] {
   ];
 }
 
-function factsOf(said: string): string {
+function factsOf(said: string, context?: Case['context']): string {
   return talkFacts({
     said,
     now: NOW,
@@ -113,6 +122,7 @@ function factsOf(said: string): string {
     texts: defaultTexts,
     overview: standItems(),
     mood: moodOf(said),
+    context,
   });
 }
 
@@ -126,7 +136,7 @@ function parse(text: string): Case[] {
     const at = line.indexOf(' => ');
     if (at < 0) continue;
     const [kind = ''] = line.slice(at + 4).split('|');
-    cases.push({ say: line.slice(0, at), kind: kind.trim(), section });
+    cases.push({ say: line.slice(0, at), kind: kind.trim(), section, context: contextOf(section) });
   }
   return cases;
 }
@@ -181,7 +191,7 @@ function argumentAfter(flag: string): string | undefined {
 
 /** Живой ответ — той же моделью, что на бою, с потолком расхода. */
 async function liveTalker(): Promise<{
-  ask: (said: string) => Promise<TalkOutcome>;
+  ask: (one: Case) => Promise<TalkOutcome>;
   finish: () => Promise<string>;
 }> {
   const { modelEnvSchema } = await import('../config/env.js');
@@ -233,7 +243,8 @@ async function liveTalker(): Promise<{
   );
 
   return {
-    ask: async (said) => await askTalk(ai, { facts: factsOf(said), mood: moodOf(said) }),
+    ask: async (one) =>
+      await askTalk(ai, { facts: factsOf(one.say, one.context), mood: moodOf(one.say) }),
     finish: async () => {
       const cost = await runCost(db, { startedAt, now: new Date() });
       await closeDb();
@@ -295,7 +306,7 @@ async function main(): Promise<void> {
     let reply = replayed?.find((call) => call.say === one.say)?.reply;
     if (reply === undefined && live !== undefined && stopped === undefined) {
       try {
-        const outcome = await live.ask(one.say);
+        const outcome = await live.ask(one);
         reply = outcome.line ?? outcome.rejected ?? '';
       } catch (error) {
         stopped = error instanceof Error ? error.message : String(error);
@@ -306,7 +317,7 @@ async function main(): Promise<void> {
       say('    модель: не спрашивали');
       continue;
     }
-    const checked = checkTalk(reply, factsOf(one.say), { mood: moodOf(one.say) });
+    const checked = checkTalk(reply, factsOf(one.say, one.context), { mood: moodOf(one.say) });
     const verdict = checked.ok ? 'прошёл' : checked.why === 'пусто' ? 'пусто' : 'отвергнут';
     verdicts.set(verdict, (verdicts.get(verdict) ?? 0) + 1);
     say(

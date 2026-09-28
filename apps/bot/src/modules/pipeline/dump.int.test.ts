@@ -10063,17 +10063,161 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect(replies.at(-1)).toBe('Понимаю 🙂 Скидывай сюда всё, что крутится в голове.');
   });
 
-  it('вопрос о её делах, записей нет — по-прежнему «ничего не записано»', async () => {
+  /** Журнал непонятого (заказчица 16.09.2026, п. 3): что там записано. */
+  async function journal(): Promise<{ replied: string; reason: string; kind: string }[]> {
+    const rows = await testDb()
+      .select()
+      .from(misunderstood)
+      .where(eq(misunderstood.userId, userId));
+    return rows.map((row) => ({ replied: row.replied, reason: row.reason, kind: row.kind }));
+  }
+
+  /**
+   * Бой 29.09.2026, 00:19: «Что приготовить на ужин?» ушло вопросом о
+   * записях, поиск ничего не нашёл — «Про это у меня ничего не записано».
+   * Ничего не нашлось — решает модель: вопрос не о её делах — отвечает по
+   * сути, о её делах — молчит, и остаётся честное «ничего не записано».
+   */
+  it('вопрос не о её делах, записей нет — живой ответ; в журнале — с пометкой', async () => {
     const prompts = await talkOn();
     const llm = echoingLlm({
-      router: query('Что там с котом?'),
-      talker: talked('Про кота помню 🙂'),
+      router: query('Что приготовить на ужин?'),
+      talker: talked('Можно запечь курицу с картошкой или сделать пасту с овощами.'),
     });
+
+    const { replies, talker } = await say('Что приготовить на ужин?', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).toContain('Поиск по её записям: ничего не найдено');
+    expect(replies.at(-1)).toBe('Можно запечь курицу с картошкой или сделать пасту с овощами.');
+    expect(await journal()).toEqual([
+      {
+        replied: 'Можно запечь курицу с картошкой или сделать пасту с овощами.',
+        reason: 'backlog.nothing — ответила модель',
+        kind: 'meaning',
+      },
+    ]);
+  });
+
+  it('вопрос о её делах, записей нет — модель молчит, «ничего не записано», в журнале как раньше', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({ router: query('Что там с котом?'), talker: talked('') });
 
     const { replies, talker } = await say('Что там с котом?', llm, prompts);
 
-    expect(talker).toHaveLength(0);
+    expect(talker).toHaveLength(1);
     expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
+    expect((await journal()).map((row) => row.reason)).toEqual(['backlog.nothing']);
+  });
+
+  /**
+   * Бой 29.09.2026, 00:25: «Я сдала экзамен!» маршрутизатор отдал
+   * «сделано», такого дела нет — «Такого дела у меня не было — убирать
+   * нечего». Слова, как и раньше, сохраняются кодом; отвечает модель.
+   */
+  const noSuchDeed = JSON.stringify({
+    action: 'new',
+    mode: 'append',
+    itemId: '',
+    confidence: 0.9,
+    changes: {
+      note: '',
+      text: '',
+      deadline: '',
+      deadlineAccuracy: 'none',
+      recurrenceKind: 'none',
+      recurrenceInterval: 0,
+      recurrenceText: '',
+    },
+    reason: 'подходящей записи нет',
+  });
+  const done = (text: string): string =>
+    JSON.stringify({ crisis: false, segments: [{ intent: 'COMPLETE', text }] });
+  /** Как на бою: у человека есть дела — резолверу есть из чего выбирать. */
+  async function withSomeDeed(): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Оплатить садик', type: 'TASK', priority: 'SOON', topic: 'личное' });
+  }
+
+  it('новость как «сделала» («Я сдала экзамен!»), такого дела нет — живой ответ, слова сохранены', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    const llm = echoingLlm({
+      router: done('Я сдала экзамен!'),
+      resolver: noSuchDeed,
+      talker: talked('Поздравляю 🙌 Это большое дело.'),
+    });
+
+    const { replies, talker } = await say('Я сдала экзамен!', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).toContain('Такого дела в её записях нет');
+    expect(replies.at(-1)).toBe('Поздравляю 🙌 Это большое дело.');
+    const drafts = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, true)));
+    expect(drafts.map((row) => row.text)).toEqual(['Я сдала экзамен!']);
+    expect(await journal()).toEqual([
+      {
+        replied: 'Поздравляю 🙌 Это большое дело.',
+        reason: 'resolver.nothingToClose — ответила модель',
+        kind: 'meaning',
+      },
+    ]);
+  });
+
+  it('такого дела нет, модель промолчала — прежнее «убирать нечего»', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    const llm = echoingLlm({
+      router: done('Уже вынесла мусор'),
+      resolver: noSuchDeed,
+      talker: talked(''),
+    });
+
+    const { replies } = await say('Уже вынесла мусор', llm, prompts);
+
+    expect(replies.at(-1)).toBe(defaultTexts.resolver.nothingToClose);
+    expect((await journal()).map((row) => row.reason)).toEqual(['resolver.nothingToClose']);
+  });
+
+  it('выключено — «такого дела нет» и «ничего не записано» словарём, модель не зовётся', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    await putSetting(testDb(), { name: 'talkLive', value: '0' });
+
+    const closed = await say(
+      'Я сдала экзамен!',
+      echoingLlm({
+        router: done('Я сдала экзамен!'),
+        resolver: noSuchDeed,
+        talker: talked('Ура 🙌'),
+      }),
+      prompts,
+    );
+    expect(closed.talker).toHaveLength(0);
+    expect(closed.replies.at(-1)).toBe(defaultTexts.resolver.nothingToClose);
+
+    const asked = await say(
+      'Что приготовить на ужин?',
+      echoingLlm({ router: query('Что приготовить на ужин?'), talker: talked('Паста 🙂') }),
+      prompts,
+    );
+    expect(asked.talker).toHaveLength(0);
+    expect(asked.replies.at(-1)).toBe(defaultTexts.backlog.nothing);
+  });
+
+  it('болтовня с живым ответом — в журнале непонятого, как раньше заготовка', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({ router: smalltalk('Ты тут?'), talker: talked('Тут 🙂') });
+
+    await say('Ты тут?', llm, prompts);
+
+    expect(await journal()).toEqual([
+      { replied: 'Тут 🙂', reason: 'answer.nothingToParse — ответила модель', kind: 'meaning' },
+    ]);
   });
 
   it('кризис — своим сценарием, модель живого ответа не зовётся', async () => {
