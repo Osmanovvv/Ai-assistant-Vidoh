@@ -683,7 +683,7 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
  * нет — опереться не на что: не угадываем, а возвращаем оба чтения,
  * чтобы реплика их назвала, вместо «менять нечего».
  */
-function spokenClockTime(
+export function spokenClockTime(
   spoken: string,
   current: number | null,
 ): {
@@ -696,6 +696,15 @@ function spokenClockTime(
 
   const [morning, evening] = first;
   if (morning === undefined || evening === undefined) return {};
+
+  /**
+   * Часть суток словом перед часом — «утром в 9», «вечером в 8» (набор
+   * settings.md, 28.09.2026): у дела на 19:00 «утром в 9» было 21:00 —
+   * ближайшее. Названа — решает она, а не близость к часу дела.
+   */
+  const part = daypartWordIn(spoken);
+  if (part === 'morning') return { time: morning };
+  if (part === 'evening') return { time: evening };
 
   /**
    * Голый час с 1 до 6 — день (вариант Б, решение Никиты 24.09.2026):
@@ -729,6 +738,16 @@ function spokenClockTime(
     return { unclear: [morning, evening] };
   }
   return { time: nearest };
+}
+
+const MORNING_WORDS = new Set(['утром', 'утра', 'утречком']);
+const EVENING_WORDS = new Set(['вечером', 'вечера', 'вечерком']);
+
+function daypartWordIn(spoken: string): 'morning' | 'evening' | undefined {
+  const words = spoken.toLowerCase().split(/[^\p{L}]+/u);
+  if (words.some((word) => MORNING_WORDS.has(word))) return 'morning';
+  if (words.some((word) => EVENING_WORDS.has(word))) return 'evening';
+  return undefined;
 }
 
 /** Ночь для часа дела — с 23:00 до 05:59. */

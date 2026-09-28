@@ -160,3 +160,13 @@ describe('город в пояс', () => {
     expect(KNOWN_CITIES).toBeGreaterThan(80);
   });
 });
+
+describe('сокращения из набора settings.md (docs/28, шаг 6, 28.09.2026)', () => {
+  it.each<[string, string]>([
+    ['Екб', 'Asia/Yekaterinburg'],
+    ['мск', 'Europe/Moscow'],
+    ['по Москве', 'Europe/Moscow'],
+  ])('«%s» → %s', (text, zone) => {
+    expect(zoneOfCity(text)).toBe(zone);
+  });
+});

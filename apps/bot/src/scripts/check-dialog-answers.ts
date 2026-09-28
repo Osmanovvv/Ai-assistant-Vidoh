@@ -2,7 +2,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { ReaderReading } from '../modules/ai/schemas/index.js';
-import { clockTimesIn } from '../modules/classifier/clock-time.js';
+import { clockTimesIn, timeShiftIn } from '../modules/classifier/clock-time.js';
+import { zoneOfCity } from '../modules/onboarding/cities.js';
+import { settingTime, spokenName } from '../modules/onboarding/spoken-setting.js';
+import { spokenClockTime } from '../modules/resolver/patch.js';
 import { answerRemainder, readAnswer } from '../modules/resolver/answer.js';
 import {
   checkReading,
@@ -38,19 +41,28 @@ import { defaultTexts } from '../texts/index.js';
  *   npx tsx src/scripts/check-dialog-answers.ts … --replay ../../docs/eval-dialog/runs/….json
  */
 
-type Kind = 'time' | 'which' | 'move' | 'attach';
+/**
+ * Вопросы бота: четыре с чтением моделью (docs/28, шаг 3) и пять
+ * вопросов-настроек шага 6 — опрос, меню «Изменить», «Изменить время».
+ */
+type Kind =
+  'time' | 'which' | 'move' | 'attach' | 'morning' | 'evening' | 'name' | 'city' | 'retime';
+
+const SETTING_KINDS: readonly Kind[] = ['morning', 'evening', 'name', 'city', 'retime'];
 
 interface Section {
   readonly title: string;
   readonly kind: Kind;
   readonly command: string;
   readonly subject: string;
+  /** Нынешний час дела у «Изменить время», минуты. */
+  readonly current?: number | undefined;
   readonly cases: { readonly say: string; readonly expect: string; readonly live: boolean }[];
 }
 
 type Verdict = 'верно' | 'не понял' | 'не так';
 
-const KINDS: readonly Kind[] = ['time', 'which', 'move', 'attach'];
+const KINDS: readonly Kind[] = ['time', 'which', 'move', 'attach', ...SETTING_KINDS];
 
 function parse(text: string): Section[] {
   const sections: Section[] = [];
@@ -60,6 +72,7 @@ function parse(text: string): Section[] {
         kind?: Kind;
         command: string;
         subject: string;
+        current?: number;
         cases: Section['cases'][number][];
       }
     | undefined;
@@ -71,6 +84,7 @@ function parse(text: string): Section[] {
         kind: current.kind,
         command: current.command,
         subject: current.subject,
+        ...(current.current === undefined ? {} : { current: current.current }),
         cases: current.cases,
       });
     }
@@ -85,6 +99,11 @@ function parse(text: string): Section[] {
     }
     if (current === undefined) continue;
 
+    const now = /^сейчас: (\d{1,2}):(\d{2})$/u.exec(line);
+    if (now !== null) {
+      current.current = Number(now[1]) * 60 + Number(now[2]);
+      continue;
+    }
     const header = /^(вид|команда|вопрос): (.+)$/u.exec(line);
     if (header !== null) {
       const value = header[2] ?? '';
@@ -115,8 +134,59 @@ function clock(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
+/** Вопрос-настройка: как его читает `bot/handlers/awaiting.ts`. */
+function settingReads(section: Section, say: string): string {
+  if (section.kind === 'morning' || section.kind === 'evening') {
+    const time = settingTime(say, section.kind);
+    return time === undefined ? 'нет ответа' : time === 'off' ? 'выключить' : time;
+  }
+  if (section.kind === 'name') return spokenName(say) ?? 'нет ответа';
+  if (section.kind === 'city') return zoneOfCity(say) ?? 'нет ответа';
+
+  // «Изменить время»: как правка — час с опорой на час дела, сдвиг от него.
+  if (clockTimesIn(say).length === 0 && timeShiftIn(say) === undefined) return 'нет ответа';
+  const heard = spokenClockTime(say, section.current ?? null);
+  if (heard.time !== undefined) return clock(heard.time);
+  if (heard.unclear !== undefined) return 'двояко';
+  const shift = timeShiftIn(say);
+  return shift === undefined || section.current === undefined
+    ? 'нет ответа'
+    : clock((section.current + shift + 24 * 60) % (24 * 60));
+}
+
+/** Ждали: у города — его пояс, у имени — без точки и регистра. */
+function expectedValue(section: Section, value: string): string {
+  if (section.kind === 'city') return zoneOfCity(value) ?? `?${value}`;
+  return comparable(section, value);
+}
+
+/** Прочитано: пояс города — как есть, имя — без точки и регистра. */
+function comparable(section: Section, value: string): string {
+  if (section.kind === 'name')
+    return value
+      .replace(/[.!]+$/u, '')
+      .trim()
+      .toLowerCase();
+  return value;
+}
+
+function judgeSetting(section: Section, expect: string, got: string): Verdict {
+  const silent = got === 'нет ответа';
+  if (NOT_ANSWERS.includes(expect)) {
+    // Не понял — реплика идёт обычным разбором (опрос) или бот
+    // переспрашивает: для «не ответ» это верно, для остального — нет.
+    if (!silent) return 'не так';
+    return expect === 'не ответ' ? 'верно' : 'не понял';
+  }
+  if (silent || got === 'двояко')
+    return expect === 'переспросить' && got === 'двояко' ? 'верно' : 'не понял';
+  if (expect === 'выключить' || got === 'выключить') return expect === got ? 'верно' : 'не так';
+  return comparable(section, got) === expectedValue(section, expect) ? 'верно' : 'не так';
+}
+
 /** Что понял бы код: то же слово, что в наборе, или «нет ответа». */
 function codeReads(section: Section, say: string): string {
+  if (SETTING_KINDS.includes(section.kind)) return settingReads(section, say);
   if (section.kind === 'time') {
     const done = clarifiedCommand('time', section.command, say);
     if (done === undefined) return 'нет ответа';
@@ -180,7 +250,10 @@ function questionOf(section: Section): ReaderQuestion {
   if (section.kind === 'move' || section.kind === 'attach') {
     return { kind: section.kind, title: section.subject };
   }
-  return { kind: section.kind, command: section.command };
+  if (section.kind === 'time' || section.kind === 'which') {
+    return { kind: section.kind, command: section.command };
+  }
+  throw new Error(`Вопрос «${section.kind}» модель пока не читает`);
 }
 
 /** Прочитанное моделью и проверенное кодом — словом набора. */
@@ -357,10 +430,13 @@ async function main(): Promise<void> {
     const missed: string[] = [];
     for (const one of section.cases) {
       const got = codeReads(section, one.say);
-      let verdict = judgeCode(section, one.say, one.expect, got);
+      const setting = SETTING_KINDS.includes(section.kind);
+      let verdict = setting
+        ? judgeSetting(section, one.expect, got)
+        : judgeCode(section, one.say, one.expect, got);
       let shown = `код: ${got}`;
 
-      if (withModel && reachesModel(got) && stopped === undefined) {
+      if (withModel && !setting && reachesModel(got) && stopped === undefined) {
         let recorded: Recorded | undefined;
         if (replayed !== undefined) {
           recorded = replayed.find(

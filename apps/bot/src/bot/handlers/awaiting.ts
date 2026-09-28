@@ -2,15 +2,20 @@ import { InlineKeyboard, type Context } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
+import { eq } from 'drizzle-orm';
+
+import { items } from '../../db/schema.js';
 import {
   AWAITING,
   awaitingOf,
-  parseName,
-  parseTime,
   setAwaiting,
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
-import { clockTimesIn, sureReading } from '../../modules/classifier/clock-time.js';
+import { settingTime, spokenName } from '../../modules/onboarding/spoken-setting.js';
+import { clockTimesIn, timeShiftIn } from '../../modules/classifier/clock-time.js';
+import { saveDraft } from '../../modules/items/items.repo.js';
+import { CLARIFY_REASON, hourClarifyCommand } from '../../modules/resolver/clarify.js';
+import { clockOf } from '../../modules/scheduler/plan.js';
 import { zoneOfCity } from '../../modules/onboarding/cities.js';
 import { recalcDeadlines } from '../../modules/onboarding/backfill.js';
 import {
@@ -171,7 +176,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
     // ── Имя ──────────────────────────────────────────────────────────────
     if (awaiting.kind === 'name') {
-      const name = parseName(text);
+      const name = spokenName(text);
 
       if (name === undefined) {
         await setAwaiting(db, userId, null);
@@ -253,7 +258,8 @@ export function consumeAwaited(deps: AwaitingDeps) {
 
     // ── Время напоминаний ────────────────────────────────────────────────
     if (awaiting.kind === 'morning' || awaiting.kind === 'evening') {
-      const time = parseTime(text);
+      // Словами и в свою половину суток: «в 9» вечером — 21:00 (docs/28, шаг 6).
+      const time = settingTime(text, awaiting.kind);
 
       if (time === undefined) {
         await setAwaiting(db, userId, null);
@@ -271,8 +277,11 @@ export function consumeAwaited(deps: AwaitingDeps) {
         return true;
       }
 
-      await setEvening(db, userId, time);
-      await ctx.reply(texts.onboarding.eveningSaved(time));
+      // «Не пиши вечером» — вечерней сводки не будет.
+      await setEvening(db, userId, time === 'off' ? null : time);
+      await ctx.reply(
+        time === 'off' ? texts.settings.savedEveningOff : texts.onboarding.eveningSaved(time),
+      );
       logger.info({ userId, time }, 'Вечернее время задано словами');
       // Вечер — последний вопрос (правка заказчицы 14.09.2026, п. 1.1):
       // шага про сферы нет, опрос закрывается.
@@ -304,7 +313,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
       await setAwaiting(db, userId, null);
 
       if (awaiting.kind === AWAITING.setName) {
-        const name = parseName(text);
+        const name = spokenName(text);
 
         if (name === undefined) {
           await sayNotUnderstood(ctx, logger, userId, texts.onboarding.nameNotUnderstood);
@@ -350,7 +359,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
         return true;
       }
 
-      const time = parseTime(text);
+      const time = settingTime(text, awaiting.kind === AWAITING.setMorning ? 'morning' : 'evening');
 
       if (time === undefined) {
         await sayNotUnderstood(ctx, logger, userId, texts.onboarding.timeNotUnderstood);
@@ -364,8 +373,10 @@ export function consumeAwaited(deps: AwaitingDeps) {
         return true;
       }
 
-      await setEvening(db, userId, time);
-      await ctx.reply(texts.settings.savedEvening(time));
+      await setEvening(db, userId, time === 'off' ? null : time);
+      await ctx.reply(
+        time === 'off' ? texts.settings.savedEveningOff : texts.settings.savedEvening(time),
+      );
       logger.info({ userId, time }, 'Вечернее время изменено из настроек');
       return true;
     }
@@ -379,8 +390,12 @@ export function consumeAwaited(deps: AwaitingDeps) {
      * день, 16:00 (вариант Б, 24.09.2026): выбирает правка, как у голоса.
      */
     if (awaiting.kind === 'retime' && awaiting.itemId !== undefined) {
-      const first = clockTimesIn(text)[0];
-      if (first === undefined || sureReading(first) === undefined) {
+      /**
+       * Час выбирает правка, как у голосового переноса (docs/28, шаг 6):
+       * «в 8» у дела на 19:00 — 20:00, «на час позже» — 20:00, ночь
+       * далеко — вопрос. Раньше годился только однозначный час.
+       */
+      if (clockTimesIn(text).length === 0 && timeShiftIn(text) === undefined) {
         await ctx.reply(texts.card.retimeNotUnderstood);
         return true;
       }
@@ -400,6 +415,33 @@ export function consumeAwaited(deps: AwaitingDeps) {
         reason: 'час словами по кнопке «Изменить время»',
         changedBy: 'user',
       });
+
+      /**
+       * Два чтения часа, опереться не на что («в 7» у дела без часа, ночь
+       * далеко) — вопрос «07:00 или 19:00?», и он помнится, как у голоса:
+       * ответ «вечером» следом доделывает перенос (`clarify.ts`).
+       */
+      if (outcome.kind === 'unchanged' && outcome.timeUnclear !== undefined) {
+        const [row] = await db
+          .select({ text: items.text })
+          .from(items)
+          .where(eq(items.id, awaiting.itemId));
+        if (row !== undefined) {
+          await saveDraft(db, {
+            userId,
+            batchId: null,
+            text: hourClarifyCommand(row.text, outcome.timeUnclear[0]),
+            reason: CLARIFY_REASON.time,
+          });
+        }
+        await ctx.reply(
+          texts.resolver.timeUnclear(
+            clockOf(outcome.timeUnclear[0]),
+            clockOf(outcome.timeUnclear[1]),
+          ),
+        );
+        return true;
+      }
 
       if (outcome.kind !== 'applied') {
         await ctx.reply(outcome.kind === 'gone' ? texts.card.gone : texts.card.editNotApplied);

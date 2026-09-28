@@ -178,7 +178,7 @@ const TI_VERBS = new Set([
 /** Слова ответа, а не дела: «добавить к прошлой», «перенести», «оставить». */
 const ANSWER_VERBS = new Set(['добавить', 'перенести', 'переносить', 'оставить', 'поставить']);
 
-function isVerb(word: string): boolean {
+export function isVerb(word: string): boolean {
   if (TI_VERBS.has(word)) return true;
   if (!/(?:ть|ться)$/u.test(word) || word.length < 4) return false;
   return !NOT_VERBS.has(word) && !NUMBER.test(word) && !ANSWER_VERBS.has(word);

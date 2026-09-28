@@ -407,6 +407,32 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect((await reread(item.id)).deadlineTime).toBe(time);
   });
 
+  /**
+   * «Утром в 9» у дела на 19:00 — 09:00, а не ближайшее 21:00 (набор
+   * settings.md, «Изменить время», 28.09.2026): часть суток названа словом
+   * перед часом, и выбирает она, а не близость к часу дела.
+   */
+  it.each<[number, string, number]>([
+    [19 * 60, 'утром в 9', 9 * 60],
+    [19 * 60, 'Перенеси посылку утром в 9.', 9 * 60],
+    [10 * 60, 'вечером в 8', 20 * 60],
+    [10 * 60, 'с утра в 7', 7 * 60],
+  ])('у дела на %i мин «%s» — часть суток словом решает', async (time, spoken, expected) => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: time });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(expected);
+  });
+
   it('«на пол 1» у дела 23:00 — 00:30: по кругу суток ближе ночное', async () => {
     const item = await sow({ text: 'Забрать посылку', deadlineTime: 23 * 60 });
 
