@@ -48,6 +48,7 @@ const STAGES: Record<string, string> = {
   decomposer: 'Разбиение проекта',
   answerer: 'Ответ на вопрос о делах',
   reader: 'Чтение ответа на вопрос бота',
+  talker: 'Живой ответ там, где у бота нет своего',
   speech: 'Речь',
   embedder: 'Векторы',
 };

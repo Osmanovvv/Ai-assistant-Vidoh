@@ -180,10 +180,23 @@ export function questionFacts(params: QuestionFactsParams): string {
   }
 
   // Ничего не найдено — обзор: сегодня, срок прошёл, ближайшие дни, цели.
-  lines.push('По вопросу ничего не найдено');
-  const open = (params.overview ?? []).filter(
-    (item) => item.type === 'TASK' || item.type === 'DESIRE',
-  );
+  lines.push('По вопросу ничего не найдено', ...overviewLines(params.overview ?? [], context));
+  return lines.join('\n');
+}
+
+/**
+ * Обзор открытых дел строками фактов: сегодня, срок прошёл, ближайшие
+ * дни, цели, неточные сроки, сколько всего. Общий у ответа на вопрос и
+ * живого ответа вне сценария (docs/29): модель говорит о делах по одному
+ * и тому же списку, а страж сверяет с ним числа и дни.
+ */
+export function overviewLines(
+  overview: readonly Item[],
+  context: { readonly now: Date; readonly timeZone: string; readonly texts: TextProfile },
+): string[] {
+  const { now, timeZone, texts } = context;
+  const lines: string[] = [];
+  const open = overview.filter((item) => item.type === 'TASK' || item.type === 'DESIRE');
   const todayKey = isoDateIn(now, timeZone);
   const dated = open.filter((item) => item.deadlineAt !== null && item.deadlineAccuracy === 'day');
   const today = dated
@@ -228,7 +241,7 @@ export function questionFacts(params: QuestionFactsParams): string {
     );
   }
   lines.push(`Открытых дел всего: ${String(open.length)}`);
-  return lines.join('\n');
+  return lines;
 }
 
 /** Ответ на вопрос — до трёх фраз и один вопрос (§13.9). */

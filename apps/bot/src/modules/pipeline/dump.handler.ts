@@ -26,6 +26,7 @@ import {
   periodLabel,
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
+import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
@@ -2359,6 +2360,45 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         const questionOpen = onboardingOpen || happened.asked;
 
         /**
+         * Живой ответ (план docs/29, решение Никиты 28.09.2026): своего
+         * ответа у бота нет — модель говорит своими словами по фактам
+         * кода, код проверяет (`talk/talk.ts`). «Ок», 👍 — смайликом, без
+         * модели. Не прошло — дальше как раньше: ответчик по делам, фраза
+         * чувства или «Я здесь». Выключатель `talk.live`.
+         */
+        const spokenHere = parseText.trim();
+        const talkLive =
+          !thanked && spokenHere !== '' && ((await deps.settings?.number('talkLive')) ?? 0) === 1;
+        if (talkLive && onlyAck(spokenHere)) {
+          await answer(texts.answer.ack);
+          return;
+        }
+        const talked = talkLive
+          ? (
+              await askTalk(ai, {
+                facts: talkFacts({
+                  said: spokenHere,
+                  now,
+                  timeZone: context.timeZone,
+                  texts,
+                  overview: await openItemsFor(db, batch.userId),
+                  mood,
+                  questionOpen,
+                  dialog,
+                }),
+                mood,
+                questionOpen,
+                userId: batch.userId,
+                batchId: batch.id,
+              })
+            ).line
+          : undefined;
+        if (talked !== undefined) {
+          await answer(talked);
+          return;
+        }
+
+        /**
          * Последняя попытка — моделью (22.09.2026, экран заказчицы
          * 21.09): «Напиши мне все, что накопилось» → «Я здесь.
          * Расскажешь, что в голове?». Слово добавили в рамку вопроса в
@@ -2372,7 +2412,6 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * пустой список дел.
          */
         const lastTry = !thanked && mood === undefined && (await openItemsFor(db, batch.userId));
-        const spokenHere = parseText.trim();
         const rescue =
           lastTry !== false && lastTry.length > 0 && spokenHere !== ''
             ? (
@@ -3222,6 +3261,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        */
       omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
       feelingsOnly,
+      // Живой ответ на одни чувства — ниже, после разбора (docs/29).
       mood,
       quickAdd: quickAdded,
       // Раскладка по сферам и «на сегодня / на завтра» — по разобранным
@@ -3255,14 +3295,41 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       'Выгрузка разобрана',
     );
 
+    /**
+     * Одни чувства разбором — тот же живой ответ, что без разбора
+     * (docs/29): фраза словаря по силе остаётся, если модель промолчала
+     * или страж не пропустил. Выключатель `talk.live`.
+     */
+    const questionTaken = happened.asked || startOnboarding !== undefined || onboardingOpen;
+    const feelingsTalk =
+      feelingsOnly && ((await deps.settings?.number('talkLive')) ?? 0) === 1
+        ? (
+            await askTalk(ai, {
+              facts: talkFacts({
+                said: parseText.trim(),
+                now,
+                timeZone: context.timeZone,
+                texts,
+                overview: open,
+                mood,
+                questionOpen: questionTaken,
+                dialog,
+              }),
+              mood,
+              questionOpen: questionTaken,
+              userId: batch.userId,
+              batchId: batch.id,
+            })
+          ).line
+        : undefined;
+    const replyText = feelingsTalk ?? presented.reply.text;
+
     // §13.2: под разбором три кнопки, и одна из них ведёт к остальным
     // делам. Без неё человек не знал, куда они делись.
     // Припаркованная правка — строкой под ответом, а не молча (A4).
     if (!onlyMovedRepeats) {
       await answer(
-        parkedLines().length > 0
-          ? `${presented.reply.text}\n\n${parkedLines().join('\n')}`
-          : presented.reply.text,
+        parkedLines().length > 0 ? `${replyText}\n\n${parkedLines().join('\n')}` : replyText,
         presented.reply.buttons,
       );
     }
