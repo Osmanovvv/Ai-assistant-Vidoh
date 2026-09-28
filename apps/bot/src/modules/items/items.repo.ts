@@ -38,7 +38,8 @@ export interface SaveItemsParams {
 /** Черновик: разобрать не удалось, но текст терять нельзя (§17 ТЗ). */
 export interface SaveDraftParams {
   readonly userId: string;
-  readonly batchId: string;
+  /** Нет — черновик не из выгрузки: переспрос после кнопки «Изменить время». */
+  readonly batchId: string | null;
   readonly text: string;
   /** Чем именно не удалось: пойдёт в админку к тому, кто будет разбирать. */
   readonly reason: string;

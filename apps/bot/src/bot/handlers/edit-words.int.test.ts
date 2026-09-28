@@ -446,7 +446,13 @@ describe('«Изменить время» — час словами (ТЗ про
     expect(await wentToDump('10:30')).toBe(false);
   });
 
-  it('«в 9» — не понято, ожидание остаётся; «9 утра» — понято', async () => {
+  /**
+   * «В 9» у дела без часа (docs/28, шаг 6, 28.09.2026): раньше — «не
+   * поняла время», теперь — вопрос «09:00 или 21:00?», как у голосового
+   * переноса, и он помнится: ответ «вечером» следом доделает перенос
+   * обычным разбором (`clarify.ts`).
+   */
+  it('«в 9» у дела без часа — вопрос «09:00 или 21:00?», и он помнится', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();
 
@@ -455,14 +461,42 @@ describe('«Изменить время» — час словами (ТЗ про
 
     await bot.handleUpdate(textUpdate('в 9'));
     expect(await timeOfItem(itemId)).toBeNull();
-    expect(await awaitingOfUser()).toBe(`retime:${itemId}`);
     expect(textOf(calls.filter((call) => call.method === 'sendMessage').at(-1))).toBe(
-      defaultTexts.card.retimeNotUnderstood,
+      defaultTexts.resolver.timeUnclear('09:00', '21:00'),
     );
+    const drafts = await testDb()
+      .select({ reason: items.draftReason, text: items.text })
+      .from(items)
+      .where(eq(items.isDraft, true));
+    expect(drafts.some((one) => one.reason === 'ждёт уточнения: утро или вечер')).toBe(true);
+  });
 
+  it('«9 утра» — понято сразу', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(null);
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
     await bot.handleUpdate(textUpdate('9 утра'));
+
     expect(await timeOfItem(itemId)).toBe(9 * 60);
     expect(await awaitingOfUser()).toBeNull();
+  });
+
+  it.each<[string, number]>([
+    ['в 8', 20 * 60],
+    ['полвосьмого', 19 * 60 + 30],
+    ['на час позже', 20 * 60],
+    ['утром в 9', 9 * 60],
+  ])('у дела на 19:00 «%s» — как у переноса: с опорой на час дела', async (said, expected) => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(19 * 60);
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+    await bot.handleUpdate(textUpdate(said));
+
+    expect(await timeOfItem(itemId)).toBe(expected);
   });
 
   it('«в 4» — 16:00 без переспроса: голый час с 1 до 6 — день (вариант Б, 24.09.2026)', async () => {

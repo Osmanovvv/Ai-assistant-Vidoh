@@ -1064,6 +1064,61 @@ describe('ответ словами', () => {
     expect(texts.at(-1)).toBe(defaultTexts.onboarding.finished);
   });
 
+  /**
+   * Набор docs/eval-dialog/settings.md (28.09.2026): «в 9» на «Во сколько
+   * писать вечером?» сохранялось как 09:00 — вечерняя сводка пришла бы
+   * утром; «не пиши вечером» было «не разобрала».
+   */
+  it.each<[string, string]>([
+    ['в 9', '21:00:00'],
+    ['в девять', '21:00:00'],
+    ['полдесятого', '21:30:00'],
+  ])('вечер словами «%s» — вечерняя половина суток', async (said, expected) => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.evening);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.eveningOwn));
+    await bot.handleUpdate(textUpdate(said));
+
+    expect((await settingsOf())?.eveningTime).toBe(expected);
+  });
+
+  it('«не пиши вечером» — вечером не писать, опрос закрыт', async () => {
+    const { bot, calls } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+    await startedAt(STEP.evening);
+
+    await bot.handleUpdate(callbackUpdate(ACTION.eveningOwn));
+    await bot.handleUpdate(textUpdate('не пиши вечером'));
+
+    expect((await settingsOf())?.eveningOn).toBe(false);
+    expect((await onboardingStateOf(testDb(), userId)).step).toBe(STEP.done);
+    expect(repliesOf(calls)).toContain(defaultTexts.settings.savedEveningOff);
+  });
+
+  it('«Меня зовут Оля» — имя «Оля», а не вся фраза', async () => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+    await bot.handleUpdate(textUpdate('Меня зовут Оля'));
+
+    expect((await settingsOf())?.preferredName).toBe('Оля');
+  });
+
+  it('«купить хлеб» на «Как тебя звать?» — не имя: имя не тронуто', async () => {
+    const { bot } = createTestBot(recordingQuestions().sender);
+    await bot.init();
+
+    await bot.handleUpdate(textUpdate('/start'));
+    await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+    await bot.handleUpdate(textUpdate('купить хлеб'));
+
+    expect((await settingsOf())?.preferredName).toBeNull();
+  });
+
   it('не время — настройка не меняется, мысль идёт в разбор', async () => {
     const { bot, calls } = createTestBot(recordingQuestions().sender);
     await bot.init();

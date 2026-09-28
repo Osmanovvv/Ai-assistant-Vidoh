@@ -63,6 +63,8 @@ const CITIES: Readonly<Record<string, string>> = {
   петербург: MOSCOW,
   питер: MOSCOW,
   спб: MOSCOW,
+  // «мск», «Екб» — как пишут в переписке (набор settings.md, 28.09.2026).
+  мск: MOSCOW,
   краснодар: MOSCOW,
   сочи: MOSCOW,
   анапа: MOSCOW,
@@ -127,6 +129,7 @@ const CITIES: Readonly<Record<string, string>> = {
 
   екатеринбург: YEKATERINBURG,
   ебург: YEKATERINBURG,
+  екб: YEKATERINBURG,
   челябинск: YEKATERINBURG,
   магнитогорск: YEKATERINBURG,
   'нижний тагил': YEKATERINBURG,
@@ -194,6 +197,8 @@ const AROUND_CITY = new Set([
   'нахожусь',
   'сейчас',
   'это',
+  // «По Москве» — время города (28.09.2026).
+  'по',
 ]);
 
 function normalize(text: string): string {
