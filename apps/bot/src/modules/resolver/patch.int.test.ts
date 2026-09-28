@@ -379,6 +379,34 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect((await reread(item.id)).deadlineTime).toBe(12 * 60 + 30);
   });
 
+  /**
+   * Живая проверка Никиты 28.09.2026, 03:29: «Перенеси посылку на пол 12» у
+   * посылки на 19:00 — бот молча поставил 23:30 (ближайшее по кругу суток).
+   * Решение Никиты: ближайшее чтение ночью (23:00–05:59), второе днём, и
+   * сдвиг больше двух часов — не угадываем, спрашиваем «11:30 или 23:30?».
+   * Небольшой сдвиг позднего дела («пол 12» у 22:30) — как было.
+   */
+  it.each<[number, string, readonly [number, number]]>([
+    [19 * 60, 'Перенеси посылку на пол 12.', [11 * 60 + 30, 23 * 60 + 30]],
+    [20 * 60, 'Перенеси посылку на пол 1.', [30, 12 * 60 + 30]],
+  ])('у дела на %i мин «%s» — ночь далеко: вопрос, час не тронут', async (time, spoken, both) => {
+    const item = await sow({ text: 'Забрать посылку', deadlineTime: time });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken,
+      timeZone: MOSCOW,
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('unchanged');
+    expect(outcome.kind === 'unchanged' ? outcome.timeUnclear : undefined).toEqual(both);
+    expect((await reread(item.id)).deadlineTime).toBe(time);
+  });
+
   it('«на пол 1» у дела 23:00 — 00:30: по кругу суток ближе ночное', async () => {
     const item = await sow({ text: 'Забрать посылку', deadlineTime: 23 * 60 });
 

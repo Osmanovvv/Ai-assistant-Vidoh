@@ -715,8 +715,29 @@ function spokenClockTime(
     const straight = Math.abs(reading - current);
     return Math.min(straight, day - straight);
   };
-  return { time: around(morning) <= around(evening) ? morning : evening };
+  const nearest = around(morning) <= around(evening) ? morning : evening;
+
+  /**
+   * Ближайшее — ночью (второе тогда днём: чтения через 12 часов), и сдвиг
+   * большой (живая проверка Никиты 28.09.2026, 03:29): «на пол 12» у
+   * посылки на 19:00 молча ставило 23:30. Решение Никиты — спросить
+   * «11:30 или 23:30?».
+   * Небольшой сдвиг позднего дела («пол 12» у 22:30, «пол 1» у 23:00) —
+   * как было: человек двигает его ненамного.
+   */
+  if (atNight(nearest) && around(nearest) > NIGHT_SHIFT_MINUTES) {
+    return { unclear: [morning, evening] };
+  }
+  return { time: nearest };
 }
+
+/** Ночь для часа дела — с 23:00 до 05:59. */
+function atNight(minutes: number): boolean {
+  return minutes >= 23 * 60 || minutes < 6 * 60;
+}
+
+/** Сдвиг дальше двух часов в ночь — уже не «чуть позже». */
+const NIGHT_SHIFT_MINUTES = 2 * 60;
 
 export async function applyDecision(db: Executor, params: ApplyParams): Promise<ApplyOutcome> {
   const now = params.now ?? new Date();
