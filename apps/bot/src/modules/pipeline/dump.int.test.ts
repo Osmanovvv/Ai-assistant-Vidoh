@@ -9874,35 +9874,87 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect(talker).toHaveLength(0);
   });
 
-  it('усталость без дел — модель отвечает, зная силу чувства', async () => {
+  /**
+   * Замер 28.09.2026 (docs/eval-talk, talker@2): на «Устала ужасно…»
+   * модель ответила суше её же фразы. Чувство, которое код узнаёт по её
+   * словам (`presenter/mood.ts`), отвечается её фразой — модель не
+   * зовётся; живой ответ — только чувствам вне её списка.
+   */
+  it('усталость по её словам — её фраза, модель не зовётся', async () => {
     const prompts = await talkOn();
     const llm = echoingLlm({
       router: smalltalk('Я сегодня вообще вымоталась'),
-      talker: talked('Да, денёк был длинный 😮‍💨 Если что-то крутится в голове — скидывай сюда.'),
+      talker: talked('Да, денёк был длинный 😮‍💨'),
     });
 
     const { replies, talker } = await say('Я сегодня вообще вымоталась', llm, prompts);
 
-    expect(talker[0]).toContain('Чувство: усталость');
-    expect(replies.at(-1)).toBe(
-      'Да, денёк был длинный 😮‍💨 Если что-то крутится в голове — скидывай сюда.',
-    );
+    expect(talker).toHaveLength(0);
+    expect(replies).toEqual([defaultTexts.answer.feelingsOnlyTired]);
   });
 
-  it('сильное чувство — эмодзи не пройдёт, её спокойная фраза', async () => {
+  it('сильное чувство по её словам — её спокойная фраза, модель не зовётся', async () => {
     const prompts = await talkOn();
     const llm = echoingLlm({
       router: smalltalk('Я в панике, всё разваливается'),
-      talker: talked('Я здесь 😌'),
+      talker: talked('Я здесь.'),
     });
 
     const { replies, talker } = await say('Я в панике, всё разваливается', llm, prompts);
 
-    expect(talker[0]).toContain('Чувство: сильное');
+    expect(talker).toHaveLength(0);
     expect(replies).toEqual([defaultTexts.answer.feelingsOnlyHeavy]);
   });
 
-  it('чувства разбором (единицы EMOTION) — тоже живой ответ вместо фразы словаря', async () => {
+  it('чувство вне её списка («мне грустно») — живой ответ вместо общей фразы', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: smalltalk('Мне грустно'),
+      talker: talked('Грустные дни тоже бывают. Если что-то крутится в голове — скидывай сюда.'),
+    });
+
+    const { replies, talker } = await say('Мне грустно', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).not.toContain('Чувство:');
+    expect(replies.at(-1)).toBe(
+      'Грустные дни тоже бывают. Если что-то крутится в голове — скидывай сюда.',
+    );
+  });
+
+  it('чувства разбором (единицы EMOTION) вне её списка — тоже живой ответ', async () => {
+    const prompts = await talkOn();
+    const said = 'как-то тоскливо сегодня';
+    const emotion = (text: string): string =>
+      JSON.stringify({
+        items: [
+          {
+            text,
+            type: 'EMOTION',
+            priority: 'NONE',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          },
+        ],
+      });
+    const llm = echoingLlm({
+      classifier: emotion(said),
+      talker: talked('Бывают такие дни. Если что-то крутится — скидывай сюда.'),
+    });
+
+    const { replies, talker } = await say(said, llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(replies.at(-1)).toBe('Бывают такие дни. Если что-то крутится — скидывай сюда.');
+  });
+
+  it('чувства разбором по её словам («так устала») — её фраза', async () => {
     const prompts = await talkOn();
     const said = 'так устала, всё навалилось';
     const llm = echoingLlm({
@@ -9923,14 +9975,13 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
           },
         ],
       }),
-      talker: talked('Навалилось — бывает 😮‍💨 Скидывай сюда, что крутится.'),
+      talker: talked('Навалилось — бывает 😮‍💨'),
     });
 
     const { replies, talker } = await say(said, llm, prompts);
 
-    expect(talker).toHaveLength(1);
-    expect(talker[0]).toContain('Чувство: усталость');
-    expect(replies.at(-1)).toBe('Навалилось — бывает 😮‍💨 Скидывай сюда, что крутится.');
+    expect(talker).toHaveLength(0);
+    expect(replies.at(-1)).toContain(defaultTexts.answer.feelingsOnlyTired);
   });
 
   it('кризис — своим сценарием, модель живого ответа не зовётся', async () => {

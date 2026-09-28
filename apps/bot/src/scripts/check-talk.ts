@@ -147,12 +147,12 @@ function nowReply(say: string): { readonly reply: string; readonly byCode: boole
 
 /**
  * Дойдёт ли реплика до модели живого ответа на бою: кризис, «спасибо»,
- * «напомнишь?», «какие ещё» и «ок» отвечает код.
+ * «напомнишь?», «какие ещё», «ок» и чувства по её списку слов (её фразы,
+ * замер 28.09.2026) отвечает код.
  */
 function reachesTalker(one: Case): boolean {
   if (one.kind.startsWith('код:')) return false;
-  const now = nowReply(one.say);
-  if (now.byCode && moodOf(one.say) === undefined) return false;
+  if (nowReply(one.say).byCode) return false;
   return !onlyAck(one.say);
 }
 

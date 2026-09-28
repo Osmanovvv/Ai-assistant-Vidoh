@@ -2367,8 +2367,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * чувства или «Я здесь». Выключатель `talk.live`.
          */
         const spokenHere = parseText.trim();
+        // Чувство по её словам — её фраза (замер 28.09.2026: модель суше).
         const talkLive =
-          !thanked && spokenHere !== '' && ((await deps.settings?.number('talkLive')) ?? 0) === 1;
+          !thanked &&
+          mood === undefined &&
+          spokenHere !== '' &&
+          ((await deps.settings?.number('talkLive')) ?? 0) === 1;
         if (talkLive && onlyAck(spokenHere)) {
           await answer(texts.answer.ack);
           return;
@@ -3297,12 +3301,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     /**
      * Одни чувства разбором — тот же живой ответ, что без разбора
-     * (docs/29): фраза словаря по силе остаётся, если модель промолчала
-     * или страж не пропустил. Выключатель `talk.live`.
+     * (docs/29), и так же только чувству вне её списка: узнанное по её
+     * словам отвечается её фразой (замер 28.09.2026 — у модели суше). Фраза
+     * словаря остаётся, если модель промолчала или страж не пропустил.
+     * Выключатель `talk.live`.
      */
     const questionTaken = happened.asked || startOnboarding !== undefined || onboardingOpen;
     const feelingsTalk =
-      feelingsOnly && ((await deps.settings?.number('talkLive')) ?? 0) === 1
+      feelingsOnly && mood === undefined && ((await deps.settings?.number('talkLive')) ?? 0) === 1
         ? (
             await askTalk(ai, {
               facts: talkFacts({

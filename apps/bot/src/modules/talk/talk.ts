@@ -143,6 +143,17 @@ const CLAIM =
   /(?<!\p{L})(записала|сохранила|удалила|убрала|перенесла|добавила|поставила|отметила|напомнила|закрыла|отправила|заказала|позвонила|написала|нашла|включила|вызвала|завела|отменила|поменяла|изменила)(?!\p{L})/iu;
 /** Напоминания здесь не ставятся: «напомню» — обещание, «могу напомнить» — нет. */
 const REMIND_PROMISE = /(?<!\p{L})напомню(?!\p{L})/iu;
+/**
+ * Мужской род — и о себе, и о ней (замер talker@3, 28.09.2026: «Теперь
+ * полон сил» на «я выспалась»). Вне сценария о третьих лицах речь почти
+ * не идёт, поэтому краткие формы запрещены целиком — в отличие от общего
+ * стража, где «муж занят» — правда.
+ */
+const MASCULINE_SHORT =
+  /(?<!\p{L})(рад|готов|полон|уверен|должен|свободен|прав|спокоен|счастлив|доволен|занят|согласен|устал)(?!\p{L})/iu;
+/** Язык помощника-ИИ — её текст о характере: «не языком ИИ». */
+const AI_SPEAK =
+  /(чем могу помочь|чем я могу помочь|рада помочь|обращайся|как искусственный интеллект|я всего лишь (бот|программа))/iu;
 
 export function checkTalk(raw: string, facts: string, options: TalkCheckOptions): CheckedLine {
   const voiced = checkVoice(raw, facts, limitsFor(options));
@@ -156,6 +167,8 @@ export function checkTalk(raw: string, facts: string, options: TalkCheckOptions)
     return { ok: false, why: `сделано не было: ${claim[0].toLowerCase()}` };
   }
   if (REMIND_PROMISE.test(voiced.line)) return { ok: false, why: 'обещание напомнить' };
+  if (MASCULINE_SHORT.test(voiced.line)) return { ok: false, why: 'мужской род' };
+  if (AI_SPEAK.test(voiced.line)) return { ok: false, why: 'язык ИИ' };
   return voiced;
 }
 
