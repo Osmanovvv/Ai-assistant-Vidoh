@@ -9984,6 +9984,40 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect(replies.at(-1)).toContain(defaultTexts.answer.feelingsOnlyTired);
   });
 
+  /**
+   * Бой 28.09.2026, 20:14: «Ты вообще меня понимаешь?» маршрутизатор
+   * отдал вопросом о записях, поиск ничего не нашёл — «Про это у меня
+   * ничего не записано». Вопрос к самому боту — живой ответ.
+   */
+  const query = (text: string): string =>
+    JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text }] });
+
+  it('вопрос к боту, записей нет — живой ответ вместо «ничего не записано»', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: query('Ты вообще меня понимаешь?'),
+      talker: talked('Понимаю 🙂 Скидывай сюда всё, что крутится в голове.'),
+    });
+
+    const { replies, talker } = await say('Ты вообще меня понимаешь?', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(replies.at(-1)).toBe('Понимаю 🙂 Скидывай сюда всё, что крутится в голове.');
+  });
+
+  it('вопрос о её делах, записей нет — по-прежнему «ничего не записано»', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: query('Что там с котом?'),
+      talker: talked('Про кота помню 🙂'),
+    });
+
+    const { replies, talker } = await say('Что там с котом?', llm, prompts);
+
+    expect(talker).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.backlog.nothing);
+  });
+
   it('кризис — своим сценарием, модель живого ответа не зовётся', async () => {
     const prompts = await talkOn();
     const llm = echoingLlm({

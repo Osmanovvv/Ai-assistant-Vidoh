@@ -68,6 +68,18 @@ export function onlyAck(text: string): boolean {
   return words.length === 1 && ACK_WORDS.has(words[0] ?? '') && !/[?]/u.test(text);
 }
 
+/**
+ * Вопрос к самому боту, а не о её делах (бой 28.09.2026, 20:14): «Ты
+ * вообще меня понимаешь?» маршрутизатор отдал вопросом о записях, поиск
+ * ничего не нашёл — и бот ответил «Про это у меня ничего не записано».
+ * Обращение на «ты» — к боту: про её дела она говорит «у меня», «я».
+ */
+const TO_BOT = /(?<!\p{L})(ты|тебя|тебе|тобой|твой|твоя|твое|твоё|твои)(?!\p{L})/iu;
+
+export function addressesBot(text: string): boolean {
+  return TO_BOT.test(text);
+}
+
 const MOOD_WORDS: Readonly<Record<Mood, string>> = {
   heavy: 'сильное',
   tired: 'усталость',
@@ -155,8 +167,41 @@ const MASCULINE_SHORT =
 const AI_SPEAK =
   /(чем могу помочь|чем я могу помочь|рада помочь|обращайся|как искусственный интеллект|я всего лишь (бот|программа))/iu;
 
+const GRAPHEMES = new Intl.Segmenter('ru', { granularity: 'grapheme' });
+const PICTURE = /\p{Extended_Pictographic}/u;
+/** Метка вырезанного смайлика — символ частного пользования, в тексте его нет. */
+const DROPPED = '';
+
+/**
+ * Лишний смайлик — убрать, а не выкидывать ответ (проба talker@4,
+ * 28.09.2026: «Привет! 👋 Если что-то крутится…» уходил в заготовку из-за
+ * 👋). Остаётся первый из её списка; прочие вырезаются, а там, где
+ * смайлик разделял фразы («Я здесь 😌 Давай…»), ставится точка.
+ */
+function withoutStrayEmoji(text: string, allowed: ReadonlySet<string>): string {
+  let kept = false;
+  let out = '';
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    const picture = withoutSkinTone(segment.replace(/️/gu, ''));
+    if (!PICTURE.test(picture)) {
+      out += segment;
+    } else if (!kept && allowed.has(picture)) {
+      kept = true;
+      out += segment;
+    } else {
+      out += DROPPED;
+    }
+  }
+  return out
+    .replace(/(\p{L})\s*+\s*(?=\p{Lu})/gu, '$1. ')
+    .replace(/\s*+/gu, '')
+    .replace(/\s{2,}/gu, ' ')
+    .trim();
+}
+
 export function checkTalk(raw: string, facts: string, options: TalkCheckOptions): CheckedLine {
-  const voiced = checkVoice(raw, facts, limitsFor(options));
+  const limits = limitsFor(options);
+  const voiced = checkVoice(withoutStrayEmoji(raw, limits.emoji ?? NO_EMOJI), facts, limits);
   if (!voiced.ok) return voiced;
 
   const claim = CLAIM.exec(voiced.line);
