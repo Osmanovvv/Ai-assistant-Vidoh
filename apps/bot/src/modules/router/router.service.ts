@@ -9,6 +9,7 @@ import {
 import { splitClosings } from './closing.js';
 import { restoreUncovered } from './coverage.js';
 import { splitDayQuestions } from './day-question.js';
+import { onlyDoneWords } from './known-patch.js';
 import { splitPatchTails } from './patch-tail.js';
 import { looksLikeThought } from './thought-words.js';
 import { namesOnlyTime } from '../resolver/deixis.js';
@@ -292,6 +293,19 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  /**
+   * «Готово», «уже сделала» одной репликой — сделано (набор
+   * docs/eval-dialog/commands.md, 28.09.2026): модель назвала «готово»
+   * болтовнёй. Какое дело — последнее обсуждённое (`deixis.ts`).
+   */
+  const done = thoughts.map((segment) =>
+    alone &&
+    (segment.intent === 'SMALLTALK' || segment.intent === 'DUMP') &&
+    onlyDoneWords(segment.text)
+      ? { ...segment, intent: 'COMPLETE' as const }
+      : segment,
+  );
+
   if (reordered) {
     deps.logger?.warn(
       { promptVersion: outcome.promptVersion, count: segments.length },
@@ -305,13 +319,13 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * мыслями, и модель то делает из вопроса дело, то теряет мысль в
    * вопросе. См. `day-question.ts`.
    */
-  const withQuestions = splitDayQuestions(thoughts);
+  const withQuestions = splitDayQuestions(done);
 
-  if (withQuestions.length !== thoughts.length) {
+  if (withQuestions.length !== done.length) {
     deps.logger?.info(
       {
         promptVersion: outcome.promptVersion,
-        before: thoughts.length,
+        before: done.length,
         after: withQuestions.length,
       },
       'Вопрос о дне внутри мысли выделен кодом',
