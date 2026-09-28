@@ -305,6 +305,9 @@ function isThought(thought: string): boolean {
   );
 }
 
+/** Согласие первым словом: «да», «ага», «угу». */
+const YES_WORDS = new Set(['да', 'ага', 'угу']);
+
 /** Ответ модели — через проверки кода. */
 export function checkReading(
   question: ReaderQuestion,
@@ -371,9 +374,16 @@ export function checkReading(
 
   if (question.kind === 'move' || question.kind === 'attach') {
     const allowed = question.kind === 'move' ? ['да', 'нет'] : ['к прошлой', 'отдельно'];
-    return allowed.includes(choice)
-      ? { kind: 'answer', choice, thought }
-      : { kind: 'unread', why: 'выбор не из предложенных' };
+    if (!allowed.includes(choice)) return { kind: 'unread', why: 'выбор не из предложенных' };
+    /**
+     * Согласие в словах и «нет»/«отдельно» у модели — спор (замер
+     * 28.09.2026: «Да, и ещё записать Диму к логопеду» → «отдельно»).
+     */
+    const first = words(part)[0] ?? '';
+    if (YES_WORDS.has(first) && (choice === 'нет' || choice === 'отдельно')) {
+      return { kind: 'unread', why: 'спор: согласие в словах, отказ у модели' };
+    }
+    return { kind: 'answer', choice, thought };
   }
 
   const time = /^(\d{1,2}):(\d{2})$/u.exec(choice);
