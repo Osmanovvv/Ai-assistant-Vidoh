@@ -185,6 +185,31 @@ function openDeedForms(facts: string): ReadonlyMap<string, true> {
   return forms;
 }
 
+/**
+ * «Надо/нужно» — понукание, кроме пересказа её же дела (журнал боя
+ * 27.09.2026, docs/29): «Про платье, которое нужно забрать вечером,
+ * помню.» при деле «Забрать платье из ателье» — её слова, а строку
+ * выкидывали как совет. Сразу за «нужно» — глагол, которым начинается
+ * её дело из фактов; любой другой — по-прежнему совет.
+ */
+function mustIsAdvice(line: string, facts: string): boolean {
+  const verbs = new Set<string>();
+  for (const factLine of facts.split('\n')) {
+    const lower = factLine.toLowerCase().replace(/ё/gu, 'е');
+    if (/^(вопрос|реплика|бот|человек):/u.test(lower)) continue;
+    for (const match of lower.matchAll(/(?:^|[:;—]\s*)(\p{L}+)/gu)) {
+      const first = match[1] ?? '';
+      if (/(ть|ти|чь)(ся|сь)?$/u.test(first)) verbs.add(first);
+    }
+  }
+  for (const match of line.matchAll(new RegExp(MUST.source, 'giu'))) {
+    const rest = line.slice(match.index + match[0].length);
+    const next = /^\s+(\p{L}+)/u.exec(rest)?.[1]?.toLowerCase().replace(/ё/gu, 'е');
+    if (next === undefined || !verbs.has(next)) return true;
+  }
+  return false;
+}
+
 /** «Дело», «дела», «дел» — счёт дел, а не чего-то ещё. */
 const DEEDS = /^дел[ао]?$/u;
 
@@ -236,6 +261,31 @@ export interface VoiceLimits {
   readonly countsFromFacts?: boolean | undefined;
   /** Оценка дела — «хорошее», «важное»: у строки нельзя, у ответа можно. */
   readonly forbidJudging?: boolean | undefined;
+  /**
+   * Какие эмодзи можно, не больше одного. Нет — никаких: у строки и
+   * ответа на вопрос их нет (живой ответ вне сценария, docs/29 — её список).
+   */
+  readonly emoji?: ReadonlySet<string> | undefined;
+  /**
+   * Числа свободны, кроме часов, дат и счёта дел (живой ответ вне
+   * сценария, docs/29): «15% от 3000 — это 450», «две идеи» — не факты о
+   * ней; «в 18:30», «29.09», «пять дел» — факты, и только из фактов.
+   */
+  readonly freeNumbers?: boolean | undefined;
+}
+
+/**
+ * Число — час или дата: с «:» или «.» внутри, «в 7», «к 9», «7 утра»,
+ * «через 2 часа». Проценты, рубли и голый счёт — нет.
+ */
+function timeLike(line: string, match: RegExpMatchArray): boolean {
+  const number = match[0];
+  if (/[:.]\d/u.test(number)) return true;
+  const start = match.index ?? 0;
+  const before = line.slice(Math.max(0, start - 8), start).toLowerCase();
+  const after = line.slice(start + number.length, start + number.length + 12).toLowerCase();
+  if (/^\s*(утра|вечера|дня|ночи|час\p{L}*|минут\p{L}*)/u.test(after)) return true;
+  return /(?<!\p{L})(в|к|до|после|на)\s+$/u.test(before) && !/^\s*(%|процент|руб|₽)/u.test(after);
 }
 
 const LINE_LIMITS: VoiceLimits = {
@@ -281,7 +331,7 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   const forbidden = forbiddenPhraseIn(line);
   if (forbidden !== undefined) return { ok: false, why: `запрет: ${forbidden}` };
   if (ADVICE.test(line)) return { ok: false, why: 'совет' };
-  if (limits.allowMust !== true && MUST.test(line)) return { ok: false, why: 'совет' };
+  if (limits.allowMust !== true && mustIsAdvice(line, facts)) return { ok: false, why: 'совет' };
   if (PRESSURE.test(line)) return { ok: false, why: 'давление' };
   if (FOR_HER.test(line)) return { ok: false, why: 'за неё' };
   if (ASKS_HER.test(line)) return { ok: false, why: 'просит её' };
@@ -296,7 +346,13 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   if (PROMISE.test(line)) return { ok: false, why: 'обещание' };
   if (PRAISE.test(line)) return { ok: false, why: 'оценка' };
   if (limits.forbidJudging === true && JUDGING.test(line)) return { ok: false, why: 'оценка' };
-  if (picturesIn(line).length > 0) return { ok: false, why: 'эмодзи' };
+  const pictures = picturesIn(line);
+  if (
+    pictures.length > (limits.emoji === undefined ? 0 : 1) ||
+    pictures.some((picture) => limits.emoji?.has(picture) !== true)
+  ) {
+    return { ok: false, why: 'эмодзи' };
+  }
   if (limits.forbidOpening && OPENING.test(line)) return { ok: false, why: 'повторяет открытие' };
   if (COUNT_OF_ITEMS.test(line)) return { ok: false, why: 'повторяет счёт' };
   if (YOU_PLURAL.test(line)) return { ok: false, why: 'на вы' };
@@ -314,8 +370,9 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
     }
   }
 
-  for (const number of line.match(NUMBERS) ?? []) {
-    if (!facts.includes(number)) return { ok: false, why: `число не из фактов: ${number}` };
+  for (const match of line.matchAll(NUMBERS)) {
+    if (limits.freeNumbers === true && !timeLike(line, match)) continue;
+    if (!facts.includes(match[0])) return { ok: false, why: `число не из фактов: ${match[0]}` };
   }
   const known = numbersIn(facts);
   for (const spelled of spelledNumbersBeforeUnits(line)) {
@@ -325,6 +382,8 @@ export function checkVoice(raw: string, facts: string, limits: VoiceLimits): Che
   }
   const lists = listSizesIn(facts);
   for (const [index, word] of (limits.countsFromFacts === true ? lineWords : []).entries()) {
+    // «Две идеи» — не счёт её дел: при свободных числах сверяется только он.
+    if (limits.freeNumbers === true && !DEEDS.test(lineWords[index + 1] ?? '')) continue;
     const value = COUNT_WORDS.get(word.replace(/ё/gu, 'е'));
     // «Два дела» — счёт по списку фактов (стенд 22.09.2026); «трёх
     // звонков» — не счёт дел, и числа в фактах для него нет.

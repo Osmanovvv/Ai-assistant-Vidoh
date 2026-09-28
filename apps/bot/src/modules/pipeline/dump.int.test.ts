@@ -46,6 +46,7 @@ import {
   READER_SCHEMA_NAME,
   RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
+  TALKER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
@@ -145,6 +146,7 @@ const MARKERS = {
   resolver: 'РЕШЕНИЕ',
   answerer: 'ОТВЕТ',
   reader: 'ЧТЕНИЕ',
+  talker: 'РАЗГОВОР',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -262,6 +264,9 @@ function echoingLlm(
           return JSON.stringify({ answer: '' });
         case 'reader':
           return JSON.stringify({ kind: 'not_answer', choice: '', thought: '' });
+        case 'talker':
+          // Пусто — сказать нечего: ответ словарный, как без модели.
+          return JSON.stringify({ reply: '' });
       }
     },
   });
@@ -9735,6 +9740,212 @@ describe('сказать нечего — последняя попытка мо
 
     expect(inputs).toHaveLength(0);
     expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+});
+
+/**
+ * Живой ответ там, где у бота нет своего (план docs/29, решение Никиты
+ * 28.09.2026: «живость там, где это надо»). Выключатель `talk.live`, по
+ * умолчанию выключено: болтовня, чувства без дел, обрывок — словарём.
+ */
+describe('живой ответ вне сценария (docs/29, 28.09.2026)', () => {
+  async function talkOn(): Promise<PromptRegistry> {
+    const prompts = await seedPrompts();
+    for (const [stage, marker, schemaName] of [
+      ['talker', MARKERS.talker, TALKER_SCHEMA_NAME],
+      ['answerer', MARKERS.answerer, ANSWERER_SCHEMA_NAME],
+    ] as const) {
+      await seedPrompt(testDb(), { stage, version: `${stage}@test`, prompt: marker, schemaName });
+      await activatePrompt(testDb(), stage, `${stage}@test`);
+    }
+    await putSetting(testDb(), { name: 'talkLive', value: '1' });
+    return prompts;
+  }
+
+  async function say(
+    text: string,
+    llm: MockLlmProvider,
+    prompts: PromptRegistry,
+  ): Promise<{ replies: string[]; talker: string[]; answerer: string[] }> {
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+    const inputsOf = (stage: Stage): string[] =>
+      llm.requests.filter((request) => stageOf(request) === stage).map((request) => request.input);
+    return { replies: all, talker: inputsOf('talker'), answerer: inputsOf('answerer') };
+  }
+
+  const smalltalk = (text: string): string =>
+    JSON.stringify({ crisis: false, segments: [{ intent: 'SMALLTALK', text }] });
+  const talked = (reply: string): string => JSON.stringify({ reply });
+
+  async function withParcel(): Promise<void> {
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+        text: 'Забрать посылку',
+        deadlineAt: at(60_000),
+        deadlineAccuracy: 'day',
+      });
+  }
+
+  it('«Ты меня понимаешь?» — ответ модели своими словами, по её делам', async () => {
+    const prompts = await talkOn();
+    await withParcel();
+    const llm = echoingLlm({
+      router: smalltalk('Ты меня понимаешь?'),
+      talker: talked('Понимаю 🙂 Про посылку помню.'),
+    });
+
+    const { replies, talker, answerer } = await say('Ты меня понимаешь?', llm, prompts);
+
+    expect(replies.at(-1)).toBe('Понимаю 🙂 Про посылку помню.');
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).toContain('Реплика: Ты меня понимаешь?');
+    expect(talker[0]).toContain('Забрать посылку');
+    // Одна модель на реплику: ответчик по делам не зовётся следом.
+    expect(answerer).toHaveLength(0);
+    // Ничего не записано: реплика — не дело.
+    expect(await testDb().select().from(items)).toHaveLength(1);
+  });
+
+  it('выключено — как раньше: модель живого ответа не зовётся', async () => {
+    const prompts = await talkOn();
+    await putSetting(testDb(), { name: 'talkLive', value: '0' });
+    const llm = echoingLlm({
+      router: smalltalk('Ты меня понимаешь?'),
+      talker: talked('Понимаю 🙂'),
+    });
+
+    const { replies, talker } = await say('Ты меня понимаешь?', llm, prompts);
+
+    expect(talker).toHaveLength(0);
+    expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+
+  it('страж не пропустил — словарная реплика, как без модели', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: smalltalk('Ты меня понимаешь?'),
+      talker: talked('Всё будет хорошо, не переживай.'),
+    });
+
+    const { replies, talker } = await say('Ты меня понимаешь?', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+
+  it('«ок» — смайликом, без модели', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({ router: smalltalk('ок'), talker: talked('Ага 🙂') });
+
+    const { replies, talker, answerer } = await say('ок', llm, prompts);
+
+    expect(replies.at(-1)).toBe(defaultTexts.answer.ack);
+    expect(talker).toHaveLength(0);
+    expect(answerer).toHaveLength(0);
+  });
+
+  it('«Спасибо» — по-прежнему её «Пожалуйста 🤍», модель не зовётся', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({ router: smalltalk('Спасибо'), talker: talked('Обращайся 🙂') });
+
+    const { replies, talker } = await say('Спасибо', llm, prompts);
+
+    expect(replies.at(-1)).toBe(defaultTexts.answer.thanks);
+    expect(talker).toHaveLength(0);
+  });
+
+  it('усталость без дел — модель отвечает, зная силу чувства', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: smalltalk('Я сегодня вообще вымоталась'),
+      talker: talked('Да, денёк был длинный 😮‍💨 Если что-то крутится в голове — скидывай сюда.'),
+    });
+
+    const { replies, talker } = await say('Я сегодня вообще вымоталась', llm, prompts);
+
+    expect(talker[0]).toContain('Чувство: усталость');
+    expect(replies.at(-1)).toBe(
+      'Да, денёк был длинный 😮‍💨 Если что-то крутится в голове — скидывай сюда.',
+    );
+  });
+
+  it('сильное чувство — эмодзи не пройдёт, её спокойная фраза', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: smalltalk('Я в панике, всё разваливается'),
+      talker: talked('Я здесь 😌'),
+    });
+
+    const { replies, talker } = await say('Я в панике, всё разваливается', llm, prompts);
+
+    expect(talker[0]).toContain('Чувство: сильное');
+    expect(replies).toEqual([defaultTexts.answer.feelingsOnlyHeavy]);
+  });
+
+  it('чувства разбором (единицы EMOTION) — тоже живой ответ вместо фразы словаря', async () => {
+    const prompts = await talkOn();
+    const said = 'так устала, всё навалилось';
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: said,
+            type: 'EMOTION',
+            priority: 'NONE',
+            topic: 'личное',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          },
+        ],
+      }),
+      talker: talked('Навалилось — бывает 😮‍💨 Скидывай сюда, что крутится.'),
+    });
+
+    const { replies, talker } = await say(said, llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).toContain('Чувство: усталость');
+    expect(replies.at(-1)).toBe('Навалилось — бывает 😮‍💨 Скидывай сюда, что крутится.');
+  });
+
+  it('кризис — своим сценарием, модель живого ответа не зовётся', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: true,
+        segments: [{ intent: 'SMALLTALK', text: 'не хочу жить' }],
+      }),
+      talker: talked('Я здесь 🙂'),
+    });
+
+    const { talker } = await say('не хочу жить', llm, prompts);
+
+    expect(talker).toHaveLength(0);
   });
 });
 

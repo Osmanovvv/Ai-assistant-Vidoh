@@ -155,6 +155,11 @@ export interface TextProfile {
     readonly feelingsOnlyHeavy: string;
     /** Поблагодарила — 🤍 (её правило 16.09.2026). */
     readonly thanks: string;
+    /**
+     * «Ок», «понятно», «ага», 👍 — смайликом, без вопроса (решение Никиты
+     * 28.09.2026, план docs/29). Только при `talk.live` = 1.
+     */
+    readonly ack: string;
 
     readonly actionsLead: string;
     /** §13.7: при «я на нуле» предлагается ровно одно дело. */

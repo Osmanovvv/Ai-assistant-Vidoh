@@ -4,6 +4,7 @@ import type { AiStage } from '../../../db/schema.js';
 
 import { answererSchema, ANSWERER_SCHEMA_NAME } from './answerer.js';
 import { readerSchema, READER_SCHEMA_NAME } from './reader.js';
+import { talkerSchema, TALKER_SCHEMA_NAME } from './talker.js';
 
 import {
   classifierSchema,
@@ -63,6 +64,7 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [PRESENTER_V2_SCHEMA_NAME]: presenterV2Schema,
   [ANSWERER_SCHEMA_NAME]: answererSchema,
   [READER_SCHEMA_NAME]: readerSchema,
+  [TALKER_SCHEMA_NAME]: talkerSchema,
   [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
@@ -88,6 +90,8 @@ export const OPTIONAL_STAGES: ReadonlySet<AiStage> = new Set<AiStage>([
   'answerer',
   // Без промпта ответ на вопрос бота узнаёт только код, как до 28.09.2026.
   'reader',
+  // Без промпта там, где у бота нет своего ответа, — словарь, как до 28.09.2026.
+  'talker',
 ]);
 
 /**
@@ -107,6 +111,7 @@ export const SCHEMA_BY_STAGE: Readonly<Partial<Record<AiStage, string>>> = {
   decomposer: DECOMPOSER_SCHEMA_NAME,
   answerer: ANSWERER_SCHEMA_NAME,
   reader: READER_SCHEMA_NAME,
+  talker: TALKER_SCHEMA_NAME,
 };
 
 export class UnknownSchemaError extends Error {
@@ -181,4 +186,6 @@ export type { ResolverAction, ResolverAnswer, ResolverMode } from './resolver.js
 export { answererSchema, ANSWERER_SCHEMA_NAME };
 export { readerSchema, READER_SCHEMA_NAME, READER_KINDS } from './reader.js';
 export type { ReaderReading } from './reader.js';
+export { talkerSchema, TALKER_SCHEMA_NAME } from './talker.js';
+export type { TalkReply } from './talker.js';
 export type { LiveAnswer } from './answerer.js';
