@@ -1773,6 +1773,7 @@ describe('дополнение против замены сквозь конве
     const [taxi] = await testDb().select().from(items).where(eq(items.id, item!.id));
     expect(taxi?.deadlineTime).toBe(20 * 60);
     expect(taxi?.body).toBeNull();
+    expect(taxi?.text).toBe('Заказать такси');
     expect(all.join('\n')).toContain('20:00');
     expect(all.join('\n')).not.toContain('Добавила подробность');
   });
@@ -10509,6 +10510,8 @@ describe('час нового дела — утро или вечер (вари�
     const rows = await liveItems();
     expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 20 * 60]]);
     expect(all.some((text) => text.includes('20:00'))).toBe(true);
+    // «На 8» в названии — уже не правда (бой 29.09.2026, 02:12).
+    expect(rows[0]?.text).toBe('Заказать такси');
   });
 
   it('«Купить торт на 8 человек» — не час: ни вопроса, ни часа', async () => {

@@ -22,6 +22,7 @@ import {
   timeShiftIn,
   localMinutes,
   withoutClockPhrase,
+  withoutStaleNaHour,
 } from '../classifier/clock-time.js';
 import { isRecordCommand, startsWithRecordCommand } from '../router/append.js';
 import { weekdaysIn } from '../classifier/time-words.js';
@@ -183,6 +184,21 @@ interface Plan {
   readonly timeUnclear?: readonly [number, number] | undefined;
   /** Сказан сдвиг («на час позже»), а у дела нет часа — сдвигать не от чего. */
   readonly noTimeToShift?: boolean | undefined;
+}
+
+/**
+ * Название, когда час стал сроком: прежний час в нём — неправда (бой
+ * 22.09.2026: «Напомню про «Позвонить сестре в 3:10» … в 03:45»; 29.09.2026:
+ * «Напомню про «Заказать такси на 8» … в 21:00»). Срезается фраза о часе и
+ * «на N» в конце, если оно было этим часом. С заглавной (живой прогон
+ * 26.09.2026: «В 7 зайти в аптеку» уходило вместе с ней). Нечего срезать —
+ * пусто.
+ */
+function titleForHour(title: string, time: number, spoken: string): string | undefined {
+  const withoutPhrase = withoutClockPhrase(title);
+  const base = withoutPhrase !== title && /\p{L}{2,}/u.test(withoutPhrase) ? withoutPhrase : title;
+  const cleaned = withoutStaleNaHour(base, time, spoken);
+  return cleaned === title ? undefined : withCapital(cleaned);
 }
 
 /** Связки вокруг часа в короткой поправке: «кстати, а такси на 8 вечера». */
@@ -377,6 +393,8 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
     ) {
       if (heard.time === undefined) return { next, timeUnclear: heard.unclear };
       if (item.deadlineTime !== heard.time) next.deadlineTime = heard.time;
+      const retitled = titleForHour(item.text, heard.time, spoken);
+      if (retitled !== undefined) next.text = retitled;
       return { next };
     }
 
@@ -585,9 +603,8 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
      * заглавной (живой прогон 26.09.2026, 02:07): час в начале — «В 7
      * зайти в аптеку» — уходил вместе с ней, и дело так и хранилось.
      */
-    const title = next.text ?? item.text;
-    const cleaned = withoutClockPhrase(title);
-    if (cleaned !== title && /\p{L}{2,}/u.test(cleaned)) next.text = withCapital(cleaned);
+    const retitled = titleForHour(next.text ?? item.text, spokenTime, params.spoken ?? '');
+    if (retitled !== undefined) next.text = retitled;
   }
 
   /**

@@ -591,6 +591,29 @@ function trailingNaHour(text: string): ClockTime | undefined {
   return [morning, morning + NOON * MINUTES_IN_HOUR];
 }
 
+/** «… на 8» в конце названия — с «пожалуйста», точкой, кавычкой. */
+const TRAILING_NA_TITLE = /\s+на\s+\d{1,2}(?:\s*,?\s*пожалуйста)?[\s.!?…,;)»"]*$/iu;
+/** Час назван через «на»: «на 9 вечера» — вне кавычек, не название. */
+const HOUR_BY_NA = /(?<!\p{L})на\s+\d{1,2}(?!\d)/u;
+
+/**
+ * «На N» в конце названия — уже не правда, когда час поставлен (бой
+ * 29.09.2026, 02:12: «Напомню про «Заказать такси на 8» сегодня в 21:00»):
+ * срезается, если новый час — чтение этого «на N» (ответ на вопрос «08:00
+ * или 20:00?») или назван тоже через «на» («такси на 9 вечера»). «Торт на
+ * 8» и «к 18:00» — не трогается: там «на 8» скорее люди.
+ */
+export function withoutStaleNaHour(title: string, time: number, spoken: string): string {
+  const readings = trailingNaHour(title);
+  if (readings === undefined) return title;
+  const unquoted = normalize(spoken).replace(/«[^»]*»/gu, ' ');
+  const answered = readings.includes(time);
+  const saidByNa = HOUR_BY_NA.test(unquoted) && clockTimesIn(unquoted).length > 0;
+  if (!answered && !saidByNa) return title;
+  const cut = title.replace(TRAILING_NA_TITLE, '').trim();
+  return /\p{L}{2,}/u.test(cut) ? cut : title;
+}
+
 /** Первый названный час дела и надо ли о нём спросить, даже если чтение ясно. */
 interface FirstClock {
   readonly time: ClockTime;

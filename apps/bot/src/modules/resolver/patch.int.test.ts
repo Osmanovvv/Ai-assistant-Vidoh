@@ -293,11 +293,51 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
       }),
     );
 
-    expect(applied?.fields).toEqual(['deadlineTime']);
+    expect(applied?.fields).toEqual(['deadlineTime', 'text']);
     const after = await reread(item.id);
     expect(after.deadlineTime).toBe(20 * 60);
     expect(after.body).toBeNull();
+    expect(after.text).toBe('Заказать такси');
     expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('«Кстати такси на 9 вечера» к «Заказать такси на 8» — 21:00, «на 8» из названия уходит (бой 29.09.2026, 02:12)', async () => {
+    const item = await sow({ text: 'Заказать такси на 8' });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: noted('на 9 вечера'),
+      spoken: 'Кстати такси на 9 вечера',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBe(21 * 60);
+    expect(after.text).toBe('Заказать такси');
+  });
+
+  it('«торт на 8» и «к 18:00» — час ставится, «на 8» в названии остаётся', async () => {
+    const item = await sow({ text: 'Купить торт на 8' });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'давай к 18:00',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBe(18 * 60);
+    expect(after.text).toBe('Купить торт на 8');
   });
 
   it('дополнение с часом про другое — подробность, час дела не трогается', async () => {
