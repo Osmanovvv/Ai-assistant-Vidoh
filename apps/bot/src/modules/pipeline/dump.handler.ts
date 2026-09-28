@@ -26,7 +26,7 @@ import {
   periodLabel,
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
-import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
+import { addressesBot, askTalk, onlyAck, talkFacts } from '../talk/talk.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeIfNeeded } from '../projects/decomposer.service.js';
@@ -2072,6 +2072,33 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         const prose = await liveAnswer();
         if (prose !== undefined) {
           await tell(prose);
+          continue;
+        }
+        /**
+         * Вопрос к самому боту (бой 28.09.2026, 20:14): «Ты вообще меня
+         * понимаешь?» ушёл вопросом о записях, и бот ответил «Про это у
+         * меня ничего не записано». Обращение на «ты» — живой ответ
+         * (docs/29); не прошёл — словарь, как раньше.
+         */
+        const toBot =
+          addressesBot(asked) && ((await deps.settings?.number('talkLive')) ?? 0) === 1
+            ? (
+                await askTalk(ai, {
+                  facts: talkFacts({
+                    said: asked,
+                    now,
+                    timeZone: context.timeZone,
+                    texts,
+                    overview: await openItemsFor(db, batch.userId),
+                    dialog,
+                  }),
+                  userId: batch.userId,
+                  batchId: batch.id,
+                })
+              ).line
+            : undefined;
+        if (toBot !== undefined) {
+          await tell(toBot);
           continue;
         }
       }

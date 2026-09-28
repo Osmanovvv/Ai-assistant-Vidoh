@@ -11,7 +11,7 @@ import {
 import type { Item } from '../../db/schema.js';
 import { defaultTexts } from '../../texts/index.js';
 
-import { askTalk, checkTalk, onlyAck, talkFacts, type AskTalk } from './talk.js';
+import { addressesBot, askTalk, checkTalk, onlyAck, talkFacts, type AskTalk } from './talk.js';
 
 /**
  * Живой ответ там, где у бота нет своего (план docs/29, 28.09.2026):
@@ -109,6 +109,24 @@ describe('«ок» — смайлик, без модели (решение Ни�
   });
 });
 
+describe('вопрос к самому боту (бой 28.09.2026, 20:14)', () => {
+  it.each([
+    'Ты вообще меня понимаешь?',
+    'ты меня слушаешь вообще',
+    'А тебе не скучно?',
+    'Ты умная?',
+  ])('«%s» — к боту', (said) => {
+    expect(addressesBot(said)).toBe(true);
+  });
+
+  it.each(['Что там с котом?', 'Когда у меня отчёт?', 'Что я хотела купить?'])(
+    '«%s» — про её дела',
+    (said) => {
+      expect(addressesBot(said)).toBe(false);
+    },
+  );
+});
+
 describe('факты для живого ответа', () => {
   it('реплика, время суток и её ближайшие дела', () => {
     const facts = factsFor('Ты меня понимаешь?');
@@ -177,8 +195,6 @@ describe('страж живого ответа', () => {
     ['Напомню тебе завтра утром.', 'обещание напомнить'],
     ['Всё будет хорошо.', 'запрет'],
     ['Не переживай, я рядом.', 'запрет'],
-    ['Ха 😂', 'эмодзи'],
-    ['Привет 🙂🙌', 'эмодзи'],
     ['Как вы?', 'на вы'],
     ['Понял тебя.', 'мужской род'],
     ['У тебя пять дел на сегодня.', 'число не из фактов'],
@@ -195,10 +211,26 @@ describe('страж живого ответа', () => {
     if (!checked.ok) expect(checked.why).toContain(why);
   });
 
-  it('сильное чувство — без эмодзи вовсе', () => {
-    const heavy = factsFor('Я в панике', { mood: 'heavy' });
-    expect(checkTalk('Я здесь 😌 Давай по одному.', heavy, { mood: 'heavy' }).ok).toBe(false);
-    expect(checkTalk('Я здесь. Давай по одному.', heavy, { mood: 'heavy' }).ok).toBe(true);
+  /**
+   * Лишний смайлик — убрать, а не выкидывать ответ (проба talker@4
+   * 28.09.2026: «Привет! 👋 Если что-то крутится…» падал в заготовку).
+   */
+  it.each([
+    [
+      'Привет! 👋 Если что-то крутится в голове — скидывай сюда.',
+      {},
+      'Привет! Если что-то крутится в голове — скидывай сюда.',
+    ],
+    ['Ха 😂', {}, 'Ха'],
+    ['Привет 🙂🙌', {}, 'Привет 🙂'],
+    ['Я здесь 😌 Давай по одному.', { mood: 'heavy' as const }, 'Я здесь. Давай по одному.'],
+    ['Поздравляю 🎉', {}, 'Поздравляю'],
+  ])('лишний смайлик убран: «%s»', (reply, options, line) => {
+    expect(checkTalk(reply, facts, options)).toEqual({ ok: true, line });
+  });
+
+  it('один смайлик — и только смайлик: пусто, а не «»', () => {
+    expect(checkTalk('🎉', facts, {})).toEqual({ ok: false, why: 'пусто' });
   });
 
   it('лёгкая усталость — её эмодзи можно', () => {
@@ -283,13 +315,13 @@ describe('обращение к модели', () => {
     expect(wrong.line).toBeUndefined();
   });
 
-  it('страж знает о силе чувства: при сильном эмодзи не пройдёт', async () => {
+  it('страж знает о силе чувства: при сильном смайлик убран', async () => {
     const heavy = factsFor('Я в панике', { mood: 'heavy' });
     const outcome = await askTalk(
       deps(TALKER_SCHEMA_NAME),
       { facts: heavy, mood: 'heavy' },
       asking({ reply: 'Я здесь 😌' }).ask,
     );
-    expect(outcome.line).toBeUndefined();
+    expect(outcome.line).toBe('Я здесь');
   });
 });
