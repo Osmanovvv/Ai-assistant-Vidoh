@@ -32,6 +32,7 @@ import { isRecurring, nextDeadlineAfterDone } from '../recurrence/recurrence.ser
 
 import { recordRevision } from './revisions.repo.js';
 import { withCapital } from '../items/item-text.js';
+import { sameWord, words } from './clarify.js';
 
 /**
  * Применение изменения (§7.3 ТЗ, задача 3.3).
@@ -184,6 +185,45 @@ interface Plan {
   readonly noTimeToShift?: boolean | undefined;
 }
 
+/** Связки вокруг часа в короткой поправке: «кстати, а такси на 8 вечера». */
+const AROUND_HOUR = new Set([
+  'кстати',
+  'а',
+  'и',
+  'ну',
+  'вот',
+  'давай',
+  'лучше',
+  'тогда',
+  'пусть',
+  'будет',
+  'это',
+  'уже',
+  'да',
+  'нет',
+  'ок',
+  'ладно',
+  'хорошо',
+  'значит',
+  'короче',
+]);
+
+/**
+ * Кроме часа — только слова самого дела и связки: «Кстати такси на 8
+ * вечера» у «Заказать такси на 8». Тогда это час дела, а не подробность.
+ */
+function onlyHourFor(spoken: string, title: string): boolean {
+  const own = words(title.replace(/ё/gu, 'е')).filter((word) => word.length >= 3);
+  const rest = words(withoutClockPhrase(spoken).replace(/ё/gu, 'е'));
+  return (
+    rest.some((word) => own.some((mine) => sameWord(word, mine))) &&
+    rest.every(
+      (word) =>
+        AROUND_HOUR.has(word) || own.some((mine) => word.length >= 3 && sameWord(word, mine)),
+    )
+  );
+}
+
 function plan(item: Item, params: ApplyParams, now: Date): Plan {
   const next: ItemPatch = {};
   let refused: string | undefined;
@@ -318,6 +358,28 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * — значит однажды переписать заголовок под видом уточнения.
    */
   if (params.mode === 'append') {
+    /**
+     * Дополнение из одного часа — это час дела (бой 29.09.2026, 00:23):
+     * «Кстати такси на 8 вечера» к «Заказать такси на 8» модель отдала
+     * подробностью, «на 8 вечера» легло в примечание, а 20:00, который код
+     * читает однозначно, не встал — напоминания к нему не было бы. Только
+     * когда кроме часа в словах лишь само дело и связки: «маме сказать,
+     * что приеду в 7 вечера» — подробность, у звонка свой час. Только у
+     * дела с днём, как у правки; двоякий час — вопрос, а не подробность.
+     */
+    const spoken = params.spoken ?? '';
+    const heard = spokenClockTime(spoken, item.deadlineTime);
+    if (
+      item.deadlineAt !== null &&
+      item.deadlineAccuracy === 'day' &&
+      (heard.time !== undefined || heard.unclear !== undefined) &&
+      onlyHourFor(spoken, item.text)
+    ) {
+      if (heard.time === undefined) return { next, timeUnclear: heard.unclear };
+      if (item.deadlineTime !== heard.time) next.deadlineTime = heard.time;
+      return { next };
+    }
+
     const note = params.changes.note.trim();
     if (note.length === 0) return { next };
 

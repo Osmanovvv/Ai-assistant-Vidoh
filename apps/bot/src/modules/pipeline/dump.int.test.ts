@@ -1719,6 +1719,64 @@ describe('дополнение против замены сквозь конве
     expect(saved.filter((one) => !one.isDraft)).toHaveLength(1);
   });
 
+  it('«Кстати такси на 8 вечера» — час делу, а не подробность (бой 29.09.2026, 00:23)', async () => {
+    const prompts = await seedPrompts();
+    const [item] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Заказать такси на 8',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        deadlineAt: at(60_000),
+        deadlineAccuracy: 'day',
+      })
+      .returning({ id: items.id });
+    const { sender, all } = recordingSender();
+
+    await queuedBatchOf([{ kind: 'text', text: 'Кстати такси на 8 вечера', offsetMs: 0 }]);
+
+    // Как на бою: модель резолвера отдала час подробностью.
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'DUMP', text: 'Кстати такси на 8 вечера' }],
+      }),
+      resolver: JSON.stringify({
+        action: 'update',
+        mode: 'append',
+        itemId: '1',
+        confidence: 0.9,
+        changes: {
+          note: 'на 8 вечера',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+        reason: 'уточнение времени',
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const [taxi] = await testDb().select().from(items).where(eq(items.id, item!.id));
+    expect(taxi?.deadlineTime).toBe(20 * 60);
+    expect(taxi?.body).toBeNull();
+    expect(all.join('\n')).toContain('20:00');
+    expect(all.join('\n')).not.toContain('Добавила подробность');
+  });
+
   it('вектор пересчитывается, когда правка сменила заголовок', async () => {
     /**
      * План 2.9 обещает дословно: «Считается при создании записи **и при
@@ -10196,6 +10254,85 @@ describe('час нового дела — утро или вечер (вари�
     const rows = await liveItems();
     expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 19 * 60]]);
     expect(all.some((text) => text.includes('19:00'))).toBe(true);
+  });
+
+  /**
+   * Бой 29.09.2026, 00:20: «Закажи такси на 8» записалось без часа и без
+   * вопроса. Голое «на N» в конце фразы нового дела — всегда вопрос
+   * (решение Никиты 29.09.2026), ответ ставит час.
+   */
+  it('«Закажи такси на 8» — вопрос «08:00 или 20:00?»; «Вечером» ставит 20:00', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Закажи такси на 8.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Заказать такси на 8', 'личное'),
+        }),
+      },
+      userId,
+    );
+
+    const [saved] = await liveItems();
+    expect(saved?.deadlineTime).toBeNull();
+    expect(
+      all.filter((text) => text.includes('Во сколько «Заказать такси на 8» — 08:00 или 20:00?')),
+    ).toHaveLength(1);
+
+    const resolverCalls: string[] = [];
+    await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver(resolverCalls) }),
+        }),
+      },
+      userId,
+    );
+
+    expect(resolverCalls).toEqual([]);
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.id, row.deadlineTime])).toEqual([[saved?.id, 20 * 60]]);
+    expect(all.some((text) => text.includes('20:00'))).toBe(true);
+  });
+
+  it('«Купить торт на 8 человек» — не час: ни вопроса, ни часа', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Купить торт на 8 человек.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Купить торт на 8 человек', 'покупки'),
+        }),
+      },
+      userId,
+    );
+
+    const [saved] = await liveItems();
+    expect(saved?.deadlineTime).toBeNull();
+    expect(all.some((text) => text.includes('Во сколько'))).toBe(false);
   });
 
   it('«Второе» на «07:00 или 19:00?» — 19:00, как «Вечером» (прогон Никиты 27.09.2026, 18:02)', async () => {

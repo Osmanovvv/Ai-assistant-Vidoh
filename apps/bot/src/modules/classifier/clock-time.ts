@@ -569,7 +569,33 @@ export function clockTimeOf(
   siblings: readonly string[] = [],
 ): number | undefined {
   const first = firstClockOf(itemText, spoken, siblings);
-  return first === undefined ? undefined : sureReading(first);
+  return first === undefined || first.ask ? undefined : sureReading(first.time);
+}
+
+/**
+ * «Такси на 8» (бой 29.09.2026, 00:20): голое «на N» в конце фразы нового
+ * дела. Число ли это, люди ли — по фразе не понять, поэтому часом оно
+ * становится только здесь, у нового дела, и всегда вопросом (решение
+ * Никиты 29.09.2026): «стол на 4» молча получил бы 16:00. Правки
+ * («перенеси на 8» — часто число месяца) и ответы читают час через
+ * `clockTimesIn`, их это не касается.
+ */
+const TRAILING_NA = /(?<!\p{L})на\s+(\d{1,2})(?:\s*,?\s*пожалуйста)?[\s.!?…,;)»"]*$/u;
+
+function trailingNaHour(text: string): ClockTime | undefined {
+  const match = TRAILING_NA.exec(normalize(text).trim());
+  if (match === null) return undefined;
+  const hour = Number(match[1]);
+  if (hour < 1 || hour > NOON) return undefined;
+  const morning = (hour % NOON) * MINUTES_IN_HOUR;
+  return [morning, morning + NOON * MINUTES_IN_HOUR];
+}
+
+/** Первый названный час дела и надо ли о нём спросить, даже если чтение ясно. */
+interface FirstClock {
+  readonly time: ClockTime;
+  /** «На N» в конце фразы — только вопрос, сам не выбирается. */
+  readonly ask: boolean;
 }
 
 /** Первый названный час дела: из его слов, а нет их — из своего предложения. */
@@ -577,18 +603,31 @@ function firstClockOf(
   itemText: string,
   spoken: string,
   siblings: readonly string[],
-): ClockTime | undefined {
+): FirstClock | undefined {
   const own = clockTimesIn(itemText);
   const sentences = ownSentences(itemText, spoken);
   const sentence = sentences[0];
   // Час из предложения — только когда оно принадлежит одному этому делу:
   // «к стоматологу в 13:00 и погулять с собакой» — час стоматолога.
-  const shared =
+  const alone = sentences.length === 1 && !shared(sentence, spoken, siblings);
+  const times = own.length > 0 ? own : alone ? clockTimesIn(sentence ?? '') : [];
+  const first = times[0];
+  if (first !== undefined) return { time: first, ask: false };
+
+  const trailing = trailingNaHour(itemText) ?? (alone ? trailingNaHour(sentence ?? '') : undefined);
+  return trailing === undefined ? undefined : { time: trailing, ask: true };
+}
+
+/** Предложение касается и соседней записи — оно не только моё. */
+function shared(
+  sentence: string | undefined,
+  spoken: string,
+  siblings: readonly string[],
+): boolean {
+  return (
     sentence !== undefined &&
-    siblings.some((other) => ownSentences(other, spoken).includes(sentence));
-  const times =
-    own.length > 0 ? own : sentences.length === 1 && !shared ? clockTimesIn(sentence ?? '') : [];
-  return times[0];
+    siblings.some((other) => ownSentences(other, spoken).includes(sentence))
+  );
 }
 
 /**
@@ -629,10 +668,11 @@ export function unclearClockOf(
   siblings: readonly string[] = [],
 ): readonly [number, number] | undefined {
   const first = firstClockOf(itemText, spoken, siblings);
-  if (first?.length !== 2 || sureReading(first) !== undefined) {
+  if (first === undefined) return undefined;
+  if (!first.ask && (first.time.length !== 2 || sureReading(first.time) !== undefined)) {
     return undefined;
   }
-  const [morning, evening] = first;
+  const [morning, evening] = first.time;
   return morning === undefined || evening === undefined ? undefined : [morning, evening];
 }
 
@@ -699,6 +739,13 @@ export function dayAfterPassedClock(params: {
   let times = clockTimesIn(params.itemText);
   // Час остался только в речи — берётся из своего предложения, если оно одно.
   if (times.length === 0 && sentences.length === 1) times = clockTimesIn(sentences[0] ?? '');
+  // «Такси на 8» в 21:00 — оба чтения позади, как у «в 8» (29.09.2026).
+  if (times.length === 0) {
+    const trailing =
+      trailingNaHour(params.itemText) ??
+      (sentences.length === 1 ? trailingNaHour(sentences[0] ?? '') : undefined);
+    if (trailing !== undefined) times = [trailing];
+  }
   if (times.length === 0) return undefined;
 
   // Прошли все времена во всех чтениях — иначе ошибиться можно, и правило молчит.
