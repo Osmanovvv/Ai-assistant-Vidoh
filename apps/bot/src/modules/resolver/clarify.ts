@@ -2,6 +2,7 @@ import { clockPhraseOf, clockTimesIn, withoutClockPhrase } from '../classifier/c
 import { moodOf } from '../presenter/mood.js';
 import { onlyThanks } from '../presenter/thanks.js';
 import { isRecordCommand, startsWithReplacement } from '../router/append.js';
+import { startsAsQuestion } from './answer.js';
 import { namesNoDeed } from './deixis.js';
 
 /**
@@ -195,7 +196,7 @@ const NOT_A_DEED = [
 const NEW_THOUGHT = new Set(['ещё', 'еще', 'кстати']);
 
 export function notADeed(said: string): boolean {
-  if (onlyThanks(said) || moodOf(said) !== undefined) return true;
+  if (onlyThanks(said) || moodOf(said) !== undefined || startsAsQuestion(said)) return true;
   const spoken = words(said);
   const joined = ` ${spoken.join(' ')} `;
   if (NOT_A_DEED.some((phrase) => joined.includes(` ${phrase} `))) return true;

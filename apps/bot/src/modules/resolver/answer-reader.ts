@@ -212,14 +212,20 @@ function answerPartOf(reply: string, thought: string): string | undefined {
 
   let before = reply.slice(0, at);
   const after = reply.slice(at + bare.length);
-  while (CONJUNCTIONS.test(before)) before = before.replace(CONJUNCTIONS, '');
+  /**
+   * Без знаков (набор cases-plain, 28.09.2026): «вечером и купить хлеб» —
+   * граница союз. Что перед ним только ответ, проверит `namesDeed`.
+   */
+  let joined = false;
+  while (CONJUNCTIONS.test(before)) {
+    before = before.replace(CONJUNCTIONS, '');
+    joined = true;
+  }
 
   const rest = `${before} ${after}`;
   if (!/[\p{L}\d]/u.test(rest)) return undefined;
   const separated =
-    before.trim() === ''
-      ? /^\s*[.,;:!?—–\-\n]/u.test(after)
-      : BOUNDARY.test(before) || before.trim() === '';
+    before.trim() === '' ? /^\s*[.,;:!?—–\-\n]/u.test(after) : BOUNDARY.test(before) || joined;
   return separated ? rest : undefined;
 }
 
@@ -259,6 +265,10 @@ const UNDECIDED = [
   'всё равно',
   'как хочешь',
   'посмотрим',
+  // «Сложно сказать» — не дело «сказать» (набор cases-plain, 28.09.2026).
+  'сложно сказать',
+  'трудно сказать',
+  'не могу сказать',
 ];
 
 function soundsUndecided(reply: string): boolean {
@@ -284,6 +294,12 @@ function refuses(reply: string): boolean {
  * вопрос вместо ответа.
  */
 const ABOUT_OWN = new Set(['меня', 'мне', 'мой', 'моя', 'моё', 'мое', 'мои', 'моих', 'мою']);
+
+function withoutUndecided(reply: string): string {
+  let joined = ` ${words(reply).join(' ')} `;
+  for (const phrase of UNDECIDED) joined = joined.split(` ${phrase} `).join(' ');
+  return joined.trim();
+}
 
 function asksBack(reply: string): boolean {
   if (words(reply).some((word) => ABOUT_OWN.has(word))) return false;
@@ -327,6 +343,15 @@ export function checkReading(
     case 'undecided':
       // «А какая разница?» — спрашивает, а не отказывается: объяснить.
       if (reply.includes('?') && asksBack(reply)) return { kind: 'counter_question' };
+      // «Сложно сказать» — не дело «сказать»; «Не знаю, надо ещё позвонить
+      // маме» — дело: ищется в словах без самой фразы «не знаю».
+      if (
+        words(reply).length <= UNDECIDED_WORDS &&
+        soundsUndecided(reply) &&
+        !namesDeed(withoutUndecided(reply), title)
+      ) {
+        return { kind: 'undecided' };
+      }
       return words(reply).length <= UNDECIDED_WORDS && !namesDeed(reply, title)
         ? { kind: 'undecided' }
         : { kind: 'unread', why: '«не решил» с новым делом' };

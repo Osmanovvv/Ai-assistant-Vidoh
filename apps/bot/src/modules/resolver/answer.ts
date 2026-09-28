@@ -210,6 +210,31 @@ export function answerRemainder(text: string): string {
   return rest.length >= 2 ? rest.join(' ') : '';
 }
 
+/**
+ * Вопрос без «?» (набор без знаков docs/eval-dialog/cases-plain.md,
+ * 28.09.2026): «что значит отдельная», «а какие у меня есть». Наспех знак
+ * не ставят, а вопросительное слово в начале остаётся. «Как» и «где» не в
+ * списке: «как прошлое, туда же», «где маме позвонить» — ответы.
+ */
+const QUESTION_START = new Set([
+  'что',
+  'чего',
+  'какой',
+  'какая',
+  'какое',
+  'какие',
+  'какую',
+  'когда',
+  'почему',
+  'зачем',
+  'сколько',
+]);
+
+export function startsAsQuestion(text: string): boolean {
+  const words = wordsOf(text).filter((word) => word !== 'а' && word !== 'ну');
+  return QUESTION_START.has(words[0] ?? '');
+}
+
 export function readAnswer(text: string, context: AnswerContext = {}): AnswerReading {
   const words = wordsOf(text);
   if (words.length === 0) return 'unclear';
@@ -221,7 +246,9 @@ export function readAnswer(text: string, context: AnswerContext = {}): AnswerRea
    * отдельная?» читалось ответом «отдельно». Со словами сверх словаря это
    * мысль или вопрос боту — в разбор; без них — непонятый ответ.
    */
-  if (text.includes('?')) return answerRemainder(text) === '' ? 'unclear' : 'content';
+  if (text.includes('?') || startsAsQuestion(text)) {
+    return answerRemainder(text) === '' ? 'unclear' : 'content';
+  }
 
   /**
    * «Не про то», «не про неё» — отдельная история (там же): «про то» внутри
