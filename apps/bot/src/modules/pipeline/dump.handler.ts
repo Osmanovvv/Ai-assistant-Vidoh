@@ -2452,43 +2452,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
          * Живой ответ (план docs/29, решение Никиты 28.09.2026): своего
          * ответа у бота нет — модель говорит своими словами по фактам
          * кода, код проверяет (`talk/talk.ts`). «Ок», 👍 — смайликом, без
-         * модели. Не прошло — дальше как раньше: ответчик по делам, фраза
-         * чувства или «Я здесь». Выключатель `talk.live`.
+         * модели. Выключатель `talk.live`.
+         *
+         * Не зовётся (проверка 29.09.2026 — все сценарии разбора с
+         * включённым живым ответом): при чувстве по её словам — её фраза
+         * (замер 28.09.2026); при открытом вопросе бота — тихое «Я здесь.»,
+         * иначе болтовня модели читается как принятый ответ на вопрос.
+         * И только после ответчика по делам ниже — он был первым с 22.09 и
+         * отвечает её делами («Напиши мне всё, что накопилось»).
          */
         const spokenHere = parseText.trim();
-        // Чувство по её словам — её фраза (замер 28.09.2026: модель суше).
         const talkLive =
           !thanked &&
           mood === undefined &&
+          !questionOpen &&
           spokenHere !== '' &&
-          ((await deps.settings?.number('talkLive')) ?? 0) === 1;
+          (await talkLiveOn());
         if (talkLive && onlyAck(spokenHere)) {
           await answer(texts.answer.ack);
-          return;
-        }
-        const talked = talkLive
-          ? (
-              await askTalk(ai, {
-                facts: talkFacts({
-                  said: spokenHere,
-                  now,
-                  timeZone: context.timeZone,
-                  texts,
-                  overview: await openItemsFor(db, batch.userId),
-                  mood,
-                  questionOpen,
-                  dialog,
-                }),
-                mood,
-                questionOpen,
-                userId: batch.userId,
-                batchId: batch.id,
-              })
-            ).line
-          : undefined;
-        if (talked !== undefined) {
-          await journalTalk('answer.nothingToParse', talked);
-          await answer(talked);
           return;
         }
 
@@ -2523,6 +2504,30 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
                 })
               ).line
             : undefined;
+
+        // Ответчик по делам промолчал — живой ответ (docs/29).
+        const talked =
+          rescue === undefined && talkLive
+            ? (
+                await askTalk(ai, {
+                  facts: talkFacts({
+                    said: spokenHere,
+                    now,
+                    timeZone: context.timeZone,
+                    texts,
+                    overview: lastTry === false ? [] : lastTry,
+                    dialog,
+                  }),
+                  userId: batch.userId,
+                  batchId: batch.id,
+                })
+              ).line
+            : undefined;
+        if (talked !== undefined) {
+          await journalTalk('answer.nothingToParse', talked);
+          await answer(talked);
+          return;
+        }
 
         await answer(
           thanked

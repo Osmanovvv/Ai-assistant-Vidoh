@@ -9878,10 +9878,67 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect(talker).toHaveLength(1);
     expect(talker[0]).toContain('Реплика: Ты меня понимаешь?');
     expect(talker[0]).toContain('Забрать посылку');
-    // Одна модель на реплику: ответчик по делам не зовётся следом.
-    expect(answerer).toHaveLength(0);
+    // Сначала, как и до живого ответа, ответчик по делам (22.09.2026); он
+    // промолчал — отвечает живой ответ (проверка 29.09.2026).
+    expect(answerer).toHaveLength(1);
     // Ничего не записано: реплика — не дело.
     expect(await testDb().select().from(items)).toHaveLength(1);
+  });
+
+  /**
+   * Проверка 29.09.2026 (все сценарии разбора с включённым живым ответом):
+   * живой ответ стоял раньше ответчика по делам и перехватывал «Напиши мне
+   * всё, что накопилось» — случай заказчицы 21.09, чинённый ответчиком.
+   * Ответчик — первым, как было; живой ответ — только когда он промолчал.
+   */
+  it('«напиши мне всё, что накопилось» — сначала ответчик по делам, живой ответ не перехватывает', async () => {
+    const prompts = await talkOn();
+    await withParcel();
+    const llm = echoingLlm({
+      router: smalltalk('Напиши мне все, что накопилось'),
+      answerer: JSON.stringify({ answer: 'На сегодня у тебя одно дело: забрать посылку.' }),
+      talker: talked('Привет 🙂'),
+    });
+
+    const { replies, talker, answerer } = await say('Напиши мне все, что накопилось', llm, prompts);
+
+    expect(answerer).toHaveLength(1);
+    expect(talker).toHaveLength(0);
+    expect(replies.at(-1)).toBe('На сегодня у тебя одно дело: забрать посылку.');
+  });
+
+  /**
+   * Бот ждёт ответа на свой вопрос (опрос «Как мне тебя называть?»): «привет»
+   * поверх него — тихое «Я здесь.» (находка 19, 17.09.2026), а не болтовня
+   * модели: иначе человек примет её ответ за принятый ответ на вопрос.
+   */
+  it('открыт вопрос бота — «Я здесь.», живой ответ не вмешивается', async () => {
+    const prompts = await talkOn();
+    await testDb()
+      .update(userSettings)
+      .set({ onboardingStep: STEP.name })
+      .where(eq(userSettings.userId, userId));
+    const llm = echoingLlm({ router: smalltalk('привет'), talker: talked('Привет 🙂') });
+
+    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          onboarding: recordingQuestions().sender,
+        }),
+      },
+      userId,
+    );
+
+    expect(llm.requests.filter((request) => stageOf(request) === 'talker')).toHaveLength(0);
+    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParseQuiet);
   });
 
   it('выключено — как раньше: модель живого ответа не зовётся', async () => {
