@@ -10392,6 +10392,51 @@ describe('час нового дела — утро или вечер (вари�
       });
     });
 
+    /**
+     * Набор docs/eval-dialog/commands.md (28.09.2026): «посылку на 10 утра»
+     * маршрутизатор счёл мыслью — завелось бы второе дело рядом с «Забрать
+     * посылку». Названо записанное дело и час, глагола нет — это правка.
+     */
+    it('«посылку на 10 утра» при записанной посылке — перенос, а не второе дело', async () => {
+      const prompts = await seedPrompts();
+      const { sender } = recordingSender();
+      const [parcel] = await testDb()
+        .insert(items)
+        .values({
+          userId,
+          text: 'Забрать посылку',
+          type: 'TASK',
+          priority: 'SOON',
+          topic: 'покупки',
+          deadlineAt: new Date(Date.now() + 2 * 24 * 60 * 60_000),
+          deadlineAccuracy: 'day',
+          deadlineTime: 19 * 60,
+        })
+        .returning({ id: items.id });
+      const said = 'посылку на 10 утра';
+
+      await queuedBatchOf([{ kind: 'text', text: said, offsetMs: 0 }]);
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            llmLight: echoingLlm({
+              router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: said }] }),
+            }),
+            llm: echoingLlm({ resolver: resolverPicksFirst }),
+          }),
+        },
+        userId,
+      );
+
+      const parcels = (await liveItems()).filter((row) => /посылк/iu.test(row.text));
+      expect(parcels.map((row) => [row.id, row.deadlineTime])).toEqual([[parcel?.id, 10 * 60]]);
+    });
+
     it('новый вопрос о часе заменяет прежний: ответ на него не доделывает старый', async () => {
       const { prompts, sender, all } = await askAboutShoes();
       const bank = 'Завтра в 9 позвонить в банк.';

@@ -125,6 +125,7 @@ import {
 } from '../presenter/status.service.js';
 import type { CardName, CardSender } from '../cards/cards.js';
 import { routeIntents, type Segment } from '../router/router.service.js';
+import { patchesKnownItem } from '../router/known-patch.js';
 import {
   detectByMarkers,
   detectCrisis,
@@ -1329,7 +1330,31 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
                 : { openQuestion: questionText(aboutPending(pending, askedAbout), texts) }),
           });
 
-    deps.observe?.({ kind: 'routed', segments: routed.segments });
+    /**
+     * Перенос записанного без глагола (набор docs/eval-dialog/commands.md,
+     * 28.09.2026): «посылку на 10 утра», «давай хлеб на вечер» маршрутизатор
+     * счёл мыслью — завелось бы второе дело рядом с «Забрать посылку».
+     * Одна реплика, названо записанное дело и срок, глагола нет — это
+     * правка; какого дела и куда, решает резолвер (`known-patch.ts`).
+     */
+    const alone = routed.segments.length === 1 ? routed.segments[0] : undefined;
+    const knownPatch =
+      alone?.intent === 'DUMP' &&
+      patchesKnownItem(
+        alone.text,
+        (await openItemsFor(db, batch.userId)).map((item) => item.text),
+      );
+    const routedSegments: readonly Segment[] = knownPatch
+      ? routed.segments.map((one) => ({ ...one, intent: 'PATCH' as const }))
+      : routed.segments;
+    if (knownPatch) {
+      deps.logger?.info(
+        { batchId: batch.id },
+        'Мысль без глагола про записанное дело со сроком — разбираем как правку',
+      );
+    }
+
+    deps.observe?.({ kind: 'routed', segments: routedSegments });
 
     // Второй контур: признак от модели. Маркеры уже проверены, поэтому
     // здесь решает только он.
@@ -1389,11 +1414,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * там есть что ответить. Тот же принцип, что у ответа на уточнение:
      * всё сверх ответа — в разбор или в черновик, никогда в никуда.
      */
-    const hasThought = routed.segments.some((segment) => PARSED_INTENTS.has(segment.intent));
+    const hasThought = routedSegments.some((segment) => PARSED_INTENTS.has(segment.intent));
     const questions: { readonly text: string; readonly answer: BacklogAnswer }[] = [];
     const segments: Segment[] = [];
 
-    for (const segment of routed.segments) {
+    for (const segment of routedSegments) {
       if (segment.intent !== QUERY_INTENT) {
         segments.push(segment);
         continue;

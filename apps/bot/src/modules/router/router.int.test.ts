@@ -128,6 +128,23 @@ describe('разбор намерений', () => {
 });
 
 describe('явное дополнение поверх ответа модели (прогон 17.09.2026)', () => {
+  /**
+   * Набор docs/eval-dialog/commands.md (28.09.2026): «готово» модель назвала
+   * болтовнёй. Одной репликой — это «сделано» про последнее обсуждённое.
+   */
+  it.each(['готово', 'уже сделала'])('«%s», названное болтовнёй, — сделано', async (input) => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({ crisis: false, segments: [{ intent: 'SMALLTALK', text: input }] }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments.map((item) => item.intent)).toEqual(['COMPLETE']);
+  });
+
   it('«К банку добавь: …», названное моделью вопросом, становится правкой', async () => {
     const prompts = await prepare();
     const input = 'К банку добавь: спросить про лимит по карте';
