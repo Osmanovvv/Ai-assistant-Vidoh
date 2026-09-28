@@ -345,3 +345,36 @@ describe('замер: «да» в словах и «отдельно» у мод
     );
   });
 });
+
+/**
+ * Набор без знаков docs/eval-dialog/cases-plain.md (28.09.2026): наспех
+ * пишут без запятых — граница ответа и мысли тогда союз «и».
+ */
+describe('без знаков: «и» — граница ответа и новой мысли', () => {
+  it.each<[ReaderQuestion, string, string, string]>([
+    [shoes, 'вечером и купить хлеб', '19:00', 'купить хлеб'],
+    [move, 'да и еще купить батарейки', 'да', 'купить батарейки'],
+  ])('%#: «%s» → %s + «%s»', (question, reply, choice, thought) => {
+    expect(checkReading(question, reply, reading('answer', choice, thought))).toMatchObject({
+      kind: 'answer',
+      thought,
+    });
+  });
+
+  it('до «и» — не только ответ: «позвонить маме вечером и купить хлеб» — не прочитано', () => {
+    expect(
+      checkReading(
+        shoes,
+        'позвонить маме вечером и купить хлеб',
+        reading('answer', '19:00', 'купить хлеб'),
+      ).kind,
+    ).toBe('unread');
+  });
+
+  it.each(['сложно сказать', 'трудно сказать', 'не могу сказать'])(
+    '«%s» — не решил, а не новое дело «сказать»',
+    (reply) => {
+      expect(checkReading(attach, reply, reading('undecided')).kind).toBe('undecided');
+    },
+  );
+});
