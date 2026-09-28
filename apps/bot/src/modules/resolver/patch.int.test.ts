@@ -268,6 +268,79 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.deadlineTime).toBe(15 * 60);
   });
 
+  /**
+   * Бой 29.09.2026, 00:23: «Кстати такси на 8 вечера» к «Заказать такси на
+   * 8» модель отдала дополнением — «на 8 вечера» легло подробностью, час
+   * 20:00 не встал, напоминания не было бы. Кроме часа в словах только само
+   * дело — это его час.
+   */
+  const noted = (note: string) => ({ ...changes('', 'none'), note });
+
+  it('дополнение из одного часа — это час дела: «Кстати такси на 8 вечера»', async () => {
+    const item = await sow({ text: 'Заказать такси на 8' });
+
+    const applied = appliedOf(
+      await applyDecision(testDb(), {
+        userId,
+        itemId: item.id,
+        action: 'update',
+        mode: 'append',
+        changes: noted('на 8 вечера'),
+        spoken: 'Кстати такси на 8 вечера',
+        timeZone: MOSCOW,
+        now: NOW,
+        reason: 'проверка',
+      }),
+    );
+
+    expect(applied?.fields).toEqual(['deadlineTime']);
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBe(20 * 60);
+    expect(after.body).toBeNull();
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('дополнение с часом про другое — подробность, час дела не трогается', async () => {
+    const item = await sow({ text: 'Позвонить маме' });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: noted('сказать, что приеду в 7 вечера'),
+      spoken: 'Кстати маме сказать, что приеду в 7 вечера',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBeNull();
+    expect(after.body).toBe('сказать, что приеду в 7 вечера');
+  });
+
+  it('дополнение из двоякого часа — вопрос «утро или вечер», а не подробность', async () => {
+    const item = await sow({ text: 'Заказать такси' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: noted('в 8'),
+      spoken: 'Кстати такси в 8',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.body).toBeNull();
+    expect(after.deadlineTime).toBeNull();
+    expect(JSON.stringify(outcome)).toContain('timeUnclear');
+  });
+
   it('только час, день остаётся: «давай в 10:30»', async () => {
     const item = await sow();
 
