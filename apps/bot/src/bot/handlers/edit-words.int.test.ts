@@ -416,6 +416,32 @@ describe('«Изменить время» — час словами (ТЗ про
     return row?.time;
   }
 
+  it('нажал, написал «на 9» — у дела на 20:00 это 21:00 (бой 29.09.2026)', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(20 * 60);
+
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+    await bot.handleUpdate(textUpdate('на 9'));
+
+    expect(await timeOfItem(itemId)).toBe(21 * 60);
+    expect(await awaitingOfUser()).toBeNull();
+  });
+
+  it('нажал, написал «на 21» — 21:00 (набор settings.md, 29.09.2026)', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+
+    const itemId = await datedItem(19 * 60);
+
+    await bot.handleUpdate(callbackUpdate(`i:tm:${toShortId(itemId)}`));
+    await bot.handleUpdate(textUpdate('на 21'));
+
+    expect(await timeOfItem(itemId)).toBe(21 * 60);
+    expect(await awaitingOfUser()).toBeNull();
+  });
+
   it('нажал, написал «10:30» — час записан, ответ называет его, есть чем отменить', async () => {
     const { bot, calls } = createTestBot();
     await bot.init();

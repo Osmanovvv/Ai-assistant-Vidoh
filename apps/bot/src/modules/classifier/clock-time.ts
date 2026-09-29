@@ -592,7 +592,65 @@ function trailingNaHour(text: string): ClockTime | undefined {
 }
 
 /** «… на 8» в конце названия — с «пожалуйста», точкой, кавычкой. */
-const TRAILING_NA_TITLE = /\s+на\s+\d{1,2}(?:\s*,?\s*пожалуйста)?[\s.!?…,;)»"]*$/iu;
+const TRAILING_NA_TITLE = /(?:^|\s+)на\s+\d{1,2}(?:\s*,?\s*пожалуйста)?[\s.!?…,;)»"]*$/iu;
+
+/**
+ * Оба чтения «на N» в конце фразы (бой 29.09.2026): «Кстати такси на 9» —
+ * 09:00 и 21:00. Где это час, а где число или люди, решают вызывающие: у
+ * нового дела — всегда вопрос, у правки — только когда кроме «на N» в
+ * словах лишь само дело и связки (`patch.ts`).
+ */
+export function naHourReadings(text: string): ClockTime | undefined {
+  return trailingNaHour(text);
+}
+
+/** Число N из «на N» в конце фразы, 1–12. */
+function trailingNaNumber(text: string): number | undefined {
+  const match = TRAILING_NA.exec(normalize(text).trim());
+  const hour = Number(match?.[1]);
+  return match === null || hour < 1 || hour > NOON ? undefined : hour;
+}
+
+/**
+ * Число от модели — эхо «на N» (29.09.2026): «Закажи такси на 9» без слов
+ * о дне модель может прочесть девятым числом, а проверка срока такую дату
+ * пропускает — день не назван, спорить не с чем. Число совпало с N, день
+ * словом не назван ни в деле, ни в его предложении, и это не сегодня —
+ * дата не сказана.
+ */
+export function naDateEcho(params: {
+  readonly itemText: string;
+  readonly spoken: string;
+  readonly at: Date;
+  readonly now: Date;
+  readonly timeZone: string;
+}): boolean {
+  const sentences = ownSentences(params.itemText, params.spoken);
+  const own = trailingNaNumber(params.itemText);
+  const hour = own ?? (sentences.length === 1 ? trailingNaNumber(sentences[0] ?? '') : undefined);
+  if (hour === undefined) return false;
+  if (namesDay(params.itemText) || sentences.some((sentence) => namesDay(sentence))) return false;
+  const at = localDateParts(params.at, params.timeZone);
+  const today = localDateParts(params.now, params.timeZone);
+  const sameDay = at.year === today.year && at.month === today.month && at.day === today.day;
+  return at.day === hour && !sameDay;
+}
+
+/**
+ * Ответ на вопрос о времени («Во сколько писать вечером?», «На какое время
+ * поставить?»): «на 21», «давай на 9» — то же, что «в 21», «давай в 9»
+ * (набор settings.md, 29.09.2026). Вопрос о времени уже задан — «на N» тут
+ * не число и не люди. Сдвиг «на 2 часа позже» не трогается.
+ */
+export function naAsTimeAnswer(text: string): string {
+  if (timeShiftIn(text) !== undefined) return text;
+  return text.replace(/(?<!\p{L})на(?=\s+\d)/iu, (found) => (found === 'На' ? 'В' : 'в'));
+}
+
+/** Фраза без «на N» в конце: «Кстати такси на 9» → «Кстати такси». */
+export function withoutTrailingNa(text: string): string {
+  return trailingNaHour(text) === undefined ? text : text.replace(TRAILING_NA_TITLE, '').trim();
+}
 /** Час назван через «на»: «на 9 вечера» — вне кавычек, не название. */
 const HOUR_BY_NA = /(?<!\p{L})на\s+\d{1,2}(?!\d)/u;
 
@@ -608,7 +666,9 @@ export function withoutStaleNaHour(title: string, time: number, spoken: string):
   if (readings === undefined) return title;
   const unquoted = normalize(spoken).replace(/«[^»]*»/gu, ' ');
   const answered = readings.includes(time);
-  const saidByNa = HOUR_BY_NA.test(unquoted) && clockTimesIn(unquoted).length > 0;
+  const saidByNa =
+    HOUR_BY_NA.test(unquoted) &&
+    (clockTimesIn(unquoted).length > 0 || trailingNaHour(unquoted) !== undefined);
   if (!answered && !saidByNa) return title;
   const cut = title.replace(TRAILING_NA_TITLE, '').trim();
   return /\p{L}{2,}/u.test(cut) ? cut : title;

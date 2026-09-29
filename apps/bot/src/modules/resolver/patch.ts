@@ -22,7 +22,10 @@ import {
   timeShiftIn,
   localMinutes,
   withoutClockPhrase,
+  naHourReadings,
   withoutStaleNaHour,
+  withoutTrailingNa,
+  type ClockTime,
 } from '../classifier/clock-time.js';
 import { isRecordCommand, startsWithRecordCommand } from '../router/append.js';
 import { weekdaysIn } from '../classifier/time-words.js';
@@ -229,15 +232,34 @@ const AROUND_HOUR = new Set([
  * вечера» у «Заказать такси на 8». Тогда это час дела, а не подробность.
  */
 function onlyHourFor(spoken: string, title: string): boolean {
-  const own = words(title.replace(/ё/gu, 'е')).filter((word) => word.length >= 3);
-  const rest = words(withoutClockPhrase(spoken).replace(/ё/gu, 'е'));
+  const own = titleWordsOf(title);
+  const rest = words(withoutTrailingNa(withoutClockPhrase(spoken)).replace(/ё/gu, 'е'));
   return (
-    rest.some((word) => own.some((mine) => sameWord(word, mine))) &&
-    rest.every(
-      (word) =>
-        AROUND_HOUR.has(word) || own.some((mine) => word.length >= 3 && sameWord(word, mine)),
-    )
+    rest.some((word) => own.some((mine) => sameWord(word, mine))) && rest.every(aroundOrOwn(own))
   );
+}
+
+function titleWordsOf(title: string): readonly string[] {
+  return words(title.replace(/ё/gu, 'е')).filter((word) => word.length >= 3);
+}
+
+const aroundOrOwn =
+  (own: readonly string[]) =>
+  (word: string): boolean =>
+    AROUND_HOUR.has(word) || own.some((mine) => word.length >= 3 && sameWord(word, mine));
+
+/**
+ * «На N» в конце правки — час этого дела (бой 29.09.2026, 02:33: «Кстати
+ * такси на 9»), когда кроме него в словах только само дело и связки: «на 9»
+ * по кнопке «Изменить время», «давай на 9», «Закажи такси на 9» у такси.
+ * «Перенеси на 12» — не час: это бывает и число. Оба чтения — дальше
+ * выбирает `spokenClockTime`, как у «в 9».
+ */
+function naHourFor(spoken: string, title: string): ClockTime | undefined {
+  const readings = naHourReadings(spoken);
+  if (readings === undefined) return undefined;
+  const rest = words(withoutTrailingNa(spoken).replace(/ё/gu, 'е'));
+  return rest.every(aroundOrOwn(titleWordsOf(title))) ? readings : undefined;
 }
 
 function plan(item: Item, params: ApplyParams, now: Date): Plan {
@@ -384,7 +406,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
      * дела с днём, как у правки; двоякий час — вопрос, а не подробность.
      */
     const spoken = params.spoken ?? '';
-    const heard = spokenClockTime(spoken, item.deadlineTime);
+    const heard = spokenClockTime(spoken, item.deadlineTime, item.text);
     if (
       item.deadlineAt !== null &&
       item.deadlineAccuracy === 'day' &&
@@ -451,6 +473,8 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
   const deadlineSaid =
     deadline.length > 0 &&
     !hourWithoutDay(params.spoken ?? '') &&
+    // «На 9» — час, а не девятое число (бой 29.09.2026, 02:33).
+    naHourFor(params.spoken ?? '', item.text) === undefined &&
     !relativeWithoutDay(params.spoken ?? '');
   if (deadlineSaid) {
     /**
@@ -522,7 +546,7 @@ function plan(item: Item, params: ApplyParams, now: Date): Plan {
    * выгрузки: только однозначный час (`clock-time.ts`), голое «в 9» —
    * нет. Только при точном сроке — своём или только что поставленном.
    */
-  const heard = spokenClockTime(params.spoken ?? '', item.deadlineTime);
+  const heard = spokenClockTime(params.spoken ?? '', item.deadlineTime, item.text);
   let spokenTime = heard.time;
 
   /**
@@ -765,11 +789,14 @@ export function appliedOf(outcome: ApplyOutcome): Applied | undefined {
 export function spokenClockTime(
   spoken: string,
   current: number | null,
+  /** Название дела: по нему «на 9» в правке читается часом (`naHourFor`). */
+  title?: string,
 ): {
   readonly time?: number | undefined;
   readonly unclear?: readonly [number, number] | undefined;
 } {
-  const first = clockTimesIn(spoken)[0];
+  const said = clockTimesIn(spoken)[0];
+  const first = said ?? (title === undefined ? undefined : naHourFor(spoken, title));
   if (first === undefined) return {};
   if (first.length === 1) return { time: first[0] };
 
@@ -791,7 +818,8 @@ export function spokenClockTime(
    * 11:00 — 18:00, а не ближайшее 06:00. Утро остаётся, только когда само
    * дело стоит ночью или рано утром: пробежка на 05:00 «в 6» — 06:00.
    */
-  const sure = sureReading(first);
+  // «На N» с 1 до 6 сам день не выбирает: «стол на 4» — может быть и люди.
+  const sure = said === undefined ? undefined : sureReading(first);
   if (sure !== undefined && (current === null || !isEarlyHour(current))) return { time: sure };
   if (current === null) return { unclear: [morning, evening] };
 

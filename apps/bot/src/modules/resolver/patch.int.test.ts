@@ -321,6 +321,109 @@ describe('час в правке словами (ТЗ проджекта 17.09.2
     expect(after.text).toBe('Заказать такси');
   });
 
+  /**
+   * Бой 29.09.2026, 02:33: «Кстати такси на 9» (без «вечера») — «на N» у
+   * записанного дела тоже час. Выбор — как у «в 9»: ближайшее к часу дела
+   * чтение, часа нет — вопрос; 1–6 сам не выбирается («стол на 4» — может
+   * быть и люди). Дату из «на 9» модель не ставит.
+   */
+  it('«Кстати такси на 9» у такси на 20:00 — 21:00, не подробность', async () => {
+    const item = await sow({ text: 'Заказать такси', deadlineTime: 20 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: noted('на 9'),
+      spoken: 'Кстати такси на 9',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBe(21 * 60);
+    expect(after.body).toBeNull();
+    expect(after.text).toBe('Заказать такси');
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+  });
+
+  it('«давай на 9», а модель прочла 9-е число — день прежний, час 21:00', async () => {
+    const item = await sow({ text: 'Заказать такси', deadlineTime: 20 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('2026-09-09'),
+      spoken: 'давай на 9',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineAt?.toISOString()).toBe(THURSDAY.toISOString());
+    expect(after.deadlineTime).toBe(21 * 60);
+  });
+
+  it('«на 9» по кнопке «Изменить время» — 21:00 у дела на 20:00', async () => {
+    const item = await sow({ text: 'Заказать такси', deadlineTime: 20 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'replace',
+      changes: changes('', 'none'),
+      spoken: 'на 9',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(21 * 60);
+  });
+
+  it('«Кстати стол на 4» у стола без часа — вопрос, а не молча 16:00', async () => {
+    const item = await sow({ text: 'Забронировать стол' });
+
+    const outcome = await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      mode: 'append',
+      changes: noted('на 4'),
+      spoken: 'Кстати стол на 4',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    const after = await reread(item.id);
+    expect(after.deadlineTime).toBeNull();
+    expect(after.body).toBeNull();
+    expect(JSON.stringify(outcome)).toContain('timeUnclear');
+  });
+
+  it('«перенеси на 12» без названия дела — не час, как раньше (может быть число)', async () => {
+    const item = await sow({ text: 'Заказать такси', deadlineTime: 20 * 60 });
+
+    await applyDecision(testDb(), {
+      userId,
+      itemId: item.id,
+      action: 'update',
+      changes: changes('', 'none'),
+      spoken: 'перенеси на 12',
+      timeZone: MOSCOW,
+      now: NOW,
+      reason: 'проверка',
+    });
+
+    expect((await reread(item.id)).deadlineTime).toBe(20 * 60);
+  });
+
   it('«торт на 8» и «к 18:00» — час ставится, «на 8» в названии остаётся', async () => {
     const item = await sow({ text: 'Купить торт на 8' });
 

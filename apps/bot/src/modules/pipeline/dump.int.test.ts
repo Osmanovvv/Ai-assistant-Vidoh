@@ -10514,6 +10514,223 @@ describe('час нового дела — утро или вечер (вари�
     expect(rows[0]?.text).toBe('Заказать такси');
   });
 
+  /**
+   * Бой 29.09.2026, 02:31–02:33, дословно: «Закажи такси на 8» → вопрос →
+   * «Вечером» → 20:00 → «Кстати такси на 9». Последнее завело второе дело
+   * «Заказать такси на 9» с вопросом: короткая поправка к записанному делу
+   * не узнавалась — «на 9» не считалось часом. Теперь — правка того же дела,
+   * ближайшее к 20:00 чтение, 21:00.
+   */
+  it('«Кстати такси на 9» после «Вечером» — тому же такси 21:00, второго дела нет', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const first = 'Закажи такси на 8.';
+
+    await queuedBatchOf([{ kind: 'text', text: first, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(first, 'Заказать такси на 8', 'личное'),
+        }),
+      },
+      userId,
+    );
+
+    await queuedBatchOf([{ kind: 'text', text: 'Вечером', offsetMs: 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(2 * 60_000),
+          llm: echoingLlm({ resolver: unsureResolver([]) }),
+        }),
+      },
+      userId,
+    );
+
+    // Как на бою: маршрутизатор — мысль, резолвер — дополнение «на 9».
+    const later = 'Кстати такси на 9';
+    await queuedBatchOf([{ kind: 'text', text: later, offsetMs: 3 * 60_000 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          now: at(4 * 60_000),
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: later }] }),
+            resolver: JSON.stringify({
+              action: 'update',
+              mode: 'append',
+              itemId: '1',
+              confidence: 0.9,
+              changes: {
+                note: 'на 9',
+                text: '',
+                deadline: '',
+                deadlineAccuracy: 'none',
+                recurrenceKind: 'none',
+                recurrenceInterval: 0,
+                recurrenceText: '',
+              },
+              reason: 'уточнение часа',
+            }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime])).toEqual([['Заказать такси', 21 * 60]]);
+    expect(all.some((text) => text.includes('Заказать такси на 9'))).toBe(false);
+    expect(all.at(-1)).toContain('21:00');
+  });
+
+  /**
+   * Модель прочла «на 9» девятым числом (проверка срока такое пропускает:
+   * день не назван). Дела ещё нет — оно новое: срок сегодня, час — вопросом.
+   */
+  it('«Закажи такси на 9», а модель дала 9-е число — срок сегодня и вопрос «09:00 или 21:00?»', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const spoken = 'Закажи такси на 9.';
+    const title = 'Заказать такси на 9';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: echoingLlm({
+            router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: spoken }] }),
+            extractor: () =>
+              JSON.stringify({ units: [{ text: title, isProject: false, isEmotion: false }] }),
+            classifier: () =>
+              JSON.stringify({
+                items: [
+                  {
+                    text: title,
+                    type: 'TASK',
+                    priority: 'SOON',
+                    topic: 'личное',
+                    isProject: false,
+                    deadline: '2026-09-09',
+                    deadlineAccuracy: 'day',
+                    deadlineText: 'на 9',
+                    recurrenceKind: 'none',
+                    recurrenceInterval: 0,
+                    recurrenceText: '',
+                  },
+                ],
+              }),
+          }),
+        }),
+      },
+      userId,
+    );
+
+    const [saved] = await liveItems();
+    // Сегодня по Москве от часов теста (24.08.2026), а не 9-е число.
+    expect(saved?.deadlineAt?.toISOString()).toBe('2026-08-23T21:00:00.000Z');
+    expect(saved?.deadlineTime).toBeNull();
+    expect(
+      all.filter((text) => text.includes('Во сколько «Заказать такси на 9» — 09:00 или 21:00?')),
+    ).toHaveLength(1);
+  });
+
+  it('«Закажи такси на 9» у такси, записанного два дня назад, — повтор с новым часом: 21:00', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Заказать такси',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00+03:00`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 20 * 60,
+        createdAt: at(-2 * 24 * 60 * 60_000),
+        updatedAt: at(-2 * 24 * 60 * 60_000),
+      });
+    const spoken = 'Закажи такси на 9.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Заказать такси на 9', 'личное'),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime])).toEqual([['Заказать такси', 21 * 60]]);
+    expect(all.some((text) => text.includes('Во сколько'))).toBe(false);
+  });
+
+  it('«Закажи такси на 9» у записанного такси на 20:00 — повтор: 21:00, второго дела нет', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Заказать такси',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        deadlineAt: new Date(`${tomorrowIso()}T00:00:00+03:00`),
+        deadlineAccuracy: 'day',
+        deadlineTime: 20 * 60,
+      });
+    const spoken = 'Закажи такси на 9.';
+
+    await queuedBatchOf([{ kind: 'text', text: spoken, offsetMs: 0 }]);
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          sender,
+          llm: tomorrowDump(spoken, 'Заказать такси на 9', 'личное'),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await liveItems();
+    expect(rows.map((row) => [row.text, row.deadlineTime])).toEqual([['Заказать такси', 21 * 60]]);
+    expect(all.some((text) => text.includes('Во сколько'))).toBe(false);
+  });
+
   it('«Купить торт на 8 человек» — не час: ни вопроса, ни часа', async () => {
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();
