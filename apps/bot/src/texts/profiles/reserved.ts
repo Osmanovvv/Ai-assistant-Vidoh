@@ -152,6 +152,12 @@ export const reserved: TextProfile = {
     patchParked: 'Одну правку применить не вышло — слова сохранила. Скажи ещё раз, если важно.',
     nothingToParse: 'Я здесь. Расскажешь, что в голове?',
     nothingToParseQuiet: 'Я здесь.',
+
+    greetingMorning: 'Доброе утро 🙂',
+    greetingDay: 'Добрый день 🙂',
+    greetingEvening: 'Добрый вечер 🙂',
+    greetingNight: 'Привет 🙂',
+    greetingInvite: 'Расскажешь, что в голове?',
   },
 
   menu: {

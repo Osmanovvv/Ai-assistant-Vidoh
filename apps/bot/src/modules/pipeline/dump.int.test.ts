@@ -1052,7 +1052,11 @@ describe('разбор', () => {
     );
 
     expect(await testDb().select().from(items)).toHaveLength(0);
-    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+    // Приветствие — фразой словаря по часам человека (ТЗ §7.1, 29.09.2026):
+    // часы стенда — 13:01 по Москве.
+    expect(all.at(-1)).toBe(
+      `${defaultTexts.answer.greetingDay} ${defaultTexts.answer.greetingInvite}`,
+    );
   });
 
   it('сбой извлечения сохраняет текст черновиком и говорит об этом', async () => {
@@ -3587,7 +3591,7 @@ describe('пустая выгрузка при открытом вопросе (
    * подряд разными сообщениями (§13.9: один вопрос на обмен).
    * При открытом вопросе ответ на пустую выгрузку — утверждение без «?».
    */
-  it('«привет» поверх вопроса опроса — «Я здесь.» без второго вопроса', async () => {
+  it('«привет» поверх вопроса опроса — одно приветствие, без второго вопроса', async () => {
     const prompts = await seedPrompts();
     await testDb()
       .update(userSettings)
@@ -3618,7 +3622,8 @@ describe('пустая выгрузка при открытом вопросе (
       userId,
     );
 
-    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParseQuiet);
+    // Приветствие по часам (29.09.2026) — и по-прежнему без «?».
+    expect(all.at(-1)).toBe(defaultTexts.answer.greetingDay);
     expect(all).not.toContain(defaultTexts.answer.nothingToParse);
     for (const said of all) expect(countQuestions(said), said).toBe(0);
     expect(await testDb().select().from(items).where(eq(items.userId, userId))).toEqual([]);
@@ -3653,7 +3658,10 @@ describe('пустая выгрузка при открытом вопросе (
       userId,
     );
 
-    expect(all.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+    expect(all.at(-1)).toBe(
+      `${defaultTexts.answer.greetingDay} ${defaultTexts.answer.greetingInvite}`,
+    );
+    expect(String(all.at(-1))).toContain(defaultTexts.answer.greetingInvite);
   });
 });
 
@@ -9919,9 +9927,10 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
       .update(userSettings)
       .set({ onboardingStep: STEP.name })
       .where(eq(userSettings.userId, userId));
-    const llm = echoingLlm({ router: smalltalk('привет'), talker: talked('Привет 🙂') });
+    // Не приветствие: на него отвечает код (29.09.2026), модель и так молчит.
+    const llm = echoingLlm({ router: smalltalk('как дела'), talker: talked('Хорошо 🙂') });
 
-    await queuedBatchOf([{ kind: 'text', text: 'привет', offsetMs: 0 }]);
+    await queuedBatchOf([{ kind: 'text', text: 'как дела', offsetMs: 0 }]);
     const { sender, all } = recordingSender();
     await processUserBatches(
       {
@@ -9967,6 +9976,33 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
 
     expect(talker).toHaveLength(1);
     expect(replies.at(-1)).toBe(defaultTexts.answer.nothingToParse);
+  });
+
+  it('«Привет» голосом — фраза словаря по часам, ни ответчик, ни живой ответ не зовутся', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({
+      router: smalltalk('Привет'),
+      talker: talked('Привет! Доброе утро 🙂'),
+    });
+
+    const { replies, talker, answerer } = await say('Привет', llm, prompts);
+
+    expect(replies.at(-1)).toBe(
+      `${defaultTexts.answer.greetingDay} ${defaultTexts.answer.greetingInvite}`,
+    );
+    expect(talker).toHaveLength(0);
+    expect(answerer).toHaveLength(0);
+  });
+
+  it('«Доброе утро» днём — «Добрый день»: утро по часам человека, а не по словам', async () => {
+    const prompts = await talkOn();
+    const llm = echoingLlm({ router: smalltalk('Доброе утро') });
+
+    const { replies } = await say('Доброе утро', llm, prompts);
+
+    expect(replies.at(-1)).toBe(
+      `${defaultTexts.answer.greetingDay} ${defaultTexts.answer.greetingInvite}`,
+    );
   });
 
   it('«ок» — смайликом, без модели', async () => {

@@ -94,6 +94,8 @@ function createTestBot(
   promo?: AwaitingDeps['promo'],
   /** Бренд-карточки (ТЗ по визуалам 18.09.2026): карточка старта после опроса. */
   cards?: CardSender,
+  /** Часы: приветствие зависит от времени суток (29.09.2026). */
+  now?: () => Date,
 ): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
@@ -126,7 +128,8 @@ function createTestBot(
     consentUrl: CONSENT_URL,
     // Ответ словами (задача 3.61): без этого текстовая реплика
     // уходит в буфер выгрузки, как было до задачи.
-    consume: consumeAwaited({ db: testDb(), logger: log, promo, cards }),
+    consume: consumeAwaited({ db: testDb(), logger: log, promo, cards, now }),
+    now,
   };
   bot.use(incomingMiddleware(incoming));
   registerStartHandlers(bot, {
@@ -1149,6 +1152,102 @@ describe('ответ словами', () => {
     expect(replies).not.toContain(defaultTexts.onboarding.nameNotUnderstood);
     expect(replies).not.toContain(defaultTexts.onboarding.timeNotUnderstood);
     expect(await awaitingOfUser()).toBeNull();
+  });
+
+  describe('приветствие во время опроса (29.09.2026)', () => {
+    /**
+     * «Привет» на «Как тебя называть?» стал бы именем: бот звал бы
+     * человека «Привет». На вопрос о времени — «не поняла время» и мысль
+     * в разбор. Приветствие — не ответ и не мысль: бот здоровается по
+     * часам человека и ждёт ответа дальше.
+     */
+    const DAY = new Date('2026-09-29T11:00:00Z'); // 14:00 по Москве
+    const at = (): Date => DAY;
+
+    it('«Привет» на «Как тебя называть?» — поздороваться и спросить снова; имя — следующим словом', async () => {
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        logger,
+        undefined,
+        undefined,
+        at,
+      );
+      await bot.init();
+
+      await bot.handleUpdate(textUpdate('/start'));
+      await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect((await settingsOf())?.preferredName).toBeNull();
+      expect(await awaitingOfUser()).toBe('name');
+      const replies = repliesOf(calls);
+      expect(replies.at(-1)).toBe(
+        `${defaultTexts.answer.greetingDay} ${defaultTexts.onboarding.nameUnknown}`,
+      );
+      expect(replies).not.toContain(defaultTexts.onboarding.nameNotUnderstood);
+
+      await bot.handleUpdate(textUpdate('Оля'));
+      expect((await settingsOf())?.preferredName).toBe('Оля');
+    });
+
+    it('«Привет, я Оля» — имя Оля, а не «Привет, я Оля»', async () => {
+      const { bot } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        logger,
+        undefined,
+        undefined,
+        at,
+      );
+      await bot.init();
+
+      await bot.handleUpdate(textUpdate('/start'));
+      await bot.handleUpdate(callbackUpdate(ACTION.nameOwn));
+      await bot.handleUpdate(textUpdate('Привет, я Оля'));
+
+      expect((await settingsOf())?.preferredName).toBe('Оля');
+    });
+
+    it('«Добрый вечер» на «другое время» утра — приветствие по часам, время и ожидание целы', async () => {
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        logger,
+        undefined,
+        undefined,
+        at,
+      );
+      await bot.init();
+      await startedAt(STEP.morning);
+      const before = (await settingsOf())?.morningTime;
+
+      await bot.handleUpdate(callbackUpdate(ACTION.morningOwn));
+      await bot.handleUpdate(textUpdate('Добрый вечер'));
+
+      expect((await settingsOf())?.morningTime).toBe(before);
+      expect(await awaitingOfUser()).toBe('morning');
+      const replies = repliesOf(calls);
+      expect(replies.at(-1)).toBe(defaultTexts.answer.greetingDay);
+      expect(replies).not.toContain(defaultTexts.onboarding.timeNotUnderstood);
+    });
+
+    it('вопрос опроса висит с кнопками — на «Привет» только приветствие, второго вопроса нет (§13.9)', async () => {
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        logger,
+        undefined,
+        undefined,
+        at,
+      );
+      await bot.init();
+
+      await bot.handleUpdate(textUpdate('/start'));
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(repliesOf(calls).at(-1)).toBe(defaultTexts.answer.greetingDay);
+    });
   });
 });
 

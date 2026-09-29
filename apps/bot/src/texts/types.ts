@@ -218,6 +218,20 @@ export interface TextProfile {
      * ставить второй вопрос над первым. §13.9: один вопрос на обмен.
      */
     readonly nothingToParseQuiet: string;
+
+    /**
+     * Ответ на одно приветствие — сразу, без модели (ТЗ §7.1: «Приветствие
+     * … короткий ответ, без обращения к тяжёлым моделям»; Никита,
+     * 29.09.2026). Приветствие — по часам человека: днём не бывает
+     * «Доброе утро». Ночью — просто «Привет»: «доброй ночи» говорят,
+     * уходя. Ответ — приветствие и через пробел `greetingInvite`; когда
+     * бот ждёт имени — приветствие и вопрос об имени.
+     */
+    readonly greetingMorning: string;
+    readonly greetingDay: string;
+    readonly greetingEvening: string;
+    readonly greetingNight: string;
+    readonly greetingInvite: string;
   };
 
   /**

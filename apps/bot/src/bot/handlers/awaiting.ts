@@ -12,6 +12,7 @@ import {
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
 import { settingTime, spokenName } from '../../modules/onboarding/spoken-setting.js';
+import { onlyGreeting, salutationAt } from '../../modules/presenter/greeting.js';
 import { clockTimesIn, naAsTimeAnswer, timeShiftIn } from '../../modules/classifier/clock-time.js';
 import { saveDraft } from '../../modules/items/items.repo.js';
 import { CLARIFY_REASON, hourClarifyCommand } from '../../modules/resolver/clarify.js';
@@ -81,6 +82,8 @@ export interface AwaitingDeps {
    * сообщение идёт в разбор обычным путём, как до задачи.
    */
   readonly promo?: ((ctx: Context, userId: string, code: string) => Promise<boolean>) | undefined;
+  /** Часы: приветствие отвечает по времени суток человека (29.09.2026). */
+  readonly now?: (() => Date) | undefined;
 }
 
 /**
@@ -172,7 +175,23 @@ export function consumeAwaited(deps: AwaitingDeps) {
     const awaiting = state.awaiting;
     if (awaiting === undefined) return false;
 
-    const texts = textsFor((await outputContextOf(db, userId)).textProfile);
+    const output = await outputContextOf(db, userId);
+    const texts = textsFor(output.textProfile);
+
+    /**
+     * Приветствие — не ответ и не мысль (29.09.2026). «Привет» на «Как
+     * тебя называть?» становилось именем, на вопрос о времени — «не
+     * поняла» и мыслью в разбор. Бот здоровается по часам человека и
+     * ждёт ответа дальше: об имени — спрашивает снова, у остального
+     * вопрос с кнопками стоит выше, второго не задаём (§13.9).
+     */
+    if (onlyGreeting(text)) {
+      const hello = salutationAt(texts, deps.now?.() ?? new Date(), output.timeZone);
+      const aboutName = awaiting.kind === AWAITING.name || awaiting.kind === AWAITING.setName;
+      await ctx.reply(aboutName ? `${hello} ${texts.onboarding.nameUnknown}` : hello);
+      logger.info({ userId, awaiting: awaiting.kind }, 'Приветствие вместо ответа — ждём дальше');
+      return true;
+    }
 
     // ── Имя ──────────────────────────────────────────────────────────────
     if (awaiting.kind === 'name') {

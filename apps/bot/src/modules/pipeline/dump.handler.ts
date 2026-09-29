@@ -102,6 +102,7 @@ import { loadContextFacts, markLineMentions } from '../presenter/context-pack.re
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
+import { greetingLine, onlyGreeting, salutationAt } from '../presenter/greeting.js';
 import { withCapital } from '../items/item-text.js';
 import { showFirstReminderCard } from '../scheduler/first-reminder-card.js';
 import { RETURNING_ACTION } from '../returning/returning-actions.js';
@@ -2469,6 +2470,22 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           !questionOpen &&
           spokenHere !== '' &&
           (await talkLiveOn());
+        /**
+         * Одно приветствие — фраза словаря по часам человека (ТЗ §7.1:
+         * «Приветствие … без обращения к тяжёлым моделям»; Никита,
+         * 29.09.2026). Текстом оно отвечено ещё в приёме (`incoming.ts`);
+         * сюда доходит голосом или вдогонку. Ни ответчик, ни живой ответ не
+         * зовутся: у модели днём бывало «Доброе утро». Вопрос уже открыт —
+         * одно приветствие, без второго вопроса.
+         */
+        if (onlyGreeting(spokenHere)) {
+          await answer(
+            questionOpen
+              ? salutationAt(texts, now, context.timeZone)
+              : greetingLine(texts, now, context.timeZone),
+          );
+          return;
+        }
         if (talkLive && onlyAck(spokenHere)) {
           await answer(texts.answer.ack);
           return;

@@ -13,6 +13,10 @@ import {
   type BufferLimits,
 } from '../../modules/buffer/buffer.service.js';
 import { onlyThanks } from '../../modules/presenter/thanks.js';
+import { greetingLine, onlyGreeting, salutationAt } from '../../modules/presenter/greeting.js';
+import { STEP, onboardingStateOf } from '../../modules/onboarding/onboarding.service.js';
+import { onlyAck } from '../../modules/talk/talk.js';
+import { backAfterPause } from '../../modules/returning/returning.service.js';
 import { looksLikeQuestion } from '../../modules/buffer/question.js';
 import { answersNow, asksDirectly, type OpenAsk } from '../../modules/buffer/answer-now.js';
 import { openClarification } from '../../modules/resolver/clarify.repo.js';
@@ -31,6 +35,7 @@ import {
   type StatusSender,
 } from '../../modules/presenter/status.service.js';
 import { consentConfirmedOf } from '../../modules/users/users.repo.js';
+import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
 import { textsFor } from '../../texts/index.js';
 
@@ -97,6 +102,11 @@ export interface IncomingDeps {
    * приглашение.
    */
   readonly payRails?: readonly Rail[] | undefined;
+  /**
+   * Часы. Приветствие отвечает по времени суток человека (29.09.2026):
+   * тестам нужен день, утро и ночь, а не момент прогона.
+   */
+  readonly now?: (() => Date) | undefined;
 }
 
 /**
@@ -270,13 +280,25 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
      * благодарность ничего не стоит, и «пробный период кончился» в ответ
      * на неё звучало бы грубо.
      */
+    /**
+     * «Ок», «понятно», 👍 — то же (ТЗ §7.1, Никита 29.09.2026): ответ
+     * 🙂 кодом был и раньше, но после полуминуты тишины и вызова
+     * маршрутизатора (1,22 ₽ на бою). Если бот ждёт ответа на свой
+     * вопрос, «ок» — ответ на него и идёт прежним путём.
+     */
+    const said = ctx.message?.text;
+    const quick = onlyThanks(said)
+      ? 'thanks'
+      : said !== undefined && onlyAck(said)
+        ? 'ack'
+        : undefined;
     if (
-      onlyThanks(ctx.message?.text) &&
+      quick !== undefined &&
       !(await hasBatchInFlight(deps.db, outcome.userId)) &&
       (await openAskOf(deps.db, outcome.userId, new Date())) === undefined
     ) {
       const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
-      await ctx.reply(texts.answer.thanks);
+      await ctx.reply(texts.answer[quick]);
       // Съедено, как ответ словами: иначе строка без выгрузки — сирота.
       await markConsumed(deps.db, outcome.messageId);
       return;
@@ -396,6 +418,45 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
       // ради текста, который отправляется редко, не нужен.
       const texts = textsFor(await textProfileOf(deps.db, outcome.userId));
       await ctx.reply(texts.limits.tooManyDumps);
+      return;
+    }
+
+    /**
+     * Одно приветствие — ответ сразу, фразой из словаря (ТЗ §7.1:
+     * «Приветствие … короткий ответ, без обращения к тяжёлым моделям»;
+     * §18 — первый отклик практически мгновенный; Никита, 29.09.2026).
+     * Раньше «Привет» ждал полминуты тишины и проходил три этапа
+     * модели — 33 секунды и 3,5–5 ₽ на бою.
+     *
+     * Приветствие — по часам человека (`greetingLine`): днём не бывает
+     * «Доброе утро».
+     *
+     * **После гейтов, а не рядом со «спасибо».** «Расскажешь, что в
+     * голове?» зовёт выгружать — человеку без доступа или сверх
+     * суточного потолка это обещание, которое следом нарушит отказ.
+     * Прежним путём — и когда бот ждёт ответа на свой вопрос, и когда
+     * выгрузка ещё собирается, и после двух недель тишины: там «привет»
+     * встречает экран «С возвращением» (§13.6).
+     */
+    const now = deps.now?.() ?? new Date();
+    if (
+      onlyGreeting(ctx.message?.text) &&
+      !(await hasBatchInFlight(deps.db, outcome.userId)) &&
+      (await openAskOf(deps.db, outcome.userId, now)) === undefined &&
+      !(await backAfterPause(deps.db, { userId: outcome.userId, now }))
+    ) {
+      const context = await outputContextOf(deps.db, outcome.userId);
+      const texts = textsFor(context.textProfile);
+      // Вопрос опроса висит с кнопками — второго не задаём (§13.9,
+      // как «Я здесь.» у разбора): только приветствие.
+      const survey = await onboardingStateOf(deps.db, outcome.userId);
+      const surveyOpen = survey.step > 0 && survey.step < STEP.done;
+      await ctx.reply(
+        surveyOpen
+          ? salutationAt(texts, now, context.timeZone)
+          : greetingLine(texts, now, context.timeZone),
+      );
+      await markConsumed(deps.db, outcome.messageId);
       return;
     }
 

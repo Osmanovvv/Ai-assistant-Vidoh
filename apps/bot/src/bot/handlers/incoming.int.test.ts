@@ -106,6 +106,8 @@ interface BotOptions {
    * кнопку, которой нет. Проверки ниже мерят **обе** стороны этого «и».
    */
   readonly payRails?: readonly Rail[] | undefined;
+  /** Часы: приветствие зависит от времени суток (29.09.2026). */
+  readonly now?: (() => Date) | undefined;
 }
 
 function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] } {
@@ -141,6 +143,7 @@ function createTestBot(options: BotOptions = {}): { bot: Bot; calls: ApiCall[] }
       ...(options.settings === undefined ? {} : { settings: options.settings }),
       ...(options.consume === undefined ? {} : { consume: options.consume }),
       ...(options.payRails === undefined ? {} : { payRails: options.payRails }),
+      ...(options.now === undefined ? {} : { now: options.now }),
     }),
   );
 
@@ -1746,6 +1749,239 @@ describe('чистая благодарность — ответ сразу (Н�
 
       expect(thanksSent(calls)).toBe(0);
       expect(calls.some((call) => call.method === 'sendMessage')).toBe(true);
+    });
+  });
+});
+
+describe('приветствие и «ок» — ответ сразу, из словаря (ТЗ §7.1, Никита 29.09.2026)', () => {
+  /**
+   * ТЗ §7.1: «Приветствие, благодарность, реплика без содержания —
+   * короткий ответ, без обращения к тяжёлым моделям»; §18 — первый отклик
+   * практически мгновенный. «Привет» шёл общим путём: полминуты тишины и
+   * три этапа модели — 33 секунды и 3,5–5 ₽ на бою. Теперь как «спасибо»:
+   * сразу и без модели. Приветствие — по часам человека: днём не бывает
+   * «Доброе утро».
+   */
+  const DAY = new Date('2026-09-29T11:00:00Z'); // 14:00 по Москве
+  const dayGreeting = `${defaultTexts.answer.greetingDay} ${defaultTexts.answer.greetingInvite}`;
+  const sent = (calls: readonly ApiCall[]): unknown[] =>
+    calls.filter((call) => call.method === 'sendMessage').map((call) => call.payload['text']);
+
+  async function consumed(): Promise<boolean> {
+    const rows = await testDb()
+      .select({ consumedAt: messagesRaw.consumedAt })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.userId, userId));
+    return rows.length > 0 && rows.every((row) => row.consumedAt !== null);
+  }
+
+  it.each(['Привет', 'Добрый день!', 'Привет 👋', 'Здравствуйте'])(
+    '«%s» днём — «Добрый день 🙂 Расскажешь, что в голове?» сразу, без выгрузки и без «Слушаю»',
+    async (text) => {
+      const { sender, said } = recordingStatus();
+      const { bot, calls } = createTestBot({ sender, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate(text));
+
+      expect(sent(calls)).toEqual([dayGreeting]);
+      expect(said).toEqual([]);
+      expect(await dumpCount()).toBe(0);
+      expect(await consumed()).toBe(true);
+    },
+  );
+
+  it('днём не бывает «Доброе утро» — даже если человек сам так поздоровался', async () => {
+    const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+    await bot.handleUpdate(textUpdate('Доброе утро'));
+
+    expect(sent(calls)).toEqual([dayGreeting]);
+    expect(String(sent(calls)[0])).not.toMatch(/утро/iu);
+  });
+
+  it('по часам человека, а не сервера: 05:00 UTC во Владивостоке — день, в Москве было бы утро', async () => {
+    await testDb().update(users).set({ timezone: 'Asia/Vladivostok' }).where(eq(users.id, userId));
+    const { bot, calls } = createTestBot({
+      sender: recordingStatus().sender,
+      now: () => new Date('2026-09-29T05:00:00Z'),
+    });
+
+    await bot.handleUpdate(textUpdate('Привет'));
+
+    expect(sent(calls)).toEqual([dayGreeting]);
+  });
+
+  it('ночью — просто «Привет 🙂», без «доброй ночи»', async () => {
+    const { bot, calls } = createTestBot({
+      sender: recordingStatus().sender,
+      now: () => new Date('2026-09-29T22:30:00Z'), // 01:30 по Москве
+    });
+
+    await bot.handleUpdate(textUpdate('Привет'));
+
+    expect(sent(calls)).toEqual([
+      `${defaultTexts.answer.greetingNight} ${defaultTexts.answer.greetingInvite}`,
+    ]);
+  });
+
+  it.each(['Ок', 'понятно', '👍'])('«%s» — 🙂 сразу, без выгрузки и без модели', async (text) => {
+    const { sender, said } = recordingStatus();
+    const { bot, calls } = createTestBot({ sender, now: () => DAY });
+
+    await bot.handleUpdate(textUpdate(text));
+
+    expect(sent(calls)).toEqual([defaultTexts.answer.ack]);
+    expect(said).toEqual([]);
+    expect(await dumpCount()).toBe(0);
+    expect(await consumed()).toBe(true);
+  });
+
+  it('«ок» после конца пробного — 🙂, как «спасибо»: ответ ничего не стоит', async () => {
+    await seedTrialSpent(3);
+    const settings = await trialOf(3);
+    const { bot, calls } = createTestBot({ settings, now: () => DAY });
+
+    await bot.handleUpdate(textUpdate('Ок'));
+
+    expect(sent(calls)).toEqual([defaultTexts.answer.ack]);
+  });
+
+  describe('как раньше', () => {
+    it.each(['Привет, купи хлеб', 'Привет, как дела?', 'Ок, и купи хлеб'])(
+      '«%s» — сверх приветствия есть слова: в разбор',
+      async (text) => {
+        const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+        await bot.handleUpdate(textUpdate(text));
+
+        expect(sent(calls)).toEqual([]);
+        expect(await dumpCount()).toBe(1);
+      },
+    );
+
+    it('выгрузка ещё собирается — «привет» и «ок» идут в неё, а не обгоняют итог', async () => {
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('купить продукты'));
+      await bot.handleUpdate(textUpdate('Привет'));
+      await bot.handleUpdate(textUpdate('Ок'));
+
+      expect(sent(calls)).toEqual([]);
+      expect(await dumpCount()).toBe(1);
+    });
+
+    it('бот ждёт ответа на свой вопрос — «ок» разбирается как раньше', async () => {
+      const [item] = await testDb()
+        .insert(items)
+        .values({ userId, text: 'Забрать ребенка', type: 'TASK', priority: 'SOON', topic: 'семья' })
+        .returning({ id: items.id });
+      const [batch] = await testDb()
+        .insert(batches)
+        .values({ userId, status: 'done', openedAt: new Date(), closedAt: new Date() })
+        .returning({ id: batches.id });
+      await askQuestion(testDb(), {
+        userId,
+        itemId: item!.id,
+        batchId: batch!.id,
+        segment: 'перенеси ребенка на вечер',
+        action: 'update',
+        changes: {
+          note: '',
+          text: '',
+          deadline: '',
+          deadlineAccuracy: 'none',
+          recurrenceKind: 'none',
+          recurrenceInterval: 0,
+          recurrenceText: '',
+        },
+      });
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Ок'));
+
+      expect(sent(calls)).not.toContain(defaultTexts.answer.ack);
+      expect(await dumpCount()).toBe(2);
+    });
+
+    it('переспрос о часе открыт — «ок» остаётся ответом на него', async () => {
+      await testDb().insert(items).values({
+        userId,
+        text: 'Перенеси «Заказать такси» в 8',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        isDraft: true,
+        draftReason: CLARIFY_REASON.time,
+      });
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender });
+
+      await bot.handleUpdate(textUpdate('Ок'));
+
+      expect(sent(calls)).not.toContain(defaultTexts.answer.ack);
+      expect(await dumpCount()).toBe(1);
+    });
+
+    it('переспрос о часе открыт — «привет» тоже идёт прежним путём, приветствие не встревает', async () => {
+      await testDb().insert(items).values({
+        userId,
+        text: 'Перенеси «Заказать такси» в 8',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+        isDraft: true,
+        draftReason: CLARIFY_REASON.time,
+      });
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(sent(calls)).toEqual([]);
+      expect(await dumpCount()).toBe(1);
+    });
+
+    it('пробный период кончился — на «привет» не зовём рассказывать, а говорим про пробный', async () => {
+      await seedTrialSpent(3);
+      const settings = await trialOf(3);
+      const { bot, calls } = createTestBot({ settings, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(sent(calls)).not.toContain(dayGreeting);
+      expect(sent(calls)).toContain(defaultTexts.limits.trialOver);
+    });
+
+    it('потолок выгрузок за сутки — на «привет» тоже честный отказ', async () => {
+      await seedDumps(30);
+      const { bot, calls } = createTestBot({ now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(sent(calls)).toEqual([defaultTexts.limits.tooManyDumps]);
+    });
+
+    it('вернулась после двух недель тишины — «привет» идёт к экрану «С возвращением»', async () => {
+      const longAgo = new Date(DAY.getTime() - 15 * 24 * 60 * 60_000);
+      await testDb()
+        .insert(batches)
+        .values({ userId, status: 'done', openedAt: longAgo, closedAt: longAgo });
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(sent(calls)).toEqual([]);
+      expect(await dumpCount()).toBe(2);
+    });
+
+    it('без согласия — экран согласия, а не приветствие', async () => {
+      await testDb()
+        .update(users)
+        .set({ consentConfirmedAt: null, consentEdition: null, consentAt: null })
+        .where(eq(users.id, userId));
+      const { bot, calls } = createTestBot({ now: () => DAY });
+
+      await bot.handleUpdate(textUpdate('Привет'));
+
+      expect(sent(calls)).toEqual([defaultTexts.consent.required(POLICY_URL, CONSENT_URL)]);
     });
   });
 });

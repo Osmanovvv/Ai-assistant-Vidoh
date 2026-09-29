@@ -56,6 +56,30 @@ export async function returningAfterPause(
 }
 
 /**
+ * Была бы пауза перед сообщением, которое ещё не стало выгрузкой.
+ *
+ * Приветствие отвечается сразу, без выгрузки (29.09.2026) — и после двух
+ * недель тишины обогнало бы экран «С возвращением»: «Привет» — самое
+ * частое первое слово вернувшегося. Такое сообщение идёт прежним путём,
+ * и экран встречает его, как раньше.
+ */
+export async function backAfterPause(
+  db: Executor,
+  params: { readonly userId: string; readonly now: Date },
+): Promise<boolean> {
+  const [previous] = await db
+    .select({ openedAt: batches.openedAt })
+    .from(batches)
+    .where(eq(batches.userId, params.userId))
+    .orderBy(desc(batches.openedAt))
+    .limit(1);
+
+  if (!previous) return false;
+
+  return params.now.getTime() - previous.openedAt.getTime() >= RETURN_AFTER_DAYS * DAY_MS;
+}
+
+/**
  * Убирает открытые записи в фон («начать с чистого листа»).
  *
  * §13.6 дословно: «не удаляет данные. Старые записи уходят в фон и
