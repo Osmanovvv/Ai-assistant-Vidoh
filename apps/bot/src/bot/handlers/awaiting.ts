@@ -12,7 +12,7 @@ import {
   setPreferredName,
 } from '../../modules/onboarding/awaiting.js';
 import { settingTime, spokenName } from '../../modules/onboarding/spoken-setting.js';
-import { clockTimesIn, timeShiftIn } from '../../modules/classifier/clock-time.js';
+import { clockTimesIn, naAsTimeAnswer, timeShiftIn } from '../../modules/classifier/clock-time.js';
 import { saveDraft } from '../../modules/items/items.repo.js';
 import { CLARIFY_REASON, hourClarifyCommand } from '../../modules/resolver/clarify.js';
 import { clockOf } from '../../modules/scheduler/plan.js';
@@ -395,7 +395,10 @@ export function consumeAwaited(deps: AwaitingDeps) {
        * «в 8» у дела на 19:00 — 20:00, «на час позже» — 20:00, ночь
        * далеко — вопрос. Раньше годился только однозначный час.
        */
-      if (clockTimesIn(text).length === 0 && timeShiftIn(text) === undefined) {
+      // «На 9», «на 21» — ответ на «На какое время поставить?»: то же, что
+      // «в 9», «в 21» (бой и набор settings.md, 29.09.2026).
+      const said = naAsTimeAnswer(text);
+      if (clockTimesIn(said).length === 0 && timeShiftIn(said) === undefined) {
         await ctx.reply(texts.card.retimeNotUnderstood);
         return true;
       }
@@ -410,7 +413,7 @@ export function consumeAwaited(deps: AwaitingDeps) {
         mode: 'replace',
         changes: emptyChanges(),
         // Час резолвер берёт из слов — тех же, что человек написал.
-        spoken: text,
+        spoken: said,
         timeZone: context.timeZone,
         reason: 'час словами по кнопке «Изменить время»',
         changedBy: 'user',

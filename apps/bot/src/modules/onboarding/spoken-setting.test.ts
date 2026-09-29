@@ -99,3 +99,23 @@ describe('имя словами', () => {
     expect(spokenName(text)).toBeUndefined();
   });
 });
+
+/**
+ * «На 21» на «Во сколько писать вечером?» (набор docs/eval-dialog/settings.md)
+ * — «нет ответа»: «на N» код часом не читал. Вопрос о времени уже задан —
+ * «на N» здесь то же, что «в N» (29.09.2026).
+ */
+describe('«на N» в ответе о времени сводки (29.09.2026)', () => {
+  it.each([
+    ['на 21', 'evening', '21:00'],
+    ['на 9', 'evening', '21:00'],
+    ['давай на 8', 'morning', '08:00'],
+    ['на 7:30', 'morning', '07:30'],
+  ] as const)('«%s» (%s) — %s', (said, part, expected) => {
+    expect(settingTime(said, part)).toBe(expected);
+  });
+
+  it('«на 8 человек» — не время', () => {
+    expect(settingTime('на 8 человек', 'morning')).toBeUndefined();
+  });
+});

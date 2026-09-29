@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { ReaderReading } from '../modules/ai/schemas/index.js';
-import { clockTimesIn, timeShiftIn } from '../modules/classifier/clock-time.js';
+import { clockTimesIn, naAsTimeAnswer, timeShiftIn } from '../modules/classifier/clock-time.js';
 import { zoneOfCity } from '../modules/onboarding/cities.js';
 import { settingTime, spokenName } from '../modules/onboarding/spoken-setting.js';
 import { spokenClockTime } from '../modules/resolver/patch.js';
@@ -144,11 +144,13 @@ function settingReads(section: Section, say: string): string {
   if (section.kind === 'city') return zoneOfCity(say) ?? 'нет ответа';
 
   // «Изменить время»: как правка — час с опорой на час дела, сдвиг от него.
-  if (clockTimesIn(say).length === 0 && timeShiftIn(say) === undefined) return 'нет ответа';
-  const heard = spokenClockTime(say, section.current ?? null);
+  // Как `awaiting.ts`: «на 21» на вопрос о времени — то же, что «в 21».
+  const said = naAsTimeAnswer(say);
+  if (clockTimesIn(said).length === 0 && timeShiftIn(said) === undefined) return 'нет ответа';
+  const heard = spokenClockTime(said, section.current ?? null);
   if (heard.time !== undefined) return clock(heard.time);
   if (heard.unclear !== undefined) return 'двояко';
-  const shift = timeShiftIn(say);
+  const shift = timeShiftIn(said);
   return shift === undefined || section.current === undefined
     ? 'нет ответа'
     : clock((section.current + shift + 24 * 60) % (24 * 60));

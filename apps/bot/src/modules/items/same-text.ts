@@ -1,5 +1,5 @@
 import type { Item } from '../../db/schema.js';
-import { withoutClockPhrase } from '../classifier/clock-time.js';
+import { withoutClockPhrase, withoutTrailingNa } from '../classifier/clock-time.js';
 import { storedTitle } from './item-text.js';
 
 /**
@@ -48,7 +48,10 @@ export function sameTextKey(text: string): string {
   // ребёнком завтра» при записанной «Поехать за ребёнком в 4 часа» завело
   // второе дело вместо переноса. Только «сегодня/завтра/послезавтра»:
   // «позвонить маме в четверг» и «в пятницу» могут быть разными делами.
-  return storedTitle(withoutClockPhrase(text))
+  //
+  // И «на N» в конце (бой 29.09.2026, 02:33): «Заказать такси на 9» при
+  // записанном «Заказать такси» — то же дело с новым часом, а не второе.
+  return storedTitle(withoutTrailingNa(withoutClockPhrase(text)))
     .toLowerCase()
     .replace(/ё/gu, 'е')
     .replace(/(?<!\p{L})(?:на\s+)?(?:сегодня|завтра|послезавтра)(?!\p{L})/gu, ' ')

@@ -16,6 +16,7 @@ import {
   dayAfterPassedClock,
   fromNowOf,
   localMinutes,
+  naDateEcho,
   unclearClockOf,
 } from './clock-time.js';
 import { looksLikeDatedWish } from './dated-wish.js';
@@ -559,6 +560,32 @@ export function correctItems(
      */
     const heardWhole = ctx.speech ?? ctx.spoken;
     const heard = heardWhole === undefined ? undefined : withoutDayQuestions(heardWhole);
+
+    /**
+     * Число от модели — эхо «на N» (29.09.2026): «Закажи такси на 9» без
+     * слов о дне — девятое число модель выдумала из часа, а проверка срока
+     * его пропускает. День не сказан — сегодня; прошли оба чтения — завтра
+     * (ниже, `dayAfterPassedClock`). Час спросит вопрос «09:00 или 21:00?».
+     */
+    if (
+      isActionable(type) &&
+      heard !== undefined &&
+      deadline?.accuracy === 'day' &&
+      naDateEcho({
+        itemText: item.text,
+        spoken: heard,
+        at: deadline.at,
+        now,
+        timeZone: ctx.timeZone,
+      })
+    ) {
+      deadline = {
+        at: startOfDayInZone(localDateParts(now, ctx.timeZone), ctx.timeZone),
+        accuracy: 'day',
+      };
+      corrections.deadline++;
+      logger?.info({ promptVersion }, 'Число от модели — эхо «на N», дня не сказано: срок сегодня');
+    }
 
     if (deadline === undefined && isActionable(type) && heard !== undefined) {
       const fromSentence = dayFromOwnSentence({

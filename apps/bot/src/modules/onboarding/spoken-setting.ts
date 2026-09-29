@@ -1,4 +1,4 @@
-import { clockTimesIn, withoutClockPhrase } from '../classifier/clock-time.js';
+import { clockTimesIn, naAsTimeAnswer, withoutClockPhrase } from '../classifier/clock-time.js';
 import { moodOf } from '../presenter/mood.js';
 import { onlyThanks } from '../presenter/thanks.js';
 import { startsAsQuestion } from '../resolver/answer.js';
@@ -93,8 +93,11 @@ export function settingTime(text: string, part: DayPart): string | undefined {
   }
 
   // «Восемь утра» без «в» — час словом читается с ним, как в переспросе.
+  // «На 21», «давай на 9» (набор settings.md, 29.09.2026) — вопрос о времени
+  // уже задан, «на N» здесь то же, что «в N».
   const direct = clockTimesIn(said);
-  const phrase = direct.length > 0 ? said : `в ${said}`;
+  const withIn = naAsTimeAnswer(said);
+  const phrase = direct.length > 0 ? said : withIn !== said ? withIn : `в ${said}`;
   const found = direct.length > 0 ? direct : clockTimesIn(phrase);
   const [reading] = found;
   if (found.length !== 1 || reading === undefined) return undefined;

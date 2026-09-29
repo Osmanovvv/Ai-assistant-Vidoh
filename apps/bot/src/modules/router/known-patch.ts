@@ -1,4 +1,4 @@
-import { clockTimesIn, timeShiftIn } from '../classifier/clock-time.js';
+import { clockTimesIn, naHourReadings, timeShiftIn } from '../classifier/clock-time.js';
 import { namesDay } from '../classifier/own-sentence.js';
 import { isVerb } from '../resolver/answer-reader.js';
 import { sameWord } from '../resolver/clarify.js';
@@ -35,6 +35,27 @@ const DAYPARTS = new Set([
   'ночи',
 ]);
 
+/**
+ * Глагол дела не в неопределённой форме (29.09.2026): `isVerb` узнаёт
+ * «заказать», но не «закажи» и не «заберу», и «Закажи такси на 9» шло
+ * короткой поправкой — решала модель резолвера, а она могла счесть его
+ * новым делом. С глаголом это повтор дела с новым часом, его ловит отсев
+ * повторов кодом. Закрытый список частых дел: окончания «-и», «-ь»
+ * носят и существительные («такси», «ночь»). «Давай» — связка, не дело.
+ */
+const DEED_FORMS = new Set(
+  [
+    'закажи закажу купи куплю позвони позвоню забери заберу отвези отвезу привези привезу',
+    'перенеси перенесу напиши напишу сходи схожу съезди съезжу оплати оплачу вызови вызову',
+    'отправь отправлю поставь поставлю сделай сделаю возьми возьму отнеси отнесу принеси',
+    'принесу приготовь приготовлю убери уберу найди найду проверь проверю спроси спрошу',
+    'скажи скажу передай передам узнай узнаю договорись договорюсь встреть встречу',
+    'закажите купите позвоните заберите отвезите',
+  ]
+    .join(' ')
+    .split(' '),
+);
+
 /** Просьба завести новое: «запиши к врачу в пятницу» — не перенос. */
 const CREATE = new Set(['запиши', 'запишите', 'запомни', 'напомни', 'внеси', 'заведи', 'создай']);
 
@@ -51,10 +72,13 @@ const MAX_WORDS = 7;
 export function patchesKnownItem(text: string, openTitles: readonly string[]): boolean {
   const words = wordsOf(text);
   if (words.length === 0 || words.length > MAX_WORDS) return false;
-  if (words.some((word) => isVerb(word) || CREATE.has(word))) return false;
+  if (words.some((word) => isVerb(word) || DEED_FORMS.has(word) || CREATE.has(word))) return false;
 
+  // «Кстати такси на 9» — «на N» в конце у записанного дела тоже час (бой
+  // 29.09.2026, 02:33: без этого завелось второе дело «Заказать такси на 9»).
   const timed =
     clockTimesIn(text).length > 0 ||
+    naHourReadings(text) !== undefined ||
     timeShiftIn(text) !== undefined ||
     namesDay(text) ||
     words.some((word) => DAYPARTS.has(word));

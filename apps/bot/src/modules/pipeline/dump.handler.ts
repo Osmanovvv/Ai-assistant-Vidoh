@@ -73,6 +73,7 @@ import {
   clockTimesIn,
   fromNowIn,
   hourWithoutDay,
+  naHourReadings,
   timeShiftIn,
   withoutClockPhrase,
 } from '../classifier/clock-time.js';
@@ -2821,6 +2822,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         unit.text;
       const carriesTime =
         clockTimesIn(spoken).length > 0 ||
+        // «Закажи такси на 9» у записанного такси (бой 29.09.2026): час —
+        // правка его прочтёт, если кроме «на 9» в словах только само дело.
+        naHourReadings(spoken) !== undefined ||
         timeShiftIn(spoken) !== undefined ||
         fromNowIn(spoken) !== undefined ||
         (unit.deadline !== undefined && namesDay(spoken));
