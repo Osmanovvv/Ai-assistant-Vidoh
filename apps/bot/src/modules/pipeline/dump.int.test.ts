@@ -10277,6 +10277,92 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect((await journal()).map((row) => row.reason)).toEqual(['resolver.nothingToClose']);
   });
 
+  /**
+   * Бой 29.09.2026, 10:48: «…сегодня пойти на борьбу. Позаниматься. И ещё
+   * я сдал на права.» — итог записал три дела, а под вопросом «Оставить как
+   * есть или выбрать главное?» встало «Такого дела у меня не было — убирать
+   * нечего». Новость — не сделанное дело. Внутри выгрузки с делами — тот же
+   * живой ответ, что и в одиночку, но строкой над итогом: сначала коротко
+   * по-человечески, потом дела (её текст «про эмоции», 16.09.2026). Без
+   * смайлика и без вопроса: в сообщении уже значки сфер и её вопрос.
+   */
+  const withNews = (deed: string, news: string): string =>
+    JSON.stringify({
+      crisis: false,
+      segments: [
+        { intent: 'DUMP', text: deed },
+        { intent: 'COMPLETE', text: news },
+      ],
+    });
+
+  it('новость внутри выгрузки с делами — живая строка над итогом, без «убирать нечего»', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    const llm = echoingLlm({
+      router: withNews('Купить хлеб', 'И ещё я сдал на права'),
+      resolver: noSuchDeed,
+      talker: talked('Поздравляю 🙌 Это большое дело.'),
+    });
+
+    const { replies, talker } = await say('Купить хлеб. И ещё я сдал на права', llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(talker[0]).toContain('Реплика: И ещё я сдал на права');
+    expect(talker[0]).toContain('Такого дела в её записях нет');
+    expect(talker[0]).toContain('Свой вопрос не задавай');
+    const summary = replies.find((text) => text.includes('Записала')) ?? '';
+    expect(summary.startsWith('Поздравляю. Это большое дело.\n\n')).toBe(true);
+    expect(summary).not.toContain(defaultTexts.resolver.nothingToClose);
+    expect(summary).not.toContain('🙌');
+    expect(replies.join('\n')).not.toContain(defaultTexts.resolver.nothingToClose);
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(saved.map((row) => row.text)).toContain('Купить хлеб');
+    const drafts = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, true)));
+    expect(drafts.map((row) => row.text)).toEqual(['И ещё я сдал на права']);
+    expect((await journal()).map((row) => row.reason)).toContain(
+      'resolver.nothingToClose — ответила модель',
+    );
+  });
+
+  it('новость внутри выгрузки, модель промолчала — итог и прежняя строка под ним', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    const llm = echoingLlm({
+      router: withNews('Купить хлеб', 'Уже вынесла мусор'),
+      resolver: noSuchDeed,
+      talker: talked(''),
+    });
+
+    const { replies } = await say('Купить хлеб. Уже вынесла мусор', llm, prompts);
+
+    const summary = replies.find((text) => text.includes('Записала')) ?? '';
+    expect(summary.endsWith(`\n\n${defaultTexts.resolver.nothingToClose}`)).toBe(true);
+  });
+
+  it('новость внутри выгрузки, живой ответ выключен — как раньше, модель не зовётся', async () => {
+    const prompts = await talkOn();
+    await withSomeDeed();
+    await putSetting(testDb(), { name: 'talkLive', value: '0' });
+    const llm = echoingLlm({
+      router: withNews('Купить хлеб', 'И ещё я сдал на права'),
+      resolver: noSuchDeed,
+      talker: talked('Поздравляю 🙌'),
+    });
+
+    const { replies, talker } = await say('Купить хлеб. И ещё я сдал на права', llm, prompts);
+
+    expect(talker).toHaveLength(0);
+    const summary = replies.find((text) => text.includes('Записала')) ?? '';
+    expect(summary.endsWith(`\n\n${defaultTexts.resolver.nothingToClose}`)).toBe(true);
+  });
+
   it('выключено — «такого дела нет» и «ничего не записано» словарём, модель не зовётся', async () => {
     const prompts = await talkOn();
     await withSomeDeed();

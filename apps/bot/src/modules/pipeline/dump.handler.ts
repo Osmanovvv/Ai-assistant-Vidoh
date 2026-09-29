@@ -823,6 +823,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const sayParked = (line: string, unchangedOf?: string): void => {
       parkedWords.push({ line, unchangedOf });
     };
+    /**
+     * Слова «сделала», для которых дела не нашлось: «И ещё я сдал на
+     * права» (бой 29.09.2026). Живой ответ реагирует на них, а не на
+     * всю выгрузку.
+     */
+    const absentSaid: string[] = [];
     /** Дела, изменённые этой выгрузкой: о них «менять нечего» не говорится. */
     const changedHere = new Set<string>();
     const parkedLines = (): string[] => [
@@ -1877,6 +1883,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         outcome.said === 'unchanged' &&
         outcome.timeUnclear === undefined &&
         outcome.noTimeToShift !== true;
+      if (outcome.said === 'absent') absentSaid.push(segment.text);
       sayParked(
         parkedLine(outcome.said, outcome.timeUnclear, outcome.noTimeToShift),
         plainUnchanged ? outcome.itemId : undefined,
@@ -3449,9 +3456,51 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     // §13.2: под разбором три кнопки, и одна из них ведёт к остальным
     // делам. Без неё человек не знал, куда они делись.
     // Припаркованная правка — строкой под ответом, а не молча (A4).
+    /**
+     * «И ещё я сдал на права» внутри выгрузки с делами (бой 29.09.2026,
+     * 10:48): маршрутизатор отдал «сделано», такого дела нет, и под
+     * вопросом итога вставало «Такого дела у меня не было — убирать
+     * нечего». Как и в одиночку — живой ответ (docs/29), но строкой над
+     * итогом: сначала коротко по-человечески, потом дела (её текст «про
+     * эмоции», 16.09.2026). Без вопроса и смайлика: в сообщении уже её
+     * вопрос и значки сфер. Модель промолчала или страж не пропустил —
+     * прежняя строка под итогом.
+     */
+    const newsTalk =
+      !onlyMovedRepeats &&
+      feelingsTalk === undefined &&
+      absentSaid.length > 0 &&
+      parkedLines().includes(texts.resolver.nothingToClose) &&
+      (await talkLiveOn())
+        ? (
+            await askTalk(ai, {
+              facts: talkFacts({
+                said: absentSaid.join(' '),
+                now,
+                timeZone: context.timeZone,
+                texts,
+                overview: open,
+                mood,
+                questionOpen: true,
+                dialog,
+                context: 'noSuchDeed',
+              }),
+              mood,
+              questionOpen: true,
+              bare: true,
+              userId: batch.userId,
+              batchId: batch.id,
+            })
+          ).line
+        : undefined;
+    if (newsTalk !== undefined) await journalTalk('resolver.nothingToClose', newsTalk);
+    const underLines = parkedLines().filter(
+      (line) => newsTalk === undefined || line !== texts.resolver.nothingToClose,
+    );
+    const withNews = newsTalk === undefined ? replyText : `${newsTalk}\n\n${replyText}`;
     if (!onlyMovedRepeats) {
       await answer(
-        parkedLines().length > 0 ? `${replyText}\n\n${parkedLines().join('\n')}` : replyText,
+        underLines.length > 0 ? `${withNews}\n\n${underLines.join('\n')}` : withNews,
         presented.reply.buttons,
       );
     }
