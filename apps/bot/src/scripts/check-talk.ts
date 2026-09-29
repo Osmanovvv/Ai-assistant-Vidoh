@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { Item } from '../db/schema.js';
 import { feelingsOnlyReply } from '../modules/presenter/presenter.service.js';
 import { moodOf } from '../modules/presenter/mood.js';
+import { greetingLine, onlyGreeting } from '../modules/presenter/greeting.js';
 import { onlyThanks } from '../modules/presenter/thanks.js';
 import { detectByMarkers } from '../modules/safety/crisis.js';
 import { asksToRemind, asksWillRemind } from '../modules/scheduler/remind-request.js';
@@ -146,6 +147,9 @@ function nowReply(say: string): { readonly reply: string; readonly byCode: boole
   const texts = defaultTexts;
   if (detectByMarkers(say).detected) return { reply: 'кризисный ответ (код)', byCode: true };
   if (onlyThanks(say)) return { reply: texts.answer.thanks, byCode: true };
+  if (onlyAck(say)) return { reply: texts.answer.ack, byCode: true };
+  // Приветствие — сразу фразой словаря по часам человека (29.09.2026).
+  if (onlyGreeting(say)) return { reply: greetingLine(texts, NOW, 'Europe/Moscow'), byCode: true };
   if (asksToRemind(say) || asksWillRemind(say)) {
     return { reply: 'ответ про напоминание (код)', byCode: true };
   }
@@ -157,13 +161,12 @@ function nowReply(say: string): { readonly reply: string; readonly byCode: boole
 
 /**
  * Дойдёт ли реплика до модели живого ответа на бою: кризис, «спасибо»,
- * «напомнишь?», «какие ещё», «ок» и чувства по её списку слов (её фразы,
- * замер 28.09.2026) отвечает код.
+ * «ок», приветствие, «напомнишь?», «какие ещё» и чувства по её списку
+ * слов (её фразы, замер 28.09.2026) отвечает код.
  */
 function reachesTalker(one: Case): boolean {
   if (one.kind.startsWith('код:')) return false;
-  if (nowReply(one.say).byCode) return false;
-  return !onlyAck(one.say);
+  return !nowReply(one.say).byCode;
 }
 
 /** По `n` из каждого раздела, равномерно: замер дешевле, разнообразие то же. */

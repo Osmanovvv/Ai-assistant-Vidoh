@@ -1,4 +1,5 @@
 import { clockTimesIn, naAsTimeAnswer, withoutClockPhrase } from '../classifier/clock-time.js';
+import { withoutGreeting } from '../presenter/greeting.js';
 import { moodOf } from '../presenter/mood.js';
 import { onlyThanks } from '../presenter/thanks.js';
 import { startsAsQuestion } from '../resolver/answer.js';
@@ -130,7 +131,9 @@ const NO_NAME = [
  * именем не становятся.
  */
 export function spokenName(text: string): string | undefined {
-  const said = text.trim().replace(/[.!]+$/u, '');
+  // «Привет, я Оля» — приветствие именем не становится, «Привет» один —
+  // имени нет (29.09.2026: бот назвал бы человека «Привет»).
+  const said = withoutGreeting(text).replace(/[.!]+$/u, '');
   if (said === '' || text.includes('?')) return undefined;
   if (onlyThanks(said) || moodOf(said) !== undefined || startsAsQuestion(said)) return undefined;
   if (NO_NAME.some((phrase) => hasPhrase(said, phrase))) return undefined;

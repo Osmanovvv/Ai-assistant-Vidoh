@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { onlyGreeting } from '../modules/presenter/greeting.js';
 import { onlyThanks } from '../modules/presenter/thanks.js';
+import { onlyAck } from '../modules/talk/talk.js';
 import { onlyDoneWords, patchesKnownItem } from '../modules/router/known-patch.js';
 import { asksToRemind, asksWillRemind } from '../modules/scheduler/remind-request.js';
 
@@ -81,6 +83,8 @@ function parse(text: string): Case[] {
 /** Что решил бы код до маршрутизатора. */
 function codeReads(say: string): string {
   if (onlyThanks(say)) return 'спасибо';
+  // Приветствие и «ок» — ответ сразу в приёме, без маршрутизатора (29.09.2026).
+  if (onlyGreeting(say) || onlyAck(say)) return 'SMALLTALK';
   if (asksToRemind(say) || asksWillRemind(say)) return 'напомнить';
   return 'маршрутизатор';
 }
