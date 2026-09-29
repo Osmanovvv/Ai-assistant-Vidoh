@@ -47,6 +47,7 @@ import {
   RESOLVER_SCHEMA_NAME,
   ROUTER_SCHEMA_NAME,
   TALKER_SCHEMA_NAME,
+  SPLITTER_SCHEMA_NAME,
 } from '../ai/schemas/index.js';
 import { attachMessageToBatch, closeBatchOnSilence } from '../buffer/buffer.service.js';
 import { MockEmbeddingProvider } from '../embedder/providers/mock.js';
@@ -147,6 +148,7 @@ const MARKERS = {
   answerer: 'ОТВЕТ',
   reader: 'ЧТЕНИЕ',
   talker: 'РАЗГОВОР',
+  splitter: 'ПОКУПКИ',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -267,6 +269,9 @@ function echoingLlm(
         case 'talker':
           // Пусто — сказать нечего: ответ словарный, как без модели.
           return JSON.stringify({ reply: '' });
+        case 'splitter':
+          // Пусто — одна покупка: дело не делится, как без модели.
+          return JSON.stringify({ positions: [] });
       }
     },
   });
@@ -856,6 +861,106 @@ describe('разбор', () => {
       .from(items)
       .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
     expect(saved.map((item) => item.text)).toEqual(['Купить овощи, мясо и специи']);
+  });
+
+  /**
+   * Покупки позициями (правка заказчицы 29.09.2026): «Купить овощи, мясо и
+   * специи» — три дела; где отдельные покупки, решает модель, код
+   * проверяет (`purchase-split.ts`). Подтверждение — одной строкой, как у
+   * неё: «Записала в «Покупки»: Купить овощи, мясо и специи.».
+   */
+  const LIST = 'Купить овощи, мясо и специи';
+  const shopping = (text: string, positions: readonly string[] | undefined) =>
+    echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+      extractor: () =>
+        JSON.stringify({ units: [{ text: LIST, isProject: false, isEmotion: false }] }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text: unitsOf(text),
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'покупки',
+              isProject: false,
+              deadline: '',
+              deadlineAccuracy: 'none',
+              deadlineText: '',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
+          ],
+        }),
+      ...(positions === undefined ? {} : { splitter: JSON.stringify({ positions }) }),
+    });
+  const unitsOf = (text: string): string =>
+    text.replace(/^добавь ещё\s+/u, '').replace(/^./u, (first) => first.toUpperCase());
+
+  async function purchasesOn(level: '0' | '1' | '2'): Promise<void> {
+    await seedPrompt(testDb(), {
+      stage: 'splitter',
+      version: 'splitter@test',
+      prompt: MARKERS.splitter,
+      schemaName: SPLITTER_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'splitter', 'splitter@test');
+    await putSetting(testDb(), { name: 'purchaseSplit', value: level });
+  }
+
+  async function openTitles(): Promise<string[]> {
+    const rows = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)))
+      .orderBy(asc(items.sourceOrder));
+    return rows.map((row) => row.text);
+  }
+
+  const splitterCalls = (llm: MockLlmProvider): number =>
+    llm.requests.filter((request) => stageOf(request) === 'splitter').length;
+
+  it('покупки позициями включены — три дела, подтверждение одной строкой её словами', async () => {
+    await purchasesOn('1');
+    const text = `добавь ещё ${LIST.toLowerCase()}`;
+    const llm = shopping(text, ['овощи', 'мясо', 'специи']);
+
+    const all = await dumpOf(text, llm);
+
+    expect(await openTitles()).toEqual(['Купить овощи', 'Купить мясо', 'Купить специи']);
+    expect(all.at(-1)).toBe('Записала в «Покупки»: Купить овощи, мясо и специи.');
+    expect(splitterCalls(llm)).toBe(1);
+  });
+
+  it('выключено — одно дело, модель покупок не зовётся', async () => {
+    await purchasesOn('0');
+    const llm = shopping(LIST, ['овощи', 'мясо', 'специи']);
+
+    await dumpOf(LIST, llm);
+
+    expect(await openTitles()).toEqual([LIST]);
+    expect(splitterCalls(llm)).toBe(0);
+  });
+
+  it('модель выдумала позицию — проверка не пропускает, дело одно', async () => {
+    await purchasesOn('1');
+    const llm = shopping(LIST, ['овощи', 'мясо', 'хлеб']);
+
+    await dumpOf(LIST, llm);
+
+    expect(await openTitles()).toEqual([LIST]);
+  });
+
+  it('одна покупка на троих — модель не делит, дело одно', async () => {
+    await purchasesOn('2');
+    const text = 'Купить подарок маме, папе и бабушке';
+    const llm = shopping(text, []);
+
+    await dumpOf(text, llm);
+
+    expect(await openTitles()).toEqual([text]);
+    expect(splitterCalls(llm)).toBe(1);
   });
 
   it('первое дело с часом — карточка 04 «Записала. Напомню в нужный момент.» с кнопками; второе — без картинки (визуал 04)', async () => {

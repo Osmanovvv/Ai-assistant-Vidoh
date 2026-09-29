@@ -40,6 +40,8 @@ const BY_STAGE: Readonly<Partial<Record<AiStage, number>>> = {
   reader: STRUCTURAL,
   // Живой ответ вне сценария — та же лёгкая свобода слова, что у строки.
   talker: PRESENTER,
+  // Деление покупки на позиции — выбор кусков текста, без свободы.
+  splitter: STRUCTURAL,
 };
 
 /**

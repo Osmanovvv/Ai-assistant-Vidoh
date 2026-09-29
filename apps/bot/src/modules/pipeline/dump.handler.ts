@@ -102,6 +102,7 @@ import { loadContextFacts, markLineMentions } from '../presenter/context-pack.re
 import { moodOf } from '../presenter/mood.js';
 import { summarizeDump } from '../presenter/summary.js';
 import { saysThanks } from '../presenter/thanks.js';
+import { askPurchaseTitles } from '../classifier/purchase-split.js';
 import { greetingLine, onlyGreeting, salutationAt } from '../presenter/greeting.js';
 import { withCapital } from '../items/item-text.js';
 import { showFirstReminderCard } from '../scheduler/first-reminder-card.js';
@@ -1061,6 +1062,23 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
 
     // Полная модель или лёгкая — решается здесь и дальше не меняется.
     const heavy = limited.degrade ? aiLight : ai;
+
+    /**
+     * Покупки позициями (правка заказчицы 29.09.2026): «Купить овощи, мясо
+     * и специи» — три дела. Выключатель `purchase.split`: 0 — выключено,
+     * 1 — лёгкая модель, 2 — полная (при мягком лимите — лёгкая). Модель
+     * делит, код проверяет (`purchase-split.ts`).
+     */
+    const purchaseLevel = (await deps.settings?.number('purchaseSplit')) ?? 0;
+    const purchases =
+      purchaseLevel === 0
+        ? undefined
+        : async (text: string): Promise<readonly string[] | undefined> =>
+            await askPurchaseTitles(purchaseLevel === 1 ? aiLight : heavy, {
+              text,
+              userId: batch.userId,
+              batchId: batch.id,
+            });
 
     // ── Намерения ───────────────────────────────────────────────────────
     /**
@@ -2639,6 +2657,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const topics = await topicsFor(db, batch.userId);
 
     const classified = await classifyUnits(heavy, {
+      purchases,
       units: extracted.units,
       // §3.8б: «запомни» живёт в сказанном, а не в единицах.
       spoken: dumpText,
@@ -3058,6 +3077,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
 
       const lateClassified = await classifyUnits(heavy, {
+        purchases,
         units: lateExtracted.units,
         spoken: spokenLate,
         // Правилам дня — речь целиком, как и у основного прохода.
@@ -3220,6 +3240,21 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * от версии к версии, и «Записала» приходило бы через раз. К форме
      * ответа человек привыкает быстрее, чем к чему бы то ни было ещё.
      */
+    /**
+     * Позиции одной покупки — одно сказанное дело (правка заказчицы
+     * 29.09.2026): «добавь ещё купить овощи, мясо и специи» остаётся
+     * быстрым добавлением и отвечает её строкой «Записала в «Покупки»:
+     * Купить овощи, мясо и специи.», а в ветке — три позиции. Считаются
+     * те же единицы, что и в счёте ниже: новые и узнанные повторы.
+     */
+    const purchaseGroups = new Map<string, number>();
+    for (const unit of [...fresh, ...split.repeats.map((one) => one.unit)]) {
+      if (unit.purchaseOf === undefined) continue;
+      purchaseGroups.set(unit.purchaseOf, (purchaseGroups.get(unit.purchaseOf) ?? 0) + 1);
+    }
+    const purchaseExtra = [...purchaseGroups.values()].reduce((sum, count) => sum + count - 1, 0);
+    const [purchaseTitle] = purchaseGroups.size === 1 ? [...purchaseGroups.keys()] : [];
+
     const quickAdd = isQuickAdd({
       /**
        * Во время онбординга режим не включается.
@@ -3252,7 +3287,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * быть быстрым добавлением и отвечало полным разбором: человек
        * сказал одно дело, а получил список.
        */
-      created: saved.length + split.known.length + late.known.length,
+      created: saved.length + split.known.length + late.known.length - purchaseExtra,
       hidden: selection.hidden,
       emotions: composition.emotions,
       spoken: dumpText,
@@ -3281,7 +3316,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             // Тема у записи всегда есть — без своей она ложится в тему по
             // умолчанию; пустота здесь только на бумаге схемы.
             topic: withCapital(added.topic ?? topics.defaultName),
-            title: addedLine?.title ?? withCapital(added.text),
+            title:
+              purchaseTitle === undefined
+                ? (addedLine?.title ?? withCapital(added.text))
+                : withCapital(purchaseTitle),
             ...(addedLine === undefined || addedLine.when === '' ? {} : { when: addedLine.when }),
           };
 

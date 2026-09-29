@@ -1,0 +1,1 @@
+ALTER TYPE "public"."ai_stage" ADD VALUE 'splitter';

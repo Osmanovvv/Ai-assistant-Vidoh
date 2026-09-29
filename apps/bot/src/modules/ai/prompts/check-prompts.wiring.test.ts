@@ -96,7 +96,10 @@ describe('связка: сторож печатает причину и сове
      */
     // `reader` (28.09.2026): без промпта ответ на вопрос бота узнаёт код.
     // `talker` (28.09.2026): без промпта там, где у бота нет своего ответа, — словарь.
-    expect(OPTIONAL_STAGES).toEqual(new Set(['presenter', 'answerer', 'reader', 'talker']));
+    // `splitter` (29.09.2026): без промпта покупка остаётся одним делом.
+    expect(OPTIONAL_STAGES).toEqual(
+      new Set(['presenter', 'answerer', 'reader', 'talker', 'splitter']),
+    );
     expect(script, 'необязательные этапы не отделены от обязательных').toContain('OPTIONAL_STAGES');
     expect(script, 'необязательный этап не должен ронять выкладку').toMatch(
       /missing|необязательн/u,
