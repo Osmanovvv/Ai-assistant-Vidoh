@@ -485,7 +485,9 @@ describe('команды не попадают в выгрузку', () => {
 
     const dumps = await testDb().select().from(batches);
     expect(dumps).toHaveLength(0);
-    expect(calls.map((call) => call.payload['text'])).not.toContain('Слушаю.');
+    expect(calls.map((call) => call.payload['text'])).not.toContain(
+      defaultTexts.listening.acknowledged,
+    );
   });
 
   it('команда не считается согласием на обработку', async () => {

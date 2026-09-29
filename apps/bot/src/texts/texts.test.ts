@@ -159,3 +159,10 @@ describe('запрещённые шаблоны словаря (§13, задач
     expect(decorated).toEqual([]);
   });
 });
+
+describe('пока бот слушает — многоточие (правка заказчицы 29.09.2026)', () => {
+  it('«Слушаю…» и «Секунду, слушаю запись…» — видно, что идёт работа', () => {
+    expect(defaultTexts.listening.acknowledged).toBe('Слушаю…');
+    expect(defaultTexts.listening.working).toBe('Секунду, слушаю запись…');
+  });
+});
