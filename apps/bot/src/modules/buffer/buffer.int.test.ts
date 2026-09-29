@@ -454,6 +454,26 @@ describe('combineBatch', () => {
     await expect(combineBatch(testDb(), batchId)).resolves.toBe('наговорила голосом');
   });
 
+  it('фразу, порванную «?» распознавания, склеивает — только у голосового (бой 29.09.2026)', async () => {
+    const { batchId } = await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({
+        transcript: 'Спросить рецепт? Рыбы у Анжелы, так еще нужно позвонить маме.',
+        receivedAt: at(1),
+      }),
+      now: at(0),
+    });
+    await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text: 'Купить подарок? Маме на юбилей.', receivedAt: at(2) }),
+      now: at(1_000),
+    });
+
+    await expect(combineBatch(testDb(), batchId)).resolves.toBe(
+      'Спросить рецепт рыбы у Анжелы, так еще нужно позвонить маме.\nКупить подарок? Маме на юбилей.',
+    );
+  });
+
   it('смешивает голос и текст в одном порядке', async () => {
     const { batchId } = await attachMessageToBatch(testDb(), {
       userId,
