@@ -133,6 +133,12 @@ const NO_EMOJI: ReadonlySet<string> = new Set();
 export interface TalkCheckOptions {
   readonly mood?: Mood | undefined;
   readonly questionOpen?: boolean | undefined;
+  /**
+   * Строка встаёт в чужое сообщение — над итогом выгрузки («И ещё я сдал
+   * на права», бой 29.09.2026): там уже значки сфер, а её правило — 0–1
+   * эмодзи на сообщение. Смайлик убирается, как лишний.
+   */
+  readonly bare?: boolean | undefined;
 }
 
 function limitsFor(options: TalkCheckOptions): VoiceLimits {
@@ -144,7 +150,12 @@ function limitsFor(options: TalkCheckOptions): VoiceLimits {
     allowMust: true,
     countsFromFacts: true,
     freeNumbers: true,
-    emoji: options.mood === 'heavy' ? NO_EMOJI : options.mood === undefined ? TONE : TONE_FEELINGS,
+    emoji:
+      options.bare === true || options.mood === 'heavy'
+        ? NO_EMOJI
+        : options.mood === undefined
+          ? TONE
+          : TONE_FEELINGS,
   };
 }
 

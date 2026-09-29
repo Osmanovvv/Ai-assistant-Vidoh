@@ -320,4 +320,26 @@ describe('обращение к модели', () => {
     );
     expect(outcome.line).toBe('Я здесь');
   });
+
+  /**
+   * Строка над итогом выгрузки («И ещё я сдал на права», бой 29.09.2026):
+   * в сообщении уже есть значки сфер и вопрос «Оставить как есть или
+   * выбрать главное?» — её правило 0–1 эмодзи и один вопрос на сообщение.
+   */
+  it('строка внутри итога — смайлик убран, вопрос не пропущен', async () => {
+    const news = factsFor('И ещё я сдал на права', { questionOpen: true, context: 'noSuchDeed' });
+    const glad = await askTalk(
+      deps(TALKER_SCHEMA_NAME),
+      { facts: news, questionOpen: true, bare: true },
+      asking({ reply: 'Поздравляю 🙌 Это большое дело.' }).ask,
+    );
+    expect(glad.line).toBe('Поздравляю. Это большое дело.');
+
+    const asked = await askTalk(
+      deps(TALKER_SCHEMA_NAME),
+      { facts: news, questionOpen: true, bare: true },
+      asking({ reply: 'Поздравляю! Как ощущения?' }).ask,
+    );
+    expect(asked.line).toBeUndefined();
+  });
 });
