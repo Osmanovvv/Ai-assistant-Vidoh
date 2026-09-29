@@ -4,6 +4,7 @@ import { SETTINGS } from '../settings/settings.repo.js';
 import type { Database, Executor } from '../../infra/db.js';
 import { batches, messagesRaw, type Batch } from '../../db/schema.js';
 import { MAX_BATCH_AGE_MS } from './batch-age.js';
+import { rejoinBrokenQuestions } from './broken-question.js';
 
 /**
  * Буфер выгрузки и окно тишины (задачи 1.12 и 1.13).
@@ -374,8 +375,12 @@ export async function combineBatch(db: Executor, batchId: string): Promise<strin
     .where(eq(messagesRaw.batchId, batchId))
     .orderBy(asc(messagesRaw.receivedAt), asc(messagesRaw.tgMessageId));
 
+  // Расшифровку — со склеенной фразой, которую распознавание порвало «?»
+  // (бой 29.09.2026: «Спросить рецепт? Рыбы у Анжелы»); текст — как есть.
   const parts = rows
-    .map((row) => (row.transcript ?? row.text ?? '').trim())
+    .map((row) =>
+      (row.transcript === null ? (row.text ?? '') : rejoinBrokenQuestions(row.transcript)).trim(),
+    )
     .filter((part) => part !== '');
 
   const combined = parts.join('\n');
