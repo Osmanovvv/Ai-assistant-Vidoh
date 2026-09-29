@@ -144,6 +144,8 @@ export const reserved: TextProfile = {
     nothingToPick: 'Выбирать пока не из чего — всё записано, вернёмся, когда появится.',
 
     added: (topic, title) => `Записала в «${topic}»: ${title}.`,
+    // Со сроком — дата после названия (правка заказчицы 29.09.2026).
+    addedWithDate: (topic, title, date) => `Записала в «${topic}»: ${title} · ${date}.`,
     buttonDoNow: 'Сделать сейчас',
     buttonShowAll: 'Разобрать всё',
     buttonLater: 'Оставить на потом',

@@ -19,6 +19,7 @@ import {
   naDateEcho,
   unclearClockOf,
 } from './clock-time.js';
+import { splitItems } from './split-actions.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { looksLikeSomedayTask } from './someday-task.js';
 import {
@@ -1011,7 +1012,7 @@ export async function classifyUnits(
     };
   }
 
-  const { items, corrections } = correctItems(outcome.value, {
+  const { items: corrected, corrections } = correctItems(outcome.value, {
     ...(params.spoken === undefined ? {} : { spoken: params.spoken }),
     topics: params.topics,
     defaultTopic: params.defaultTopic,
@@ -1023,6 +1024,20 @@ export async function classifyUnits(
     promptVersion: outcome.promptVersion,
     logger: deps.logger,
   });
+
+  /**
+   * Два действия через запятую — два дела (правка заказчицы 29.09.2026:
+   * «Созвониться с Ириной Михайловной, проверить документы по кассе» —
+   * «отдельные 2 задачи, не через запятую»). После поправок: сверка
+   * слов записей с единицами идёт по номеру и деления не видит.
+   */
+  const items = splitItems(corrected);
+  if (items.length > corrected.length) {
+    deps.logger?.info(
+      { added: items.length - corrected.length },
+      'Дело из нескольких действий через запятую разделено',
+    );
+  }
 
   return {
     ok: true,

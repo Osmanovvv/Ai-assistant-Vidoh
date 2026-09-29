@@ -413,7 +413,14 @@ export interface PresentParams {
    * Разберём, когда дойдём» не показывало, что именно записано, а
    * «когда дойдём» читалось как «потом». Сфера и дело — в реплике.
    */
-  readonly quickAdd?: { readonly topic: string; readonly title: string } | undefined;
+  readonly quickAdd?:
+    | {
+        readonly topic: string;
+        readonly title: string;
+        /** Срок словами списков («завтра», «сегодня, 19:00», «03.10»); нет срока — нет. */
+        readonly when?: string | undefined;
+      }
+    | undefined;
 }
 
 export interface PresentResult {
@@ -441,10 +448,17 @@ export function presentDump(params: PresentParams): PresentResult {
       reply: {
         // Точку ставит шаблон; своя у названия дала бы «…в понедельник..»
         // (прогон Никиты 27.09.2026, 15:22).
-        text: texts.answer.added(
-          params.quickAdd.topic,
-          params.quickAdd.title.replace(/\s*\.+$/u, ''),
-        ),
+        text:
+          params.quickAdd.when === undefined
+            ? texts.answer.added(
+                params.quickAdd.topic,
+                params.quickAdd.title.replace(/\s*\.+$/u, ''),
+              )
+            : texts.answer.addedWithDate(
+                params.quickAdd.topic,
+                params.quickAdd.title.replace(/\s*\.+$/u, ''),
+                params.quickAdd.when,
+              ),
         buttons: [],
       },
       reason: 'быстрое добавление',
