@@ -490,7 +490,8 @@ describe('меню', () => {
 
     await bot.handleUpdate(callbackUpdate(`${MENU_ACTION.topicPrefix}${toShortId(topicId)}`));
     const itemsScreen = calls.filter((call) => call.method === 'editMessageText').at(-1);
-    expect(textOf(itemsScreen)).toBe(defaultTexts.summary.header('здоровье'));
+    // Просто название темы (правка заказчицы 29.09.2026: без «что здесь есть»).
+    expect(textOf(itemsScreen)).toBe('здоровье');
     expect(keyboardOf(itemsScreen).map((button) => button.text)).toContain('к врачу');
 
     const cardButton = keyboardOf(itemsScreen).find((button) => button.text === 'к врачу');

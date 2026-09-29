@@ -11,6 +11,7 @@ import pg from 'pg';
 import * as schema from '../db/schema.js';
 import { batches, items, telegramUpdates, topics, users, userSettings } from '../db/schema.js';
 import type { AiStage } from '../db/schema.js';
+import { isTopicSummary } from '../e2e/summary-mark.js';
 import { startTelegramStub, type TelegramStub } from '../e2e/telegram-stub.js';
 import { postUpdate, textUpdate } from '../e2e/updates.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
@@ -297,16 +298,14 @@ function lastRows(from: number): string[][] {
   return (markup?.inline_keyboard ?? []).map((row) => row.map((one) => one.text));
 }
 
-/** Последняя реплика человеку — не сводка ветки. */
-const SUMMARY_MARK = defaultTexts.summary.header('').trim();
-
 function answerToPerson(from: number): string {
   const texts = stub.calls
     .slice(from)
     .filter((one) => one.method === 'sendMessage' || one.method === 'editMessageText')
     .filter((one) => one.payload['message_thread_id'] === undefined)
     .map((one) => (typeof one.payload['text'] === 'string' ? one.payload['text'] : ''))
-    .filter((text) => text !== '' && !text.includes(SUMMARY_MARK));
+    // Последняя реплика человеку — не сводка ветки (ветки стенда — TOPICS).
+    .filter((text) => text !== '' && !isTopicSummary(text, TOPICS));
 
   return texts.at(-1) ?? '';
 }

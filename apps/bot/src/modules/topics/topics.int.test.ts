@@ -294,6 +294,18 @@ describe('перенос записи между темами', () => {
 });
 
 describe('текст сводки', () => {
+  it('заголовок — просто название темы, без «что здесь есть» (правка заказчицы 29.09.2026)', () => {
+    const text = buildSummary({
+      topicName: 'семья',
+      items: [{ text: 'Написать мужу список продуктов', deadlineAt: null } as never],
+      texts: defaultTexts,
+      timeZone: MOSCOW,
+    });
+
+    expect(text).toBe('семья\n\n— Написать мужу список продуктов');
+    expect(text).not.toContain('что здесь есть');
+  });
+
   it('заголовок, строки и дата', () => {
     const text = buildSummary({
       topicName: 'здоровье',
