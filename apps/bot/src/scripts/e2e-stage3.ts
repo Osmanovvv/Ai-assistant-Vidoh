@@ -30,6 +30,7 @@ import { STEP } from '../modules/onboarding/onboarding.service.js';
 import { activatePrompt, seedPrompt } from '../modules/ai/prompts/seed.js';
 import { SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
 import { setItemEmbedding } from '../modules/embedder/embedder.service.js';
+import { isTopicSummary } from '../e2e/summary-mark.js';
 import { startTelegramStub, type TelegramStub } from '../e2e/telegram-stub.js';
 import { callbackUpdate, postUpdate, textUpdate } from '../e2e/updates.js';
 import { defaultTexts } from '../texts/index.js';
@@ -367,10 +368,15 @@ function lastKeyboard(): Keyboard {
  * сводки начали обновляться после правок, это не мешало; после — сводка
  * стала выглядеть последним ответом человеку и роняла проверку.
  *
- * Заголовок берётся из словаря, а не переписан сюда: правка формулировки
- * не должна ломать тест, который к ней отношения не имеет.
+ * С 29.09.2026 заголовок — просто название темы (правка заказчицы),
+ * поэтому признак — ветки, которые бот завёл за прогон (`isTopicSummary`).
  */
-const SUMMARY_MARK = defaultTexts.summary.header('').trim();
+function topicNames(): string[] {
+  return stub.calls
+    .filter((call) => call.method === 'createForumTopic')
+    .map((call) => call.payload['name'])
+    .filter((name): name is string => typeof name === 'string');
+}
 
 /** Последний ответ человеку, не сводка ветки. */
 function answerToPerson(): string {
@@ -381,7 +387,8 @@ function answerToPerson(): string {
           (call.method === 'sendMessage' || call.method === 'editMessageText') &&
           call.payload['message_thread_id'] === undefined &&
           !(
-            typeof call.payload['text'] === 'string' && call.payload['text'].includes(SUMMARY_MARK)
+            typeof call.payload['text'] === 'string' &&
+            isTopicSummary(call.payload['text'], topicNames())
           ),
       )
       .map((call) => (typeof call.payload['text'] === 'string' ? call.payload['text'] : ''))

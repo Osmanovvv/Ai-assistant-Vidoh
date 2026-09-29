@@ -417,7 +417,9 @@ export const reserved: TextProfile = {
   },
 
   summary: {
-    header: (topic) => `${topic} — что здесь есть:`,
+    // Просто название темы (правка заказчицы 29.09.2026: «что здесь есть»
+    // убрать). Тот же заголовок — у экрана темы в меню.
+    header: (topic) => topic,
     line: (text) => `— ${text}`,
     lineWithDate: (text, date) => `— ${text} · ${date}`,
     empty: 'Пока пусто.',

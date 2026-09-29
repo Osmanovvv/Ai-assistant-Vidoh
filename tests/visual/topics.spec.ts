@@ -44,11 +44,20 @@ const BOT = process.env['VISUAL_BOT'] ?? 'vydoh_dev_bot';
 const SESSION = process.env['VISUAL_SESSION'] ?? '.data/visual/session.json';
 const SHOTS = process.env['VISUAL_SHOTS'] ?? join('docs', 'visual');
 
-/** Заголовок сводки темы: `<тема> — что здесь есть:`. */
-const SUMMARY_MARK = defaultTexts.summary.header('').trim();
-
 /** Строка списка в сводке и в выдаче — тире с пробелом. */
 const BULLET = defaultTexts.summary.line('').trim();
+
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+/**
+ * Сводка темы: заголовок и сразу строка списка. С 29.09.2026 заголовок —
+ * просто название темы (правка заказчицы: без «что здесь есть»), поэтому
+ * узнаётся по названию и тире следом; переносы строк Telegram Web рисует
+ * тегами, в тексте элемента их может не быть.
+ */
+function summaryOf(topic: string): RegExp {
+  return new RegExp(`^${escaped(defaultTexts.summary.header(topic))}\\s*${escaped(BULLET)}`, 'u');
+}
 
 test.beforeAll(() => {
   // Понятный отказ вместо непонятного: без сессии Playwright уронил бы
@@ -155,25 +164,18 @@ test.describe('темы в Telegram Web', () => {
     const topic = process.env['VISUAL_TOPIC'] ?? 'семья';
 
     /**
-     * Ветку ищем сначала по превью сводки, потом по названию.
-     *
-     * Превью надёжнее: строка «тема — что здесь есть» есть только у
-     * ветки. Но оно живёт лишь до следующего сообщения в теме — стоит
-     * человеку написать туда, и в списке будет ответ бота. На этом
-     * проверка и упала в первый раз.
+     * Ветку ищем по названию. Прежде — сначала по превью «тема — что здесь
+     * есть»; с 29.09.2026 этих слов в сводке нет (правка заказчицы).
      */
-    const byPreview = page.getByText(`${topic} — что здесь есть`, { exact: false }).first();
-    const byName = page.getByText(topic, { exact: true }).first();
-
-    const entry = (await byPreview.count()) > 0 ? byPreview : byName;
+    const entry = page.getByText(topic, { exact: true }).first();
 
     await expect(entry, `в списке нет ветки «${topic}»`).toBeVisible();
     await entry.click();
 
-    const summary = page.getByText(SUMMARY_MARK, { exact: false }).first();
+    const summary = page.getByText(summaryOf(topic)).first();
     await expect(
       summary,
-      `в ветке «${topic}» нет заголовка сводки «${SUMMARY_MARK}»`,
+      `в ветке «${topic}» нет сводки: заголовок «${defaultTexts.summary.header(topic)}» и список`,
     ).toBeVisible();
 
     await summary.scrollIntoViewIfNeeded();
