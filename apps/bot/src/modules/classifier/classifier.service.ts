@@ -20,6 +20,7 @@ import {
   unclearClockOf,
 } from './clock-time.js';
 import { splitItems } from './split-actions.js';
+import { splitPurchases } from './purchase-split.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { looksLikeSomedayTask } from './someday-task.js';
 import {
@@ -105,6 +106,12 @@ export interface ClassifyParams {
    * им. Соседи внутри одного прохода считаются сами.
    */
   readonly siblings?: readonly string[] | undefined;
+  /**
+   * Позиции покупки со списком (правка заказчицы 29.09.2026): названия
+   * или ничего — дело остаётся одним. Не задано — покупки не делятся
+   * (выключатель `purchase.split`).
+   */
+  readonly purchases?: ((text: string) => Promise<readonly string[] | undefined>) | undefined;
   readonly now?: Date | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
@@ -134,6 +141,12 @@ export interface ClassifiedItem {
    * нет, а конвейер спрашивает «утро или вечер» сразу при записи.
    */
   readonly unclearTime?: readonly [number, number] | undefined;
+  /**
+   * Позиция покупки со списком (правка заказчицы 29.09.2026): из какого
+   * дела вышла — «Купить овощи, мясо и специи». Подтверждение называет
+   * его одной строкой, как у заказчицы.
+   */
+  readonly purchaseOf?: string | undefined;
 }
 
 /** Что пришлось поправить за моделью. Ненулевое — повод к промпту. */
@@ -1031,12 +1044,20 @@ export async function classifyUnits(
    * «отдельные 2 задачи, не через запятую»). После поправок: сверка
    * слов записей с единицами идёт по номеру и деления не видит.
    */
-  const items = splitItems(corrected);
-  if (items.length > corrected.length) {
+  const actions = splitItems(corrected);
+  if (actions.length > corrected.length) {
     deps.logger?.info(
-      { added: items.length - corrected.length },
+      { added: actions.length - corrected.length },
       'Дело из нескольких действий через запятую разделено',
     );
+  }
+
+  // Покупки позициями (правка заказчицы 29.09.2026): модель делит список,
+  // код проверяет (`purchase-split.ts`).
+  const items =
+    params.purchases === undefined ? actions : await splitPurchases(actions, params.purchases);
+  if (items.length > actions.length) {
+    deps.logger?.info({ added: items.length - actions.length }, 'Покупка разделена на позиции');
   }
 
   return {

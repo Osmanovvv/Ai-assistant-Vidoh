@@ -49,6 +49,7 @@ const STAGES: Record<string, string> = {
   answerer: 'Ответ на вопрос о делах',
   reader: 'Чтение ответа на вопрос бота',
   talker: 'Живой ответ там, где у бота нет своего',
+  splitter: 'Покупки позициями',
   speech: 'Речь',
   embedder: 'Векторы',
 };
