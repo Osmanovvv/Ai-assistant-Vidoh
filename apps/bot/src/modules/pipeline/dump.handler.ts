@@ -2182,7 +2182,13 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       if (answer.kind === 'listed') {
         const shownItems = answer.items.slice(0, SPOKEN_LIST_LIMIT);
         const rest = answer.items.length - shownItems.length;
-        const lines = shownItems.map((item) => texts.backlog.line(item.text));
+        // Со сроком — дата после названия (правка заказчицы 29.09.2026):
+        // строкой «про это», как в «Мои дела»; название — так же, с
+        // заглавной и без слов дня, и у дел без срока — один вид в списке.
+        const lines = shownItems.map((item) => {
+          const { title, when } = aboutLine(item, { now, timeZone: context.timeZone }, texts);
+          return when === '' ? texts.backlog.line(title) : texts.summary.lineWithDate(title, when);
+        });
         if (rest > 0) lines.push(texts.backlog.more(rest));
         await tell(
           [listHeader(answer.question, answer.items.length === 0, texts.backlog), ...lines].join(
@@ -3259,6 +3265,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * выше, — и она берётся из тех же трёх источников, что и счёт.
      */
     const added = quickAdd ? [...saved, ...split.known, ...late.known][0] : undefined;
+    /**
+     * Со сроком — и дата (правка заказчицы 29.09.2026: «везде, где у
+     * задачи есть срок, указывать дату»): строкой «про это» — той же, что
+     * в «Мои дела»: сегодня и завтра словом, дальше числом, с часом.
+     */
+    const addedLine =
+      added !== undefined && added.deadlineAt !== null
+        ? aboutLine(added, { now, timeZone: context.timeZone }, texts)
+        : undefined;
     const quickAdded =
       added === undefined
         ? undefined
@@ -3266,7 +3281,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
             // Тема у записи всегда есть — без своей она ложится в тему по
             // умолчанию; пустота здесь только на бумаге схемы.
             topic: withCapital(added.topic ?? topics.defaultName),
-            title: withCapital(added.text),
+            title: addedLine?.title ?? withCapital(added.text),
+            ...(addedLine === undefined || addedLine.when === '' ? {} : { when: addedLine.when }),
           };
 
     /**

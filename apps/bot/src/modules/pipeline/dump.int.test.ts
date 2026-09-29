@@ -773,6 +773,91 @@ describe('разбор', () => {
     ]);
   });
 
+  /**
+   * Правка заказчицы 29.09.2026: «Созвониться с Ириной Михайловной,
+   * проверить документы по кассе · 30.09» — «прописать как отдельные 2
+   * задачи, не через запятую». Делит код после классификации: у частей тот
+   * же срок и сфера (`split-actions.ts`).
+   */
+  const oneTitle = (text: string, extra: Record<string, unknown> = {}) =>
+    echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+      extractor: () => JSON.stringify({ units: [{ text, isProject: false, isEmotion: false }] }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text,
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'работа',
+              isProject: false,
+              deadline: tomorrowIso(),
+              deadlineAccuracy: 'day',
+              deadlineText: 'завтра',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+              ...extra,
+            },
+          ],
+        }),
+    });
+
+  async function dumpOf(text: string, llm: MockLlmProvider): Promise<string[]> {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+    return all;
+  }
+
+  it('два действия через запятую — два дела с тем же сроком и сферой (правка заказчицы 29.09.2026)', async () => {
+    const text = 'Созвониться с Ириной Михайловной, проверить документы по кассе';
+
+    const all = await dumpOf(`Завтра ${text}`, oneTitle(text));
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)))
+      .orderBy(asc(items.sourceOrder));
+    expect(saved.map((item) => item.text)).toEqual([
+      'Созвониться с Ириной Михайловной',
+      'Проверить документы по кассе',
+    ]);
+    expect(new Set(saved.map((item) => item.deadlineAt?.toISOString())).size).toBe(1);
+    expect(saved.every((item) => item.deadlineAt !== null && item.topic === 'работа')).toBe(true);
+    expect(all.join('\n')).not.toContain('Ириной Михайловной, проверить');
+  });
+
+  it('список покупок через запятую — по-прежнему одно дело', async () => {
+    const text = 'Купить овощи, мясо и специи';
+
+    await dumpOf(
+      text,
+      oneTitle(text, {
+        topic: 'покупки',
+        deadline: '',
+        deadlineAccuracy: 'none',
+        deadlineText: '',
+      }),
+    );
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
+    expect(saved.map((item) => item.text)).toEqual(['Купить овощи, мясо и специи']);
+  });
+
   it('первое дело с часом — карточка 04 «Записала. Напомню в нужный момент.» с кнопками; второе — без картинки (визуал 04)', async () => {
     const prompts = await seedPrompts();
     const { cards, shown } = recordingCards();
@@ -2457,7 +2542,12 @@ describe('«уже сделала» без такой записи (прогон
     );
 
     const rows = await rowsOfUser();
-    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual([BALCONY]);
+    // Действия через запятую — отдельные дела (правка заказчицы 29.09.2026).
+    expect(rows.filter((row) => !row.isDraft).map((row) => row.text)).toEqual([
+      'Разобрать балкон',
+      'Убрать коробки',
+      'Выкинуть мусор',
+    ]);
     expect(rows.filter((row) => row.isDraft).map((row) => row.text)).toEqual([SAID]);
     expect(all.join('\n')).toContain(defaultTexts.resolver.nothingToClose);
   });
@@ -3335,7 +3425,8 @@ describe('бренд-карточки (ТЗ по визуалам, продже�
     };
 
     const overdue = (await ask('что у меня просрочено?')).at(-1) ?? '';
-    expect(overdue.split(NEWLINE)).toEqual([defaultTexts.backlog.overdue, '— Сдать отчёт']);
+    // Со сроком — дата после названия (правка заказчицы 29.09.2026).
+    expect(overdue.split(NEWLINE)).toEqual([defaultTexts.backlog.overdue, '— Сдать отчёт · 21.08']);
 
     const count = (await ask('сколько у меня дел')).at(-1) ?? '';
     expect(count).toBe(defaultTexts.backlog.count('2 дела', 1, 1, 0));
@@ -7421,6 +7512,49 @@ describe('быстрое добавление (§13.3, задача 3.9)', () =>
    * то, чего не видно на чистой функции: реплика действительно короткая,
    * список действий не показан, а запись при этом создана.
    */
+  it('быстрое добавление со сроком — дата после названия (правка заказчицы 29.09.2026)', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const text = 'добавь ещё позвонить в банк завтра';
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text }] }),
+      extractor: () =>
+        JSON.stringify({
+          units: [{ text: 'позвонить в банк завтра', isProject: false, isEmotion: false }],
+        }),
+      classifier: () =>
+        JSON.stringify({
+          items: [
+            {
+              text: 'Позвонить в банк',
+              type: 'TASK',
+              priority: 'SOON',
+              topic: 'работа',
+              isProject: false,
+              deadline: tomorrowIso(),
+              deadlineAccuracy: 'day',
+              deadlineText: 'завтра',
+              recurrenceKind: 'none',
+              recurrenceInterval: 0,
+              recurrenceText: '',
+            },
+          ],
+        }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.at(-1)).toBe('Записала в «Работа»: Позвонить в банк · завтра.');
+  });
+
   it('«Добавь ещё купить витамины» — одна строка и никакой выдачи', async () => {
     const prompts = await seedPrompts();
     const { sender, all } = recordingSender();
@@ -12182,8 +12316,9 @@ ${second}`,
     const rows = await liveItems();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.deadlineAt?.toISOString()).toBe('2026-08-25T21:00:00.000Z');
-    // Одно дело — и ответ про одно, без «Записала 2 дела».
-    expect(all).toEqual(['Записала в «Здоровье»: Записать Мишу к стоматологу в среду.']);
+    // Одно дело — и ответ про одно, без «Записала 2 дела»; срок — датой
+    // после названия (правка заказчицы 29.09.2026).
+    expect(all).toEqual(['Записала в «Здоровье»: Записать Мишу к стоматологу · 26.08.']);
   });
 
   it('у записанного свой день — другой день заводит новое дело, как раньше', async () => {

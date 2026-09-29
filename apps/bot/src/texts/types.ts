@@ -193,6 +193,12 @@ export interface TextProfile {
      * показывало, что записано.
      */
     readonly added: (topic: string, title: string) => string;
+    /**
+     * То же, когда у дела есть срок: «Записала в «Работа»: Созвониться с
+     * Ириной Михайловной · завтра.» — «везде, где у задачи есть срок,
+     * указывать дату» (правка заказчицы 29.09.2026).
+     */
+    readonly addedWithDate: (topic: string, title: string, date: string) => string;
     readonly buttonDoNow: string;
     readonly buttonShowAll: string;
     readonly buttonLater: string;
