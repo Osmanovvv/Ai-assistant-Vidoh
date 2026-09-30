@@ -49,6 +49,17 @@ const SPOKEN_LEAD = new RegExp(
   'iu',
 );
 
+/**
+ * Вступление идеи (правка заказчицы 30.09.2026: «Может быть, сделать
+ * семейный фотоальбом»): «может быть», «возможно», «наверное»,
+ * «когда-нибудь», «есть идея», «идея:», «мне». Только у идеи: у дела
+ * «может» меняет смысл — «может, позвонить маме» ещё не решено.
+ */
+const IDEA_LEAD = new RegExp(
+  String.raw`^(?:(?:есть\s+)?идея\s*[:—–-]?|может\s+быть|может|возможно|наверное|наверно|когда-нибудь|когда\s+нибудь|я|мне|нам|мы)\s*,?\s+`,
+  'iu',
+);
+
 /** Первое слово остатка — глагол в неопределённой форме, строго. */
 function startsWithInfinitive(text: string): boolean {
   const [first = ''] = text.split(/[\s,.:;!?—–-]+/u);
@@ -120,6 +131,23 @@ export function cleanTitle(
   if (item.type === 'DESIRE') {
     const cut = withoutSpokenLead(text.trim());
     if (cut === text.trim()) return text;
+    return cut.charAt(0).toUpperCase() + cut.slice(1);
+  }
+
+  /**
+   * Идея — вступление идеи и речи по кругу («Может мне когда-нибудь
+   * сделать…»), а проверка «дальше действие» — один раз, в конце: срезано
+   * должно быть только вступление целиком (правка заказчицы 30.09.2026).
+   */
+  if (item.type === 'IDEA') {
+    const whole = text.trim();
+    let cut = whole;
+    for (let round = 0; round < 6; round += 1) {
+      const before = cut;
+      cut = cut.replace(IDEA_LEAD, '').replace(SPOKEN_LEAD, '');
+      if (cut === before) break;
+    }
+    if (cut === whole || !startsWithInfinitive(cut)) return text;
     return cut.charAt(0).toUpperCase() + cut.slice(1);
   }
   if (item.type !== 'TASK') return text;
