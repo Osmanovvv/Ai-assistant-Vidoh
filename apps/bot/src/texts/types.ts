@@ -130,6 +130,10 @@ export interface TextProfile {
     readonly acknowledgementTasksAndDesires: (tasks: string, desires: string) => string;
     /** Одни желания: «Записала 2 желания, разложила по местам.» */
     readonly acknowledgementDesires: (desires: string) => string;
+    /** С идеями, списком: «Записала 2 дела и 1 идею, разложила по местам.» (30.09.2026). */
+    readonly acknowledgementWithIdeas: (list: string) => string;
+    /** Одна идея и больше ничего — «Отличная идея — запомнила.» (её слова, 30.09.2026). */
+    readonly ideaSingle: string;
     /**
      * Компактный итог разбора по её образцу (16.09.2026, п. 3): строка
      * сферы «Работа — 4» (иконку подставляет код), «На сегодня: …»,

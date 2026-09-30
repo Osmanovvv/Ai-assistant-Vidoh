@@ -13,6 +13,18 @@ const MOSCOW = 'Europe/Moscow';
 const at = (iso: string) => new Date(iso);
 
 describe('summarizeDump', () => {
+  it('идея — тоже в сфере (правка заказчицы 30.09.2026: «идея всего 1», а в ответе её не видно)', () => {
+    const summary = summarizeDump(
+      [{ text: 'Сделать семейный фотоальбом', type: 'IDEA', topic: 'семья' }],
+      {
+        now: NOW,
+        timeZone: MOSCOW,
+      },
+    );
+
+    expect(summary.spheres).toEqual([{ name: 'семья', icon: '\u2764\uFE0F', count: 1 }]);
+  });
+
   it('считает дела и желания по сферам, больше — выше, при равенстве — по имени', () => {
     // Желания — в счёте с 17.09.2026 (решение Никиты): признание называет
     // «6 дел и 3 желания», и у желаний должно быть своё место в сферах.

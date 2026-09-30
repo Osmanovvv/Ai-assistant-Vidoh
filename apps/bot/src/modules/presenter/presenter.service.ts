@@ -337,6 +337,11 @@ function desiresPhrase(count: number): string {
   return counted(count, ['желание', 'желания', 'желаний']);
 }
 
+/** «Записала 1 идею, 2 идеи, 5 идей» — винительный. */
+function ideasPhrase(count: number): string {
+  return counted(count, ['идею', 'идеи', 'идей']);
+}
+
 export function acknowledgementOf(
   composition: DumpComposition,
   texts: TextProfile,
@@ -381,7 +386,40 @@ export function acknowledgementOf(
    * нигде, и человеку не понять, услышаны ли они. Без желаний фраза —
    * образец заказчицы, как была.
    */
-  const { tasks, desires } = counted ?? composition;
+  /**
+   * Одна идея и больше ничего — её словами (правка заказчицы 30.09.2026:
+   * «отличная идея… я запомнила»). Только без чувств и настроения: при
+   * усталости похвала не к месту, там тон по силе и счёт, как у всех.
+   */
+  if (
+    mood === undefined &&
+    composition.emotions === 0 &&
+    recordsIn(composition) === 1 &&
+    composition.ideas === 1
+  ) {
+    return answer.ideaSingle;
+  }
+
+  const { tasks, desires, ideas } = counted ?? composition;
+
+  /**
+   * Идеи — в счёте (правка заказчицы 30.09.2026): прежде ответ на одну
+   * идею был голым «Всё, забрала.» — не понять, что услышано. Без идей
+   * строки прежние, слово в слово.
+   */
+  if (ideas > 0) {
+    const parts = [
+      ...(tasks > 0 ? [tasksPhrase(tasks)] : []),
+      ...(desires > 0 ? [desiresPhrase(desires)] : []),
+      ideasPhrase(ideas),
+    ];
+    const list =
+      parts.length === 1
+        ? ideasPhrase(ideas)
+        : `${parts.slice(0, -1).join(', ')} и ${ideasPhrase(ideas)}`;
+    return `${opening} ${texts.answer.acknowledgementWithIdeas(list)}`;
+  }
+
   if (tasks <= 0 && desires <= 0) return opening;
 
   const recorded =

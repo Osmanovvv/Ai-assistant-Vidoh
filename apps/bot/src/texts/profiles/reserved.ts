@@ -110,9 +110,13 @@ export const reserved: TextProfile = {
   },
 
   answer: {
-    acknowledgementFallback: 'Всё, забрала.',
-    acknowledgementTiredFallback: 'Поняла, забрала.',
-    acknowledgementLong: 'Всё, забрала — на сегодня можно больше это не держать в голове 🤍',
+    // «Запомнила», а не «забрала» (правка заказчицы 30.09.2026: «забрала»
+    // не все поймут без контекста).
+    acknowledgementFallback: 'Всё, запомнила.',
+    acknowledgementTiredFallback: 'Поняла, запомнила.',
+    acknowledgementLong: 'Всё, запомнила — на сегодня можно больше это не держать в голове 🤍',
+    // Одна идея — её словами (правка заказчицы 30.09.2026).
+    ideaSingle: 'Отличная идея — запомнила.',
     acknowledgementTired:
       'Да, на сегодня уже многовато 😮‍💨 Давай хотя бы это больше не держать в голове.',
     acknowledgementAnnoyed: 'Понимаю 🙃 Давай хотя бы это больше не держать в голове.',
@@ -121,6 +125,8 @@ export const reserved: TextProfile = {
     acknowledgementTasksAndDesires: (tasks, desires) =>
       `Записала ${tasks} и ${desires}, разложила по местам.`,
     acknowledgementDesires: (desires) => `Записала ${desires}, разложила по местам.`,
+    // С идеями — списком: «2 дела и 1 идею», «1 дело, 1 желание и 2 идеи».
+    acknowledgementWithIdeas: (list) => `Записала ${list}, разложила по местам.`,
     sphereLine: (name, count) => `${name} — ${count}`,
     dueToday: 'На сегодня:',
     dueTomorrow: 'На завтра:',

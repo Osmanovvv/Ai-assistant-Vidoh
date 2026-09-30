@@ -205,3 +205,13 @@ describe('«Оставить как есть» (правка заказчицы 
     expect(defaultTexts.answer.keptAsIs).toBe('Ок. Оставляю как есть. Всё у меня в памяти.');
   });
 });
+
+describe('«запомнила», а не «забрала» (правка заказчицы 30.09.2026)', () => {
+  it('открытие ответа — понятно и без контекста', () => {
+    expect(defaultTexts.answer.acknowledgementFallback).toBe('Всё, запомнила.');
+    expect(defaultTexts.answer.acknowledgementTiredFallback).toBe('Поняла, запомнила.');
+    expect(defaultTexts.answer.acknowledgementLong).toBe(
+      'Всё, запомнила — на сегодня можно больше это не держать в голове 🤍',
+    );
+  });
+});
