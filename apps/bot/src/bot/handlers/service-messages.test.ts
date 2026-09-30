@@ -116,6 +116,72 @@ describe('служебные сообщения о ветках и закреп�
     expect(calls).toEqual([]);
   });
 
+  describe('«тема изменена» — удаляется, если изменил сам бот (30.09.2026)', () => {
+    /**
+     * Смена иконок и переименование веток 30.09.2026 оставили в ветках
+     * «название темы изменено» — то же техническое уведомление, что
+     * «ветка создана». Только своё: если вкладку переименовала сама
+     * женщина, строка — её действие, и стирать его нельзя.
+     */
+    it('изменил бот — строка удаляется', async () => {
+      const { bot, calls } = createTestBot();
+      await bot.init();
+
+      await bot.handleUpdate(serviceUpdate({ forum_topic_edited: { name: 'Семья' } }));
+
+      const removed = calls.find((call) => call.method === 'deleteMessage');
+      expect(removed?.payload).toEqual({ chat_id: TG_ID, message_id: 100 + seq });
+    });
+
+    it('иконку сменил бот — тоже удаляется', async () => {
+      const { bot, calls } = createTestBot();
+      await bot.init();
+
+      await bot.handleUpdate(
+        serviceUpdate({ forum_topic_edited: { icon_custom_emoji_id: '5312241539987020022' } }),
+      );
+
+      expect(calls.map((call) => call.method)).toEqual(['deleteMessage']);
+    });
+
+    it('изменила сама женщина — не трогается', async () => {
+      const { bot, calls } = createTestBot();
+      await bot.init();
+
+      await bot.handleUpdate(
+        serviceUpdate({
+          forum_topic_edited: { name: 'Моя семья' },
+          from: { id: TG_ID, is_bot: false, first_name: 'Аня' },
+        }),
+      );
+
+      expect(calls).toEqual([]);
+    });
+
+    it('не в личном чате не трогает', async () => {
+      const { bot, calls } = createTestBot();
+      await bot.init();
+
+      await bot.handleUpdate(
+        serviceUpdate(
+          { forum_topic_edited: { name: 'Семья' } },
+          { id: -100_500, type: 'supergroup', title: 'Группа', is_forum: true },
+        ),
+      );
+
+      expect(calls).toEqual([]);
+    });
+
+    it('отказ Telegram удалить — не ошибка обработчика', async () => {
+      const { bot } = createTestBot({ deleteFails: true });
+      await bot.init();
+
+      await expect(
+        bot.handleUpdate(serviceUpdate({ forum_topic_edited: { name: 'Семья' } })),
+      ).resolves.toBeUndefined();
+    });
+  });
+
   it('отказ Telegram удалить — не ошибка обработчика', async () => {
     const { bot, calls } = createTestBot({ deleteFails: true });
     await bot.init();

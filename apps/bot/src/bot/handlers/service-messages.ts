@@ -1,4 +1,4 @@
-import type { Bot } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import type { Logger } from 'pino';
 
 /**
@@ -15,16 +15,30 @@ import type { Logger } from 'pino';
  * Telegram здесь не ошибка: строка просто останется, как было.
  */
 export function registerServiceMessageHandlers(bot: Bot, logger: Logger): void {
-  bot.on('message:forum_topic_created', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
-
+  const remove = async (ctx: Context): Promise<void> => {
     try {
       await ctx.deleteMessage();
     } catch (error) {
       logger.debug(
-        { err: error, messageId: ctx.msg.message_id },
+        { err: error, messageId: ctx.msg?.message_id },
         'Служебное сообщение Telegram не удалилось — остаётся в чате',
       );
     }
+  };
+
+  bot.on('message:forum_topic_created', async (ctx) => {
+    if (ctx.chat.type !== 'private') return;
+    await remove(ctx);
+  });
+
+  /**
+   * «Название темы изменено» — тоже техническое уведомление (30.09.2026:
+   * смена иконок и переименование веток оставили такие строки). Только
+   * своё: изменила вкладку сама женщина — строка её, не трогаем.
+   */
+  bot.on('message:forum_topic_edited', async (ctx) => {
+    if (ctx.chat.type !== 'private') return;
+    if (ctx.from.id !== ctx.me.id) return;
+    await remove(ctx);
   });
 }
