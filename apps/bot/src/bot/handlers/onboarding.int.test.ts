@@ -92,7 +92,7 @@ function createTestBot(
   log: Logger = logger,
   /** Приём промокода словами — как в бою, обратным вызовом (§14). */
   promo?: AwaitingDeps['promo'],
-  /** Бренд-карточки (ТЗ по визуалам 18.09.2026): карточка старта после опроса. */
+  /** Бренд-карточки: картинка приветствия на экране согласия (30.09.2026). */
   cards?: CardSender,
   /** Часы: приветствие зависит от времени суток (29.09.2026). */
   now?: () => Date,
@@ -128,7 +128,7 @@ function createTestBot(
     consentUrl: CONSENT_URL,
     // Ответ словами (задача 3.61): без этого текстовая реплика
     // уходит в буфер выгрузки, как было до задачи.
-    consume: consumeAwaited({ db: testDb(), logger: log, promo, cards, now }),
+    consume: consumeAwaited({ db: testDb(), logger: log, promo, now }),
     now,
   };
   bot.use(incomingMiddleware(incoming));
@@ -140,8 +140,9 @@ function createTestBot(
     privacyPolicyEdition: EDITION,
     release: (id, chatId) => releaseHeldMessages(incoming, { userId: id, chatId }),
     ...(questions === undefined ? {} : { onboarding: questions }),
+    ...(cards === undefined ? {} : { cards }),
   });
-  registerOnboardingHandlers(bot, testDb(), logger, { cards });
+  registerOnboardingHandlers(bot, testDb(), logger);
 
   return { bot, calls };
 }
@@ -298,6 +299,89 @@ describe('согласие кнопкой «Согласна» (§16, решен
     ]);
     expect(questions.asked).toEqual([]);
     expect((await settingsOf())?.onboardingStep).toBe(0);
+  });
+
+  describe('картинка приветствия — первой, до текста (правка заказчицы 30.09.2026)', () => {
+    /** Карточки с отметкой, сколько сообщений ушло до неё. */
+    function orderedCards(): {
+      cards: CardSender;
+      shown: { card: string; caption: string; messagesBefore: number }[];
+      watch: (calls: readonly ApiCall[]) => void;
+    } {
+      const shown: { card: string; caption: string; messagesBefore: number }[] = [];
+      let watched: readonly ApiCall[] = [];
+      return {
+        shown,
+        watch: (calls) => {
+          watched = calls;
+        },
+        cards: {
+          send: ({ card, caption }) => {
+            const messagesBefore = watched.filter((call) => call.method === 'sendMessage').length;
+            shown.push({ card, caption, messagesBefore });
+            return Promise.resolve(7001);
+          },
+        },
+      };
+    }
+
+    it('без согласия: сначала картинка старта без подписи, следом её текст с «Согласна»', async () => {
+      await withoutConsent();
+      const { cards, shown, watch } = orderedCards();
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        undefined,
+        undefined,
+        cards,
+      );
+      watch(calls);
+
+      await bot.handleUpdate(textUpdate('/start'));
+
+      expect(shown).toEqual([{ card: 'start', caption: '', messagesBefore: 0 }]);
+      const sent = calls.filter((call) => call.method === 'sendMessage');
+      expect(sent).toHaveLength(1);
+      expect(textOf(sent[0])).toBe(defaultTexts.consent.screen(POLICY_URL, CONSENT_URL));
+      expect(keyboardOf(sent[0]).map((button) => button.text)).toEqual([
+        defaultTexts.consent.button,
+      ]);
+    });
+
+    it('картинка не ушла — текст с «Согласна» всё равно приходит', async () => {
+      await withoutConsent();
+      const failing: CardSender = { send: () => Promise.reject(new Error('Telegram упал')) };
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        undefined,
+        undefined,
+        failing,
+      );
+
+      await bot.handleUpdate(textUpdate('/start'));
+
+      const sent = calls.filter((call) => call.method === 'sendMessage');
+      expect(sent).toHaveLength(1);
+      expect(textOf(sent[0])).toBe(defaultTexts.consent.screen(POLICY_URL, CONSENT_URL));
+    });
+
+    it('согласие уже есть — повторный /start без картинки, как прежде', async () => {
+      const { cards, shown, watch } = orderedCards();
+      const { bot, calls } = createTestBot(
+        recordingQuestions().sender,
+        undefined,
+        undefined,
+        undefined,
+        cards,
+      );
+      watch(calls);
+
+      await bot.handleUpdate(textUpdate('/start'));
+
+      expect(shown).toEqual([]);
+      expect(calls.filter((call) => call.method === 'sendMessage')).toHaveLength(1);
+    });
   });
 
   it('нажатие записывает согласие с редакцией и открывает опрос первым вопросом', async () => {
@@ -556,18 +640,22 @@ describe('полный путь', () => {
     expect(textOf(last)).toBe(defaultTexts.onboarding.finished);
   });
 
-  it('после опроса — карточка старта с приглашением, без кнопок (ТЗ по визуалам 18.09.2026)', async () => {
+  it('после опроса картинки нет — приглашение текстом (правка заказчицы 30.09.2026)', async () => {
+    // Картинка приветствия переехала на первый экран `/start`; здесь —
+    // «Всё, больше не спрашиваю.» и приглашение со второй строки.
     const { cards, shown } = recordingCards();
-    const { bot } = createTestBot(undefined, undefined, undefined, undefined, cards);
+    const { bot, calls } = createTestBot(undefined, undefined, undefined, undefined, cards);
     await bot.init();
     await startedAt(STEP.evening);
 
     await bot.handleUpdate(callbackUpdate(`${ACTION.eveningPrefix}22:00`));
 
-    expect(shown).toEqual([{ card: 'start', caption: defaultTexts.cards.start }]);
+    expect(shown).toEqual([]);
+    const last = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(last)).toBe(defaultTexts.onboarding.finished);
   });
 
-  it('опрос закрыт словами — карточка старта тоже', async () => {
+  it('опрос закрыт словами — картинки тоже нет', async () => {
     const { cards, shown } = recordingCards();
     const { bot } = createTestBot(
       recordingQuestions().sender,
@@ -582,7 +670,7 @@ describe('полный путь', () => {
     await bot.handleUpdate(callbackUpdate(ACTION.eveningOwn));
     await bot.handleUpdate(textUpdate('в 21 45'));
 
-    expect(shown.map((one) => one.card)).toEqual(['start']);
+    expect(shown).toEqual([]);
   });
 
   it('каждый ответ правит ту же реплику, а не шлёт новую', async () => {

@@ -7,6 +7,7 @@ import { cancelBatchClose, enqueueUserProcessing, scheduleBatchClose } from '../
 import {
   DEFAULT_LIMITS,
   attachMessageToBatch,
+  batchHasRecording,
   closeBatchOnSilence,
   hasBatchInFlight,
   isOverDumpLimit,
@@ -577,10 +578,17 @@ async function bufferMessage(
       threadId: params.threadId,
     };
 
+    // Есть запись — сразу «Минуточку, слушаю запись…», та же реплика, что
+    // поставит расшифровка (правка заказчицы 30.09.2026): прежде «Слушаю…»
+    // через миг сменялось вторым словом.
+    const heard = (await batchHasRecording(deps.db, attached.batchId))
+      ? texts.listening.working
+      : texts.listening.acknowledged;
+
     if (attached.messageCount === 1) {
-      await showStatus(statusDeps, target, texts.listening.acknowledged);
+      await showStatus(statusDeps, target, heard);
     } else {
-      await moveStatus(statusDeps, target, texts.listening.acknowledged);
+      await moveStatus(statusDeps, target, heard);
     }
   };
 

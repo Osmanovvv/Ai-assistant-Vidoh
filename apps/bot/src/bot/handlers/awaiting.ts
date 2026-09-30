@@ -42,7 +42,6 @@ import type { EmbeddingProvider } from '../../modules/embedder/providers/types.j
 import type { ModelPricing } from '../../modules/metering/pricing.js';
 import type { SpendGuard } from '../../modules/metering/spend-guard.js';
 import { textsFor } from '../../texts/index.js';
-import type { CardSender } from '../../modules/cards/cards.js';
 
 /**
  * Приём ответа словами (задача 3.61).
@@ -64,8 +63,6 @@ import type { CardSender } from '../../modules/cards/cards.js';
 export interface AwaitingDeps {
   readonly db: Database;
   readonly logger: Logger;
-  /** Бренд-карточки (ТЗ по визуалам 18.09.2026): карточка старта после опроса. */
-  readonly cards?: CardSender | undefined;
   /** Вектор заголовка после правки словами (A5). */
   readonly embedder?: EmbeddingProvider | undefined;
   readonly spendGuard?: SpendGuard | undefined;
@@ -306,12 +303,8 @@ export function consumeAwaited(deps: AwaitingDeps) {
       // шага про сферы нет, опрос закрывается.
       await finish(db, userId, new Date());
       logger.info({ userId }, 'Онбординг пройден');
+      // Без картинки: она идёт первой на `/start` (правка заказчицы 30.09.2026).
       await ctx.reply(texts.onboarding.finished);
-      // Карточка старта — перед первой выгрузкой (ТЗ по визуалам, 01).
-      const chatId = ctx.chat?.id;
-      if (deps.cards !== undefined && chatId !== undefined) {
-        await deps.cards.send({ chatId, card: 'start', caption: texts.cards.start });
-      }
       return true;
     }
 

@@ -955,7 +955,6 @@ async function main(): Promise<void> {
     consume: consumeAwaited({
       db,
       logger,
-      cards,
       // Вектор заголовка после правки словами из карточки (A5).
       embedder,
       spendGuard,
@@ -982,6 +981,8 @@ async function main(): Promise<void> {
     // После «Согласна» сказанное до кнопки уходит в выгрузку (§16).
     release: (userId, chatId) => releaseHeldMessages(incoming, { userId, chatId }),
     onboarding: questions,
+    // Картинка приветствия — первой на экране согласия (30.09.2026).
+    cards,
   });
   registerPrivacyHandlers(bot, {
     db,
@@ -1004,7 +1005,7 @@ async function main(): Promise<void> {
   registerServiceMessageHandlers(bot, logger);
   // Любое нажатие снимает ожидание заголовка — раньше всех кнопок.
   registerPendingEditGuard(bot, db);
-  registerOnboardingHandlers(bot, db, logger, { cards });
+  registerOnboardingHandlers(bot, db, logger);
   registerMenuHandlers(bot, db, logger, { cards });
 
   // Команды платёжной платформы — после приёма: сперва сохраняем
