@@ -38,6 +38,7 @@ import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-k
 import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { attachListTails } from './list-tail.js';
+import { missingUnits } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
 /**
@@ -116,6 +117,8 @@ export interface ClassifyParams {
   readonly now?: Date | undefined;
   readonly userId?: string | undefined;
   readonly batchId?: string | undefined;
+  /** Разбор недостающих единиц — сам уже не повторяется (`missing-units.ts`). */
+  readonly forMissing?: boolean | undefined;
 }
 
 export interface ClassifiedItem {
@@ -1071,6 +1074,36 @@ export async function classifyUnits(
     params.purchases === undefined ? actions : await splitPurchases(actions, params.purchases);
   if (items.length > actions.length) {
     deps.logger?.info({ added: items.length - actions.length }, 'Покупка разделена на позиции');
+  }
+
+  /**
+   * Записей меньше, чем единиц (заказчица, 30.09.2026: сказанное не должно
+   * пропадать молча). Недостающие единицы разбираются ещё раз отдельно —
+   * один вызов, и только при недостаче: в обычной выгрузке денег не
+   * прибавляется. Повтор не ответил — остаётся то, что есть.
+   */
+  const missing =
+    params.forMissing === true
+      ? []
+      : missingUnits(
+          params.units,
+          outcome.value.items.map((item) => item.text),
+        );
+  if (missing.length > 0) {
+    deps.logger?.warn(
+      { promptVersion: outcome.promptVersion, missing: missing.length },
+      'Классификация вернула не все единицы — недостающие разбираются ещё раз',
+    );
+    const again = await classifyUnits(deps, { ...params, units: missing, forMissing: true });
+    if (again.ok) {
+      return {
+        ok: true,
+        items: [...items, ...again.items],
+        fromModel: [...outcome.value.items, ...again.fromModel],
+        promptVersion: outcome.promptVersion,
+        corrections,
+      };
+    }
   }
 
   return {

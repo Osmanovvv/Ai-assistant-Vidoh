@@ -12955,3 +12955,66 @@ describe('большая цель — по шагам и на других пу�
     expect(history.map((one) => one.changedBy)).toEqual(['resolver']);
   });
 });
+
+describe('её голосовое 30.09.2026, 12:47: «Сходить на Вайлдберриз» не пропадает', () => {
+  /**
+   * Маршрутизатор отдал кусок целиком (повтор на живой модели — 3 из 3), а
+   * извлечение вернуло шесть единиц из семи: дело выпало молча. Здесь
+   * извлечение отвечает так же, как на бою, — без него.
+   */
+  it('извлечение потеряло дело — оно всё равно записано', async () => {
+    const SPEECH =
+      'Так смотри, мне нужно. Выкупать собаку, выкупать. Мне нужно заказать шампунь. Сходить на Вайлдберриз? Что то я так устала. Так башка не соображает, что еще. А еще давай начнем рисовать картину по номерам, начну, да, пожалуй, начнем рисовать картину. Так позвонить еще надо, Анжеле. И Елене Михайловне написать.';
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: SPEECH, offsetMs: 0 }]);
+    const { sender } = recordingSender();
+    const unit = (text: string, isEmotion = false) => ({ text, isProject: false, isEmotion });
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          {
+            intent: 'DUMP',
+            text: 'Так смотри, мне нужно. Выкупать собаку, выкупать. Мне нужно заказать шампунь.',
+          },
+          {
+            intent: 'DUMP',
+            text: 'Сходить на Вайлдберриз? Что то я так устала. Так башка не соображает, что еще.',
+          },
+          {
+            intent: 'DUMP',
+            text: 'А еще давай начнем рисовать картину по номерам, начну, да, пожалуй, начнем рисовать картину.',
+          },
+          { intent: 'DUMP', text: 'Так позвонить еще надо, Анжеле. И Елене Михайловне написать.' },
+        ],
+      }),
+      extractor: JSON.stringify({
+        units: [
+          unit('Выкупать собаку'),
+          unit('Заказать шампунь'),
+          unit('Устала, башка не соображает', true),
+          unit('Начать рисовать картину по номерам'),
+          unit('Позвонить Анжеле'),
+          unit('Написать Елене Михайловне'),
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(eq(items.userId, userId))
+      .orderBy(asc(items.sourceOrder));
+    expect(saved.map((item) => item.text)).toContain('Сходить на Вайлдберриз');
+    expect(saved).toHaveLength(7);
+  });
+});

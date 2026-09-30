@@ -1,5 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { ExtractedUnits } from '../ai/schemas/index.js';
+import { restoreDroppedDeeds } from './dropped-deeds.js';
 
 /**
  * Извлечение атомарных единиц (задача 2.5).
@@ -131,5 +132,17 @@ export async function extractUnits(
     );
   }
 
-  return { ok: true, units, promptVersion: outcome.promptVersion, collapsed };
+  /**
+   * Дело, выпавшее у модели, — обратно (заказчица, 30.09.2026: «Сходить на
+   * Вайлдберриз?» пропало из шести дел голосового). См. `dropped-deeds.ts`.
+   */
+  const guarded = restoreDroppedDeeds(params.input, units);
+  if (guarded.restored > 0) {
+    deps.logger?.warn(
+      { promptVersion: outcome.promptVersion, restored: guarded.restored },
+      'Извлечение потеряло дело — возвращено кодом',
+    );
+  }
+
+  return { ok: true, units: guarded.units, promptVersion: outcome.promptVersion, collapsed };
 }

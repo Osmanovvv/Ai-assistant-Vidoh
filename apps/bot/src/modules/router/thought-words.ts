@@ -174,10 +174,15 @@ const LEAD = new Set([
  * признак не попадает.
  */
 export function opensWithAction(text: string): boolean {
+  return openingAction(text) !== undefined;
+}
+
+/** Глагол дела, с которого начинается реплика, — или ничего (см. `opensWithAction`). */
+export function openingAction(text: string): string | undefined {
   for (const word of wordsOf(text).slice(0, 6)) {
-    if (ACTIONS.includes(word)) return true;
-    if (!LEAD.has(word) && !namesDay(word)) return false;
+    if (ACTIONS.includes(word)) return word;
+    if (!LEAD.has(word) && !namesDay(word)) return undefined;
   }
 
-  return false;
+  return undefined;
 }
