@@ -16,6 +16,7 @@ import {
   removeThread,
   topicByThread,
   updateThreadIcon,
+  updateThreadName,
 } from './topics.service.js';
 
 /**
@@ -104,7 +105,8 @@ describe('ветка темы', () => {
 
     await ensureThread(deps(gateway), { topicId: (await topicRow('здоровье'))!.id, chatId: CHAT });
 
-    expect(gateway.created[0]).toEqual({ name: 'здоровье', iconEmojiId: 'icon-1' });
+    // Имя ветки — сфера с заглавной (правка заказчицы 30.09.2026).
+    expect(gateway.created[0]).toEqual({ name: 'Здоровье', iconEmojiId: 'icon-1' });
   });
 
   it('без подходящей иконки ветка всё равно создаётся', async () => {
@@ -136,8 +138,8 @@ describe('ветка темы', () => {
       await ensureThread(deps(gateway), { topicId: (await topicRow('личное'))!.id, chatId: CHAT });
 
       expect(gateway.created).toEqual([
-        { name: 'семья', iconEmojiId: 'heart-id' },
-        { name: 'личное', iconEmojiId: 'star-id' },
+        { name: 'Семья', iconEmojiId: 'heart-id' },
+        { name: 'Личное', iconEmojiId: 'star-id' },
       ]);
     });
 
@@ -186,6 +188,37 @@ describe('ветка темы', () => {
 
       expect(await updateThreadIcon(deps(gateway), { topicId, chatId: CHAT })).toBe('no-icon');
       expect(gateway.iconsSet).toEqual([]);
+    });
+
+    it('готовая ветка переименовывается в сферу с заглавной (правка заказчицы 30.09.2026)', async () => {
+      await seedTopics(['семья']);
+      const topicId = (await topicRow('семья'))!.id;
+      const { threadId } = await ensureThread(deps(new FakeTopicGateway()), {
+        topicId,
+        chatId: CHAT,
+      });
+      const gateway = new FakeTopicGateway();
+
+      expect(await updateThreadName(deps(gateway), { topicId, chatId: CHAT })).toBe('set');
+      expect(gateway.renamed).toEqual([{ chatId: CHAT, threadId, name: 'Семья' }]);
+    });
+
+    it('имя уже с заглавной — не трогается; ветки нет — тоже', async () => {
+      await seedTopics(['ВБ заказы', 'семья']);
+      const shouting = (await topicRow('ВБ заказы'))!.id;
+      await ensureThread(deps(new FakeTopicGateway()), { topicId: shouting, chatId: CHAT });
+      const gateway = new FakeTopicGateway();
+
+      expect(await updateThreadName(deps(gateway), { topicId: shouting, chatId: CHAT })).toBe(
+        'same',
+      );
+      expect(
+        await updateThreadName(deps(gateway), {
+          topicId: (await topicRow('семья'))!.id,
+          chatId: CHAT,
+        }),
+      ).toBe('no-thread');
+      expect(gateway.renamed).toEqual([]);
     });
 
     it('ветку удалили руками — не ошибка', async () => {
@@ -386,7 +419,8 @@ describe('текст сводки', () => {
       timeZone: MOSCOW,
     });
 
-    expect(text).toBe('семья\n\n— Написать мужу список продуктов');
+    // С заглавной (правка заказчицы 30.09.2026).
+    expect(text).toBe('Семья\n\n— Написать мужу список продуктов');
     expect(text).not.toContain('что здесь есть');
   });
 
@@ -404,7 +438,7 @@ describe('текст сводки', () => {
       timeZone: MOSCOW,
     });
 
-    expect(text).toContain(defaultTexts.summary.header('здоровье'));
+    expect(text.split('\n')[0]).toBe('Здоровье');
     expect(text).toContain('04.09');
     expect(text).toContain('— купить лекарство');
   });

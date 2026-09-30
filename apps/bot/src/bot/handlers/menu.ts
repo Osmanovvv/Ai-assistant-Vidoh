@@ -15,6 +15,7 @@ import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { selectForToday } from '../../modules/output/filter.js';
 import { itemsOfTopic } from '../../modules/topics/summary.service.js';
 import { listTopics } from '../../modules/topics/topics.repo.js';
+import { sphereTitle } from '../../modules/topics/sphere-title.js';
 import {
   cityOfZone,
   EVENING_TIMES,
@@ -192,7 +193,9 @@ function topicsKeyboard(
   const keyboard = new InlineKeyboard();
 
   for (const topic of own) {
-    keyboard.text(topic.name, `${MENU_ACTION.topicPrefix}${toShortId(topic.id)}`).row();
+    keyboard
+      .text(sphereTitle(topic.name), `${MENU_ACTION.topicPrefix}${toShortId(topic.id)}`)
+      .row();
   }
 
   return keyboard.text(texts.menu.buttonBack, MENU_ACTION.root);
@@ -363,7 +366,7 @@ export function registerMenuHandlers(
       // сбой (видео 15.09.2026).
       mine.length === 0
         ? texts.menu.noTopics
-        : texts.settings.topicsAre(mine.map((one) => one.name).join(', ')),
+        : texts.settings.topicsAre(mine.map((one) => sphereTitle(one.name)).join(', ')),
     ];
 
     const keyboard = fitKeyboard([
@@ -828,7 +831,9 @@ export function registerMenuHandlers(
       ctx,
       // Заголовок из словаря, тот же, что у закреплённой сводки: строить
       // видимый человеку текст в коде нельзя даже из одного двоеточия.
-      inTopic.length === 0 ? active.texts.summary.empty : active.texts.summary.header(topic.name),
+      inTopic.length === 0
+        ? active.texts.summary.empty
+        : active.texts.summary.header(sphereTitle(topic.name)),
       itemsKeyboard(active.texts, inTopic, MENU_ACTION.topics, {
         index: page,
         action: (next) => `${MENU_ACTION.pagePrefix}${code}:${String(next)}`,

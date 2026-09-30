@@ -55,7 +55,7 @@ import { setItemEmbedding } from '../embedder/embedder.service.js';
 import { pickMain } from '../presenter/pick.service.js';
 import { FakeTopicGateway } from '../topics/fake-gateway.js';
 import { ensureThread } from '../topics/topics.service.js';
-import { listTopics, MAX_TOPICS } from '../topics/topics.repo.js';
+import { listTopics, MAX_TOPICS, normalizeTopicName } from '../topics/topics.repo.js';
 import { STEP } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
@@ -1697,7 +1697,11 @@ describe('онбординг после первой выгрузки', () => {
     // момента бот не задал ни одного вопроса — это проверяется в тестах
     // обработчиков.
     const prompts = await seedPrompts();
-    await queuedBatchOf([{ kind: 'text', text: 'записать сына к врачу', offsetMs: 0 }]);
+    // Две записи: при одной своего вопроса нет и без опроса (30.09.2026),
+    // и проверка ниже была бы пустой.
+    await queuedBatchOf([
+      { kind: 'text', text: 'записать сына к врачу\nкупить продукты', offsetMs: 0 },
+    ]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
 
@@ -1740,7 +1744,8 @@ describe('онбординг после первой выгрузки', () => {
       .set({ onboardingStep: STEP.done })
       .where(eq(userSettings.userId, userId));
 
-    await queuedBatchOf([{ kind: 'text', text: 'купить продукты', offsetMs: 0 }]);
+    // Две записи: при одной своего вопроса нет вовсе (30.09.2026).
+    await queuedBatchOf([{ kind: 'text', text: 'купить продукты\nпозвонить маме', offsetMs: 0 }]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
 
@@ -3021,7 +3026,7 @@ describe('ветки тем в разборе', () => {
     );
 
     // Затронута одна тема — значит и ветка создана одна, и сводка одна.
-    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['Здоровье']);
     expect(gateway.sent).toHaveLength(1);
     expect(gateway.sent[0]?.text).toContain('К врачу');
   });
@@ -3042,7 +3047,8 @@ describe('ветки тем в разборе', () => {
     );
 
     expect(await testDb().select().from(items)).toHaveLength(1);
-    expect(all.at(-1)).toContain(defaultTexts.answer.keepOrPick);
+    // Одна запись — без вопроса (30.09.2026); полный итог — со счётом.
+    expect(all.at(-1)).toContain('Записала 1 дело');
     expect(await pickedNow()).toContain('К врачу');
   });
 
@@ -3637,7 +3643,8 @@ describe('ответ пользователю', () => {
     // Решение заказчицы 15.09.2026: дел под признанием нет, они по
     // кнопке. Код выгрузки в кнопке — чтобы сказанное в ней шло первым.
     const prompts = await seedPrompts();
-    await queuedBatchOf([{ kind: 'text', text: 'надо продукты, врача и химчистку', offsetMs: 0 }]);
+    // Две записи: при одной кнопок нет (правка заказчицы 30.09.2026).
+    await queuedBatchOf([{ kind: 'text', text: 'надо продукты\nврача и химчистку', offsetMs: 0 }]);
     const { sender, buttons, said } = recordingSender();
 
     await processUserBatches(
@@ -3678,7 +3685,7 @@ describe('ответ пользователю', () => {
     expect(sent).toEqual([]);
     // Промежуточная реплика на время расшифровки и итоговый разбор.
     expect(edited).toHaveLength(2);
-    expect(edited.at(-1)).toContain(defaultTexts.answer.keepOrPick);
+    expect(edited.at(-1)).toContain('Записала 1 дело');
     expect(await pickedNow()).toContain('Купить продукты');
   });
 
@@ -3828,7 +3835,8 @@ describe('онбординг: края', () => {
       .set({ onboardingStep: STEP.morning })
       .where(eq(userSettings.userId, userId));
 
-    await queuedBatchOf([{ kind: 'text', text: 'ещё одно дело', offsetMs: 0 }]);
+    // Две записи: при одной своего вопроса нет и без опроса (30.09.2026).
+    await queuedBatchOf([{ kind: 'text', text: 'ещё одно дело\nпозвонить маме', offsetMs: 0 }]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
 
@@ -4005,9 +4013,9 @@ describe('сферы появляются только с содержимым (
     );
 
     expect(await topicNames()).toEqual(['здоровье']);
-    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье']);
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['Здоровье']);
     // Итог — одним сообщением: раскладка по сферам и «Всё сохранила» (п. 3).
-    const summary = all.find((text) => text.includes(defaultTexts.answer.keepOrPick)) ?? '';
+    const summary = all.find((text) => text.includes('Записала')) ?? '';
     expect(summary).toContain('💊 Здоровье — 1');
     // Ни одной сводки «Пока пусто»: пустых веток нет.
     expect(gateway.sent.some((message) => message.text.includes(defaultTexts.summary.empty))).toBe(
@@ -4055,7 +4063,7 @@ describe('сферы появляются только с содержимым (
     );
 
     expect(await topicNames()).toEqual(['здоровье', 'покупки']);
-    expect(gateway.created.map((thread) => thread.name)).toEqual(['здоровье', 'покупки']);
+    expect(gateway.created.map((thread) => thread.name)).toEqual(['Здоровье', 'Покупки']);
     // Сводка — только у новой ветки, «здоровье» не перерисовано.
     expect(gateway.writes - writesAfterFirst).toBe(1);
   });
@@ -4224,7 +4232,7 @@ describe('мягкий лимит расхода', () => {
     );
 
     expect(all).toHaveLength(1);
-    expect(all[0]).toContain(defaultTexts.answer.keepOrPick);
+    expect(all[0]).toContain('Записала 1 дело');
     expect(all.join(' ')).not.toMatch(/лимит|модель|дешевл|ограничен/iu);
     expect(await pickedNow()).toContain('Купить продукты');
 
@@ -6771,7 +6779,7 @@ describe('правка доходит до резолвера (§7, задача
     );
 
     // Обычный ответ на выгрузку пришёл — и в нём строка про правку.
-    const reply = all.find((text) => text.includes(defaultTexts.answer.keepOrPick));
+    const reply = all.find((text) => text.includes('Записала'));
     expect(reply).toBeDefined();
     expect(reply).toContain(defaultTexts.resolver.deadlineRefused);
   });
@@ -8751,9 +8759,7 @@ describe('правка к сказанному в этой же выгрузке
     const withUndo = toPerson.filter((one) =>
       one.buttons.includes(defaultTexts.resolver.buttonUndo),
     );
-    const withAnswer = toPerson.filter((one) =>
-      one.buttons.includes(defaultTexts.answer.buttonPick),
-    );
+    const withAnswer = toPerson.filter((one) => one.text.includes('Записала'));
 
     expect(withUndo, `реплики: ${JSON.stringify(toPerson)}`).toHaveLength(1);
     expect(withAnswer).toHaveLength(1);
@@ -9030,7 +9036,7 @@ describe('сферы по содержанию (правка заказчицы 
     expect(saved.map((item) => item.topic)).toEqual(['дети']);
 
     // Ветка и сводка появились сразу — человек видит сферу, а не строку в базе.
-    expect(gateway.created.map((thread) => thread.name)).toContain('дети');
+    expect(gateway.created.map((thread) => thread.name)).toContain('Дети');
     const created = mine.find((topic) => topic.name === 'дети');
     expect(created?.tgThreadId).not.toBeNull();
   });
@@ -9049,7 +9055,7 @@ describe('сферы по содержанию (правка заказчицы 
       expect(mine.map((topic) => topic.name)).toEqual(['личное', 'дом']);
       const saved = await testDb().select().from(items);
       expect(saved.map((item) => item.topic)).toEqual(['личное']);
-      expect(gateway.created.map((thread) => thread.name)).not.toContain(named);
+      expect(gateway.created.map((thread) => normalizeTopicName(thread.name))).not.toContain(named);
     },
   );
 
@@ -9121,7 +9127,9 @@ describe('сферы по содержанию (правка заказчицы 
     const saved = await testDb().select().from(items);
     expect(saved.map((item) => item.topic)).toEqual(['покупки']);
     // Ветки «покупка» в чате нет.
-    expect(gateway.created.map((thread) => thread.name)).not.toContain('покупка');
+    expect(gateway.created.map((thread) => normalizeTopicName(thread.name))).not.toContain(
+      'покупка',
+    );
   });
 
   it('выключенная человеком сфера не возвращается и под другой формой: «покупка» при снятой «покупки»', async () => {
@@ -9174,7 +9182,9 @@ describe('сферы по содержанию (правка заказчицы 
     const saved = await testDb().select().from(items);
     expect(saved).toHaveLength(2);
     expect(saved.every((item) => item.topic === 'дети')).toBe(true);
-    expect(gateway.created.filter((thread) => thread.name === 'дети')).toHaveLength(1);
+    expect(
+      gateway.created.filter((thread) => normalizeTopicName(thread.name) === 'дети'),
+    ).toHaveLength(1);
   });
 });
 

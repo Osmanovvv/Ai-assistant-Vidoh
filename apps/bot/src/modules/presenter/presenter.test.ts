@@ -695,6 +695,16 @@ describe('presentDump — ответ на выгрузку целиком', () =
     expect(countQuestions(result.reply.text)).toBe(0);
   });
 
+  it('сфера — с заглавной, как в раскладке (правка заказчицы 30.09.2026)', () => {
+    // Имя темы в базе строчное: «личное». Человеку — «Личное».
+    const result = presentDump({
+      ...params,
+      quickAdd: { topic: 'личное', title: 'Заняться танцами' },
+    });
+
+    expect(result.reply.text).toBe('Записала в «Личное»: Заняться танцами.');
+  });
+
   it('со сроком — дата после названия (правка заказчицы 29.09.2026: «везде, где есть срок»)', () => {
     const result = presentDump({
       ...params,
@@ -722,6 +732,45 @@ describe('presentDump — ответ на выгрузку целиком', () =
     expect(presentDump({ ...params, profile: 'тёплый-которого-нет' }).reply.text).toContain(
       texts.answer.keepOrPick,
     );
+  });
+
+  describe('одна запись — выбирать не из чего: ни вопроса, ни кнопок (правка заказчицы 30.09.2026)', () => {
+    it.each<[string, DumpComposition]>([
+      // Её скрин: «Записала 1 желание» — и «Оставить как есть или выбрать главное?».
+      ['одно желание', { ...NOTHING, desires: 1 }],
+      ['одно дело', { ...NOTHING, tasks: 1 }],
+      ['одна идея', { ...NOTHING, ideas: 1 }],
+      ['одно сведение', { ...NOTHING, infos: 1 }],
+      // Состояние — не запись: выбирать по-прежнему не из чего.
+      ['одно дело и чувство', { ...NOTHING, tasks: 1, emotions: 1 }],
+    ])('%s', (_name, one) => {
+      const result = presentDump({ composition: one, actions: [], hidden: 0 });
+
+      expect(result.reply.text).not.toContain(texts.answer.keepOrPick);
+      expect(result.reply.buttons).toEqual([]);
+    });
+
+    it('и при сильной эмоции кнопок нет: выбирать всё так же не из чего', () => {
+      const result = presentDump({
+        composition: { ...NOTHING, desires: 1 },
+        actions: [],
+        hidden: 0,
+        mood: 'heavy',
+      });
+
+      expect(result.reply.buttons).toEqual([]);
+    });
+
+    it('две записи — вопрос и кнопки, как прежде', () => {
+      const result = presentDump({
+        composition: { ...NOTHING, tasks: 1, desires: 1 },
+        actions: [],
+        hidden: 0,
+      });
+
+      expect(result.reply.text).toContain(texts.answer.keepOrPick);
+      expect(result.reply.buttons).toHaveLength(2);
+    });
   });
 });
 
