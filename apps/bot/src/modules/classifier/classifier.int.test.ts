@@ -2004,3 +2004,99 @@ describe('хвост перечисления — к большой цели (з
     expect(result.items[0]?.topic).toBe('семья');
   });
 });
+
+describe('записей меньше, чем единиц — недостающие не пропадают (заказчица 30.09.2026)', () => {
+  const three = [
+    { text: 'выкупать собаку', isProject: false, isEmotion: false },
+    { text: 'заказать шампунь', isProject: false, isEmotion: false },
+    { text: 'сходить на Вайлдберриз', isProject: false, isEmotion: false },
+  ];
+
+  it('выпавшая единица разбирается ещё раз отдельно', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([{ text: 'Выкупать собаку' }, { text: 'Заказать шампунь', topic: 'покупки' }]),
+        answer([{ text: 'Сходить на Вайлдберриз', topic: 'покупки' }]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: three,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => item.text)).toEqual([
+      'Выкупать собаку',
+      'Заказать шампунь',
+      'Сходить на Вайлдберриз',
+    ]);
+    expect(provider.callCount).toBe(2);
+  });
+
+  it('модель слила две единицы в одно дело — второго вызова нет', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ text: 'Купить молоко, два литра', topic: 'покупки' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: [
+        { text: 'купить молоко', isProject: false, isEmotion: false },
+        { text: 'молоко обязательно два литра', isProject: false, isEmotion: false },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(provider.callCount).toBe(1);
+  });
+
+  it('повтор тоже не ответил — остаётся то, что есть, без ошибки', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([{ text: 'Выкупать собаку' }, { text: 'Заказать шампунь' }]),
+        'не json',
+        'не json',
+        'не json',
+        'не json',
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: three,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => item.text)).toEqual(['Выкупать собаку', 'Заказать шампунь']);
+  });
+});
+
+describe('повтор для недостающих — один раз (заказчица 30.09.2026)', () => {
+  it('повтор тоже вернул не всё — третьего вызова нет', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([{ text: 'Выкупать собаку' }]),
+        JSON.stringify({ items: [] }),
+        answer([{ text: 'лишний вызов' }]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: [
+        { text: 'выкупать собаку', isProject: false, isEmotion: false },
+        { text: 'сходить на Вайлдберриз', isProject: false, isEmotion: false },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(provider.callCount).toBe(2);
+  });
+});

@@ -185,3 +185,39 @@ describe('учёт расхода', () => {
     expect(call?.promptVersion).toBe('extractor@1');
   });
 });
+
+describe('дело, выпавшее из извлечения, возвращается (заказчица 30.09.2026)', () => {
+  /**
+   * Её голосовое: «…Мне нужно заказать шампунь. Сходить на Вайлдберриз?
+   * Что то я так устала…» — модель вернула шесть единиц из семи, «Сходить
+   * на Вайлдберриз» выпало молча (`dropped-deeds.ts`).
+   */
+  it('модель потеряла — дело возвращено кодом, на своём месте', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          units: [
+            unit('Выкупать собаку'),
+            unit('Заказать шампунь'),
+            unit('Устала, башка не соображает', { isEmotion: true }),
+          ],
+        }),
+      ],
+    });
+
+    const result = await extractUnits(deps(provider, prompts), {
+      input:
+        'Выкупать собаку, выкупать. Мне нужно заказать шампунь.\nСходить на Вайлдберриз? Что то я так устала.',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.units.map((one) => one.text)).toEqual([
+      'Выкупать собаку',
+      'Заказать шампунь',
+      'Сходить на Вайлдберриз',
+      'Устала, башка не соображает',
+    ]);
+  });
+});
