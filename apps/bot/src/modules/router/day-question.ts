@@ -1,5 +1,6 @@
 import { askedList, asksAboutEverything } from '../backlog/list-questions.js';
 import { askedDay } from '../backlog/periods.js';
+import { wordsOf } from '../backlog/question-words.js';
 import type { Segment } from './router.service.js';
 
 /**
@@ -29,10 +30,11 @@ const SPLITTABLE = new Set<Segment['intent']>(['DUMP', 'QUERY']);
 
 /**
  * Слова, которыми спрашивают. «Напиши», «скинь», «пришли», «дай»,
- * «отправь» — просьбы показать (заказчица, бой 21.09.2026).
+ * «отправь» — просьбы показать (заказчица, бой 21.09.2026); «выкати» —
+ * тоже (заказчица, бой 29.09.2026).
  */
 const ASK_WORD =
-  /(?<!\p{L})(?:что|чего|какие|какой|какая|кто|покажи|напомни|скажи|расскажи|перечисли|выведи|напиши|выпиши|скинь|пришли|дай|выдай|отправь)(?!\p{L})/iu;
+  /(?<!\p{L})(?:что|чего|какие|какой|какая|кто|покажи|напомни|скажи|расскажи|перечисли|выведи|напиши|выпиши|скинь|пришли|дай|выдай|отправь|выкати)(?!\p{L})/iu;
 
 /**
  * Граница предложений — по знаку конца и пробелу после него; и запятая
@@ -114,9 +116,61 @@ function splitSegment(segment: Segment): readonly Segment[] {
   return merged;
 }
 
+/**
+ * Слова, из которых состоит кусок вопроса без содержания: «Слушай, а
+ * еще...» (вводные `wordsOf` уже убрал). Закрытый список связок — не
+ * рамка вопроса: «Мои дела» и «Покажи всё» — вопросы сами по себе.
+ */
+const BARE_WORDS: ReadonlySet<string> = new Set(['а', 'и', 'еще', 'кстати', 'вообще', 'там']);
+
+/** Не спрашивает и ничего не называет: ни слова вопроса, ни знака, ни предмета. */
+function isBare(text: string): boolean {
+  const asks = ASK_WORD.test(text) || ASK_WORD_MORE.test(text) || text.trim().endsWith('?');
+  return !asks && wordsOf(text).every((word) => BARE_WORDS.has(word));
+}
+
+/**
+ * Кусок вопроса без содержания — к соседнему вопросу (заказчица, бой
+ * 29.09.2026).
+ *
+ * «Слушай, а еще... Да выкати мне вообще все, что нужно сделать на этой
+ * неделе.» — многоточие распознавания режет вопрос надвое, и «Слушай, а
+ * еще...», отвеченное отдельно, — это «а ещё» без предмета, то есть весь
+ * список «Мои дела» вдобавок к неделе. Кусок клеится к следующему
+ * вопросу, а в конце — к предыдущему; рядом вопроса нет — остаётся как
+ * был.
+ */
+function glueBareQueries(segments: readonly Segment[]): readonly Segment[] {
+  const glued: Segment[] = [];
+  let carried = '';
+
+  for (const [index, segment] of segments.entries()) {
+    const text = carried === '' ? segment.text : `${carried} ${segment.text}`;
+    carried = '';
+
+    if (segment.intent === 'QUERY' && isBare(segment.text)) {
+      if (segments[index + 1]?.intent === 'QUERY') {
+        carried = text;
+        continue;
+      }
+      const last = glued.at(-1);
+      if (last?.intent === 'QUERY') {
+        glued[glued.length - 1] = { ...last, text: `${last.text} ${text}` };
+        continue;
+      }
+    }
+
+    glued.push(text === segment.text ? segment : { ...segment, text });
+  }
+
+  return glued;
+}
+
 export function splitDayQuestions(segments: readonly Segment[]): readonly Segment[] {
-  const split = segments.flatMap((segment) =>
-    SPLITTABLE.has(segment.intent) ? splitSegment(segment) : [segment],
+  const split = glueBareQueries(
+    segments.flatMap((segment) =>
+      SPLITTABLE.has(segment.intent) ? splitSegment(segment) : [segment],
+    ),
   );
 
   // Один день — один вопрос.

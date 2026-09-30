@@ -3398,6 +3398,92 @@ describe('бренд-карточки (ТЗ по визуалам, продже�
     expect(all.some((text) => text.includes('Сдать отчёт'))).toBe(false);
   });
 
+  describe('«выкати мне всё на этой неделе» — полный список недели кодом (заказчица, бой 29.09.2026)', () => {
+    /**
+     * Бой 29.09.2026, 21:26: вводные «слушай», «да» и «выкати» код принял
+     * за предмет, вопрос ушёл в поиск, ответ дала модель по обзору — и
+     * кончила «Остальное подождёт». Заказчица: «такое ощущение, как будто
+     * бы он не всё выкатил и решил за меня, что этого хватит». Модель
+     * здесь отвечает так же, как тогда на бою.
+     */
+    const PHRASE = 'Слушай, а еще... Да выкати мне вообще все, что нужно сделать на этой неделе.';
+    const MODEL_ANSWER = JSON.stringify({
+      answer:
+        'На сегодня ничего не назначено. На этой неделе нужно сдать отчёт. Остальное подождёт.',
+    });
+
+    it.each([
+      ['одним вопросом', [{ intent: 'QUERY', text: PHRASE }]],
+      [
+        'двумя вопросами',
+        [
+          { intent: 'QUERY', text: 'Слушай, а еще...' },
+          {
+            intent: 'QUERY',
+            text: 'Да выкати мне вообще все, что нужно сделать на этой неделе.',
+          },
+        ],
+      ],
+    ])('модель отдала %s — одна карточка недели, модель не зовётся', async (_how, segments) => {
+      const prompts = await seedPrompts();
+      await testDb()
+        .insert(items)
+        .values([
+          {
+            userId,
+            text: 'Сдать отчёт',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'работа',
+            status: 'new',
+            deadlineAt: new Date(T0.getTime() + 2 * 24 * 60 * 60_000),
+            deadlineAccuracy: 'day',
+          },
+          {
+            userId,
+            text: 'Разобрать балкон',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'дом',
+            status: 'new',
+          },
+        ]);
+      await queuedBatchOf([{ kind: 'text', text: PHRASE, offsetMs: 0 }]);
+      const { sender, all } = recordingSender();
+      const { cards, shown } = recordingCards();
+      const llm = echoingLlm({
+        router: JSON.stringify({ crisis: false, segments }),
+        answerer: MODEL_ANSWER,
+      });
+
+      await processUserBatches(
+        {
+          db: testDb(),
+          lock,
+          handleBatch: handler({
+            speech: new MockSpeechProvider(),
+            prompts,
+            sender,
+            cards,
+            llm,
+            embedder: new MockEmbeddingProvider(),
+          }),
+        },
+        userId,
+      );
+
+      expect(shown).toHaveLength(1);
+      expect(shown[0]?.card).toBe('week');
+      expect(shown[0]?.caption).toContain('Сдать отчёт');
+      // Дело без срока — не на неделю, в список недели не идёт.
+      expect(shown[0]?.caption).not.toContain('Разобрать балкон');
+      expect(llm.requests.filter((request) => stageOf(request) === 'answerer')).toHaveLength(0);
+      expect(all.some((text) => text.includes('подождёт'))).toBe(false);
+      // Второго ответа — всего списка «Мои дела» — нет.
+      expect(all.some((text) => text.includes('Разобрать балкон'))).toBe(false);
+    });
+  });
+
   it('«на 3 дня» и «во вторник» — отрезки с подписью словами (21.09.2026)', async () => {
     /**
      * Никита 21.09.2026: «а на 3 дня, 7 дней, месяц отвечает?» Не отвечал
