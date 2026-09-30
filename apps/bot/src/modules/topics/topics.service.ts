@@ -43,7 +43,10 @@ import { listTopics, normalizeTopicName } from './topics.repo.js';
  * §12.4 ТЗ: эмодзи как маркер, не как украшение.
  */
 export const TOPIC_ICONS: Readonly<Record<string, string>> = {
-  семья: '👨‍👩‍👧',
+  // Семья ❤️ и личное ⭐️ — выбор заказчицы 30.09.2026: прежних
+  // 👨‍👩‍👧 и 🤍 в наборе Telegram нет, ветки жили без иконки; её ✨ и
+  // 💞 там тоже нет.
+  семья: '❤️',
   здоровье: '💊',
   работа: '💼',
   покупки: '🛒',
@@ -51,8 +54,7 @@ export const TOPIC_ICONS: Readonly<Record<string, string>> = {
   дети: '🧸',
   деньги: '💰',
   учёба: '📚',
-  // 🤍 — из примеров ТЗ проджекта 17.09.2026 (2.4: «🤍 Личное — 1»); было 🌱.
-  личное: '🤍',
+  личное: '⭐️',
 };
 
 export interface TopicServiceDeps {
@@ -78,6 +80,10 @@ export function topicIcon(name: string): string | undefined {
   return ICONS_BY_KEY.get(normalizeTopicName(name));
 }
 
+function withoutVariation(emoji: string): string {
+  return emoji.replace(/️/gu, '');
+}
+
 async function iconFor(deps: TopicServiceDeps, name: string): Promise<string | undefined> {
   const emoji = topicIcon(name);
   if (emoji === undefined) return undefined;
@@ -86,7 +92,16 @@ async function iconFor(deps: TopicServiceDeps, name: string): Promise<string | u
     const allowed = await deps.gateway.allowedIcons();
     // Символа может не оказаться в наборе Telegram — тогда ветка
     // создаётся без иконки. Отказываться от ветки из-за картинки глупо.
-    return allowed.get(emoji);
+    const exact = allowed.get(emoji);
+    if (exact !== undefined) return exact;
+
+    // Знак начертания (U+FE0F) невидим, и одна и та же «⭐» бывает с ним
+    // и без (30.09.2026): из-за него иконка терялась бы молча.
+    const plain = withoutVariation(emoji);
+    for (const [symbol, id] of allowed) {
+      if (withoutVariation(symbol) === plain) return id;
+    }
+    return undefined;
   } catch (error) {
     deps.logger?.warn({ err: error }, 'Не удалось получить набор иконок, ветка будет без иконки');
     return undefined;
@@ -137,6 +152,40 @@ export async function ensureThread(
       return { threadId: undefined, created: false, flat: true };
     }
 
+    throw error;
+  }
+}
+
+export type ThreadIconResult = 'set' | 'no-icon' | 'no-thread' | 'gone';
+
+/**
+ * Иконка готовой ветки — по карте `TOPIC_ICONS` (правка заказчицы
+ * 30.09.2026).
+ *
+ * Иконка ставится при создании ветки, и смена карты до уже созданных
+ * веток не доходит: у семьи и личного они так и остались бы кружком с
+ * буквой. Правкой ветки иконка ставится и готовой. Ветки ещё нет — она
+ * получит иконку при создании; удалили руками — забыть её, как везде.
+ */
+export async function updateThreadIcon(
+  deps: TopicServiceDeps,
+  params: { readonly topicId: string; readonly chatId: number },
+): Promise<ThreadIconResult> {
+  const [topic] = await deps.db.select().from(topics).where(eq(topics.id, params.topicId)).limit(1);
+  const threadId = topic?.tgThreadId ?? null;
+  if (topic === undefined || threadId === null) return 'no-thread';
+
+  const iconEmojiId = await iconFor(deps, topic.name);
+  if (iconEmojiId === undefined) return 'no-icon';
+
+  try {
+    await deps.gateway.setIcon({ chatId: params.chatId, threadId, iconEmojiId });
+    return 'set';
+  } catch (error) {
+    if (isThreadGone(error)) {
+      await forgetThread(deps, topic.userId, threadId);
+      return 'gone';
+    }
     throw error;
   }
 }

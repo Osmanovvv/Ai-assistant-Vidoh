@@ -86,6 +86,18 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve(this.options.icons ?? new Map());
   }
 
+  readonly iconsSet: { chatId: number; threadId: number; iconEmojiId: string }[] = [];
+
+  setIcon(params: { chatId: number; threadId: number; iconEmojiId: string }): Promise<void> {
+    // Так Telegram отвечает на правку ветки, которой уже нет (03.09.2026).
+    if (this.options.goneThreads?.has(params.threadId) === true) {
+      return Promise.reject(telegramError(400, 'Bad Request: TOPIC_ID_INVALID'));
+    }
+
+    this.iconsSet.push({ ...params });
+    return Promise.resolve();
+  }
+
   private throttled = 0;
 
   send(params: { chatId: number; threadId?: number | undefined; text: string }): Promise<number> {

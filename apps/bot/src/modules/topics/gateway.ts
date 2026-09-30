@@ -29,6 +29,17 @@ export interface TopicGateway {
    */
   allowedIcons(): Promise<ReadonlyMap<string, string>>;
 
+  /**
+   * Сменить иконку готовой ветки (правка заказчицы 30.09.2026): при
+   * создании она ставится сама, а смена карты сфер до созданных веток
+   * иначе не доходит.
+   */
+  setIcon(params: {
+    readonly chatId: number;
+    readonly threadId: number;
+    readonly iconEmojiId: string;
+  }): Promise<void>;
+
   send(params: {
     readonly chatId: number;
     readonly threadId?: number | undefined;
@@ -156,6 +167,10 @@ export function createTopicGateway(api: Api): TopicGateway {
 
       icons = map;
       return map;
+    },
+
+    async setIcon({ chatId, threadId, iconEmojiId }) {
+      await api.editForumTopic(chatId, threadId, { icon_custom_emoji_id: iconEmojiId });
     },
 
     async send({ chatId, threadId, text }) {
