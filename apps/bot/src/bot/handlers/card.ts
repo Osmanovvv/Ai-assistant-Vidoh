@@ -1,6 +1,6 @@
 import { CARD_ACTION } from '../../modules/items/card-actions.js';
 import { and, eq } from 'drizzle-orm';
-import type { InlineKeyboard, Bot } from 'grammy';
+import type { InlineKeyboard, Bot, CallbackQueryContext, Context } from 'grammy';
 import type { Logger } from 'pino';
 
 import { items, type Item } from '../../db/schema.js';
@@ -8,7 +8,12 @@ import type { Database } from '../../infra/db.js';
 import { deadlineWords } from '../../modules/items/deadline-words.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 import { describeChange } from '../../modules/resolver/change-text.js';
-import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
+import {
+  applyDecision,
+  emptyChanges,
+  type Applied,
+  type ApplyAction,
+} from '../../modules/resolver/patch.js';
 import { AWAITING, awaitingOf, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
 import { sphereTitle } from '../../modules/topics/sphere-title.js';
@@ -303,6 +308,104 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       if (chatId !== undefined) await refresh(active.userId, chatId, active.item.topic);
     });
   };
+
+  // ── Похожее уже есть (заказчица, 30.09.2026) ─────────────────────────
+  /**
+   * Бот записал новое и спросил, не то же ли это, что прежнее. «Это
+   * новое» — оба остаются; «То же — не добавлять» — новое убирается тем
+   * же путём, что «Убрать» на карточке, с кнопкой отмены; «Изменить
+   * прежнее» — новое убирается так же, и открывается карточка прежнего.
+   */
+  const CODE = '[A-Za-z0-9_-]{22}';
+
+  bot.callbackQuery(new RegExp(`^${CARD_ACTION.similarKeep}(${CODE})$`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const active = await ownItem(ctx.from.id, ctx.match[1] ?? '');
+    await ctx.editMessageText(
+      active === undefined ? textsFor(null).card.gone : active.texts.card.similarKept,
+    );
+  });
+
+  /** Новое — долой, как «Убрать» на карточке. Не вышло — почему, словами. */
+  const dropFresh = async (
+    ctx: CallbackQueryContext<Context>,
+    code: string,
+  ): Promise<
+    | {
+        readonly kind: 'dropped';
+        readonly applied: Applied;
+        readonly texts: TextProfile;
+        readonly timeZone: string;
+      }
+    | { readonly kind: 'refused'; readonly text: string }
+  > => {
+    const active = await ownItem(ctx.from.id, code);
+    if (!active) return { kind: 'refused', text: textsFor(null).card.gone };
+
+    const now = new Date();
+    const refused = buttonRefusal('cancel', active.item, active.texts, active.timeZone, now);
+    if (refused !== undefined) return { kind: 'refused', text: refused };
+
+    const outcome = await applyDecision(db, {
+      userId: active.userId,
+      itemId: active.item.id,
+      action: 'cancel',
+      changes: emptyChanges(),
+      timeZone: active.timeZone,
+      now,
+      reason: 'похожее уже было — по кнопке «то же»',
+      changedBy: 'user',
+    });
+    if (outcome.kind !== 'applied') return { kind: 'refused', text: active.texts.card.gone };
+
+    logger.info({ userId: active.userId }, 'Похожее дело: новое убрано по кнопке');
+    const chatId = ctx.chat?.id;
+    if (chatId !== undefined) await refresh(active.userId, chatId, active.item.topic);
+    return {
+      kind: 'dropped',
+      applied: outcome.applied,
+      texts: active.texts,
+      timeZone: active.timeZone,
+    };
+  };
+
+  bot.callbackQuery(
+    new RegExp(`^${CARD_ACTION.similarSame}(${CODE}):(${CODE})$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const dropped = await dropFresh(ctx, ctx.match[1] ?? '');
+      if (dropped.kind === 'refused') {
+        await ctx.editMessageText(dropped.text);
+        return;
+      }
+      await ctx.editMessageText(
+        describeChange(dropped.applied, dropped.texts, dropped.timeZone, undefined, new Date()),
+        { reply_markup: changeKeyboard(dropped.applied, dropped.texts) },
+      );
+    },
+  );
+
+  bot.callbackQuery(
+    new RegExp(`^${CARD_ACTION.similarEdit}(${CODE}):(${CODE})$`, 'u'),
+    async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const old = await ownItem(ctx.from.id, ctx.match[2] ?? '');
+      if (!old) {
+        await ctx.editMessageText(textsFor(null).card.gone);
+        return;
+      }
+      const dropped = await dropFresh(ctx, ctx.match[1] ?? '');
+      await ctx.editMessageText(
+        old.texts.card.similarEditOld,
+        dropped.kind === 'dropped'
+          ? { reply_markup: changeKeyboard(dropped.applied, dropped.texts) }
+          : {},
+      );
+      await ctx.reply(cardText(old.item, old.texts, old.timeZone), {
+        reply_markup: cardKeyboard(old.item, old.texts, back),
+      });
+    },
+  );
 
   decide(CARD_ACTION.done, 'complete', 'нажата кнопка «Сделано» на карточке');
   decide(CARD_ACTION.snooze, 'snooze', 'нажата кнопка «Отложить» на карточке');

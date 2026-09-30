@@ -345,6 +345,18 @@ export interface TextProfile {
     /** Правка не легла: записи нет или текст тот же. */
     readonly editNotApplied: string;
     /**
+     * Похожее уже есть (заказчица, 30.09.2026: «Отнести пальто в
+     * химчистку» было, а «Нужна химчистка» легла ещё одним делом). Бот
+     * записывает и сразу спрашивает; кнопки — новое, то же (новое
+     * убирается), изменить прежнее (новое убирается, открывается старое).
+     */
+    readonly similarAsk: (title: string, sphere: string) => string;
+    readonly buttonSimilarNew: string;
+    readonly buttonSimilarSame: string;
+    readonly buttonSimilarEdit: string;
+    readonly similarKept: string;
+    readonly similarEditOld: string;
+    /**
      * Передумал переименовывать (Никита, 17.09.2026): кнопка под
      * подсказкой и ответ на неё. Без них назад дороги не было — только
      * ждать пятнадцать минут или писать заголовок.

@@ -1754,3 +1754,73 @@ describe('цель без шагов раскладывается при отк�
     expect(textOf(final)).toContain('Позвать гостей');
   });
 });
+
+describe('кнопки «похожее уже есть» (заказчица 30.09.2026)', () => {
+  async function pair(owner = userId): Promise<{ fresh: string; old: string }> {
+    const old = await addItem({ owner, text: 'Отнести пальто в химчистку', topic: 'дом' });
+    const fresh = await addItem({ owner, text: 'Нужна химчистка', topic: 'покупки' });
+    return { fresh, old };
+  }
+
+  it('«Это новое» — оба остаются', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    const { fresh, old } = await pair();
+
+    await bot.handleUpdate(callbackUpdate(`${CARD_ACTION.similarKeep}${toShortId(fresh)}`));
+
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.card.similarKept);
+    expect((await itemRow(fresh))?.status).toBe('new');
+    expect((await itemRow(old))?.status).toBe('new');
+  });
+
+  it('«То же — не добавлять» — новое убрано с кнопкой отмены, прежнее на месте', async () => {
+    const gateway = new FakeTopicGateway();
+    const { bot, calls } = createTestBot(gateway);
+    await bot.init();
+    const { fresh, old } = await pair();
+
+    await bot.handleUpdate(
+      callbackUpdate(`${CARD_ACTION.similarSame}${toShortId(fresh)}:${toShortId(old)}`),
+    );
+
+    expect((await itemRow(fresh))?.status).toBe('cancelled');
+    expect((await itemRow(old))?.status).toBe('new');
+    const reply = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(keyboardOf(reply).map((one) => one.text)).toContain(defaultTexts.resolver.buttonUndo);
+  });
+
+  it('«Изменить прежнее» — новое убрано, открыта карточка прежнего', async () => {
+    const { bot, calls } = createTestBot();
+    await bot.init();
+    const { fresh, old } = await pair();
+
+    await bot.handleUpdate(
+      callbackUpdate(`${CARD_ACTION.similarEdit}${toShortId(fresh)}:${toShortId(old)}`),
+    );
+
+    expect((await itemRow(fresh))?.status).toBe('cancelled');
+    expect((await itemRow(old))?.status).toBe('new');
+    const edited = calls.filter((call) => call.method === 'editMessageText').at(-1);
+    expect(textOf(edited)).toBe(defaultTexts.card.similarEditOld);
+    const card = calls.filter((call) => call.method === 'sendMessage').at(-1);
+    expect(textOf(card)).toContain('Отнести пальто в химчистку');
+    expect(keyboardOf(card).map((one) => one.text)).toContain(defaultTexts.card.buttonEdit);
+  });
+
+  it('чужие дела по подобранному коду — не трогаются', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    const { fresh, old } = await pair(otherUserId);
+
+    await bot.handleUpdate(
+      callbackUpdate(`${CARD_ACTION.similarSame}${toShortId(fresh)}:${toShortId(old)}`),
+    );
+    await bot.handleUpdate(
+      callbackUpdate(`${CARD_ACTION.similarEdit}${toShortId(fresh)}:${toShortId(old)}`),
+    );
+
+    expect((await itemRow(fresh))?.status).toBe('new');
+    expect((await itemRow(old))?.status).toBe('new');
+  });
+});

@@ -9138,7 +9138,10 @@ describe('сферы по содержанию (правка заказчицы 
 
   it('бой 26.09.2026: модель назвала «покупка» при своей «покупки» — сфера не заводится, дело в «покупках»', async () => {
     const gateway = await ownTopics(['личное', 'покупки']);
-    await queuedBatchOf([{ kind: 'text', text: 'отвезти машину в сервис', offsetMs: 0 }]);
+    // Покупка настоящая: «отвезти машину в сервис» с 01.10.2026 уходит из
+    // «Покупок» в «Личное» (правка заказчицы, `shopping-topic.ts`), а
+    // проверяется здесь форма имени сферы.
+    await queuedBatchOf([{ kind: 'text', text: 'купить молоко', offsetMs: 0 }]);
 
     await run(gateway, () => 'покупка');
 
@@ -13016,5 +13019,102 @@ describe('её голосовое 30.09.2026, 12:47: «Сходить на Ва�
       .orderBy(asc(items.sourceOrder));
     expect(saved.map((item) => item.text)).toContain('Сходить на Вайлдберриз');
     expect(saved).toHaveLength(7);
+  });
+});
+
+describe('похожее уже есть — бот спрашивает после записи (заказчица 30.09.2026)', () => {
+  /**
+   * Её скрины: «Отнести пальто в химчистку» было, потом «И еще нужна
+   * химчистка» — «Записала в «Покупки»: Нужна химчистка.», и ещё раз.
+   */
+  const itemOf = (text: string, topic = 'покупки') => ({
+    text,
+    type: 'TASK',
+    priority: 'SOON',
+    topic,
+    isProject: false,
+    deadline: '',
+    deadlineAccuracy: 'none',
+    recurrenceKind: 'none',
+    recurrenceInterval: 0,
+    recurrenceText: '',
+    deadlineText: '',
+  });
+
+  async function coatInDom(): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Отнести пальто в химчистку',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+      })
+      .returning({ id: items.id });
+    return row!.id;
+  }
+
+  async function run(text: string, classified: readonly ReturnType<typeof itemOf>[]) {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
+    const recorded = recordingSender();
+    const llm = echoingLlm({ classifier: JSON.stringify({ items: classified }) });
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender: recorded.sender,
+        }),
+      },
+      userId,
+    );
+    return recorded;
+  }
+
+  it('её случай: записала «Нужна химчистка» — и спросила про «Отнести пальто в химчистку»', async () => {
+    await coatInDom();
+    const { all, buttons } = await run('И еще нужна химчистка', [itemOf('Нужна химчистка')]);
+
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(rows.map((row) => row.text).sort()).toEqual([
+      'Нужна химчистка',
+      'Отнести пальто в химчистку',
+    ]);
+    expect(all).toContain(defaultTexts.card.similarAsk('Отнести пальто в химчистку', 'Дом'));
+    expect(buttons).toEqual(
+      expect.arrayContaining([
+        defaultTexts.card.buttonSimilarNew,
+        defaultTexts.card.buttonSimilarSame,
+        defaultTexts.card.buttonSimilarEdit,
+      ]),
+    );
+  });
+
+  it('три дела и одно похожее: вопрос выбора уступает, его кнопки остаются', async () => {
+    await coatInDom();
+    const { all, said } = await run('сдать пальто в химчистку, купить хлеб, позвонить в банк', [
+      itemOf('Сдать пальто в химчистку', 'дом'),
+      itemOf('Купить хлеб'),
+      itemOf('Позвонить в банк', 'личное'),
+    ]);
+
+    expect(all.some((text) => text.includes(defaultTexts.answer.keepOrPick))).toBe(false);
+    // Кнопки выбора — у итога (помощник помнит кнопки только последнего сообщения).
+    const summary = said.find((one) => one.text.includes('Записала 3 дела'));
+    expect(summary?.buttons).toContain(defaultTexts.answer.buttonKeep);
+    expect(all).toContain(defaultTexts.card.similarAsk('Отнести пальто в химчистку', 'Дом'));
+  });
+
+  it('похожего нет — вопроса нет', async () => {
+    await coatInDom();
+    const { all, buttons } = await run('купить хлеб', [itemOf('Купить хлеб')]);
+
+    expect(all.some((text) => text.startsWith('Похожее уже есть'))).toBe(false);
+    expect(buttons).not.toContain(defaultTexts.card.buttonSimilarSame);
   });
 });

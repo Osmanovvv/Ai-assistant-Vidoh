@@ -46,6 +46,8 @@ import {
   type ItemToSave,
 } from '../items/items.repo.js';
 import { datelessTwins, knownByText, splitKnown } from '../items/same-text.js';
+import { similarButtons, similarOpen } from '../items/similar-open.js';
+import { sphereTitle } from '../topics/sphere-title.js';
 import { looksLikeNewTitle, newTitleFrom, renameItem } from '../items/title-edit.js';
 import { awaitingOf, setAwaiting } from '../onboarding/awaiting.js';
 import {
@@ -3562,6 +3564,24 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       }
     }
 
+    /**
+     * Похожее уже есть (заказчица, 30.09.2026): «Отнести пальто в химчистку»
+     * было, а «Нужна химчистка» и «Сдать пальто в химчистку» легли ещё
+     * двумя делами. Новое записано — и бот спрашивает, новое ли это дело
+     * или то же самое (решение Никиты 01.10.2026: спрашивать после записи —
+     * не ответила, ничего не пропало). Сравнение — с открытыми делами,
+     * прочитанными до вставки (`similar-open.ts`). Вопрос в обмене один
+     * (§13.9): заняли опрос или переспрос — не спрашиваем; спрашиваем —
+     * строки «Оставить как есть или выбрать главное?» под итогом нет,
+     * кнопки остаются, как при опросе.
+     */
+    const similar =
+      happened.asked || startOnboarding !== undefined || onboardingOpen
+        ? undefined
+        : [...saved, ...late.saved]
+            .map((item) => ({ fresh: item, old: similarOpen(item, before) }))
+            .find((pair) => pair.old !== undefined);
+
     const presented = presentDump({
       composition,
       recorded,
@@ -3581,7 +3601,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * на реплику: два вопроса подряд разными сообщениями — тот же
        * допрос.
        */
-      omitQuestion: happened.asked || startOnboarding !== undefined || onboardingOpen,
+      omitQuestion:
+        happened.asked || startOnboarding !== undefined || onboardingOpen || similar !== undefined,
       feelingsOnly,
       // Живой ответ на одни чувства — ниже, после разбора (docs/29).
       mood,
@@ -3698,6 +3719,16 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         underLines.length > 0 ? `${withNews}\n\n${underLines.join('\n')}` : withNews,
         presented.reply.buttons,
       );
+    }
+
+    // Похожее уже есть — вопрос своим сообщением, после итога (см. выше).
+    if (similar?.old !== undefined) {
+      await tell(
+        texts.card.similarAsk(similar.old.text, sphereTitle(similar.old.topic ?? '')),
+        similarButtons(similar.fresh.id, similar.old.id, texts),
+      );
+      happened.asked = true;
+      deps.logger?.info({ batchId: batch.id }, 'Похожее дело уже есть — спросила');
     }
 
     /**
