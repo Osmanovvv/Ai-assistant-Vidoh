@@ -45,7 +45,11 @@ export function summarizeDump(
   context: { readonly now: Date; readonly timeZone: string },
 ): DumpSummary {
   const tasks = units.filter((unit) => unit.type === 'TASK');
-  const placed = units.filter((unit) => unit.type === 'TASK' || unit.type === 'DESIRE');
+  // Идеи — тоже (правка заказчицы 30.09.2026): в счёте ответа они есть,
+  // значит и в раскладке по сферам — где лежит.
+  const placed = units.filter(
+    (unit) => unit.type === 'TASK' || unit.type === 'DESIRE' || unit.type === 'IDEA',
+  );
 
   const counts = new Map<string, { name: string; count: number }>();
   for (const unit of placed) {

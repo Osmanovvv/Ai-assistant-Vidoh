@@ -3689,7 +3689,7 @@ describe('ответ пользователю', () => {
     expect(await pickedNow()).toContain('Купить продукты');
   });
 
-  it('отвечает по образцу 16.09.2026: «Всё, забрала…», раскладка и один вопрос — оставить или выбрать', async () => {
+  it('отвечает по образцу 16.09.2026: «Всё, запомнила…», раскладка и один вопрос — оставить или выбрать', async () => {
     const prompts = await seedPrompts();
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
@@ -3707,7 +3707,7 @@ describe('ответ пользователю', () => {
     );
 
     const reply = all.at(-1) ?? '';
-    expect(reply.startsWith('Всё, забрала.')).toBe(true);
+    expect(reply.startsWith('Всё, запомнила.')).toBe(true);
     expect(reply).not.toContain('Записать сына к врачу');
     expect(reply).toContain(defaultTexts.answer.keepOrPick);
     expect(countQuestions(reply)).toBe(1);
@@ -6258,7 +6258,7 @@ describe('правка доходит до резолвера (§7, задача
       new Date(`${soon()}T00:00:00.000Z`).toISOString(),
     );
     expect(all.some((line) => line.includes('17:45'))).toBe(true);
-    expect(all.some((line) => line.includes('Записала') || line.includes('Всё, забрала'))).toBe(
+    expect(all.some((line) => line.includes('Записала') || line.includes('Всё, запомнила'))).toBe(
       false,
     );
   });
@@ -9472,7 +9472,7 @@ describe('живая строка поверх ответа (слой A, 22.09.2
     const { reply, presenterInputs } = await dumpWith(llm, prompts);
 
     expect(reply.split(String.fromCharCode(10)).slice(0, 2)).toEqual([
-      'Всё, забрала. Записала 2 дела и разложила по местам.',
+      'Всё, запомнила. Записала 2 дела и разложила по местам.',
       firstLine,
     ]);
     expect(presenterInputs).toHaveLength(1);
@@ -11506,7 +11506,7 @@ describe('час нового дела — утро или вечер (вари�
       );
 
       expect(await shoesAndMilk()).toEqual([['Забрать туфли из ремонта', 19 * 60]]);
-      // Одна строка про час — без «Всё, забрала» и вопроса о главном сверху.
+      // Одна строка про час — без «Всё, запомнила» и вопроса о главном сверху.
       expect(all.slice(sentBefore)).toEqual([
         'Напомню про «Забрать туфли из ремонта» завтра в 19:00.',
       ]);
