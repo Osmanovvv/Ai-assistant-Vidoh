@@ -131,11 +131,18 @@ export interface BuildReplyParams {
    */
   readonly mood?: Mood | undefined;
   /**
-   * Запись одна — выбирать не из чего (правка заказчицы 30.09.2026):
+   * Дел меньше трёх — выбирать не из чего (правки заказчицы 30.09.2026):
    * ни вопроса «оставить или выбрать», ни кнопок.
    */
-  readonly single?: boolean | undefined;
+  readonly withoutChoice?: boolean | undefined;
 }
+
+/**
+ * С какого числа дел в выгрузке есть из чего выбрать главное (правка
+ * заказчицы 30.09.2026: «когда больше 2 задач я записываю»). Желания и
+ * идеи не выбираются — в счёт не идут.
+ */
+export const CHOICE_MIN_TASKS = 3;
 
 /** Записей в составе: дела, желания, идеи, сведения. Состояние — не запись. */
 function recordsIn(composition: DumpComposition): number {
@@ -226,11 +233,11 @@ export function buildReply(params: BuildReplyParams): Reply {
    * а не вопрос: так же стоят они и под её образцом п. 3.
    */
   /**
-   * Одна запись — выбирать не из чего (правка заказчицы 30.09.2026: «1
-   * желание… не из чего выбирать»): ответ кончается раскладкой, без
-   * вопроса и кнопок.
+   * Дел меньше трёх — выбирать не из чего (правки заказчицы 30.09.2026:
+   * «1 желание… не из чего выбирать», «когда больше 2 задач»): ответ
+   * кончается раскладкой, без вопроса и кнопок.
    */
-  if (params.single === true) return { text: lines.join('\n'), buttons: [] };
+  if (params.withoutChoice === true) return { text: lines.join('\n'), buttons: [] };
 
   if (params.omitQuestion !== true && params.mood !== 'heavy') lines.push('', answer.keepOrPick);
 
@@ -265,6 +272,11 @@ export interface ActionsReplyParams {
   readonly firstItemId?: string | undefined;
   /** Сколько дел осталось за пределами выдачи. */
   readonly hidden: number;
+  /**
+   * Выбор — из одной выгрузки (правка заказчицы 30.09.2026): «Больше
+   * ничего не висит» тогда неправда — в памяти есть и другие дела.
+   */
+  readonly scoped?: boolean | undefined;
 }
 
 /**
@@ -278,11 +290,12 @@ export function buildActionsReply(params: ActionsReplyParams): Reply {
 
   if (actions.length === 0) return { text: answer.nothingToPick, buttons: [] };
 
+  const footer =
+    hidden > 0 ? answer.restSaved : params.scoped === true ? undefined : answer.nothingHidden;
   const lines: string[] = [
     actions.length === 1 ? answer.actionsLeadSingle : answer.actionsLead,
     ...actions.map((text) => answer.bullet(text)),
-    '',
-    hidden > 0 ? answer.restSaved : answer.nothingHidden,
+    ...(footer === undefined ? [] : ['', footer]),
   ];
 
   const doNow = {
@@ -531,7 +544,7 @@ export function presentDump(params: PresentParams): PresentResult {
       mood: params.mood,
       summary: params.summary,
       contextLine: params.contextLine,
-      single: recordsIn(params.composition) === 1,
+      withoutChoice: params.composition.tasks < CHOICE_MIN_TASKS,
     }),
   };
 }

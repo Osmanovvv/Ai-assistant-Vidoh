@@ -1657,9 +1657,10 @@ describe('разбор', () => {
     expect(picked.actions).toEqual(['Первое дело', 'Второе дело', 'Третье дело']);
   });
 
-  it('в выдачу идут и записи прошлых выгрузок, а не только новые', async () => {
-    // §13.2 спрашивает «что взять на сегодня», а не «что ты сказала
-    // последним»: срочное дело вчерашней выгрузки важнее нового «когда-нибудь».
+  it('прошлые записи: под разбором — нет (правка заказчицы 30.09.2026), на «с чего начать» — да', async () => {
+    // Кнопка под разбором выбирает из сказанного сейчас: «чтобы из
+    // последнего, что надиктовала… выбрать главное». Вопрос «с чего
+    // начать» без выгрузки — по-прежнему «что взять на сегодня» из всего.
     const prompts = await seedPrompts();
 
     await testDb()
@@ -1686,8 +1687,11 @@ describe('разбор', () => {
       userId,
     );
 
+    expect(await pickedNow()).toEqual(['Новое дело']);
+
     // Просроченное — с числом после дела: видно, что день прошёл.
-    expect(await pickedNow()).toContain('просроченное дело · 23.08');
+    const general = await pickMain(testDb(), { userId, now: at(0), timeZone: 'Europe/Moscow' });
+    expect(general.actions).toContain('просроченное дело · 23.08');
   });
 });
 
@@ -1697,10 +1701,10 @@ describe('онбординг после первой выгрузки', () => {
     // момента бот не задал ни одного вопроса — это проверяется в тестах
     // обработчиков.
     const prompts = await seedPrompts();
-    // Две записи: при одной своего вопроса нет и без опроса (30.09.2026),
+    // Три дела: при меньшем своего вопроса нет и без опроса (30.09.2026),
     // и проверка ниже была бы пустой.
     await queuedBatchOf([
-      { kind: 'text', text: 'записать сына к врачу\nкупить продукты', offsetMs: 0 },
+      { kind: 'text', text: 'записать сына к врачу\nкупить продукты\nпозвонить маме', offsetMs: 0 },
     ]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
@@ -1744,8 +1748,10 @@ describe('онбординг после первой выгрузки', () => {
       .set({ onboardingStep: STEP.done })
       .where(eq(userSettings.userId, userId));
 
-    // Две записи: при одной своего вопроса нет вовсе (30.09.2026).
-    await queuedBatchOf([{ kind: 'text', text: 'купить продукты\nпозвонить маме', offsetMs: 0 }]);
+    // Три дела: при меньшем своего вопроса нет вовсе (30.09.2026).
+    await queuedBatchOf([
+      { kind: 'text', text: 'купить продукты\nпозвонить маме\nзабрать посылку', offsetMs: 0 },
+    ]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
 
@@ -3643,8 +3649,10 @@ describe('ответ пользователю', () => {
     // Решение заказчицы 15.09.2026: дел под признанием нет, они по
     // кнопке. Код выгрузки в кнопке — чтобы сказанное в ней шло первым.
     const prompts = await seedPrompts();
-    // Две записи: при одной кнопок нет (правка заказчицы 30.09.2026).
-    await queuedBatchOf([{ kind: 'text', text: 'надо продукты\nврача и химчистку', offsetMs: 0 }]);
+    // Три дела: при меньшем кнопок нет (правки заказчицы 30.09.2026).
+    await queuedBatchOf([
+      { kind: 'text', text: 'надо продукты\nврача и химчистку\nпозвонить маме', offsetMs: 0 },
+    ]);
     const { sender, buttons, said } = recordingSender();
 
     await processUserBatches(
@@ -3694,6 +3702,8 @@ describe('ответ пользователю', () => {
     await queuedBatchOf([
       { kind: 'text', text: 'записать сына к врачу', offsetMs: 0 },
       { kind: 'text', text: 'и ещё забрать вещи', offsetMs: 5_000 },
+      // Третье дело: вопрос — от трёх дел (правка заказчицы 30.09.2026).
+      { kind: 'text', text: 'позвонить маме', offsetMs: 8_000 },
     ]);
     const { sender, all } = recordingSender();
 
@@ -3720,7 +3730,9 @@ describe('ответ пользователю', () => {
       now: at(0),
       timeZone: 'Europe/Moscow',
     });
-    expect(picked.actions).toEqual(['Записать сына к врачу', 'И ещё забрать вещи']);
+    expect([...picked.actions].sort()).toEqual(
+      ['Записать сына к врачу', 'И ещё забрать вещи', 'Позвонить маме'].sort(),
+    );
   });
 
   it('на пустой расшифровке честно говорит, что не разобрала', async () => {
@@ -3835,8 +3847,10 @@ describe('онбординг: края', () => {
       .set({ onboardingStep: STEP.morning })
       .where(eq(userSettings.userId, userId));
 
-    // Две записи: при одной своего вопроса нет и без опроса (30.09.2026).
-    await queuedBatchOf([{ kind: 'text', text: 'ещё одно дело\nпозвонить маме', offsetMs: 0 }]);
+    // Три дела: при меньшем своего вопроса нет и без опроса (30.09.2026).
+    await queuedBatchOf([
+      { kind: 'text', text: 'ещё одно дело\nпозвонить маме\nзабрать посылку', offsetMs: 0 },
+    ]);
     const { sender, all } = recordingSender();
     const questions = recordingQuestions();
 
@@ -9520,7 +9534,8 @@ describe('живая строка поверх ответа (слой A, 22.09.2
     const { reply } = await dumpWith(llm, prompts);
 
     expect(reply).toContain('Записала 2 дела');
-    expect(reply).toContain(defaultTexts.answer.keepOrPick);
+    // При двух делах вопроса нет (30.09.2026): целый ответ — счёт и раскладка.
+    expect(reply).toMatch(/— 2$/mu);
   });
 
   it('о ком сказала строка — три дня не повод: во второй выгрузке подряд факты без него (хвост слоя A)', async () => {

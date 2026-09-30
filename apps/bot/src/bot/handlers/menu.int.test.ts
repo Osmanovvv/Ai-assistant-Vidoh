@@ -1170,7 +1170,12 @@ describe('кнопки под разбором: «Оставить как ест
     await addItem({ owner: userId, text: 'Старое срочное', topic: 'дом', priority: 'NOW' });
     await addItem({ owner: userId, text: 'Старое обычное', topic: 'дом' });
     await addItem({ owner: userId, text: 'Ещё старое', topic: 'дом' });
-    for (const text of ['Из выгрузки — первое', 'Из выгрузки — второе']) {
+    for (const text of [
+      'Из выгрузки — первое',
+      'Из выгрузки — второе',
+      'Из выгрузки — третье',
+      'Из выгрузки — четвёртое',
+    ]) {
       await testDb().insert(items).values({
         userId,
         text,
@@ -1192,9 +1197,12 @@ describe('кнопки под разбором: «Оставить как ест
     const sent = calls.filter((call) => call.method === 'sendMessage').at(-1);
     const text = textOf(sent);
     expect(text).toContain(defaultTexts.answer.actionsLead);
-    expect(text.indexOf('Из выгрузки — первое')).toBeLessThan(text.indexOf('Старое срочное'));
+    // Только из этой выгрузки (правка заказчицы 30.09.2026): старого нет — ни срочного, ни обычного.
+    expect(text).toContain('Из выгрузки — первое');
     expect(text).toContain('Из выгрузки — второе');
+    expect(text).not.toContain('Старое срочное');
     expect(text).not.toContain('Старое обычное');
+    // Четвёртое её дело не показано — «Остальное пока никуда не убежит».
     expect(text).toContain(defaultTexts.answer.restSaved);
     expect(keyboardOf(sent).map((button) => button.text)).toEqual([
       defaultTexts.answer.buttonDoNow,

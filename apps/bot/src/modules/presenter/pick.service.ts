@@ -27,6 +27,8 @@ export interface PickedActions {
   readonly actions: readonly string[];
   readonly hidden: number;
   readonly firstItemId?: string | undefined;
+  /** Выбрано только из дел выгрузки (правка заказчицы 30.09.2026). */
+  readonly scoped?: true | undefined;
 }
 
 export async function pickMain(
@@ -41,7 +43,16 @@ export async function pickMain(
 ): Promise<PickedActions> {
   const mentioned = params.batchId === undefined ? undefined : await mentionedIn(db, params);
 
-  const open = await openItemsFor(db, params.userId);
+  /**
+   * Под разбором — только из этой выгрузки (правка заказчицы 30.09.2026:
+   * «чтобы из последнего, что надиктовала… выбрать из них главное»).
+   * Прежде сказанное шло первым, а добиралось из всей памяти — и после
+   * «дня рождения сына» выкатывались подгузники и химчистка. Упомянутого
+   * нет (старая выгрузка) — обычная очередь, как без кода.
+   */
+  const scoped = mentioned !== undefined && mentioned.size > 0;
+  const all = await openItemsFor(db, params.userId);
+  const open = scoped ? all.filter((item) => mentioned.has(item.id)) : all;
   const selection = selectForOutput(open, {
     now: params.now,
     timeZone: params.timeZone,
@@ -71,6 +82,7 @@ export async function pickMain(
     actions: shown.map(withDue),
     hidden: selection.hidden,
     firstItemId: selection.shown[0]?.id,
+    ...(scoped ? { scoped: true as const } : {}),
   };
 }
 

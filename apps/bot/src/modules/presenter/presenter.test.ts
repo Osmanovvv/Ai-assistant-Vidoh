@@ -351,6 +351,37 @@ describe('buildActionsReply — по кнопке «Выбрать главно�
     expect(countQuestions(reply.text)).toBe(0);
   });
 
+  describe('выбор из одной выгрузки (правка заказчицы 30.09.2026)', () => {
+    it('показаны все её дела — без «Больше ничего не висит»: в памяти есть и другое', () => {
+      const reply = buildActionsReply({
+        texts,
+        actions: ['Записать сына к врачу', 'Позвонить маме', 'Купить хлеб'],
+        hidden: 0,
+        scoped: true,
+      });
+
+      expect(reply.text).not.toContain(texts.answer.nothingHidden);
+      expect(reply.text.endsWith('— Купить хлеб')).toBe(true);
+    });
+
+    it('часть её дел не показана — «Остальное пока никуда не убежит.»', () => {
+      const reply = buildActionsReply({
+        texts,
+        actions: ['Одно', 'Два', 'Три'],
+        hidden: 2,
+        scoped: true,
+      });
+
+      expect(reply.text).toContain(texts.answer.restSaved);
+    });
+
+    it('без выгрузки — как прежде: «Больше ничего не висит.»', () => {
+      const reply = buildActionsReply({ texts, actions: ['Одно'], hidden: 0 });
+
+      expect(reply.text).toContain(texts.answer.nothingHidden);
+    });
+  });
+
   it('«Сделать сейчас» ведёт к первому показанному делу, а не к «первому на сегодня» (ревизия этапа 3, E2)', () => {
     const reply = buildActionsReply({
       texts,
@@ -686,15 +717,16 @@ describe('presentDump — ответ на выгрузку целиком', () =
      * С решением 15.09.2026 списка под признанием нет ни у кого; закрывать
      * нечего, а усталость живёт в самом признании.
      */
+    // Три дела: кнопки — от трёх дел (правка заказчицы 30.09.2026).
     const result = presentDump({
-      composition: { ...composition, tasks: 1, emotions: 2 },
+      composition: { ...composition, tasks: 3, emotions: 2 },
       actions: ['Записать сына к врачу'],
       hidden: 7,
     });
 
     expect(
       result.reply.text.startsWith(
-        'Поняла, запомнила. Записала 1 дело и 1 желание, разложила по местам.',
+        'Поняла, запомнила. Записала 3 дела и 1 желание, разложила по местам.',
       ),
     ).toBe(true);
     expect(result.reply.text).not.toContain(texts.answer.actionsLeadSingle);
@@ -703,9 +735,10 @@ describe('presentDump — ответ на выгрузку целиком', () =
   });
 
   it('настроение доезжает до признания и формы: усталость — 😮‍💨 и вопрос; сильная — без вопроса', () => {
+    // Три дела: вопрос и кнопки — от трёх дел (правка заказчицы 30.09.2026).
     const tired = presentDump({
       ...params,
-      composition: { ...composition, tasks: 2 },
+      composition: { ...composition, tasks: 3 },
       mood: 'tired',
     });
 
@@ -714,7 +747,7 @@ describe('presentDump — ответ на выгрузку целиком', () =
 
     const heavy = presentDump({
       ...params,
-      composition: { ...composition, tasks: 2 },
+      composition: { ...composition, tasks: 3 },
       mood: 'heavy',
     });
 
@@ -819,15 +852,24 @@ describe('presentDump — ответ на выгрузку целиком', () =
       expect(result.reply.buttons).toEqual([]);
     });
 
-    it('две записи — вопрос и кнопки, как прежде', () => {
-      const result = presentDump({
-        composition: { ...NOTHING, tasks: 1, desires: 1 },
-        actions: [],
-        hidden: 0,
-      });
+    it('три дела — вопрос и кнопки: есть из чего выбрать (правка заказчицы 30.09.2026)', () => {
+      const result = presentDump({ composition: { ...NOTHING, tasks: 3 }, actions: [], hidden: 0 });
 
       expect(result.reply.text).toContain(texts.answer.keepOrPick);
       expect(result.reply.buttons).toHaveLength(2);
+    });
+
+    it.each<[string, DumpComposition]>([
+      // «Показывать, когда больше 2 задач я записываю» — её слова.
+      ['два дела', { ...NOTHING, tasks: 2 }],
+      ['дело и желание', { ...NOTHING, tasks: 1, desires: 1 }],
+      // Желания и идеи не выбираются — в счёт трёх не идут.
+      ['два дела, желание и идея', { ...NOTHING, tasks: 2, desires: 1, ideas: 1 }],
+    ])('%s — без вопроса и кнопок', (_name, composition) => {
+      const result = presentDump({ composition, actions: [], hidden: 0 });
+
+      expect(result.reply.text).not.toContain(texts.answer.keepOrPick);
+      expect(result.reply.buttons).toEqual([]);
     });
   });
 });
