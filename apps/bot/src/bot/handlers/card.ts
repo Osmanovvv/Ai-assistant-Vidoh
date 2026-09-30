@@ -61,7 +61,8 @@ export function cardText(item: Item, texts: TextProfile, timeZone: string): stri
   // некуда посмотреть, и обещание «ничего не потеряно» пустое.
   if (item.body !== null && item.body.length > 0) lines.push(item.body, '');
 
-  if (item.topic !== null) lines.push(`${card.topicLabel}: ${item.topic}`);
+  // Сфера — с заглавной, как везде (правка заказчицы 30.09.2026).
+  if (item.topic !== null) lines.push(`${card.topicLabel}: ${sphereTitle(item.topic)}`);
 
   if (item.deadlineAt === null) {
     lines.push(`${card.deadlineLabel}: ${card.noDeadline}`);

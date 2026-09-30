@@ -759,7 +759,8 @@ describe('карточка записи', () => {
 
     const card = textOf(calls.filter((call) => call.method === 'editMessageText').at(-1));
     expect(card).toContain('к врачу');
-    expect(card).toContain(`${defaultTexts.card.topicLabel}: здоровье`);
+    // Сфера — с заглавной (правка заказчицы 30.09.2026: «везде»).
+    expect(card).toContain(`${defaultTexts.card.topicLabel}: Здоровье`);
     expect(card).toContain('04.09');
     expect(card).toContain(defaultTexts.card.statusName('new'));
   });
