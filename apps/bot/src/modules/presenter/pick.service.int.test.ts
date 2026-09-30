@@ -51,20 +51,26 @@ async function task(
 }
 
 describe('pickMain', () => {
-  it('до трёх дел, сказанное в этой выгрузке — первым, остальное посчитано', async () => {
+  it('только из этой выгрузки: до трёх её дел, остальные её дела посчитаны, старых нет (правка заказчицы 30.09.2026)', async () => {
+    /**
+     * Её скрин: сказала про день рождения сына, нажала «Выбрать главное» —
+     * а бот «бац и выкатил» подгузники и химчистку из памяти. Выбор —
+     * из того, что она только что надиктовала.
+     */
     const mine = await batch();
     await task('Старое срочное', { priority: 'NOW' });
     await task('Старое обычное');
-    await task('Ещё старое');
     await task('Из выгрузки — первое', { sourceBatchId: mine });
     await task('Из выгрузки — второе', { sourceBatchId: mine });
+    await task('Из выгрузки — третье', { sourceBatchId: mine });
+    await task('Из выгрузки — четвёртое', { sourceBatchId: mine });
 
     const picked = await pickMain(testDb(), { userId, batchId: mine, now: NOW, timeZone: MOSCOW });
 
     expect(picked.actions).toHaveLength(3);
-    expect(picked.actions.slice(0, 2)).toEqual(['Из выгрузки — первое', 'Из выгрузки — второе']);
-    expect(picked.actions[2]).toBe('Старое срочное');
-    expect(picked.hidden).toBe(2);
+    expect(picked.actions.every((text) => text.startsWith('Из выгрузки'))).toBe(true);
+    expect(picked.hidden).toBe(1);
+    expect(picked.scoped).toBe(true);
     expect(picked.firstItemId).toBeDefined();
   });
 
@@ -89,7 +95,8 @@ describe('pickMain', () => {
       timeZone: MOSCOW,
     });
 
-    expect(picked.actions).toEqual(['Повторённое', 'Срочное старое']);
+    // Только упомянутое в этой выгрузке — старое срочное не добирается.
+    expect(picked.actions).toEqual(['Повторённое']);
   });
 
   it('без кода выгрузки — обычная очередь: срочное впереди', async () => {
@@ -102,8 +109,8 @@ describe('pickMain', () => {
     expect(picked.actions[0]).toBe('Срочное');
   });
 
-  it('собирается по тому, что открыто сейчас, а не на момент разбора', async () => {
-    // Между разбором и нажатием дело закрыли — в списке его нет.
+  it('собирается по тому, что открыто сейчас: закрытое из выгрузки не показывается, чужое не добирается', async () => {
+    // Между разбором и нажатием дела выгрузки закрыли — выбирать из неё не из чего.
     const mine = await batch();
     await task('Уже сделано', { sourceBatchId: mine });
     await task('Ещё открыто', { sourceBatchId: mine });
@@ -112,8 +119,18 @@ describe('pickMain', () => {
 
     const picked = await pickMain(testDb(), { userId, batchId: mine, now: NOW, timeZone: MOSCOW });
 
-    expect(picked.actions).toEqual(['Открыто позже']);
+    expect(picked.actions).toEqual([]);
     expect(picked.hidden).toBe(0);
+  });
+
+  it('выгрузка без упомянутых дел (старая) — обычная очередь, как без кода', async () => {
+    const empty = await batch();
+    await task('Срочное', { priority: 'NOW' });
+
+    const picked = await pickMain(testDb(), { userId, batchId: empty, now: NOW, timeZone: MOSCOW });
+
+    expect(picked.actions).toEqual(['Срочное']);
+    expect(picked.scoped).toBeUndefined();
   });
 
   it('пусто — нет ни дел, ни скрытых', async () => {
