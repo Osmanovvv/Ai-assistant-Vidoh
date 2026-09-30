@@ -1567,6 +1567,44 @@ describe('вопрос разбирается сразу, не дожидаяс�
     expect(await lastBatchStatus()).toBe('open');
   });
 
+  describe('голосовое — сразу «Минуточку, слушаю запись…» (правка заказчицы 30.09.2026)', () => {
+    /**
+     * Было два слова подряд: «Слушаю…», потом разбор правил его в
+     * «Секунду, слушаю запись…». Теперь на голосовое реплика одна и та
+     * же с первой секунды — разбор ставит ту же, ничего не прыгает.
+     */
+    it('одно голосовое — одна реплика про запись', async () => {
+      const { sender, said } = recordingStatus();
+
+      await botWith(watchingQueue().queue, sender).handleUpdate(voiceUpdate(7));
+
+      expect(said).toEqual([defaultTexts.listening.working]);
+    });
+
+    it('текст — по-прежнему «Слушаю…»', async () => {
+      const { sender, said } = recordingStatus();
+
+      await botWith(watchingQueue().queue, sender).handleUpdate(textUpdate('купить хлеб'));
+
+      expect(said).toEqual([defaultTexts.listening.acknowledged]);
+    });
+
+    it('в серии есть голосовое — про запись, и после текста следом тоже', async () => {
+      const { sender, said } = recordingStatus();
+      const bot = botWith(watchingQueue().queue, sender);
+
+      await bot.handleUpdate(textUpdate('купить хлеб'));
+      await bot.handleUpdate(voiceUpdate(7));
+      await bot.handleUpdate(textUpdate('и молоко'));
+
+      expect(said).toEqual([
+        defaultTexts.listening.acknowledged,
+        defaultTexts.listening.working,
+        defaultTexts.listening.working,
+      ]);
+    });
+  });
+
   async function botAskedMove(
     hoursAgo: number,
     segment = 'перенеси ребенка на вечер',

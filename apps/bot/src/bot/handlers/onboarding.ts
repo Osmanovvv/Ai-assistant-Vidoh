@@ -19,7 +19,6 @@ import {
   type OnboardingState,
   type Question,
 } from '../../modules/onboarding/onboarding.service.js';
-import type { CardSender } from '../../modules/cards/cards.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 
@@ -65,21 +64,7 @@ export function keyboardOf(question: Question): InlineKeyboard {
   return fitKeyboard(question.rows);
 }
 
-export interface OnboardingOptions {
-  /**
-   * Бренд-карточки (ТЗ по визуалам 18.09.2026): карточка 01 после опроса,
-   * перед первой выгрузкой — с приглашением, без кнопок. Без карточек
-   * опрос закрывается словами, как раньше.
-   */
-  readonly cards?: CardSender | undefined;
-}
-
-export function registerOnboardingHandlers(
-  bot: Bot,
-  db: Database,
-  logger: Logger,
-  options: OnboardingOptions = {},
-): void {
+export function registerOnboardingHandlers(bot: Bot, db: Database, logger: Logger): void {
   async function show(
     ctx: CallbackQueryContext<Context>,
     question: Question | undefined,
@@ -297,13 +282,9 @@ export function registerOnboardingHandlers(
   ): Promise<void> {
     await finish(db, active.userId, new Date());
     logger.info({ userId: active.userId }, 'Онбординг пройден');
+    // Приглашение — в самой реплике, без картинки: картинка приветствия
+    // идёт первой на `/start` (правка заказчицы 30.09.2026).
     await ctx.editMessageText(active.state.texts.onboarding.finished);
-
-    // Карточка старта — перед первой выгрузкой (ТЗ по визуалам, 01).
-    const chatId = ctx.chat?.id;
-    if (options.cards !== undefined && chatId !== undefined) {
-      await options.cards.send({ chatId, card: 'start', caption: active.state.texts.cards.start });
-    }
   }
 
   bot.callbackQuery(ACTION.eveningOff, async (ctx) => {

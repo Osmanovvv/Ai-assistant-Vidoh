@@ -103,7 +103,8 @@ export function createCardSender(deps: CardSenderDeps): CardSender {
   return {
     async send({ chatId, threadId, card, caption, buttons }) {
       const options = {
-        caption,
+        // Пустая подпись — картинка без текста (приветствие на `/start`).
+        ...(caption === '' ? {} : { caption }),
         ...(threadId === undefined ? {} : { message_thread_id: threadId }),
         ...(buttons === undefined || buttons.length === 0
           ? {}

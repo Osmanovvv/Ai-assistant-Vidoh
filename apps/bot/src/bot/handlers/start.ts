@@ -2,6 +2,7 @@ import type { Bot, Context } from 'grammy';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../infra/db.js';
+import type { CardSender } from '../../modules/cards/cards.js';
 import { escapeMarkdown } from '../markdown.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 import {
@@ -79,6 +80,12 @@ export interface StartDeps {
    * Так удобно поднимать бота в тестах, где онбординг не проверяется.
    */
   readonly onboarding?: QuestionSender | undefined;
+  /**
+   * Картинка приветствия — первой на экране согласия (правка заказчицы
+   * 30.09.2026; прежде она шла после опроса). Не задана или не ушла —
+   * экран согласия приходит всё равно.
+   */
+  readonly cards?: CardSender | undefined;
 }
 
 export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
@@ -144,8 +151,22 @@ export function registerStartHandlers(bot: Bot, deps: StartDeps): void {
     ],
   ]);
 
-  /** Первый экран до согласия: приветствие, две ссылки, 18+ и одна кнопка. */
+  /**
+   * Первый экран до согласия: картинка приветствия, следом приветствие,
+   * две ссылки, 18+ и одна кнопка (правка заказчицы 30.09.2026: «первой
+   * должна идти картинка приветствия»). Картинка — украшение: её сбой
+   * экрану согласия не мешает.
+   */
   const consentScreen = async (ctx: Context): Promise<void> => {
+    const chatId = ctx.chat?.id;
+    if (deps.cards !== undefined && chatId !== undefined) {
+      try {
+        await deps.cards.send({ chatId, card: 'start', caption: '' });
+      } catch (error) {
+        logger.warn({ err: error }, 'Картинка приветствия не ушла — экран согласия без неё');
+      }
+    }
+
     await ctx.reply(texts.consent.screen(privacyPolicyUrl, consentUrl), {
       reply_markup: fitKeyboard([[{ label: texts.consent.button, action: CONSENT_ACTION.accept }]]),
       parse_mode: 'Markdown',

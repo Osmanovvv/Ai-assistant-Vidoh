@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, isNotNull, or, sql } from 'drizzle-orm';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
@@ -145,6 +145,22 @@ export async function hasBatchInFlight(db: Executor, userId: string): Promise<bo
         ),
       ),
     )
+    .limit(1);
+
+  return row !== undefined;
+}
+
+/**
+ * Есть ли в выгрузке запись — голосовое или аудио (правка заказчицы
+ * 30.09.2026): тогда реплика приёма сразу «Минуточку, слушаю запись…»,
+ * та же, что ставит расшифровка, и ничего не прыгает. Признак тот же,
+ * что у расшифровки: у сообщения есть файл.
+ */
+export async function batchHasRecording(db: Executor, batchId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: messagesRaw.id })
+    .from(messagesRaw)
+    .where(and(eq(messagesRaw.batchId, batchId), isNotNull(messagesRaw.fileId)))
     .limit(1);
 
   return row !== undefined;

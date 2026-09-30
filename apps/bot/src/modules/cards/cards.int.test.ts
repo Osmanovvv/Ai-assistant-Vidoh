@@ -78,6 +78,15 @@ describe('отправка карточки', () => {
     expect(await cachedId('start')).toBe('big-1');
   });
 
+  it('пустая подпись — картинка без текста, поля подписи нет вовсе (30.09.2026)', async () => {
+    const { api, sent } = fakeApi();
+    const cards = createCardSender({ api, db: testDb(), logger });
+
+    await cards.send({ chatId: CHAT, card: 'start', caption: '' });
+
+    expect(sent[0]?.options).not.toHaveProperty('caption');
+  });
+
   it('второй раз — по запомненному file_id, без файла', async () => {
     const { api, sent } = fakeApi();
     const cards = createCardSender({ api, db: testDb(), logger });
