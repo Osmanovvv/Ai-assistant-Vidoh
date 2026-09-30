@@ -29,10 +29,15 @@ import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
-import { decomposeIfNeeded } from '../projects/decomposer.service.js';
+import { decomposeGoal, planSteps } from '../projects/decomposer.service.js';
 import { describeProject } from '../projects/project-text.js';
 import { stepButtons } from '../projects/project-actions.js';
-import { contextOf, withNextSteps, type ProjectContext } from '../projects/projects.service.js';
+import {
+  contextOf,
+  saveSteps,
+  withNextSteps,
+  type ProjectContext,
+} from '../projects/projects.service.js';
 import {
   openItemsFor,
   openItemsWhere,
@@ -633,6 +638,69 @@ async function withEmbeddings(
   }
 
   return result;
+}
+
+/**
+ * Большие цели — сразу по шагам (заказчица, 30.09.2026: «чтобы большие
+ * цели мы могли по шагам разложить, чтобы бот нам в этом помог»; решение
+ * Никиты — все цели при записи). Та же модель отдаёт короткое название:
+ * «Разобраться с днём рождения ребёнка, место, гости, торт» — части ушли
+ * в шаги. Название код принимает не на слово (`project-title.ts`), а
+ * сбой модели цели не мешает: она сохранится как была, без шагов, и
+ * разложится позже — при первом открытии (`decomposeGoal`).
+ *
+ * До вектора: вектор считается по названию, которое ляжет в базу.
+ */
+interface PlannedGoals {
+  /**
+   * Те же единицы; у цели с принятым коротким названием — новая. В общем
+   * списке выгрузки остаются прежние: по её словам ищутся предложения речи.
+   */
+  readonly units: readonly ClassifiedItem[];
+  /** Шаги по единице — уже новой. */
+  readonly steps: ReadonlyMap<ClassifiedItem, readonly string[]>;
+}
+
+async function planGoals(
+  ai: AiClientDeps,
+  batch: Batch,
+  list: readonly ClassifiedItem[],
+): Promise<PlannedGoals> {
+  const steps = new Map<ClassifiedItem, readonly string[]>();
+
+  const units = await Promise.all(
+    list.map(async (unit) => {
+      if (!unit.isProject) return unit;
+      const plan = await planSteps(ai, {
+        text: unit.text,
+        userId: batch.userId,
+        batchId: batch.id,
+      });
+      if (plan.steps.length === 0) return unit;
+
+      const next = plan.title === undefined ? unit : { ...unit, text: plan.title };
+      steps.set(next, plan.steps);
+      return next;
+    }),
+  );
+
+  return { units, steps };
+}
+
+/** Шаги — к сохранённым целям: запись знает своё место в сохранённом списке. */
+async function saveGoalSteps(
+  db: Database,
+  batch: Batch,
+  saved: readonly Item[],
+  planned: PlannedGoals,
+): Promise<void> {
+  for (const item of saved) {
+    const unit = item.sourceOrder === null ? undefined : planned.units[item.sourceOrder];
+    const texts = unit === undefined ? undefined : planned.steps.get(unit);
+    if (texts === undefined || !item.isProject) continue;
+
+    await saveSteps(db, { itemId: item.id, userId: batch.userId, texts });
+  }
 }
 
 /**
@@ -2146,22 +2214,41 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * которым никто не вернётся, а таких большинство.
        */
       if (answer.kind === 'project') {
-        await decomposeIfNeeded(
-          { db, ai: { db, ...deps.ai } },
-          { item: answer.item, userId: batch.userId, batchId: batch.id },
+        // Короткое название (заказчица, 30.09.2026) — тем же путём, что из меню.
+        const goal = await decomposeGoal(
+          {
+            db,
+            ai: { db, ...deps.ai },
+            rename: {
+              db,
+              logger: deps.logger,
+              embedder: deps.embedder,
+              spendGuard: deps.ai.spendGuard,
+              pricing: deps.ai.pricing,
+              topics: deps.topics,
+            },
+          },
+          {
+            item: answer.item,
+            userId: batch.userId,
+            batchId: batch.id,
+            timeZone: context.timeZone,
+            textProfile: context.textProfile,
+            chatId: target?.chatId,
+          },
         );
 
-        const context = await contextOf(db, answer.item.id);
+        const projectContext = await contextOf(db, goal.item.id);
 
         /**
          * И кнопка ближайшему шагу (задача 3.82). Без неё §21 п.6 обещал
          * показать «что уже решено», а закрыть шаг было нечем: раздел
          * «Сделано» не мог наполниться никогда.
          */
-        const prose = await liveAnswer(context);
+        const prose = await liveAnswer(projectContext);
         await tell(
-          prose ?? describeProject(answer.item, context, texts),
-          stepButtons(context.next, texts),
+          prose ?? describeProject(goal.item, projectContext, texts),
+          stepButtons(projectContext.next, texts),
         );
 
         continue;
@@ -2860,7 +2947,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       hourCommand === undefined || clarification === undefined
         ? undefined
         : await applyHourAnswer(clarification, hourCommand);
-    const fresh =
+    const unplanned =
       hourApplied === undefined ? split.fresh : split.fresh.filter((unit) => unit !== hourAnswer);
     if (hourApplied !== undefined && clarification !== undefined) {
       await closeClarification(db, clarification, true);
@@ -2884,6 +2971,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * при этом был верен, деньги просто уходили в никуда. Платит
      * отправка, а не результат: где черта оплаты, там и граница отсева.
      */
+    // Большие цели — сразу по шагам, с коротким названием (`planGoals`).
+    const goals = await planGoals(heavy, batch, unplanned);
+    const fresh = goals.units;
+
     const toSave = await withEmbeddings(db, deps, batch, fresh);
 
     const saved = await saveItems(db, {
@@ -2891,6 +2982,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       batchId: batch.id,
       items: toSave,
     });
+    await saveGoalSteps(db, batch, saved, goals);
 
     for (const item of [...saved, ...split.known]) mentioned.add(item.id);
 
@@ -3183,13 +3275,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       // Повторы — против всех открытых записей, включая только что
       // сохранённые основным проходом.
       const lateSplit = splitKnown(lateUnits, knownByText(await openItemsFor(db, batch.userId)));
+      const lateGoals = await planGoals(heavy, batch, lateSplit.fresh);
       const lateSaved = await saveItems(db, {
         userId: batch.userId,
         batchId: batch.id,
-        items: await withEmbeddings(db, deps, batch, lateSplit.fresh),
+        items: await withEmbeddings(db, deps, batch, lateGoals.units),
       });
+      await saveGoalSteps(db, batch, lateSaved, lateGoals);
 
-      return { units: lateUnits, saved: lateSaved, known: lateSplit.known, fresh: lateSplit.fresh };
+      return { units: lateUnits, saved: lateSaved, known: lateSplit.known, fresh: lateGoals.units };
     };
 
     const late = await absorbLateThoughts();

@@ -16,7 +16,12 @@ import {
   ITEM_TYPES,
   PRIORITIES,
 } from './classifier.js';
-import { decomposerSchema, DECOMPOSER_SCHEMA_NAME } from './decomposer.js';
+import {
+  decomposerSchema,
+  decomposerV1Schema,
+  DECOMPOSER_SCHEMA_NAME,
+  DECOMPOSER_V1_SCHEMA_NAME,
+} from './decomposer.js';
 import { extractorSchema, EXTRACTOR_SCHEMA_NAME } from './extractor.js';
 import {
   presenterSchema,
@@ -67,6 +72,8 @@ export const SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   [READER_SCHEMA_NAME]: readerSchema,
   [TALKER_SCHEMA_NAME]: talkerSchema,
   [SPLITTER_SCHEMA_NAME]: splitterSchema,
+  // Первая — только шаги: decomposer@1 в базе ссылается на неё, откат возможен.
+  [DECOMPOSER_V1_SCHEMA_NAME]: decomposerV1Schema,
   [DECOMPOSER_SCHEMA_NAME]: decomposerSchema,
   [RESOLVER_SCHEMA_NAME]: resolverSchema,
   // Первая версия ещё активна в бою до заливки промптов, и откат к ней
@@ -170,7 +177,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export { extractorSchema, EXTRACTOR_SCHEMA_NAME };
-export { decomposerSchema, DECOMPOSER_SCHEMA_NAME };
+export { decomposerSchema, DECOMPOSER_SCHEMA_NAME, DECOMPOSER_V1_SCHEMA_NAME };
 export type { DecomposedSteps } from './decomposer.js';
 export { routerSchema, ROUTER_SCHEMA_NAME, INTENTS };
 export {

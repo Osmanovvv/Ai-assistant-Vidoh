@@ -670,6 +670,11 @@ export interface TextProfile {
     readonly line: (text: string) => string;
     /** Шагов пока нет и разложить не вышло. */
     readonly noSteps: string;
+    /**
+     * Пока модель раскладывает цель, открытую из меню (заказчица,
+     * 30.09.2026) — её же голосом, как «Минуточку, слушаю запись…».
+     */
+    readonly decomposing: string;
     /** Все шаги закрыты. */
     readonly finished: string;
     readonly buttonStepDone: string;

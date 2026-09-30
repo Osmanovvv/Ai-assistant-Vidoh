@@ -45,6 +45,12 @@ import {
   SINGLE_LIMIT,
 } from '../../modules/backlog/my-tasks.js';
 import type { CardSender } from '../../modules/cards/cards.js';
+import type { AiClientDeps } from '../../modules/ai/client.js';
+import { accessOf } from '../../modules/billing/subscription.service.js';
+import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
+import { decomposeGoal } from '../../modules/projects/decomposer.service.js';
+import type { SettingsRegistry } from '../../modules/settings/settings.repo.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
 
 /**
  * Меню и списки (§12.1 ТЗ, задача 2.18).
@@ -245,6 +251,21 @@ function itemsKeyboard(
 export interface MenuOptions {
   /** Бренд-карточки (ТЗ по визуалам 18.09.2026): «всё накопившееся» при 15+ делах. */
   readonly cards?: CardSender | undefined;
+  /**
+   * Раскладка цели на шаги при открытии из «Больших целей» (заказчица,
+   * 30.09.2026: «Пока не раскладывала это на шаги» — и ничего). Модель,
+   * доступ человека к ней и то, что нужно переименованию: вектор и ветки.
+   * Не задано — экран показывает цель как есть, модель не зовётся.
+   */
+  readonly goals?:
+    | {
+        readonly ai: AiClientDeps;
+        /** Доступ (пробный период, подписка) — до модели, как у «это новое». */
+        readonly settings?: SettingsRegistry | undefined;
+        readonly embedder?: EmbeddingProvider | undefined;
+        readonly topics?: TopicGateway | undefined;
+      }
+    | undefined;
 }
 
 export function registerMenuHandlers(
@@ -254,14 +275,25 @@ export function registerMenuHandlers(
   options: MenuOptions = {},
 ): void {
   /** Кто нажал и с какими текстами ему отвечать. */
-  async function acting(
-    tgId: number,
-  ): Promise<{ userId: string; texts: TextProfile; timeZone: string } | undefined> {
+  async function acting(tgId: number): Promise<
+    | {
+        userId: string;
+        texts: TextProfile;
+        timeZone: string;
+        textProfile: string | null;
+      }
+    | undefined
+  > {
     const user = await findByTgId(db, tgId);
     if (!user) return undefined;
 
     const context = await outputContextOf(db, user.id);
-    return { userId: user.id, texts: textsFor(context.textProfile), timeZone: context.timeZone };
+    return {
+      userId: user.id,
+      texts: textsFor(context.textProfile),
+      timeZone: context.timeZone,
+      textProfile: context.textProfile,
+    };
   }
 
   /**
@@ -682,22 +714,98 @@ export function registerMenuHandlers(
     );
   });
 
-  /** Экран большой цели с ближайшими шагами — из «Больших целей» и с «Сделать сейчас». */
+  /**
+   * Реплика на время работы модели — и её замена итогом, тем же
+   * сообщением. В меню правится экран; из-под ответа на выгрузку — своё
+   * сообщение, как у `show`. Кнопки на время снимаются: второе нажатие
+   * разложило бы цель ещё раз.
+   */
+  const interim = async (
+    ctx: CallbackQueryContext<Context>,
+    text: string,
+  ): Promise<(final: string, keyboard: InlineKeyboard) => Promise<void>> => {
+    if (ctx.callbackQuery.data.startsWith('answer:')) {
+      const sent = await ctx.reply(text);
+      return async (final, keyboard) => {
+        await ctx.api.editMessageText(sent.chat.id, sent.message_id, final, {
+          reply_markup: keyboard,
+        });
+      };
+    }
+
+    await ctx.editMessageText(text);
+    return async (final, keyboard) => {
+      await ctx.editMessageText(final, { reply_markup: keyboard });
+    };
+  };
+
+  /** Можно ли звать модель за этого человека: доступ — до модели. */
+  const mayDecompose = async (userId: string): Promise<boolean> => {
+    if (options.goals === undefined) return false;
+    if (options.goals.settings === undefined) return true;
+    const access = await accessOf(db, { userId, settings: options.goals.settings });
+    return access.allowed;
+  };
+
+  /**
+   * Экран большой цели с ближайшими шагами — из «Больших целей» и с
+   * «Сделать сейчас».
+   *
+   * Шагов нет — цель раскладывается здесь же (заказчица, 30.09.2026: видела
+   * «Пока не раскладывала это на шаги» и ничего не могла с этим сделать).
+   * Новые цели раскладываются при записи; сюда доходят записанные раньше
+   * и те, где модель тогда не ответила.
+   */
   const showProject = async (
     ctx: CallbackQueryContext<Context>,
     item: Item,
-    texts: TextProfile,
+    active: { userId: string; texts: TextProfile; timeZone: string; textProfile: string | null },
   ): Promise<void> => {
-    const context = await contextOf(db, item.id);
-
-    await show(
-      ctx,
-      describeProject(item, context, texts),
+    const { texts } = active;
+    const keyboardOf = (next: Parameters<typeof stepButtons>[0]): InlineKeyboard =>
       fitKeyboard([
-        ...stepButtons(context.next, texts).map((button) => [button]),
+        ...stepButtons(next, texts).map((button) => [button]),
         [{ label: texts.menu.buttonBack, action: MENU_ACTION.projects }],
-      ]),
+      ]);
+
+    const context = await contextOf(db, item.id);
+    const goals = options.goals;
+
+    if (
+      context.steps.length > 0 ||
+      !item.isProject ||
+      goals === undefined ||
+      !(await mayDecompose(active.userId))
+    ) {
+      await show(ctx, describeProject(item, context, texts), keyboardOf(context.next));
+      return;
+    }
+
+    const finish = await interim(ctx, texts.project.decomposing);
+    const planned = await decomposeGoal(
+      {
+        db,
+        ai: goals.ai,
+        rename: {
+          db,
+          logger,
+          embedder: goals.embedder,
+          spendGuard: goals.ai.spendGuard,
+          pricing: goals.ai.pricing,
+          topics: goals.topics,
+        },
+      },
+      {
+        item,
+        userId: active.userId,
+        timeZone: active.timeZone,
+        textProfile: active.textProfile,
+        chatId: ctx.chat?.id,
+      },
     );
+    const after = await contextOf(db, planned.item.id);
+
+    await finish(describeProject(planned.item, after, texts), keyboardOf(after.next));
   };
 
   bot.callbackQuery(new RegExp(`^${MENU_ACTION.projectPrefix}`, 'u'), async (ctx) => {
@@ -725,7 +833,7 @@ export function registerMenuHandlers(
 
     if (!item) return;
 
-    await showProject(ctx, item, active.texts);
+    await showProject(ctx, item, active);
   });
   // ── Мои дела: полный список (ТЗ проджекта 17.09.2026, 2.4) ────────────
   /**
@@ -963,7 +1071,7 @@ export function registerMenuHandlers(
         }
 
         if (named.isProject) {
-          await showProject(ctx, named, active.texts);
+          await showProject(ctx, named, active);
           return;
         }
 
