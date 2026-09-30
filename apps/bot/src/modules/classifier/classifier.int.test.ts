@@ -930,18 +930,28 @@ describe('заголовок дела — чистое повеление (ви�
     expect(result.items[1]?.text).toBe('Завтра позвонить в банк');
   });
 
-  it('у желания «хочу» не трогает', async () => {
+  it('у желания — само желаемое, без «хочу» (правка заказчицы 30.09.2026); тип прежний', async () => {
     const prompts = await prepare();
     const provider = new MockLlmProvider({
       responses: [
-        answer([{ text: 'Хочу научиться играть на гитаре', type: 'DESIRE', priority: 'NONE' }]),
+        answer([
+          { text: 'Давно хочу заняться танцами', type: 'DESIRE', priority: 'NONE' },
+          { text: 'Хочу собаку', type: 'DESIRE', priority: 'NONE' },
+        ]),
       ],
     });
 
-    const result = await classifyUnits(deps(provider, prompts), params('давно хочу гитару'));
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('давно хочу заняться танцами и хочу собаку'),
+    );
     if (!result.ok) throw new Error('разбор должен был удаться');
 
-    expect(result.items[0]?.text).toBe('Хочу научиться играть на гитаре');
+    expect(result.items.map((item) => [item.text, item.type])).toEqual([
+      ['Заняться танцами', 'DESIRE'],
+      // Без действия после «хочу» срезать нечего: «Собаку» хуже.
+      ['Хочу собаку', 'DESIRE'],
+    ]);
   });
 });
 

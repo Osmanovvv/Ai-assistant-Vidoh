@@ -1,5 +1,6 @@
 import type { ItemType } from '../ai/schemas/classifier.js';
 import { withoutClockPhrase } from './clock-time.js';
+import { isStrictInfinitive } from './split-actions.js';
 
 /**
  * Заголовок дела — чистое повеление (видео заказчицы 15.09.2026).
@@ -26,6 +27,39 @@ import { withoutClockPhrase } from './clock-time.js';
  */
 const LEADING_MODAL =
   /^(?:(?:мне|нам)\s+)?(?:надо|нужно|необходимо|хочу|хотела|хотел|хочется|хотелось|не\s+забыть|не\s+забудь|когда-нибудь|когда\s+нибудь)(?:\s+бы)?(?:\s+(?:ещё|еще))?(?=\s)\s+/iu;
+
+/**
+ * Вступление речи — не дословно (правка заказчицы 30.09.2026: «давно хочу
+ * заняться танцами» легло желанием «Давно хочу заняться танцами»).
+ *
+ * Шире прежнего среза: местоимение, наречия перед модальным словом
+ * («я давно хочу», «очень нужно», «ещё надо»), новые модальные слова
+ * («мечтаю», «собираюсь», «пора», «хорошо бы») и частицы после него
+ * («хочу наконец», «пора бы уже»). И строже: срезается, **только если
+ * дальше глагол в неопределённой форме**. «Хочу собаку» без него стало
+ * бы «Собаку», «Хочу на море» — «На море»; такое остаётся как сказано.
+ * Работает и у желаний: что это желание, говорит счёт «Записала 1
+ * желание», а в названии — само желаемое.
+ */
+const SPOKEN_LEAD = new RegExp(
+  String.raw`^(?:(?:я|мне|нам|мы)\s+)?` +
+    String.raw`(?:(?:давно|очень|так|уже|наконец|всё-таки|все-таки|правда|реально|прям|прямо|тоже|снова|опять|ещё|еще)\s+)*` +
+    String.raw`(?:надо|нужно|необходимо|хочу|хотела|хотел|хочется|хотелось|мечтаю|мечтала|планирую|планировала|собираюсь|собиралась|пора|хорошо\s+бы|неплохо\s+бы|не\s+мешало\s+бы)` +
+    String.raw`(?:\s+(?:бы|ещё|еще|наконец|уже|давно|очень|тоже|снова|опять))*(?=\s)\s+`,
+  'iu',
+);
+
+/** Первое слово остатка — глагол в неопределённой форме, строго. */
+function startsWithInfinitive(text: string): boolean {
+  const [first = ''] = text.split(/[\s,.:;!?—–-]+/u);
+  return isStrictInfinitive(first);
+}
+
+/** Срез вступления, если за ним действие; иначе — как было. */
+function withoutSpokenLead(text: string): string {
+  const cut = text.replace(SPOKEN_LEAD, '');
+  return cut !== text && startsWithInfinitive(cut) ? cut : text;
+}
 
 const WEEKDAYS = 'понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье';
 const MONTHS = 'январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре';
@@ -79,6 +113,15 @@ export function cleanTitle(
     readonly hasHour?: boolean;
   },
 ): string {
+  /**
+   * Желание — только вступление речи и только перед действием (правка
+   * заказчицы 30.09.2026). Состояние, идея, сведение — слова человека.
+   */
+  if (item.type === 'DESIRE') {
+    const cut = withoutSpokenLead(text.trim());
+    if (cut === text.trim()) return text;
+    return cut.charAt(0).toUpperCase() + cut.slice(1);
+  }
   if (item.type !== 'TASK') return text;
 
   /**
@@ -91,6 +134,9 @@ export function cleanTitle(
   if (item.hasHour === true) rest = withoutClockPhrase(rest);
   for (let round = 0; round < 4; round += 1) {
     const before = rest;
+    // Сперва широкое вступление (только перед действием), потом прежний
+    // срез: «Хочу наконец съездить» иначе оставляло «наконец» первым.
+    rest = withoutSpokenLead(rest);
     rest = rest.replace(LEADING_MODAL, '');
     if (item.hasDeadline) rest = rest.replace(LEADING_DAY, '');
     if (item.hasRule === true) rest = rest.replace(LEADING_RULE, '').replace(TRAILING_RULE, '');
