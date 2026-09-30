@@ -28,10 +28,14 @@ describe('иконки веток — из набора Telegram', () => {
     expect(TOPIC_ICONS['личное']).toBe('⭐️');
   });
 
-  it.each(
-    // «Дети» — 🧸 в наборе нет; замена не выбрана, ветка пока без иконки.
-    Object.entries(TOPIC_ICONS).filter(([name]) => name !== 'дети'),
-  )('«%s» (%s) есть в наборе — ветка получит иконку', (_name, emoji) => {
-    expect(ALLOWED.has(plain(emoji))).toBe(true);
+  it('дети — 👶 (решение Никиты 30.09.2026: 🧸 в наборе нет)', () => {
+    expect(TOPIC_ICONS['дети']).toBe('\u{1F476}');
   });
+
+  it.each(Object.entries(TOPIC_ICONS))(
+    '«%s» (%s) есть в наборе — ветка получит иконку',
+    (_name, emoji) => {
+      expect(ALLOWED.has(plain(emoji))).toBe(true);
+    },
+  );
 });
