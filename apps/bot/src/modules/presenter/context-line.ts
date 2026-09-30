@@ -110,6 +110,15 @@ const PERSONS: readonly (readonly [stem: string, endings: string])[] = [
 const PERSON_PATTERNS = PERSONS.map(
   ([stem, endings]) => new RegExp(`(?<!\\p{L})(${stem})(?:${endings})?(?!\\p{L})`, 'giu'),
 );
+
+const PERSON_WORDS = PERSONS.map(
+  ([stem, endings]) => new RegExp(`^(?:${stem})(?:${endings})?$`, 'iu'),
+);
+
+/** Слово — родня или зверь: «маме», «сыну», «собаку» (тот же список). */
+export function isPersonWord(word: string): boolean {
+  return PERSON_WORDS.some((pattern) => pattern.test(word));
+}
 const COUNT_OF_ITEMS =
   /\d+\s+(открыт\p{L}*\s+)?(дел[аоь]?|желани\p{L}*|иде[иейя]\p{L}*|запис\p{L}*)(?!\p{L})/iu;
 const NUMBERS = /\d+(?:[:.,]\d+)*/gu;

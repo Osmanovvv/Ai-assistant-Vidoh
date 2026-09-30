@@ -2100,3 +2100,49 @@ describe('повтор для недостающих — один раз (зак
     expect(provider.callCount).toBe(2);
   });
 });
+
+describe('«Покупки» — то, что покупают (заказчица 30.09.2026)', () => {
+  /**
+   * Её голосовое: «…купить коллаген и и отправить посылку в калининград» —
+   * модель положила оба дела в «покупки».
+   */
+  it('посылка — в «личное», коллаген остаётся в «покупках»', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          { text: 'Купить коллаген', topic: 'покупки' },
+          { text: 'Отправить посылку в Калининград', topic: 'покупки' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: [
+        { text: 'купить коллаген', isProject: false, isEmotion: false },
+        { text: 'отправить посылку в калининград', isProject: false, isEmotion: false },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => [item.text, item.topic])).toEqual([
+      ['Купить коллаген', 'покупки'],
+      ['Отправить посылку в Калининград', 'личное'],
+    ]);
+  });
+
+  it('другие сферы правило не трогает: «Позвонить в банк» в «работе» — там и остаётся', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ text: 'Позвонить в банк', topic: 'работа' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('позвонить в банк'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]?.topic).toBe('работа');
+  });
+});

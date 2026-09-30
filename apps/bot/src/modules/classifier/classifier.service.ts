@@ -38,6 +38,7 @@ import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-k
 import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { attachListTails } from './list-tail.js';
+import { notShopping } from './shopping-topic.js';
 import { missingUnits } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
@@ -272,6 +273,9 @@ export function topicNameFrom(raw: string): string | undefined {
   // Никиты 27.09.2026: «личные вещи» под куртку заводиться не должны).
   return catalogueTopic(knownTopicName(name), Object.keys(TOPIC_ICONS));
 }
+
+/** Сфера покупок — как в базовом наборе (§6.4). */
+const SHOPPING_TOPIC = 'покупки';
 
 function normalizeTopic(text: string): string {
   return text.toLowerCase().replace(/ё/gu, 'е').trim();
@@ -977,21 +981,41 @@ export function correctItems(
       );
     }
 
+    // Заголовок — повеление без «надо/хочу» и без дня, ставшего сроком
+    // (видео заказчицы 15.09.2026): см. `title.ts`.
+    const title = cleanTitle(item.text, {
+      type,
+      hasDeadline: withRule !== undefined,
+      // «Каждый вторник…» в заголовке — дубль правила повторения.
+      hasRule: recurrence?.rule !== undefined,
+      // «…в 3:10» в заголовке — дубль срока с часом (бой 22.09.2026).
+      hasHour: withRule?.time !== undefined,
+    });
+
+    /**
+     * «Покупки» — то, что покупают (заказчица, 30.09.2026: «Отправить
+     * посылку в Калининград» легло в «Покупки»). Дело, которое начинается с
+     * действия, точно не покупки, — в сферу по умолчанию (решение Никиты
+     * 01.10.2026: «Личное»). См. `shopping-topic.ts`. Судится название,
+     * которое ляжет в базу.
+     */
+    const named = topic ?? wantedTopic;
+    const notBought =
+      named !== undefined &&
+      sameTopicName(named, SHOPPING_TOPIC) &&
+      !sameTopicName(ctx.defaultTopic, SHOPPING_TOPIC) &&
+      notShopping(title);
+    if (notBought) {
+      corrections.topic++;
+      logger?.info({ promptVersion }, 'Не покупка — из «Покупок» в сферу по умолчанию');
+    }
+
     items.push({
-      // Заголовок — повеление без «надо/хочу» и без дня, ставшего сроком
-      // (видео заказчицы 15.09.2026): см. `title.ts`.
-      text: cleanTitle(item.text, {
-        type,
-        hasDeadline: withRule !== undefined,
-        // «Каждый вторник…» в заголовке — дубль правила повторения.
-        hasRule: recurrence?.rule !== undefined,
-        // «…в 3:10» в заголовке — дубль срока с часом (бой 22.09.2026).
-        hasHour: withRule?.time !== undefined,
-      }),
+      text: title,
       type,
       priority: withUrgency,
-      topic: topic ?? ctx.defaultTopic,
-      ...(wantedTopic === undefined ? {} : { wantedTopic }),
+      topic: notBought ? ctx.defaultTopic : (topic ?? ctx.defaultTopic),
+      ...(wantedTopic === undefined || notBought ? {} : { wantedTopic }),
       isProject,
       deadline: withRule,
       recurrence,
