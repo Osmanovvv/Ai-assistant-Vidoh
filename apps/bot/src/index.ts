@@ -955,6 +955,8 @@ async function main(): Promise<void> {
     consume: consumeAwaited({
       db,
       logger,
+      // Сводка ветки после правки названия словами (30.09.2026).
+      topics: topicGateway,
       // Вектор заголовка после правки словами из карточки (A5).
       embedder,
       spendGuard,

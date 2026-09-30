@@ -56,6 +56,7 @@ import { pickMain } from '../presenter/pick.service.js';
 import { FakeTopicGateway } from '../topics/fake-gateway.js';
 import { ensureThread } from '../topics/topics.service.js';
 import { listTopics, MAX_TOPICS, normalizeTopicName } from '../topics/topics.repo.js';
+import { AWAITING, setAwaiting } from '../onboarding/awaiting.js';
 import { STEP } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, countQuestions } from '../presenter/presenter.service.js';
 import type { StatusSender } from '../presenter/status.service.js';
@@ -12569,5 +12570,90 @@ ${second}`,
     );
 
     expect(await liveItems()).toHaveLength(2);
+  });
+});
+
+describe('голосовое после «Изменить» — новое название (заказчица, 30.09.2026)', () => {
+  /**
+   * Её скрин: нажала «Изменить» у «Купить молоко» и по привычке сказала
+   * голосом «Назови это молочко» — бот ждал только текст, голосовое ушло
+   * в разбор, и в «Личном» завелось дело «Назови это молочко».
+   */
+  async function editing(text: string, since?: Date): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({ userId, text, type: 'TASK', priority: 'SOON', topic: 'покупки' })
+      .returning({ id: items.id });
+    await setAwaiting(testDb(), userId, `${AWAITING.editPrefix}${row!.id}`);
+    if (since !== undefined) {
+      await testDb()
+        .update(userSettings)
+        .set({ awaitingSince: since })
+        .where(eq(userSettings.userId, userId));
+    }
+    return row!.id;
+  }
+
+  async function awaitingNow(): Promise<string | null> {
+    const [row] = await testDb()
+      .select({ awaiting: userSettings.awaitingInput })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    return row?.awaiting ?? null;
+  }
+
+  async function voice(said: string, llm = echoingLlm()) {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender, all } = recordingSender();
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider({ responses: [said] }),
+          prompts,
+          sender,
+          llm,
+        }),
+      },
+      userId,
+    );
+    const rows = await testDb().select().from(items).where(eq(items.userId, userId));
+    return { all, rows, llm };
+  }
+
+  it('«Назови это молочко» голосом — название «Молочко», нового дела нет, модель не зовётся', async () => {
+    await editing('Купить молоко');
+
+    const { all, rows, llm } = await voice('Назови это молочко.');
+
+    expect(rows.map((row) => row.text)).toEqual(['Молочко']);
+    expect(await awaitingNow()).toBeNull();
+    expect(all.at(-1)).toContain('Молочко');
+    // Ответ на «Изменить», а не выгрузка: разбора и модели нет.
+    expect(llm.requests).toHaveLength(0);
+  });
+
+  it('длинное голосовое — выгрузка, как обычно: ничего не потеряно, «Изменить» снято', async () => {
+    await editing('Купить молоко');
+
+    const { rows } = await voice(
+      'Купить хлеб. Позвонить маме в пятницу. Забрать посылку и оплатить садик до конца недели обязательно',
+    );
+
+    // Старое название цело, сказанное — новыми записями.
+    expect(rows.map((row) => row.text)).toContain('Купить молоко');
+    expect(rows.length).toBeGreaterThan(1);
+    expect(await awaitingNow()).toBeNull();
+  });
+
+  it('«Изменить» просрочено — голосовое разбирается как обычно', async () => {
+    await editing('Купить молоко', new Date(T0.getTime() - 20 * 60_000));
+
+    const { rows } = await voice('Назови это молочко.');
+
+    expect(rows.map((row) => row.text)).toContain('Купить молоко');
+    expect(await awaitingNow()).toBeNull();
   });
 });
