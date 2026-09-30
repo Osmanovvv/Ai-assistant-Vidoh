@@ -9,6 +9,7 @@ import {
   retryAfterSeconds,
   type TopicGateway,
 } from './gateway.js';
+import { sphereTitle } from './sphere-title.js';
 import { listTopics, normalizeTopicName } from './topics.repo.js';
 
 /**
@@ -138,7 +139,8 @@ export async function ensureThread(
   try {
     const threadId = await deps.gateway.createThread({
       chatId: params.chatId,
-      name: topic.name,
+      // Вкладка — сфера с заглавной (правка заказчицы 30.09.2026).
+      name: sphereTitle(topic.name),
       iconEmojiId: await iconFor(deps, topic.name),
     });
 
@@ -181,6 +183,38 @@ export async function updateThreadIcon(
 
   try {
     await deps.gateway.setIcon({ chatId: params.chatId, threadId, iconEmojiId });
+    return 'set';
+  } catch (error) {
+    if (isThreadGone(error)) {
+      await forgetThread(deps, topic.userId, threadId);
+      return 'gone';
+    }
+    throw error;
+  }
+}
+
+export type ThreadNameResult = 'set' | 'same' | 'no-thread' | 'gone';
+
+/**
+ * Имя готовой ветки — сфера с заглавной (правка заказчицы 30.09.2026).
+ *
+ * Новые ветки так и создаются (`ensureThread`), а созданные до правки
+ * остались строчными: «личное», «дом». Имя уже с заглавной не трогается —
+ * Telegram на правку тем же отвечает отказом.
+ */
+export async function updateThreadName(
+  deps: TopicServiceDeps,
+  params: { readonly topicId: string; readonly chatId: number },
+): Promise<ThreadNameResult> {
+  const [topic] = await deps.db.select().from(topics).where(eq(topics.id, params.topicId)).limit(1);
+  const threadId = topic?.tgThreadId ?? null;
+  if (topic === undefined || threadId === null) return 'no-thread';
+
+  const name = sphereTitle(topic.name);
+  if (name === topic.name) return 'same';
+
+  try {
+    await deps.gateway.rename({ chatId: params.chatId, threadId, name });
     return 'set';
   } catch (error) {
     if (isThreadGone(error)) {

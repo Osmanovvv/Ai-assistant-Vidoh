@@ -1,3 +1,4 @@
+import { sphereTitle } from '../modules/topics/sphere-title.js';
 import { defaultTexts, type TextProfile } from '../texts/index.js';
 
 /**
@@ -15,7 +16,8 @@ export function isTopicSummary(
   texts: TextProfile = defaultTexts,
 ): boolean {
   return topicNames.some((name) => {
-    const header = texts.summary.header(name);
+    // Заголовок — сфера с заглавной, как в `buildSummary` (30.09.2026).
+    const header = texts.summary.header(sphereTitle(name));
     return text === header || text.startsWith(`${header}\n`);
   });
 }

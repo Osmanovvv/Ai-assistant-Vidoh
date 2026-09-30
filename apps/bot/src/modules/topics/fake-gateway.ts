@@ -98,6 +98,17 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve();
   }
 
+  readonly renamed: { chatId: number; threadId: number; name: string }[] = [];
+
+  rename(params: { chatId: number; threadId: number; name: string }): Promise<void> {
+    if (this.options.goneThreads?.has(params.threadId) === true) {
+      return Promise.reject(telegramError(400, 'Bad Request: TOPIC_ID_INVALID'));
+    }
+
+    this.renamed.push({ ...params });
+    return Promise.resolve();
+  }
+
   private throttled = 0;
 
   send(params: { chatId: number; threadId?: number | undefined; text: string }): Promise<number> {

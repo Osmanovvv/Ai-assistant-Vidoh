@@ -11,6 +11,7 @@ import { describeChange } from '../../modules/resolver/change-text.js';
 import { applyDecision, emptyChanges, type ApplyAction } from '../../modules/resolver/patch.js';
 import { AWAITING, awaitingOf, setAwaiting } from '../../modules/onboarding/awaiting.js';
 import { listTopics, normalizeTopicName } from '../../modules/topics/topics.repo.js';
+import { sphereTitle } from '../../modules/topics/sphere-title.js';
 import { moveItemToTopic } from '../../modules/topics/topics.service.js';
 import { refreshSummaries } from '../../modules/topics/summary.service.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
@@ -451,7 +452,10 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
     await ctx.editMessageText(active.texts.card.moveWhere, {
       reply_markup: fitKeyboard([
         ...others.map((topic) => [
-          { label: topic.name, action: `${CARD_ACTION.moveTo}${code}:${toShortId(topic.id)}` },
+          {
+            label: sphereTitle(topic.name),
+            action: `${CARD_ACTION.moveTo}${code}:${toShortId(topic.id)}`,
+          },
         ]),
         [{ label: active.texts.menu.buttonBack, action: `${CARD_PREFIX}${code}` }],
       ]),
@@ -503,7 +507,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
       });
 
       if (!result.moved) {
-        await ctx.editMessageText(active.texts.card.moveAlready(result.to));
+        await ctx.editMessageText(active.texts.card.moveAlready(sphereTitle(result.to)));
         return;
       }
 
@@ -512,7 +516,7 @@ export function registerCardHandlers(bot: Bot, deps: CardDeps, back: string): vo
         'Запись перенесена в другую сферу кнопкой карточки',
       );
 
-      await ctx.editMessageText(active.texts.card.moved(result.to));
+      await ctx.editMessageText(active.texts.card.moved(sphereTitle(result.to)));
 
       /**
        * Прежняя ветка — под именем из таблицы тем, а не из записи.

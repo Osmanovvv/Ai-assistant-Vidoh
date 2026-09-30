@@ -15,6 +15,7 @@ import {
   retryAfterSeconds,
   type TopicGateway,
 } from './gateway.js';
+import { sphereTitle } from './sphere-title.js';
 import { ensureThread, forgetThread } from './topics.service.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
 
@@ -61,7 +62,8 @@ export function buildSummary(params: {
   readonly limit?: number | undefined;
 }): string {
   const { texts } = params;
-  const lines: string[] = [texts.summary.header(params.topicName)];
+  // Заголовок — сфера с заглавной (правка заказчицы 30.09.2026).
+  const lines: string[] = [texts.summary.header(sphereTitle(params.topicName))];
 
   if (params.items.length === 0) {
     lines.push('', texts.summary.empty);

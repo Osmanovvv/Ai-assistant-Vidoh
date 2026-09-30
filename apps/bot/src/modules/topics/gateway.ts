@@ -40,6 +40,13 @@ export interface TopicGateway {
     readonly iconEmojiId: string;
   }): Promise<void>;
 
+  /** Переименовать готовую ветку: сфера с заглавной (правка заказчицы 30.09.2026). */
+  rename(params: {
+    readonly chatId: number;
+    readonly threadId: number;
+    readonly name: string;
+  }): Promise<void>;
+
   send(params: {
     readonly chatId: number;
     readonly threadId?: number | undefined;
@@ -171,6 +178,10 @@ export function createTopicGateway(api: Api): TopicGateway {
 
     async setIcon({ chatId, threadId, iconEmojiId }) {
       await api.editForumTopic(chatId, threadId, { icon_custom_emoji_id: iconEmojiId });
+    },
+
+    async rename({ chatId, threadId, name }) {
+      await api.editForumTopic(chatId, threadId, { name });
     },
 
     async send({ chatId, threadId, text }) {

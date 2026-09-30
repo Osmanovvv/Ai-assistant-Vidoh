@@ -316,6 +316,22 @@ describe('меню', () => {
       expect(screen).not.toContain(defaultTexts.settings.topicsAre(''));
     });
 
+    it('сферы в настройках — с заглавной (правка заказчицы 30.09.2026)', async () => {
+      await testDb().delete(topics).where(eq(topics.userId, userId));
+      await addTopic(userId, 'работа');
+      await addTopic(userId, 'личное', true);
+
+      const { calls } = await openSettings();
+      const line = textOf(lastScreen(calls))
+        .split('\n')
+        .find((one) => one.startsWith('Сферы: '));
+
+      expect(line).toBeDefined();
+      expect(line).toContain('Работа');
+      expect(line).toContain('Личное');
+      expect(line).not.toMatch(/(?:^Сферы: |, )[а-яё]/u);
+    });
+
     it('выключатель напоминаний действительно выключает', async () => {
       const { bot, calls } = await openSettings();
       await bot.handleUpdate(callbackUpdate(MENU_ACTION.toggleReminders));
@@ -486,12 +502,13 @@ describe('меню', () => {
     await bot.handleUpdate(callbackUpdate(MENU_ACTION.topics));
     const topicsScreen = calls.filter((call) => call.method === 'editMessageText').at(-1);
     expect(textOf(topicsScreen)).toBe(defaultTexts.menu.topicsTitle);
-    expect(keyboardOf(topicsScreen).map((button) => button.text)).toContain('здоровье');
+    // Сфера — с заглавной (правка заказчицы 30.09.2026).
+    expect(keyboardOf(topicsScreen).map((button) => button.text)).toContain('Здоровье');
 
     await bot.handleUpdate(callbackUpdate(`${MENU_ACTION.topicPrefix}${toShortId(topicId)}`));
     const itemsScreen = calls.filter((call) => call.method === 'editMessageText').at(-1);
     // Просто название темы (правка заказчицы 29.09.2026: без «что здесь есть»).
-    expect(textOf(itemsScreen)).toBe('здоровье');
+    expect(textOf(itemsScreen)).toBe('Здоровье');
     expect(keyboardOf(itemsScreen).map((button) => button.text)).toContain('к врачу');
 
     const cardButton = keyboardOf(itemsScreen).find((button) => button.text === 'к врачу');
@@ -1275,7 +1292,7 @@ describe('настройки §12.1: времена, пояс, имя', () => {
     // Времена, пояс и сферы — то, чего на экране не было вовсе.
     expect(screen).toContain('08:30');
     expect(screen).toContain('Москва');
-    expect(screen).toContain('работа');
+    expect(screen).toContain('Работа');
 
     // И кнопки ко всем четырём, а не только к выключателям §11.
     const buttons = keyboardOf(calls.at(-1)).map((one) => one.text);
@@ -1516,7 +1533,8 @@ describe('«В другую сферу» переносит запись и об
     await bot.handleUpdate(callbackUpdate(`${CARD_ACTION.move}${code}`));
 
     const choices = keyboardOf(calls.at(-1));
-    expect(choices.map((one) => one.text)).toEqual(['покупки', 'Назад']);
+    // Сфера на кнопке — с заглавной (правка заказчицы 30.09.2026).
+    expect(choices.map((one) => one.text)).toEqual(['Покупки', 'Назад']);
 
     const to = choices[0]?.callback_data ?? '';
     expect(to.startsWith(CARD_ACTION.moveTo)).toBe(true);
@@ -1529,7 +1547,7 @@ describe('«В другую сферу» переносит запись и об
     expect(row?.topic).toBe('покупки');
     expect(row?.topicId).not.toBeNull();
 
-    expect(textOf(calls.at(-1))).toContain('покупки');
+    expect(textOf(calls.at(-1))).toBe(defaultTexts.card.moved('Покупки'));
 
     // И обе ветки переписаны, а не одна: §8.2 требует обеих.
     expect(

@@ -4,6 +4,7 @@ import type { ItemType } from '../ai/schemas/index.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import type { Mood } from './mood.js';
 import type { DumpSummary } from './summary.js';
+import { sphereTitle } from '../topics/sphere-title.js';
 
 /**
  * Ответ на выгрузку (задача 2.11).
@@ -129,6 +130,16 @@ export interface BuildReplyParams {
    * сильной: «чем сильнее эмоция — тем спокойнее и проще ответ».
    */
   readonly mood?: Mood | undefined;
+  /**
+   * Запись одна — выбирать не из чего (правка заказчицы 30.09.2026):
+   * ни вопроса «оставить или выбрать», ни кнопок.
+   */
+  readonly single?: boolean | undefined;
+}
+
+/** Записей в составе: дела, желания, идеи, сведения. Состояние — не запись. */
+function recordsIn(composition: DumpComposition): number {
+  return composition.tasks + composition.desires + composition.ideas + composition.infos;
 }
 
 /**
@@ -214,6 +225,13 @@ export function buildReply(params: BuildReplyParams): Reply {
    * уводим женщину в дополнительный разговор»). Кнопки — выход к делам,
    * а не вопрос: так же стоят они и под её образцом п. 3.
    */
+  /**
+   * Одна запись — выбирать не из чего (правка заказчицы 30.09.2026: «1
+   * желание… не из чего выбирать»): ответ кончается раскладкой, без
+   * вопроса и кнопок.
+   */
+  if (params.single === true) return { text: lines.join('\n'), buttons: [] };
+
   if (params.omitQuestion !== true && params.mood !== 'heavy') lines.push('', answer.keepOrPick);
 
   const pick =
@@ -451,11 +469,11 @@ export function presentDump(params: PresentParams): PresentResult {
         text:
           params.quickAdd.when === undefined
             ? texts.answer.added(
-                params.quickAdd.topic,
+                sphereTitle(params.quickAdd.topic),
                 params.quickAdd.title.replace(/\s*\.+$/u, ''),
               )
             : texts.answer.addedWithDate(
-                params.quickAdd.topic,
+                sphereTitle(params.quickAdd.topic),
                 params.quickAdd.title.replace(/\s*\.+$/u, ''),
                 params.quickAdd.when,
               ),
@@ -475,6 +493,7 @@ export function presentDump(params: PresentParams): PresentResult {
       mood: params.mood,
       summary: params.summary,
       contextLine: params.contextLine,
+      single: recordsIn(params.composition) === 1,
     }),
   };
 }
