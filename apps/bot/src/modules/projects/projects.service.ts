@@ -126,9 +126,17 @@ export interface SaveStepsParams {
  * **Срезается образец, а не любые цифры и знаки.** «2 торта купить» —
  * законный шаг, и жадное правило превратило бы его в «торта купить».
  * Поэтому убираются только «1.», «1)», одиночная точка или тире в начале.
+ *
+ * И разметка (проба decomposer@2, 30.09.2026): «**1**. Решить…»,
+ * «**Сделать ремонт в ванной**» — жирный из разметки чата, в Telegram
+ * он пришёл бы звёздочками.
  */
 function withoutNumbering(text: string): string {
-  return text.replace(/^\s*(?:\d+\s*[.)]|[.)\-–—•*])\s*/u, '').trim();
+  return text
+    .replace(/\*\*|__/gu, '')
+    .replace(/^\s*\*(.+)\*\s*$/u, '$1')
+    .replace(/^\s*(?:\d+\s*[.)]|[.)\-–—•*])\s*/u, '')
+    .trim();
 }
 
 export async function saveSteps(db: Executor, params: SaveStepsParams): Promise<ProjectStep[]> {

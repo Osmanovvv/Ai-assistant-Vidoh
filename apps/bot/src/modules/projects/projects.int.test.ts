@@ -1,15 +1,16 @@
 import { eq } from 'drizzle-orm';
+import pg from 'pg';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { items, projectSteps, type Item } from '../../db/schema.js';
-import { testDb } from '../../test/db.js';
+import { itemRevisions, items, projectSteps, type Item } from '../../db/schema.js';
+import { testDatabaseUrl, testDb } from '../../test/db.js';
 import type { AiClientDeps } from '../ai/client.js';
 import { MockLlmProvider } from '../ai/providers/mock.js';
 import { PromptRegistry } from '../ai/prompts/registry.js';
 import { activatePrompt, seedPrompt } from '../ai/prompts/seed.js';
-import { DECOMPOSER_SCHEMA_NAME } from '../ai/schemas/index.js';
+import { DECOMPOSER_SCHEMA_NAME, DECOMPOSER_V1_SCHEMA_NAME } from '../ai/schemas/index.js';
 import { upsertUser } from '../users/users.repo.js';
-import { decomposeIfNeeded } from './decomposer.service.js';
+import { decomposeGoal, decomposeIfNeeded } from './decomposer.service.js';
 import { defaultTexts } from '../../texts/index.js';
 import { describeProject } from './project-text.js';
 import { completeStep, contextOf, nextStepOf, saveSteps } from './projects.service.js';
@@ -180,6 +181,25 @@ describe('нумерация от модели не доходит до чело
     ]);
   });
 
+  it('срезает жирную разметку вокруг номера и шага (проба decomposer@2, 30.09.2026)', async () => {
+    // Ответы модели знак в знак: человек увидел бы «*1**. Решить…».
+    const saved = await saveSteps(testDb(), {
+      itemId: project.id,
+      userId,
+      texts: [
+        '**1**. Решить, чем будем угощать гостей',
+        '**Сделать ремонт в ванной**',
+        '*Позвать гостей*',
+      ],
+    });
+
+    expect(saved.map((step) => step.text)).toEqual([
+      'Решить, чем будем угощать гостей',
+      'Сделать ремонт в ванной',
+      'Позвать гостей',
+    ]);
+  });
+
   it('цифру в начале осмысленного шага не трогает', async () => {
     // Жадное правило превратило бы «2 торта купить» в «торта купить».
     const saved = await saveSteps(testDb(), {
@@ -253,19 +273,23 @@ describe('возврат к проекту (§21 п.6, задача 3.13)', () =
   });
 });
 
-describe('разложение ленивое (задача 3.12)', () => {
+describe('разложение: один раз — при записи или при первом открытии (3.12; заказчица 30.09.2026)', () => {
   /**
-   * Момент вызова в ТЗ не определён, и решение стоит денег. Раскладывать
-   * при создании значило бы платить за каждый проект, к которому человек
-   * никогда не вернётся, — а таких большинство.
-   *
-   * План просит на это интеграционный тест. Он здесь и считает вызовы.
+   * С 30.09.2026 цели раскладываются сразу при записи (правка заказчицы,
+   * решение Никиты), а здесь — запасной путь: цели, записанные раньше, и
+   * те, где модель тогда не ответила. Раскладывается один раз: шаги — это
+   * состояние человека, второе разложение стёрло бы прогресс.
    */
-  function decomposerSaying(steps: readonly string[]): {
+  function decomposerSaying(
+    steps: readonly string[],
+    title?: string,
+  ): {
     deps: AiClientDeps;
     provider: MockLlmProvider;
   } {
-    const provider = new MockLlmProvider({ respond: () => JSON.stringify({ steps }) });
+    const provider = new MockLlmProvider({
+      respond: () => JSON.stringify({ title: title ?? project.text, steps }),
+    });
 
     return {
       provider,
@@ -276,6 +300,16 @@ describe('разложение ленивое (задача 3.12)', () => {
         retry: { attempts: 1, sleep: () => Promise.resolve() },
       },
     };
+  }
+
+  async function goalNamed(text: string): Promise<Item> {
+    const [row] = await testDb()
+      .update(items)
+      .set({ text })
+      .where(eq(items.id, project.id))
+      .returning();
+    if (!row) throw new Error('цель не переименовалась');
+    return row;
   }
 
   beforeEach(async () => {
@@ -292,11 +326,11 @@ describe('разложение ленивое (задача 3.12)', () => {
     const { deps, provider } = decomposerSaying(['выбрать дату', 'позвать гостей']);
 
     const first = await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId });
-    expect(first).toHaveLength(2);
+    expect(first.steps).toHaveLength(2);
     expect(provider.callCount).toBe(1);
 
     const second = await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId });
-    expect(second).toHaveLength(2);
+    expect(second.steps).toHaveLength(2);
     // Второе разложение стёрло бы прогресс и подсунуло другой список:
     // модель нестабильна, а закрытые шаги — состояние человека.
     expect(provider.callCount).toBe(1);
@@ -316,9 +350,9 @@ describe('разложение ленивое (задача 3.12)', () => {
 
     const { deps, provider } = decomposerSaying(['шаг']);
 
-    expect(await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: plain!, userId })).toEqual(
-      [],
-    );
+    expect(await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: plain!, userId })).toEqual({
+      steps: [],
+    });
     expect(provider.callCount).toBe(0);
   });
 
@@ -331,8 +365,169 @@ describe('разложение ленивое (задача 3.12)', () => {
       retry: { attempts: 1, sleep: () => Promise.resolve() },
     };
 
-    expect(await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId })).toEqual(
-      [],
+    expect(await decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId })).toEqual({
+      steps: [],
+    });
+  });
+
+  it('модель недоступна — не ошибка: цель остаётся как была', async () => {
+    const provider = new MockLlmProvider({
+      respond: () => {
+        throw new Error('сеть упала');
+      },
+    });
+    const deps: AiClientDeps = {
+      db: testDb(),
+      provider,
+      prompts: new PromptRegistry(testDb()),
+      retry: { attempts: 1, sleep: () => Promise.resolve() },
+    };
+
+    await expect(
+      decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId }),
+    ).resolves.toEqual({ steps: [] });
+  });
+
+  it('короткое название — только принятое проверкой кода', async () => {
+    const goal = await goalNamed('Разобраться с днём рождения ребёнка, место, гости, торт');
+    const accepted = decomposerSaying(
+      ['Выбрать место', 'Позвать гостей', 'Заказать торт'],
+      'Разобраться с днём рождения ребёнка',
     );
+
+    const planned = await decomposeIfNeeded(
+      { db: testDb(), ai: accepted.deps },
+      { item: goal, userId },
+    );
+    expect(planned.title).toBe('Разобраться с днём рождения ребёнка');
+    expect(planned.steps.map((step) => step.text)).toEqual([
+      'Выбрать место',
+      'Позвать гостей',
+      'Заказать торт',
+    ]);
+  });
+
+  it('название переписано своими словами — шаги есть, название прежнее', async () => {
+    const goal = await goalNamed('Разобраться с днём рождения ребёнка, место, гости, торт');
+    const rewritten = decomposerSaying(
+      ['Выбрать место', 'Позвать гостей', 'Заказать торт'],
+      'Организовать праздник для ребёнка',
+    );
+
+    const planned = await decomposeIfNeeded(
+      { db: testDb(), ai: rewritten.deps },
+      { item: goal, userId },
+    );
+    expect(planned.title).toBeUndefined();
+    expect(planned.steps).toHaveLength(3);
+  });
+
+  it('первая версия схемы — только шаги: откат на decomposer@1 работает', async () => {
+    await seedPrompt(testDb(), {
+      stage: 'decomposer',
+      version: 'decomposer@test-v1',
+      prompt: 'разложи цель на шаги',
+      schemaName: DECOMPOSER_V1_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'decomposer', 'decomposer@test-v1');
+    const provider = new MockLlmProvider({
+      respond: () => JSON.stringify({ steps: ['выбрать дату', 'позвать гостей'] }),
+    });
+
+    const planned = await decomposeIfNeeded(
+      {
+        db: testDb(),
+        ai: {
+          db: testDb(),
+          provider,
+          prompts: new PromptRegistry(testDb()),
+          retry: { attempts: 1, sleep: () => Promise.resolve() },
+        },
+      },
+      { item: project, userId },
+    );
+
+    expect(planned.steps).toHaveLength(2);
+    expect(planned.title).toBeUndefined();
+  });
+
+  it('другая раскладка ещё пишет шаги — эта ждёт её и берёт её шаги, а не смесь', async () => {
+    /**
+     * Двойное нажатие в меню: две раскладки одной цели разом. «Другая» —
+     * своим соединением, с тем же замком, шаги вставлены, но не закрыты.
+     * Без замка эта не увидела бы их, вставила свои, и уникальность по
+     * месту пропустила бы «лишние» места длинного списка — смесь двух.
+     */
+    const other = new pg.Client({ connectionString: testDatabaseUrl() });
+    await other.connect();
+    try {
+      await other.query('begin');
+      await other.query('select pg_advisory_xact_lock(hashtext($1))', [project.id]);
+      await other.query(
+        'insert into project_steps (item_id, user_id, text, position) values ($1, $2, $3, 0), ($1, $2, $4, 1)',
+        [project.id, userId, 'чужой шаг один', 'чужой шаг два'],
+      );
+
+      const { deps } = decomposerSaying(['шаг один', 'шаг два', 'шаг три', 'шаг четыре']);
+      const pending = decomposeIfNeeded({ db: testDb(), ai: deps }, { item: project, userId });
+
+      // Эта упёрлась в незакрытую другую — замком или вставкой.
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const waiting = await other.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+           where wait_event_type = 'Lock' and pid <> pg_backend_pid()
+             and (query ilike '%pg_advisory_xact_lock%' or query ilike '%project_steps%')`,
+        );
+        if ((waiting.rows[0]?.n ?? 0) > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await other.query('commit');
+
+      const result = await pending;
+      expect(result.steps.map((step) => step.text)).toEqual(['чужой шаг один', 'чужой шаг два']);
+      const texts = (await contextOf(testDb(), project.id)).steps.map((step) => step.text);
+      expect(texts).toEqual(['чужой шаг один', 'чужой шаг два']);
+    } finally {
+      await other.end();
+    }
+  });
+
+  it('открытая цель переименовывается правкой — с историей, как из карточки', async () => {
+    const goal = await goalNamed('Разобраться с днём рождения ребёнка, место, гости, торт');
+    const { deps } = decomposerSaying(
+      ['Выбрать место', 'Позвать гостей', 'Заказать торт'],
+      'Разобраться с днём рождения ребёнка',
+    );
+
+    const planned = await decomposeGoal(
+      { db: testDb(), ai: deps, rename: { db: testDb() } },
+      { item: goal, userId, timeZone: 'Europe/Moscow', textProfile: null },
+    );
+
+    expect(planned.item.text).toBe('Разобраться с днём рождения ребёнка');
+    const [stored] = await testDb().select().from(items).where(eq(items.id, goal.id));
+    expect(stored?.text).toBe('Разобраться с днём рождения ребёнка');
+    const history = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, goal.id));
+    expect(history.map((one) => one.changedBy)).toEqual(['resolver']);
+  });
+
+  it('название не принято — цель не трогается и правки в истории нет', async () => {
+    const goal = await goalNamed('Спланировать годовщину родителей');
+    const { deps } = decomposerSaying(['выбрать дату', 'позвать гостей']);
+
+    const planned = await decomposeGoal(
+      { db: testDb(), ai: deps, rename: { db: testDb() } },
+      { item: goal, userId, timeZone: 'Europe/Moscow', textProfile: null },
+    );
+
+    expect(planned.item.text).toBe('Спланировать годовщину родителей');
+    const history = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, goal.id));
+    expect(history).toHaveLength(0);
   });
 });

@@ -39,6 +39,7 @@ import { recordRevision, revertRevision } from '../resolver/revisions.repo.js';
 import type { CompletionRequest } from '../ai/providers/types.js';
 import {
   CLASSIFIER_SCHEMA_NAME,
+  DECOMPOSER_SCHEMA_NAME,
   EXTRACTOR_SCHEMA_NAME,
   ANSWERER_SCHEMA_NAME,
   PRESENTER_SCHEMA_NAME,
@@ -150,6 +151,7 @@ const MARKERS = {
   reader: 'ЧТЕНИЕ',
   talker: 'РАЗГОВОР',
   splitter: 'ПОКУПКИ',
+  decomposer: 'ШАГИ',
 } as const;
 
 type Stage = keyof typeof MARKERS;
@@ -273,6 +275,9 @@ function echoingLlm(
         case 'splitter':
           // Пусто — одна покупка: дело не делится, как без модели.
           return JSON.stringify({ positions: [] });
+        case 'decomposer':
+          // Шагов нет — цель остаётся как была, как без модели.
+          return JSON.stringify({ title: '', steps: [] });
       }
     },
   });
@@ -285,6 +290,7 @@ async function seedPrompts(): Promise<PromptRegistry> {
     { stage: 'classifier', schema: CLASSIFIER_SCHEMA_NAME, marker: MARKERS.classifier },
     { stage: 'presenter', schema: PRESENTER_SCHEMA_NAME, marker: MARKERS.presenter },
     { stage: 'resolver', schema: RESOLVER_SCHEMA_NAME, marker: MARKERS.resolver },
+    { stage: 'decomposer', schema: DECOMPOSER_SCHEMA_NAME, marker: MARKERS.decomposer },
   ] as const;
 
   for (const { stage, schema, marker } of stages) {
@@ -12655,5 +12661,297 @@ describe('голосовое после «Изменить» — новое на
 
     expect(rows.map((row) => row.text)).toContain('Купить молоко');
     expect(await awaitingNow()).toBeNull();
+  });
+});
+
+describe('большая цель — сразу по шагам (заказчица 30.09.2026)', () => {
+  /**
+   * Её голосовое: «Так мне надо разобраться с днём рождения ребёнка. Место,
+   * гости, торт, украшения, ведущий». Цель записалась одной строкой вместе
+   * с частями, а в «Больших целях» — «Пока не раскладывала это на шаги».
+   * Теперь цель раскладывается при записи, части уходят в шаги.
+   */
+  const LONG = 'Разобраться с днём рождения ребёнка, место, гости, торт';
+  const SHORT = 'Разобраться с днём рождения ребёнка';
+
+  const goalItem = (text: string) => ({
+    text,
+    type: 'TASK',
+    priority: 'LATER',
+    topic: 'семья',
+    isProject: true,
+    deadline: '',
+    deadlineAccuracy: 'none',
+    recurrenceKind: 'none',
+    recurrenceInterval: 0,
+    recurrenceText: '',
+    deadlineText: '',
+  });
+
+  async function goalsOfUser() {
+    return await testDb().select().from(items).where(eq(items.userId, userId));
+  }
+
+  async function stepsOfGoal(itemId: string): Promise<string[]> {
+    const rows = await testDb()
+      .select()
+      .from(projectSteps)
+      .where(eq(projectSteps.itemId, itemId))
+      .orderBy(asc(projectSteps.position));
+    return rows.map((row) => row.text);
+  }
+
+  it('шаги и короткое название — при записи; вектор — по короткому', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'надо разобраться с днём рождения ребёнка, место, гости, торт',
+        offsetMs: 0,
+      },
+    ]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm({
+      classifier: JSON.stringify({ items: [goalItem(LONG)] }),
+      decomposer: JSON.stringify({
+        title: SHORT,
+        steps: ['Выбрать место', 'Позвать гостей', 'Заказать торт'],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+
+    const rows = await goalsOfUser();
+    expect(rows.map((row) => row.text)).toEqual([SHORT]);
+    expect(rows[0]?.isProject).toBe(true);
+    expect(await stepsOfGoal(rows[0]?.id ?? '')).toEqual([
+      'Выбрать место',
+      'Позвать гостей',
+      'Заказать торт',
+    ]);
+    // Вектор посчитан по названию, которое легло в базу, а не по длинному.
+    // База хранит вектор в float32: сверка — до пятого знака.
+    const expected = await new MockEmbeddingProvider().embed({ text: SHORT, purpose: 'document' });
+    const stored = rows[0]?.embedding ?? [];
+    expect(stored).toHaveLength(expected.vector.length);
+    stored.forEach((value, index) => {
+      expect(value).toBeCloseTo(expected.vector[index] ?? Number.NaN, 5);
+    });
+    expect(all.join('\n')).not.toContain('место, гости, торт');
+  });
+
+  it('модель не разложила — цель сохранена как была, без шагов, разбор не сорван', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'надо разобраться с днём рождения ребёнка, место, гости, торт',
+        offsetMs: 0,
+      },
+    ]);
+    const { sender, all } = recordingSender();
+    const llm = echoingLlm({
+      classifier: JSON.stringify({ items: [goalItem(LONG)] }),
+      decomposer: () => {
+        throw new Error('модель недоступна');
+      },
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await goalsOfUser();
+    expect(rows.map((row) => row.text)).toEqual([LONG]);
+    expect(await stepsOfGoal(rows[0]?.id ?? '')).toEqual([]);
+    expect(all.length).toBeGreaterThan(0);
+  });
+
+  it('её случай: «Украшения ведущей?» — к цели; одна запись, пять шагов', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'надо разобраться с днём рождения ребёнка, место, гости, торт\nУкрашения ведущей?',
+        offsetMs: 0,
+      },
+    ]);
+    const { sender } = recordingSender();
+    const llm = echoingLlm({
+      classifier: JSON.stringify({
+        items: [
+          goalItem(LONG),
+          { ...goalItem('Украшения ведущей'), type: 'IDEA', priority: 'NONE', isProject: false },
+        ],
+      }),
+      // Хвост не приклеился — раскладке нечего сказать, и тест покраснеет.
+      decomposer: (request) =>
+        request.input.includes('украшения ведущей')
+          ? JSON.stringify({
+              title: SHORT,
+              steps: [
+                'Выбрать место',
+                'Позвать гостей',
+                'Заказать торт',
+                'Продумать украшения',
+                'Найти ведущего',
+              ],
+            })
+          : JSON.stringify({ title: '', steps: [] }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const rows = await goalsOfUser();
+    expect(rows.map((row) => row.text)).toEqual([SHORT]);
+    expect(await stepsOfGoal(rows[0]?.id ?? '')).toHaveLength(5);
+  });
+});
+
+describe('большая цель — по шагам и на других путях (заказчица 30.09.2026)', () => {
+  const LONG = 'Разобраться с днём рождения ребёнка, место, гости, торт';
+  const SHORT = 'Разобраться с днём рождения ребёнка';
+  const STEPS = ['Выбрать место', 'Позвать гостей', 'Заказать торт'];
+  const planned = JSON.stringify({ title: SHORT, steps: STEPS });
+
+  async function stepTexts(itemId: string): Promise<string[]> {
+    const rows = await testDb()
+      .select()
+      .from(projectSteps)
+      .where(eq(projectSteps.itemId, itemId))
+      .orderBy(asc(projectSteps.position));
+    return rows.map((row) => row.text);
+  }
+
+  it('цель поздней мыслью — тоже сразу по шагам, с коротким названием', async () => {
+    const prompts = await seedPrompts();
+    await queuedBatchOf([{ kind: 'text', text: `купить хлеб, ${LONG}`, offsetMs: 0 }]);
+    const { sender } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'DUMP', text: 'купить хлеб' },
+          { intent: 'PATCH', text: LONG },
+        ],
+      }),
+      classifier: (request) =>
+        JSON.stringify({
+          items: unitsFromInput(request.input).map((text) => ({
+            text: text.includes('рожден') ? LONG : text,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: text.includes('рожден'),
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: '',
+          })),
+        }),
+      decomposer: planned,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const goal = saved.find((item) => item.isProject);
+    expect(goal?.text).toBe(SHORT);
+    expect(await stepTexts(goal?.id ?? '')).toEqual(STEPS);
+    // Вторым проходом — значит, это правда поздняя мысль.
+    const calls = await testDb().select().from(aiCalls);
+    expect(calls.filter((call) => call.stage === 'classifier')).toHaveLength(2);
+  });
+
+  it('вопрос о цели без шагов — разложена, название короткое, в истории правка', async () => {
+    const prompts = await seedPrompts();
+    const ASKED = 'что там с днём рождения';
+    const asked = await new MockEmbeddingProvider().embed({ text: ASKED, purpose: 'query' });
+
+    const [goal] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: LONG,
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'семья',
+        isProject: true,
+        embedding: [...asked.vector],
+      })
+      .returning();
+    if (!goal) throw new Error('цель не создалась');
+
+    await queuedBatchOf([{ kind: 'text', text: ASKED, offsetMs: 0 }]);
+    const { sender, all, buttons } = recordingSender();
+
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text: ASKED }] }),
+      decomposer: planned,
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider(),
+          prompts,
+          llm,
+          sender,
+          embedder: new MockEmbeddingProvider(),
+        }),
+      },
+      userId,
+    );
+
+    const reply = all.join('\n');
+    expect(reply).toContain(SHORT);
+    expect(reply).not.toContain('место, гости, торт');
+    expect(reply).toContain('Позвать гостей');
+    expect(buttons).toContain(defaultTexts.project.buttonStepDone);
+
+    const [stored] = await testDb().select().from(items).where(eq(items.id, goal.id));
+    expect(stored?.text).toBe(SHORT);
+    const history = await testDb()
+      .select()
+      .from(itemRevisions)
+      .where(eq(itemRevisions.itemId, goal.id));
+    expect(history.map((one) => one.changedBy)).toEqual(['resolver']);
   });
 });

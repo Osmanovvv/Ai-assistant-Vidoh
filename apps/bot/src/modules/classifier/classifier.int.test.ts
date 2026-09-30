@@ -1956,3 +1956,51 @@ describe('«финансовое» — это деньги (прогон Ник�
     expect(item?.wantedTopic).toBeUndefined();
   });
 });
+
+describe('хвост перечисления — к большой цели (заказчица 30.09.2026)', () => {
+  /**
+   * Её голосовое, как его распознал SpeechKit: «Так мне надо разобраться с
+   * днем рождения ребенка, место гости торт. Украшения ведущей?» — и ответ
+   * модели, как он лёг в базу: цель и отдельная идея.
+   */
+  it('«Украшения ведущей» — часть цели: одна запись, большая цель', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Разобраться с днём рождения ребёнка, место, гости, торт',
+            type: 'TASK',
+            priority: 'LATER',
+            topic: 'семья',
+            isProject: true,
+          },
+          { text: 'Украшения ведущей', type: 'IDEA', priority: 'NONE', topic: 'семья' },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('мысль'),
+      units: [
+        {
+          text: 'надо разобраться с днем рождения ребенка, место гости торт',
+          isProject: true,
+          isEmotion: false,
+        },
+        { text: 'Украшения ведущей?', isProject: false, isEmotion: false },
+      ],
+      spoken:
+        'Так мне надо разобраться с днем рождения ребенка, место гости торт. Украшения ведущей?',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((item) => item.text)).toEqual([
+      'Разобраться с днём рождения ребёнка, место, гости, торт, украшения ведущей',
+    ]);
+    expect(result.items[0]?.isProject).toBe(true);
+    expect(result.items[0]?.topic).toBe('семья');
+  });
+});

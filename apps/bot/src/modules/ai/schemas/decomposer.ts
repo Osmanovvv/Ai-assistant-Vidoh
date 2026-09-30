@@ -13,18 +13,37 @@ import { z } from 'zod';
  * чего продукт избавляет.
  */
 
-export const DECOMPOSER_SCHEMA_NAME = 'decomposer.v1';
+/** Первая версия — только шаги; decomposer@1 в базе ссылается на неё, откат возможен. */
+export const DECOMPOSER_V1_SCHEMA_NAME = 'decomposer.v1';
+
+/**
+ * Вторая — ещё и название цели (заказчица, 30.09.2026): «Разобраться с днём
+ * рождения ребёнка, место, гости, торт» — части ушли в шаги, в названии
+ * осталась цель. Название от модели код принимает не на слово
+ * (`projects/project-title.ts`).
+ */
+export const DECOMPOSER_SCHEMA_NAME = 'decomposer.v2';
+
+const steps = z
+  .array(
+    /**
+     * Шаг — это действие, а не рубрика. «Определиться с местом» —
+     * шаг, «Место» — заголовок в чьём-то плане.
+     */
+    z.string().min(3).max(200),
+  )
+  .max(7);
+
+export const decomposerV1Schema = z.object({ steps });
 
 export const decomposerSchema = z.object({
-  steps: z
-    .array(
-      /**
-       * Шаг — это действие, а не рубрика. «Определиться с местом» —
-       * шаг, «Место» — заголовок в чьём-то плане.
-       */
-      z.string().min(3).max(200),
-    )
-    .max(7),
+  /** Название цели без перечисления её частей; нечего убирать — как было. */
+  title: z.string().max(200),
+  steps,
 });
 
-export type DecomposedSteps = z.infer<typeof decomposerSchema>;
+/** Ответ любой из версий: у первой названия нет. */
+export interface DecomposedSteps {
+  readonly title?: string | undefined;
+  readonly steps: readonly string[];
+}

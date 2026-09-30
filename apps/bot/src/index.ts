@@ -1008,7 +1008,16 @@ async function main(): Promise<void> {
   // Любое нажатие снимает ожидание заголовка — раньше всех кнопок.
   registerPendingEditGuard(bot, db);
   registerOnboardingHandlers(bot, db, logger);
-  registerMenuHandlers(bot, db, logger, { cards });
+  registerMenuHandlers(bot, db, logger, {
+    cards,
+    // Цель без шагов раскладывается при открытии (заказчица, 30.09.2026).
+    goals: {
+      ai: { db, provider: llm, prompts, logger, spendGuard },
+      settings,
+      embedder,
+      topics: topicGateway,
+    },
+  });
 
   // Команды платёжной платформы — после приёма: сперва сохраняем
   // обращение человека, потом отвечаем (ревизия четвёртого этапа).

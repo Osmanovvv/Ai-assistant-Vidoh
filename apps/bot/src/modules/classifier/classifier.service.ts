@@ -37,6 +37,7 @@ import { cleanTitle } from './title.js';
 import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-key.js';
 import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
+import { attachListTails } from './list-tail.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
 /**
@@ -404,8 +405,20 @@ export function correctItems(
       'День в конце предложения отдан следующему делу',
     );
   }
-  const modelItems = handed.items;
-  const said = handed.said;
+  /**
+   * Хвост перечисления — к большой цели (заказчица, 30.09.2026): «…место
+   * гости торт. Украшения ведущей?» — точку поставило распознавание, и
+   * «Украшения ведущей» стало отдельной идеей. См. `list-tail.ts`.
+   */
+  const tailed = attachListTails(handed.items, handed.said);
+  if (tailed.attached > 0) {
+    logger?.info(
+      { promptVersion, приклеено: tailed.attached },
+      'Хвост перечисления приклеен к большой цели',
+    );
+  }
+  const modelItems = tailed.items;
+  const said = tailed.said;
 
   // Входные тексты годятся только при совпадении числа записей.
   const aligned = said?.length === modelItems.length;

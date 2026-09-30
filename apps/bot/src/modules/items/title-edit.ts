@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 
+import type { ChangedBy } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
@@ -83,6 +84,9 @@ export async function renameItem(
     readonly timeZone: string;
     readonly textProfile: string | null;
     readonly chatId?: number | undefined;
+    /** Почему и кто — в историю правок; по умолчанию правка человека из карточки. */
+    readonly reason?: string | undefined;
+    readonly changedBy?: ChangedBy | undefined;
   },
 ): Promise<RenameOutcome> {
   const { db } = deps;
@@ -96,8 +100,8 @@ export async function renameItem(
     changes: { ...emptyChanges(), text: params.title },
     spoken: params.spoken,
     timeZone: params.timeZone,
-    reason: 'правка словами из карточки',
-    changedBy: 'user',
+    reason: params.reason ?? 'правка словами из карточки',
+    changedBy: params.changedBy ?? 'user',
   });
 
   if (outcome.kind !== 'applied') return { kind: outcome.kind === 'gone' ? 'gone' : 'unchanged' };

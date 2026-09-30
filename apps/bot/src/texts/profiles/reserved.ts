@@ -424,6 +424,7 @@ export const reserved: TextProfile = {
     nextStep: (text) => `Ближайший шаг: ${text}`,
     line: (text) => `— ${text}`,
     noSteps: 'Пока не раскладывала это на шаги.',
+    decomposing: 'Минуточку, раскладываю на шаги…',
     finished: 'Здесь всё сделано.',
     buttonStepDone: 'Шаг сделан',
     stepDone: (next) => `Отметила. Дальше: ${next}`,

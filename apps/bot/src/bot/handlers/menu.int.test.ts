@@ -4,14 +4,21 @@ import type { Update, UserFromGetMe } from 'grammy/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  appSettings,
   batches,
   itemRevisions,
   items,
   projectSteps,
+  promptVersions,
   reminders,
   topics,
   userSettings,
 } from '../../db/schema.js';
+import { PromptRegistry } from '../../modules/ai/prompts/registry.js';
+import { activatePrompt, seedPrompt } from '../../modules/ai/prompts/seed.js';
+import { MockLlmProvider } from '../../modules/ai/providers/mock.js';
+import { DECOMPOSER_SCHEMA_NAME } from '../../modules/ai/schemas/index.js';
+import { putSetting, SETTINGS, SettingsRegistry } from '../../modules/settings/settings.repo.js';
 import { createLogger } from '../../infra/logger.js';
 import { CARD_ACTION } from '../../modules/items/card-actions.js';
 import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
@@ -25,7 +32,7 @@ import { registerUndoHandlers } from './undo.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { BILLING_ACTION } from './billing.js';
 import { DELETE_STEP_ONE } from './privacy.js';
-import { MENU_ACTION, registerMenuHandlers } from './menu.js';
+import { MENU_ACTION, registerMenuHandlers, type MenuOptions } from './menu.js';
 
 /**
  * Меню и карточка записи через настоящие обработчики (задача 2.18).
@@ -48,7 +55,10 @@ let seq = 0;
 let userId: string;
 let otherUserId: string;
 
-function createTestBot(gateway?: FakeTopicGateway): { bot: Bot; calls: ApiCall[] } {
+function createTestBot(
+  gateway?: FakeTopicGateway,
+  options: MenuOptions = {},
+): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -73,7 +83,7 @@ function createTestBot(gateway?: FakeTopicGateway): { bot: Bot; calls: ApiCall[]
     return Promise.resolve({ ok: true, result } as never);
   });
 
-  registerMenuHandlers(bot, testDb(), logger);
+  registerMenuHandlers(bot, testDb(), logger, options);
   registerCardHandlers(
     bot,
     { db: testDb(), logger, ...(gateway === undefined ? {} : { topics: gateway }) },
@@ -1618,5 +1628,129 @@ describe('«В другую сферу» переносит запись и об
 
     // Тупика быть не должно: назад в карточку.
     expect(keyboardOf(calls.at(-1)).map((one) => one.text)).toEqual(['Назад']);
+  });
+});
+
+describe('цель без шагов раскладывается при открытии (заказчица 30.09.2026)', () => {
+  /**
+   * Её скрин: «Меню → Большие цели» — «Пока не раскладывала это на шаги»,
+   * и больше ничего. Раскладка была, но звалась только вопросом в чате.
+   */
+  const LONG = 'Разобраться с днём рождения ребёнка, место, гости, торт';
+  const SHORT = 'Разобраться с днём рождения ребёнка';
+  const STEPS = ['Выбрать место', 'Позвать гостей', 'Заказать торт'];
+
+  async function addGoal(text: string): Promise<string> {
+    const [row] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text,
+        type: 'TASK',
+        priority: 'LATER',
+        topic: 'семья',
+        sourceOrder: 0,
+        isProject: true,
+      })
+      .returning({ id: items.id });
+    return row!.id;
+  }
+
+  async function goalsWith(options: { readonly settings?: SettingsRegistry } = {}): Promise<{
+    readonly provider: MockLlmProvider;
+    readonly gateway: FakeTopicGateway;
+    readonly goals: NonNullable<MenuOptions['goals']>;
+  }> {
+    await testDb().delete(promptVersions).where(eq(promptVersions.stage, 'decomposer'));
+    await seedPrompt(testDb(), {
+      stage: 'decomposer',
+      version: 'decomposer@test',
+      prompt: 'разложи цель на шаги',
+      schemaName: DECOMPOSER_SCHEMA_NAME,
+    });
+    await activatePrompt(testDb(), 'decomposer', 'decomposer@test');
+    const provider = new MockLlmProvider({
+      respond: () => JSON.stringify({ title: SHORT, steps: STEPS }),
+    });
+    const gateway = new FakeTopicGateway();
+    return {
+      provider,
+      gateway,
+      goals: {
+        ai: {
+          db: testDb(),
+          provider,
+          prompts: new PromptRegistry(testDb()),
+          retry: { attempts: 1, sleep: () => Promise.resolve() },
+        },
+        topics: gateway,
+        ...(options.settings === undefined ? {} : { settings: options.settings }),
+      },
+    };
+  }
+
+  it('«Минуточку, раскладываю…» — и тем же экраном шаги, кнопка и короткое название', async () => {
+    const { provider, gateway, goals } = await goalsWith();
+    const { bot, calls } = createTestBot(gateway, { goals });
+    await bot.init();
+    await addTopic(userId, 'семья');
+    const id = await addGoal(LONG);
+
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projectPrefix + toShortId(id)));
+
+    const screens = calls.filter((call) => call.method === 'editMessageText');
+    expect(screens.map(textOf)).toContain(defaultTexts.project.decomposing);
+    const final = screens.at(-1);
+    expect(textOf(final)).toContain(SHORT);
+    expect(textOf(final)).not.toContain('место, гости, торт');
+    expect(textOf(final)).toContain('Позвать гостей');
+    expect(keyboardOf(final).map((one) => one.text)).toContain(defaultTexts.project.buttonStepDone);
+    expect(provider.callCount).toBe(1);
+
+    // Название в базе и в сводке ветки — короткое.
+    expect((await itemRow(id))?.text).toBe(SHORT);
+    expect(gateway.writes).toBeGreaterThan(0);
+
+    // Второе открытие — шаги уже есть, модель не зовётся.
+    await bot.handleUpdate(callbackUpdate(MENU_ACTION.projectPrefix + toShortId(id)));
+    expect(provider.callCount).toBe(1);
+  });
+
+  it('доступ кончился — модель не зовётся, экран как был', async () => {
+    await putSetting(testDb(), { name: 'trialDumps', value: '0' });
+    try {
+      const settings = new SettingsRegistry({ db: testDb(), logger });
+      const { provider, gateway, goals } = await goalsWith({ settings });
+      const { bot, calls } = createTestBot(gateway, { goals });
+      await bot.init();
+      const id = await addGoal(LONG);
+
+      await bot.handleUpdate(callbackUpdate(MENU_ACTION.projectPrefix + toShortId(id)));
+
+      expect(provider.callCount).toBe(0);
+      expect(textOf(calls.at(-1))).toContain(defaultTexts.project.noSteps);
+      expect((await itemRow(id))?.text).toBe(LONG);
+    } finally {
+      await testDb().delete(appSettings).where(eq(appSettings.key, SETTINGS.trialDumps.key));
+    }
+  });
+
+  it('из-под ответа на выгрузку — своё сообщение, и итог правит его же', async () => {
+    const { gateway, goals } = await goalsWith();
+    const { bot, calls } = createTestBot(gateway, { goals });
+    await bot.init();
+    const id = await addGoal(LONG);
+
+    await bot.handleUpdate(callbackUpdate(`${ANSWER_ACTION.now}:${toShortId(id)}`));
+
+    const waiting = calls.find(
+      (call) => call.method === 'sendMessage' && textOf(call) === defaultTexts.project.decomposing,
+    );
+    expect(waiting).toBeDefined();
+    const final = calls.at(-1);
+    expect(final?.method).toBe('editMessageText');
+    // Правится именно сообщение «Минуточку…», а не ответ на выгрузку.
+    expect(final?.payload['message_id']).toBe(calls.indexOf(waiting!) + 1);
+    expect(textOf(final)).toContain('Позвать гостей');
   });
 });
