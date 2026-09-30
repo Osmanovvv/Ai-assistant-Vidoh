@@ -37,7 +37,8 @@ import { applyDecision, emptyChanges } from '../../modules/resolver/patch.js';
 import { describeChange } from '../../modules/resolver/change-text.js';
 import { changeKeyboard } from './undo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
-import { reembedIfRetitled } from '../../modules/embedder/reembed.js';
+import { newTitleFrom, renameItem } from '../../modules/items/title-edit.js';
+import type { TopicGateway } from '../../modules/topics/gateway.js';
 import type { EmbeddingProvider } from '../../modules/embedder/providers/types.js';
 import type { ModelPricing } from '../../modules/metering/pricing.js';
 import type { SpendGuard } from '../../modules/metering/spend-guard.js';
@@ -67,6 +68,8 @@ export interface AwaitingDeps {
   readonly embedder?: EmbeddingProvider | undefined;
   readonly spendGuard?: SpendGuard | undefined;
   readonly pricing?: Readonly<Record<string, ModelPricing>> | undefined;
+  /** Сводка ветки после правки названия (заказчица, 30.09.2026). */
+  readonly topics?: TopicGateway | undefined;
   /**
    * Приём промокода словами (§14, задача 4.4).
    *
@@ -487,19 +490,26 @@ export function consumeAwaited(deps: AwaitingDeps) {
        */
       const context = await outputContextOf(db, userId);
 
-      const outcome = await applyDecision(db, {
-        userId,
-        itemId: awaiting.itemId,
-        action: 'update',
-        mode: 'replace',
-        // Меняется один заголовок; остальные поля пустые, как их
-        // присылает резолвер, когда правит только текст.
-        changes: { ...emptyChanges(), text },
-        spoken: text,
-        timeZone: context.timeZone,
-        reason: 'правка словами из карточки',
-        changedBy: 'user',
-      });
+      // «Назови это молочко» — название «Молочко» (заказчица, 30.09.2026).
+      const title = newTitleFrom(text);
+      if (title === undefined) {
+        await ctx.reply(texts.card.editNotApplied);
+        return true;
+      }
+
+      // Название, вектор и сводка ветки — одной функцией с голосовым путём.
+      const outcome = await renameItem(
+        { ...deps, logger },
+        {
+          userId,
+          itemId: awaiting.itemId,
+          title,
+          spoken: text,
+          timeZone: context.timeZone,
+          textProfile: context.textProfile,
+          chatId: ctx.chat?.id,
+        },
+      );
 
       if (outcome.kind !== 'applied') {
         // Записи нет или менять нечего: сказать честно и не трогать разбор.
@@ -508,17 +518,6 @@ export function consumeAwaited(deps: AwaitingDeps) {
       }
 
       const { applied } = outcome;
-
-      await reembedIfRetitled(
-        {
-          db,
-          ...(deps.embedder === undefined ? {} : { provider: deps.embedder }),
-          ...(deps.spendGuard === undefined ? {} : { spendGuard: deps.spendGuard }),
-          ...(deps.pricing === undefined ? {} : { pricing: deps.pricing }),
-          logger,
-        },
-        applied,
-      );
 
       logger.info({ userId, itemId: awaiting.itemId }, 'Запись поправлена словами из карточки');
 

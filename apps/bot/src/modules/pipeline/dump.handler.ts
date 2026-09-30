@@ -41,6 +41,8 @@ import {
   type ItemToSave,
 } from '../items/items.repo.js';
 import { datelessTwins, knownByText, splitKnown } from '../items/same-text.js';
+import { looksLikeNewTitle, newTitleFrom, renameItem } from '../items/title-edit.js';
+import { awaitingOf, setAwaiting } from '../onboarding/awaiting.js';
 import {
   aboutPending,
   changeButtons,
@@ -1014,6 +1016,51 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     };
 
     if (await stopOnCrisis(detectByMarkers(combined), 'markers')) return;
+
+    /**
+     * Голосом — ответ на «Изменить» (заказчица, 30.09.2026): «Назови это
+     * молочко» после «Изменить» у «Купить молоко» ушло в разбор и завело
+     * дело в «Личном». Текстовый ответ берёт приём (`awaiting.ts`), сюда
+     * ожидание доходит только с голосовым. Похоже на название — это оно,
+     * без модели; несколько мыслей — выгрузка, как обычно, а ожидание
+     * снимается: сказанное не пропадает в название.
+     */
+    const waiting = await awaitingOf(db, batch.userId, now);
+    if (waiting.expired) await setAwaiting(db, batch.userId, null);
+    if (waiting.awaiting?.kind === 'edit' && waiting.awaiting.itemId !== undefined) {
+      await setAwaiting(db, batch.userId, null);
+      const title = looksLikeNewTitle(combined) ? newTitleFrom(combined) : undefined;
+      if (title !== undefined) {
+        const renamed = await renameItem(
+          {
+            db,
+            logger: deps.logger,
+            embedder: deps.embedder,
+            spendGuard: deps.ai.spendGuard,
+            pricing: deps.ai.pricing,
+            topics: deps.topics,
+          },
+          {
+            userId: batch.userId,
+            itemId: waiting.awaiting.itemId,
+            title,
+            spoken: combined,
+            timeZone: context.timeZone,
+            textProfile: context.textProfile,
+            chatId: target?.chatId,
+          },
+        );
+        if (renamed.kind === 'applied') {
+          await tell(
+            describeChange(renamed.applied, texts, context.timeZone, combined, now),
+            changeButtons(renamed.applied, texts, combined),
+          );
+        } else {
+          await answer(renamed.kind === 'gone' ? texts.card.gone : texts.card.editNotApplied);
+        }
+        return;
+      }
+    }
 
     /**
      * Закрытие дня словами (ТЗ по визуалам 18.09.2026, карточка 06):

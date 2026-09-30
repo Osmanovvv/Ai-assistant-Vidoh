@@ -11,6 +11,8 @@ import { AWAITING_TTL_MS } from '../../modules/onboarding/awaiting.js';
 import { toShortId } from '../../modules/shared/short-id.js';
 import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { testDb } from '../../test/db.js';
+import { FakeTopicGateway } from '../../modules/topics/fake-gateway.js';
+import { ensureTopics } from '../../modules/topics/topics.repo.js';
 import { defaultTexts } from '../../texts/index.js';
 import { consumeAwaited } from './awaiting.js';
 import { MENU_ACTION, registerMenuHandlers } from './menu.js';
@@ -45,7 +47,8 @@ const stubQueue = {
 let seq = 0;
 let userId: string;
 
-function createTestBot(): { bot: Bot; calls: ApiCall[] } {
+/** Шлюз веток — по желанию: там, где проверяется сводка после правки. */
+function createTestBot(topics?: FakeTopicGateway): { bot: Bot; calls: ApiCall[] } {
   const botInfo = {
     id: 1,
     is_bot: true,
@@ -76,7 +79,11 @@ function createTestBot(): { bot: Bot; calls: ApiCall[] } {
       queue: stubQueue,
       privacyPolicyUrl: 'https://vydoh-app.ru/privacy',
       consentUrl: 'https://vydoh-app.ru/consent',
-      consume: consumeAwaited({ db: testDb(), logger }),
+      consume: consumeAwaited({
+        db: testDb(),
+        logger,
+        ...(topics === undefined ? {} : { topics }),
+      }),
     }),
   );
   // Страж — раньше всех кнопок, как в index.ts: любое нажатие снимает
@@ -183,6 +190,40 @@ async function wentToDump(text: string): Promise<boolean> {
 
   return row?.batchId != null;
 }
+
+describe('новое название её словами и сводка ветки (заказчица, 30.09.2026)', () => {
+  it('«Назови это молочко» текстом — название «Молочко», а не вся фраза', async () => {
+    const { bot } = createTestBot();
+    await bot.init();
+    const itemId = await addItem('Купить молоко');
+
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+    await bot.handleUpdate(textUpdate('Назови это молочко'));
+
+    expect(await textOfItem(itemId)).toBe('Молочко');
+    expect(await awaitingOfUser()).toBeNull();
+  });
+
+  it('после переименования сводка ветки переписана: там новое название, а не старое', async () => {
+    // Её скрин: переименовала «Купить молоко» в «Молочка», а в ветке
+    // «Покупки» так и осталось «Купить молоко» — сводку не перечитали.
+    await ensureTopics(testDb(), userId, ['личное']);
+    const gateway = new FakeTopicGateway();
+    const { bot } = createTestBot(gateway);
+    await bot.init();
+    const itemId = await addItem('Купить молоко');
+
+    await bot.handleUpdate(callbackUpdate(`i:edt:${toShortId(itemId)}`));
+    await bot.handleUpdate(textUpdate('Молочка'));
+
+    const summaries = [
+      ...gateway.sent.map((one) => one.text),
+      ...gateway.edited.map((one) => one.text),
+    ];
+    expect(summaries.some((text) => text.includes('— Молочка'))).toBe(true);
+    expect(summaries.at(-1)).not.toContain('Купить молоко');
+  });
+});
 
 describe('правка записи словами', () => {
   it('нажал, написал — запись переписана, и есть чем отменить', async () => {
