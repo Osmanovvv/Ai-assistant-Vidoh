@@ -15,6 +15,7 @@ import {
   moveItemToTopic,
   removeThread,
   topicByThread,
+  updateThreadIcon,
 } from './topics.service.js';
 
 /**
@@ -118,6 +119,89 @@ describe('ветка темы', () => {
 
     expect(result.created).toBe(true);
     expect(gateway.created[0]?.iconEmojiId).toBeUndefined();
+  });
+
+  describe('семья ❤️ и личное ⭐️ (выбор заказчицы 30.09.2026)', () => {
+    // Так их пишет Telegram: со знаком начертания U+FE0F.
+    const TELEGRAM = new Map([
+      ['❤️', 'heart-id'],
+      ['⭐️', 'star-id'],
+    ]);
+
+    it('новые ветки создаются с иконкой', async () => {
+      await seedTopics(['семья', 'личное']);
+      const gateway = new FakeTopicGateway({ icons: TELEGRAM });
+
+      await ensureThread(deps(gateway), { topicId: (await topicRow('семья'))!.id, chatId: CHAT });
+      await ensureThread(deps(gateway), { topicId: (await topicRow('личное'))!.id, chatId: CHAT });
+
+      expect(gateway.created).toEqual([
+        { name: 'семья', iconEmojiId: 'heart-id' },
+        { name: 'личное', iconEmojiId: 'star-id' },
+      ]);
+    });
+
+    it('знак начертания не мешает найти иконку: «⭐» без него — та же звезда', async () => {
+      await seedTopics(['личное']);
+      const gateway = new FakeTopicGateway({ icons: new Map([['⭐', 'star-id']]) });
+
+      await ensureThread(deps(gateway), { topicId: (await topicRow('личное'))!.id, chatId: CHAT });
+
+      expect(gateway.created[0]?.iconEmojiId).toBe('star-id');
+    });
+
+    it('у готовой ветки иконка ставится правкой ветки', async () => {
+      await seedTopics(['семья']);
+      const gateway = new FakeTopicGateway({ icons: TELEGRAM });
+      const topicId = (await topicRow('семья'))!.id;
+      const { threadId } = await ensureThread(deps(new FakeTopicGateway()), {
+        topicId,
+        chatId: CHAT,
+      });
+
+      const result = await updateThreadIcon(deps(gateway), { topicId, chatId: CHAT });
+
+      expect(result).toBe('set');
+      expect(gateway.iconsSet).toEqual([{ chatId: CHAT, threadId, iconEmojiId: 'heart-id' }]);
+    });
+
+    it('ветки ещё нет — править нечего, она получит иконку при создании', async () => {
+      await seedTopics(['семья']);
+      const gateway = new FakeTopicGateway({ icons: TELEGRAM });
+
+      const result = await updateThreadIcon(deps(gateway), {
+        topicId: (await topicRow('семья'))!.id,
+        chatId: CHAT,
+      });
+
+      expect(result).toBe('no-thread');
+      expect(gateway.iconsSet).toEqual([]);
+    });
+
+    it('сфера без иконки в наборе — не трогается', async () => {
+      await seedTopics(['бизнес']);
+      const topicId = (await topicRow('бизнес'))!.id;
+      await ensureThread(deps(new FakeTopicGateway()), { topicId, chatId: CHAT });
+      const gateway = new FakeTopicGateway({ icons: TELEGRAM });
+
+      expect(await updateThreadIcon(deps(gateway), { topicId, chatId: CHAT })).toBe('no-icon');
+      expect(gateway.iconsSet).toEqual([]);
+    });
+
+    it('ветку удалили руками — не ошибка', async () => {
+      await seedTopics(['семья']);
+      const topicId = (await topicRow('семья'))!.id;
+      const { threadId } = await ensureThread(deps(new FakeTopicGateway()), {
+        topicId,
+        chatId: CHAT,
+      });
+      const gateway = new FakeTopicGateway({
+        icons: TELEGRAM,
+        goneThreads: new Set([threadId ?? -1]),
+      });
+
+      expect(await updateThreadIcon(deps(gateway), { topicId, chatId: CHAT })).toBe('gone');
+    });
   });
 
   it('выключенный режим тем даёт плоский режим, а не отказ', async () => {

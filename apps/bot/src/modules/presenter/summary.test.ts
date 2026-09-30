@@ -34,9 +34,9 @@ describe('summarizeDump', () => {
     expect(summary.spheres).toEqual([
       { name: 'работа', icon: '💼', count: 3 },
       { name: 'покупки', icon: '🛒', count: 2 },
-      // 🤍 у «личного» — из примеров ТЗ проджекта 17.09.2026 (2.4).
-      { name: 'личное', icon: '🤍', count: 1 },
-      { name: 'семья', icon: '👨‍👩‍👧', count: 1 },
+      // Иконки «личного» и «семьи» — выбор заказчицы 30.09.2026.
+      { name: 'личное', icon: '⭐️', count: 1 },
+      { name: 'семья', icon: '❤️', count: 1 },
     ]);
   });
 
