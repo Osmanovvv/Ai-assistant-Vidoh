@@ -8,6 +8,7 @@ import pg from 'pg';
 
 import * as schema from '../db/schema.js';
 import type { Database } from '../infra/db.js';
+import { assertSafeTestDatabaseUrl, type TestDatabaseName } from './database-safety.js';
 
 /**
  * Тестовая база для интеграционных тестов.
@@ -19,8 +20,10 @@ import type { Database } from '../infra/db.js';
 
 const DEFAULT_URL = 'postgres://vydoh:vydoh@localhost:5434/vydoh_test';
 
-export function testDatabaseUrl(): string {
-  return process.env['TEST_DATABASE_URL'] ?? DEFAULT_URL;
+export function testDatabaseUrl(databaseName: TestDatabaseName = 'vydoh_test'): string {
+  const url = process.env['TEST_DATABASE_URL'] ?? DEFAULT_URL;
+  assertSafeTestDatabaseUrl(url, databaseName);
+  return url;
 }
 
 const migrationsFolder = resolve(dirname(fileURLToPath(import.meta.url)), '../../drizzle');
@@ -50,16 +53,26 @@ async function ensureDatabaseExists(url: string): Promise<void> {
 
 let pool: pg.Pool | undefined;
 let database: NodePgDatabase<typeof schema> | undefined;
+let connectedUrl: string | undefined;
 
 /** Готовит базу к прогону: создаёт её при необходимости и применяет миграции. */
-export async function setupTestDatabase(): Promise<Database> {
-  if (database) return database;
+export async function setupTestDatabase(
+  databaseName: TestDatabaseName = 'vydoh_test',
+): Promise<Database> {
+  // Даже при готовом пуле сначала проверяем адрес, а не обходим защиту кэшем.
+  const url = testDatabaseUrl(databaseName);
+  if (database) {
+    if (connectedUrl !== url) {
+      throw new Error('Нельзя менять адрес открытой тестовой базы: сначала closeTestDatabase().');
+    }
+    return database;
+  }
 
-  const url = testDatabaseUrl();
   await ensureDatabaseExists(url);
 
   pool = new pg.Pool({ connectionString: url, max: 4 });
   database = drizzle(pool, { schema });
+  connectedUrl = url;
 
   await migrate(database, { migrationsFolder });
 
@@ -128,6 +141,7 @@ export async function closeTestDatabase(): Promise<void> {
     await pool.end();
     pool = undefined;
     database = undefined;
+    connectedUrl = undefined;
     liveTables = undefined;
   }
 }

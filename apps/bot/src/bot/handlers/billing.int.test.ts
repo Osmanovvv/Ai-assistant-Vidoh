@@ -594,9 +594,12 @@ describe('согласие на автосписания — §14, оферта 
     const periodEnd = periodEndAfter(new Date(), 'monthly');
     const charge = untilText(new Date(periodEnd.getTime() - RENEWAL_LEAD_MS));
 
-    expect(textOf(sent(calls)[0])).toContain(charge);
+    const firstChargeLabel = 'первое автосписание — ';
+    const text = textOf(sent(calls)[0]);
+
+    expect(text).toContain(`${firstChargeLabel}${charge}`);
     // И это именно день списания, а не конец периода.
-    expect(textOf(sent(calls)[0])).not.toContain(untilText(periodEnd));
+    expect(text).not.toContain(`${firstChargeLabel}${untilText(periodEnd)}`);
   });
 
   it('у платящего первое списание считается от конца оплаченного, а не от сегодня', async () => {
@@ -619,8 +622,12 @@ describe('согласие на автосписания — §14, оферта 
     const fromPeriodEnd = new Date(periodEndAfter(until, 'monthly').getTime() - RENEWAL_LEAD_MS);
     const fromToday = new Date(periodEndAfter(new Date(), 'monthly').getTime() - RENEWAL_LEAD_MS);
 
-    expect(textOf(sent(calls)[0])).toContain(untilText(fromPeriodEnd));
-    expect(textOf(sent(calls)[0])).not.toContain(untilText(fromToday));
+    // Проверяем дату именно после подписи: «1 ноября» входит в «21 ноября».
+    const firstChargeLabel = 'первое автосписание — ';
+    const text = textOf(sent(calls)[0]);
+
+    expect(text).toContain(`${firstChargeLabel}${untilText(fromPeriodEnd)}`);
+    expect(text).not.toContain(`${firstChargeLabel}${untilText(fromToday)}`);
   });
 
   it('переключатель правит тот же экран: отметка ставится и снимается', async () => {
