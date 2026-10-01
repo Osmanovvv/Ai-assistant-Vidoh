@@ -19,6 +19,7 @@ import { SCHEMA_BY_STAGE } from '../modules/ai/schemas/index.js';
 import { STEP } from '../modules/onboarding/onboarding.service.js';
 import { upsertUser } from '../modules/users/users.repo.js';
 import { defaultTexts } from '../texts/index.js';
+import { assertSafeTestDatabaseUrl } from '../test/database-safety.js';
 
 /**
  * Прогон находок ручного прогона (задачи 3.21–3.28).
@@ -51,6 +52,7 @@ import { defaultTexts } from '../texts/index.js';
  */
 
 const DB_URL = process.env['E2E_DATABASE_URL'] ?? 'postgres://vydoh:vydoh@localhost:5434/vydoh_e2e';
+assertSafeTestDatabaseUrl(DB_URL, 'vydoh_e2e');
 const REDIS_URL = process.env['E2E_REDIS_URL'] ?? 'redis://localhost:6379/9';
 const SECRET = 'e2e-secret-e2e-secret';
 const CHAT_ID = 999_000_555;

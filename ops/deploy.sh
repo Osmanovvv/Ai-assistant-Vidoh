@@ -83,19 +83,13 @@ sshx "mkdir -p $REMOTE_DIR/logs && chown 1000:1000 $REMOTE_DIR/logs && chmod 755
 # `.env`, журналы, сертификаты и копии лежат отдельно и не трогаются.
 sshx "cd $REMOTE_DIR && rm -rf apps/bot/src apps/admin/src apps/bot/drizzle"
 
-# Исключается всё, что либо собирается на месте, либо не должно уезжать:
-# зависимости, история, сборки, локальные настройки и чужие сертификаты.
+# Состав и исключения задаёт deploy-archive.sh: архив можно отдельно
+# проверить локально, не запуская выкладку и не подключаясь к серверу.
 # Повтор здесь отдельным циклом, а не внутри sshx: поток архива
 # одноразовый, и заново его надо создавать целиком.
 delivered=""
 for attempt in 1 2 3; do
-  if tar --exclude=node_modules \
-      --exclude=.git \
-      --exclude=dist \
-      --exclude=.env \
-      --exclude='ops/caddy/certs' \
-      --exclude='*.log' \
-      -czf - . \
+  if bash ops/deploy-archive.sh \
     | ssh $SSH_OPTS "$HOST" "tar -xzf - -C $REMOTE_DIR"; then
     delivered="да"
     break
@@ -147,6 +141,9 @@ REMOTE
 fi
 
 # ─── Сборка и запуск ──────────────────────────────────────────────────────────
+
+say "Сохраняю предыдущий образ для отката"
+sshx "cd $REMOTE_DIR && bash ops/preserve-image.sh rollback"
 
 say "Собираю образ и поднимаю сервисы"
 sshx "cd $REMOTE_DIR && $COMPOSE up -d --build --remove-orphans"
@@ -297,6 +294,9 @@ if ! ssh $SSH_OPTS "$HOST" "cmp -s $REMOTE_DIR/ops/logrotate/vydoh /etc/logrotat
 ' >&2
   exit 1
 fi
+
+say "Закрепляю образ успешной выкладки"
+sshx "cd $REMOTE_DIR && bash ops/preserve-image.sh release"
 
 say "Состояние сервисов"
 sshx "cd $REMOTE_DIR && $COMPOSE ps"

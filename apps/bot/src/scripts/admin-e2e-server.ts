@@ -92,7 +92,7 @@ let seeded: Database | undefined;
 
 if (seedUrl !== undefined) {
   process.env['TEST_DATABASE_URL'] = seedUrl;
-  seeded = await setupTestDatabase();
+  seeded = await setupTestDatabase('vydoh_admin_e2e');
 
   await seeded.delete(appSettings);
   // Правки реплик — тоже состояние стенда: остаться от прошлого прогона

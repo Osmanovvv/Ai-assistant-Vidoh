@@ -19,6 +19,7 @@ import { startTelegramStub, type TelegramStub } from '../e2e/telegram-stub.js';
 import { postUpdate, textUpdate } from '../e2e/updates.js';
 import { defaultTexts } from '../texts/index.js';
 import { upsertUser } from '../modules/users/users.repo.js';
+import { assertSafeTestDatabaseUrl } from '../test/database-safety.js';
 
 /**
  * Сквозной тест этапа 2 (задача 2.23).
@@ -46,6 +47,7 @@ import { upsertUser } from '../modules/users/users.repo.js';
  */
 
 const DB_URL = process.env['E2E_DATABASE_URL'] ?? 'postgres://vydoh:vydoh@localhost:5434/vydoh_e2e';
+assertSafeTestDatabaseUrl(DB_URL, 'vydoh_e2e');
 const REDIS_URL = process.env['E2E_REDIS_URL'] ?? 'redis://localhost:6379/7';
 const SECRET = 'e2e-secret-e2e-secret';
 const CHAT_ID = 999_000_222;

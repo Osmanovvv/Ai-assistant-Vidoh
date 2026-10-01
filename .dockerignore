@@ -15,11 +15,57 @@ coverage
 # Секреты в образ не едут ни при каких обстоятельствах (§16 ТЗ).
 .env
 .env.*
-!.env.example
 ops/caddy/certs
+secrets
+**/secrets
+**/*.env
+**/*.env.*
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/.npmrc
+**/.netrc
+**/.pgpass
 
 # Материалы заказчика и служебное.
 docs
+**/docs
 *.log
 .vscode
 .idea
+
+# Локальные сессии, журналы и результаты проверок.
+.data
+.claude
+.cache
+.turbo
+logs
+backups
+playwright-report
+test-results
+tests/eval/runs
+**/.data
+**/.claude
+**/logs
+**/backups
+**/playwright-report
+**/test-results
+**/*.log
+
+# Архивы и дампы не нужны для сборки приложения.
+**/*.zip
+**/*.tar
+**/*.tgz
+**/*.gz
+**/*.bz2
+**/*.xz
+**/*.zst
+**/*.7z
+**/*.rar
+**/*.dump
+**/*.backup
+**/*.bak
