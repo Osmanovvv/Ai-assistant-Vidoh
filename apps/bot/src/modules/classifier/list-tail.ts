@@ -124,10 +124,18 @@ const SENTENCE_WORDS = new Set([
 ]);
 
 /**
+ * Прошедшее время — это уже мысль, а не часть: «подарок купила» (стенд
+ * 01.10.2026). От пяти букв: «пила», «мыло» — не глаголы. Ошибка в
+ * сторону «не часть» безопасна: перечисление остаётся как было.
+ */
+const PAST_TENSE = /(?:ла|ли|ло|лся|лась|лись|лось)$/u;
+
+/**
  * Части перечисления словами — или ничего, если это не перечисление:
  * пустая часть, длинная часть, цифры, глагол или слово предложения.
+ * Общая для хвоста цели и для короткого названия (`project-title.ts`).
  */
-function listChunks(text: string): (readonly string[])[] | undefined {
+export function listChunks(text: string): (readonly string[])[] | undefined {
   const chunks = text
     .toLowerCase()
     .replace(/ё/gu, 'е')
@@ -142,6 +150,7 @@ function listChunks(text: string): (readonly string[])[] | undefined {
     for (const word of chunk) {
       if (!/^\p{L}+(?:-\p{L}+)?$/u.test(word)) return undefined;
       if (SENTENCE_WORDS.has(word) || isStrictInfinitive(word)) return undefined;
+      if (word.length >= 5 && PAST_TENSE.test(word)) return undefined;
     }
   }
 
