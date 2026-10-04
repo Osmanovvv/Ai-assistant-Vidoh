@@ -13,6 +13,7 @@ import {
   withRunBudget,
 } from '../eval/budget.js';
 import { loadDataset } from '../eval/dataset.js';
+import { assertSafeEvalDatabaseUrl } from '../eval/database-safety.js';
 import { BadPinError, parsePins } from '../eval/pins.js';
 import { ANY, checkThreshold, collect, format, type EvalReport } from '../eval/report.js';
 import { runDataset } from '../eval/runner.js';
@@ -39,9 +40,8 @@ import { createEmbeddingProvider } from '../modules/embedder/providers/factory.j
  * складывается в `<папка>/runs`, чтобы следующий прогон показал разницу:
  * без сравнения с прошлым числа не значат ничего.
  *
- * **Базу берёт ту, что дана.** Расход прогона пишется в учёт, как у
- * настоящих вызовов (§10.5) — значит боевую базу подставлять нельзя,
- * иначе прогоны исказят себестоимость выгрузки.
+ * Принимает только отдельную локальную `vydoh_eval`: пересоздание
+ * пользователей стенда и учёт расхода не должны попасть в рабочую базу.
  */
 
 /**
@@ -95,6 +95,8 @@ if (directory === undefined) usage();
 
 /** Папка набора — уже проверенная: объявлениям функций ниже сужение не видно. */
 const datasetDir: string = directory;
+
+assertSafeEvalDatabaseUrl(process.env['DATABASE_URL']);
 
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.

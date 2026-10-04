@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { restoreDroppedDeeds } from './dropped-deeds.js';
+import {
+  restoreDroppedDeeds,
+  restoreShortenedText,
+  restoreShortenedWords,
+} from './dropped-deeds.js';
 
 const unit = (text: string, isEmotion = false) => ({ text, isProject: false, isEmotion });
 const texts = (units: readonly { readonly text: string }[]) => units.map((one) => one.text);
@@ -128,5 +132,54 @@ describe('дело, выпавшее из извлечения, возвраща
 
     expect(result.units).toEqual([]);
     expect(result.restored).toBe(0);
+  });
+});
+
+describe('предмет, укороченный моделью, возвращается словами человека', () => {
+  it('«чеснокодавилку» не превращает в «чеснок»', () => {
+    const result = restoreShortenedWords('Заказать чеснокодавилку и отпугиватель от собак.', [
+      unit('Заказать чеснок'),
+      unit('Заказать отпугиватель от собак'),
+    ]);
+
+    expect(texts(result.units)).toEqual([
+      'Заказать чеснокодавилку',
+      'Заказать отпугиватель от собак',
+    ]);
+    expect(result.restored).toBe(1);
+  });
+
+  it('сохраняет весь список, если модель вернула одну укороченную покупку', () => {
+    const result = restoreShortenedWords('Заказать чеснокодавилку и отпугиватель от собак.', [
+      unit('Заказать чеснок'),
+    ]);
+
+    expect(texts(result.units)).toEqual(['Заказать чеснокодавилку и отпугиватель от собак']);
+    expect(result.restored).toBeGreaterThan(0);
+  });
+
+  it('обычные окончания не переписывает', () => {
+    const units = [unit('Купить молоко')];
+    const result = restoreShortenedWords('Купить молока.', units);
+
+    expect(result.units).toEqual(units);
+    expect(result.restored).toBe(0);
+  });
+
+  it('при двух одинаковых кандидатах не угадывает запись', () => {
+    const units = [unit('Заказать чеснок'), unit('Заказать чеснок для дачи')];
+    const result = restoreShortenedWords('Заказать чеснокодавилку.', units);
+
+    expect(result.units).toEqual(units);
+    expect(result.restored).toBe(0);
+  });
+
+  it('защищает классификацию, если она снова сократила слово', () => {
+    expect(
+      restoreShortenedText('Заказать чеснокодавилку и отпугиватель от собак', 'Заказать чеснок'),
+    ).toEqual({
+      text: 'Заказать чеснокодавилку и отпугиватель от собак',
+      restored: 3,
+    });
   });
 });

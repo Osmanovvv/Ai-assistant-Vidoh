@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { loadDataset } from '../eval/dataset.js';
+import { assertSafeEvalDatabaseUrl } from '../eval/database-safety.js';
 import { runMergedDataset } from '../eval/merged.js';
 import { checkThreshold, collect, format, shares, type EvalReport } from '../eval/report.js';
 import { modelEnvSchema } from '../config/env.js';
@@ -35,6 +36,8 @@ if (directory === undefined) {
   process.stderr.write('Использование: run-eval-merged <папка-с-набором>\n');
   process.exit(2);
 }
+
+assertSafeEvalDatabaseUrl(process.env['DATABASE_URL']);
 
 // Читаемый вывод — только в терминале человека: в контейнере
 // без `pino-pretty` он не нужен и раньше ронял скрипт.

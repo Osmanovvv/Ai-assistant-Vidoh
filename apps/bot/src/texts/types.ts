@@ -707,6 +707,8 @@ export interface TextProfile {
     readonly empty: string;
     /** Сколько записей не показано: сводка не растёт бесконечно. */
     readonly more: (count: number) => string;
+    /** Кнопка открывает полный список без ограничения сводки. */
+    readonly buttonAll: string;
   };
 
   /**

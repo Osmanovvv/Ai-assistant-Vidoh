@@ -1,6 +1,6 @@
 import { GrammyError } from 'grammy';
 
-import type { CreateThreadParams, TopicGateway } from './gateway.js';
+import type { CreateThreadParams, TopicButton, TopicGateway } from './gateway.js';
 
 /**
  * Поддельные ветки Telegram для тестов (задачи 2.15–2.17).
@@ -15,6 +15,7 @@ export interface SentMessage {
   readonly chatId: number;
   readonly threadId: number | undefined;
   readonly text: string;
+  readonly buttons?: readonly TopicButton[] | undefined;
 }
 
 export interface FakeGatewayOptions {
@@ -61,7 +62,11 @@ let nextMessageId = 5000;
 export class FakeTopicGateway implements TopicGateway {
   readonly created: { name: string; iconEmojiId: string | undefined }[] = [];
   readonly sent: SentMessage[] = [];
-  readonly edited: { messageId: number; text: string }[] = [];
+  readonly edited: {
+    messageId: number;
+    text: string;
+    buttons?: readonly TopicButton[] | undefined;
+  }[] = [];
 
   private readonly lastText = new Map<number, string>();
 
@@ -111,7 +116,12 @@ export class FakeTopicGateway implements TopicGateway {
 
   private throttled = 0;
 
-  send(params: { chatId: number; threadId?: number | undefined; text: string }): Promise<number> {
+  send(params: {
+    chatId: number;
+    threadId?: number | undefined;
+    text: string;
+    buttons?: readonly TopicButton[] | undefined;
+  }): Promise<number> {
     if (params.threadId !== undefined && this.options.goneThreads?.has(params.threadId) === true) {
       return Promise.reject(telegramError(400, 'Bad Request: message thread not found'));
     }
@@ -130,7 +140,12 @@ export class FakeTopicGateway implements TopicGateway {
       );
     }
 
-    this.sent.push({ chatId: params.chatId, threadId: params.threadId, text: params.text });
+    this.sent.push({
+      chatId: params.chatId,
+      threadId: params.threadId,
+      text: params.text,
+      ...(params.buttons === undefined ? {} : { buttons: params.buttons }),
+    });
     nextMessageId++;
     this.lastText.set(nextMessageId, params.text);
     return Promise.resolve(nextMessageId);
@@ -160,7 +175,12 @@ export class FakeTopicGateway implements TopicGateway {
     return Promise.resolve();
   }
 
-  edit(params: { chatId: number; messageId: number; text: string }): Promise<void> {
+  edit(params: {
+    chatId: number;
+    messageId: number;
+    text: string;
+    buttons?: readonly TopicButton[] | undefined;
+  }): Promise<void> {
     if (this.options.goneMessages?.has(params.messageId) === true) {
       return Promise.reject(telegramError(400, 'Bad Request: message to edit not found'));
     }
@@ -174,7 +194,11 @@ export class FakeTopicGateway implements TopicGateway {
       );
     }
 
-    this.edited.push({ messageId: params.messageId, text: params.text });
+    this.edited.push({
+      messageId: params.messageId,
+      text: params.text,
+      ...(params.buttons === undefined ? {} : { buttons: params.buttons }),
+    });
     this.lastText.set(params.messageId, params.text);
     return Promise.resolve();
   }

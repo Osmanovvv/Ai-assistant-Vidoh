@@ -338,6 +338,64 @@ describe('четвёртый сигнал: человек назвал запи�
   });
 });
 
+describe('отмена по полному названию среди похожих дел', () => {
+  const warm = candidate({ text: 'Спрятать тёплую одежду ребёнка' });
+  const summer = candidate({ id: 'i-2', text: 'Спрятать летнюю одежду ребёнка' });
+  const both = [warm, summer];
+
+  it.each([
+    'Убери «Спрятать тёплую одежду ребёнка».',
+    'Здесь, пожалуйста, измени, убери, спрятать теплую одежду ребенка. Вот эта задача не нужна.',
+    'Убери СПРЯТАТЬ ТЁПЛУЮ ОДЕЖДУ РЕБЁНКА',
+  ])('«%s» подтверждает отмену только названного дела', (spoken) => {
+    const verdict = decide(answer({ action: 'cancel' }), both, { now: NOW, spoken });
+    expect(verdict.kind).toBe('apply');
+    expect(verdict.candidate?.id).toBe(warm.id);
+    expect(verdict.why).toBe('отмена подтверждена полным названием');
+  });
+
+  it.each([
+    'Убери одежду ребёнка.',
+    'Убери тёплую одежду ребёнка.',
+    'Убери спрятать тёплую одежду ребёнка и спрятать летнюю одежду ребёнка.',
+  ])('«%s» без единственного полного названия остаётся переспросом', (spoken) => {
+    expect(decide(answer({ action: 'cancel' }), both, { now: NOW, spoken }).kind).toBe('ask');
+  });
+
+  it('модель выбрала похожее другое дело — отмена не подтверждается', () => {
+    expect(
+      decide(answer({ action: 'cancel', itemId: summer.id }), both, {
+        now: NOW,
+        spoken: `Убери ${warm.text}`,
+      }).kind,
+    ).toBe('ask');
+  });
+
+  it('одинаковые названия не позволяют выбрать одну запись', () => {
+    expect(
+      decide(answer({ action: 'cancel' }), [warm, { ...summer, text: warm.text }], {
+        now: NOW,
+        spoken: `Убери ${warm.text}`,
+      }).kind,
+    ).toBe('ask');
+  });
+
+  it('средняя уверенность по-прежнему требует подтверждения', () => {
+    expect(
+      decide(answer({ action: 'cancel', confidence: 0.6 }), both, {
+        now: NOW,
+        spoken: `Убери ${warm.text}`,
+      }).kind,
+    ).toBe('ask');
+  });
+
+  it('правило полного названия не меняет обработку переноса', () => {
+    expect(
+      decide(answer(), both, { now: NOW, spoken: `${warm.text} перенеси на завтра` }).kind,
+    ).toBe('ask');
+  });
+});
+
 describe('пятый сигнал: перенос срока, а срок есть у одной записи (прогон 18.09.2026, голос 2)', () => {
   /**
    * Бой: «Записать кота к ветеринару в среду, хотя нет, в среду не могу,

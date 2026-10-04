@@ -538,14 +538,16 @@ export async function resolveAwaiting(deps: RenewalDeps): Promise<{
 export const RENEWAL_TICK_MS = 3_600_000;
 
 /** Запускает продление и возвращает способ его остановить. */
-export function startRenewals(deps: RenewalDeps, intervalMs = RENEWAL_TICK_MS): () => void {
-  let running = false;
+export function startRenewals(
+  deps: RenewalDeps,
+  intervalMs = RENEWAL_TICK_MS,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
 
   const tick = (): void => {
-    if (running) return;
-    running = true;
+    if (inFlight !== null) return;
 
-    void runRenewals(deps)
+    inFlight = runRenewals(deps)
       .then(async (round) => {
         if (round.charged > 0 || round.failed > 0) {
           deps.logger.info(round, 'Проход продления подписок');
@@ -568,7 +570,7 @@ export function startRenewals(deps: RenewalDeps, intervalMs = RENEWAL_TICK_MS): 
         deps.logger.error({ err: error }, 'Проход продления не удался');
       })
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   };
 
@@ -595,7 +597,7 @@ export function startRenewals(deps: RenewalDeps, intervalMs = RENEWAL_TICK_MS): 
    * значит и повторять нечего.
    *
    * Проход не ждут: подъём бота не должен упираться в Робокассу. От
-   * наложения на первый тик защищает тот же `running`, что и всегда.
+   * наложения на первый тик защищает тот же `inFlight`, что и остановку.
    */
   tick();
 
@@ -603,7 +605,8 @@ export function startRenewals(deps: RenewalDeps, intervalMs = RENEWAL_TICK_MS): 
 
   timer.unref();
 
-  return () => {
+  return async () => {
     clearInterval(timer);
+    if (inFlight !== null) await inFlight;
   };
 }

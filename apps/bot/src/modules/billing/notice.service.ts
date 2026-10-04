@@ -159,14 +159,13 @@ export const NOTICE_TICK_MS = 3_600_000;
 export function startRenewalNotices(
   deps: RenewalNoticeDeps,
   intervalMs = NOTICE_TICK_MS,
-): () => void {
-  let running = false;
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
 
   const tick = (): void => {
-    if (running) return;
-    running = true;
+    if (inFlight !== null) return;
 
-    void runRenewalNotices(deps, { now: new Date() })
+    inFlight = runRenewalNotices(deps, { now: new Date() })
       .then((round) => {
         if (round.noticed > 0 || round.skipped > 0) {
           deps.logger.info(round, 'Проход предупреждений о списании');
@@ -176,15 +175,16 @@ export function startRenewalNotices(
         deps.logger.error({ err: error }, 'Проход предупреждений о списании не удался');
       })
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   };
 
   tick();
   const timer = setInterval(tick, intervalMs);
 
-  return () => {
+  return async () => {
     clearInterval(timer);
+    if (inFlight !== null) await inFlight;
   };
 }
 

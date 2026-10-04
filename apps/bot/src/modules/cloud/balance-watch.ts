@@ -27,7 +27,7 @@ const CHECK_EVERY_MS = 30 * 60_000;
 
 export interface BalanceWatchHandle {
   readonly watch: { readonly status: () => Promise<BalanceStatus> };
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 }
 
 export interface StartBalanceWatchParams {
@@ -82,13 +82,19 @@ export async function startBalanceWatch(
   }
 
   const running = watch;
+  const inFlight = new Set<Promise<void>>();
   const tick = (): void => {
-    void running.check().catch((error: unknown) => {
+    const pass = running.check().catch((error: unknown) => {
       logger.warn(
         { why: error instanceof Error ? error.message : String(error) },
         'Проверка баланса Yandex Cloud не удалась',
       );
     });
+    inFlight.add(pass);
+    void pass.then(
+      () => inFlight.delete(pass),
+      () => inFlight.delete(pass),
+    );
   };
 
   const first = setTimeout(tick, 0);
@@ -98,9 +104,10 @@ export async function startBalanceWatch(
 
   return {
     watch: running,
-    stop: () => {
+    stop: async () => {
       clearTimeout(first);
       clearInterval(timer);
+      await Promise.allSettled([...inFlight]);
     },
   };
 }

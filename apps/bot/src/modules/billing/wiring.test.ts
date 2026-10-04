@@ -47,6 +47,7 @@ describe('уведомления по оферте п. 7.4 и 7.8 подключ
   });
 
   it('проход предупреждений останавливается вместе с остальными', () => {
-    expect(index).toContain('stopRenewalNotices();');
+    expect(index).toContain('Promise.resolve(stopRenewalNotices()),');
+    expect(index).toContain('Promise.allSettled(stopping)');
   });
 });

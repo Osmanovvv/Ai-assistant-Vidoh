@@ -221,3 +221,44 @@ describe('дело, выпавшее из извлечения, возвраща
     ]);
   });
 });
+
+describe('предмет из речи не сокращается при извлечении', () => {
+  it('восстанавливает «чеснокодавилку» перед дальнейшим разбором покупок', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          units: [unit('Заказать чеснок'), unit('Заказать отпугиватель от собак')],
+        }),
+      ],
+    });
+
+    const result = await extractUnits(deps(provider, prompts), {
+      input: 'Заказать чеснокодавилку и отпугиватель от собак.',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.units.map((one) => one.text)).toEqual([
+      'Заказать чеснокодавилку',
+      'Заказать отпугиватель от собак',
+    ]);
+  });
+
+  it('не теряет второй предмет, если модель вернула список одной строкой', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ units: [unit('Заказать чеснок')] })],
+    });
+
+    const result = await extractUnits(deps(provider, prompts), {
+      input: 'Заказать чеснокодавилку и отпугиватель от собак.',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.units.map((one) => one.text)).toEqual([
+      'Заказать чеснокодавилку и отпугиватель от собак',
+    ]);
+  });
+});

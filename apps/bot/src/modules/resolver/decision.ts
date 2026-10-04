@@ -278,6 +278,35 @@ function namedAlone(
 }
 
 /**
+ * Полное название при отмене различает похожие дела: «убери спрятать
+ * тёплую одежду ребёнка» не означает «спрятать летнюю одежду ребёнка».
+ * Совпадение только целой фразы, без изменения порядка и склонений.
+ * Два названных дела либо два одинаковых названия — всё ещё переспрос.
+ */
+function fullTitleNamedAlone(
+  candidate: Candidate,
+  candidates: readonly Candidate[],
+  spoken: string | undefined,
+): boolean {
+  if (spoken === undefined) return false;
+
+  const normalize = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/ё/gu, 'е')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+  const said = ` ${normalize(spoken)} `;
+  const named = candidates.filter((one) => {
+    // Одно общее слово вроде «одежда» не становится полным опознанием.
+    if (new Set(namingWords(one.text)).size < 2) return false;
+    return said.includes(` ${normalize(one.text)} `);
+  });
+
+  return named.length === 1 && named[0]?.id === candidate.id;
+}
+
+/**
  * Перенос срока, а срок есть у одной записи (прогон 18.09.2026, голос 2).
  *
  * «Записать кота к ветеринару в среду, хотя нет, в среду не могу, давай
@@ -454,6 +483,16 @@ export function decide(
       candidate,
       newThought: false,
       why: 'подтверждено словом',
+    };
+  }
+
+  if (answer.action === 'cancel' && fullTitleNamedAlone(candidate, candidates, context.spoken)) {
+    return {
+      kind: 'apply',
+      action: answer.action,
+      candidate,
+      newThought: false,
+      why: 'отмена подтверждена полным названием',
     };
   }
 

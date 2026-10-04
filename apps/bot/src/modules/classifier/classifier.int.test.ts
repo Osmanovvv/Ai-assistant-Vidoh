@@ -1166,6 +1166,60 @@ describe('срок соседа по чужой цитате (прогон 17.09
     // Снятие чужого срока и срок из своего предложения — две правки.
     expect(result.corrections.deadline).toBe(2);
   });
+
+  it('дата из отдельной правки не переходит новой посылке', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Забрать посылку',
+            deadline: '2026-09-05',
+            deadlineAccuracy: 'day',
+            deadlineText: 'на субботу',
+          },
+        ]),
+      ],
+    });
+    const speech = 'Купила продукты, врача перенеси на субботу, ещё забрать посылку.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Забрать посылку'),
+      spoken: speech,
+      speech,
+      siblings: ['Врача перенеси на субботу.'],
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.deadline).toBeUndefined();
+  });
+
+  it('две явно названные одинаковые даты сохраняются у обоих дел', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Забрать посылку',
+            deadline: '2026-09-05',
+            deadlineAccuracy: 'day',
+            deadlineText: 'на субботу',
+          },
+        ]),
+      ],
+    });
+    const speech = 'Врача перенеси на субботу, ещё забрать посылку тоже на субботу.';
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params('Забрать посылку'),
+      spoken: speech,
+      speech,
+      siblings: ['Врача перенеси на субботу.'],
+    });
+    if (!result.ok) throw new Error('разбор должен был удаться');
+
+    expect(result.items[0]?.deadline?.at.toISOString()).toBe('2026-09-04T21:00:00.000Z');
+  });
 });
 
 describe('слово о времени суток берёт день у слова о дне перед ним (голос 8, 18.09.2026)', () => {
@@ -2098,6 +2152,39 @@ describe('повтор для недостающих — один раз (зак
 
     expect(result.ok).toBe(true);
     expect(provider.callCount).toBe(2);
+  });
+});
+
+describe('классификация сохраняет полное предметное слово', () => {
+  it('не превращает «чеснокодавилку» в «чеснок»', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ text: 'Заказать чеснок', topic: 'покупки' }])],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), params('Заказать чеснокодавилку'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => item.text)).toEqual(['Заказать чеснокодавилку']);
+  });
+
+  it('не теряет второй предмет из списка', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [answer([{ text: 'Заказать чеснок', topic: 'покупки' }])],
+    });
+
+    const result = await classifyUnits(
+      deps(provider, prompts),
+      params('Заказать чеснокодавилку и отпугиватель от собак'),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((item) => item.text)).toEqual([
+      'Заказать чеснокодавилку и отпугиватель от собак',
+    ]);
   });
 });
 

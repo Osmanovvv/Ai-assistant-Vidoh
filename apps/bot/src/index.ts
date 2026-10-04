@@ -943,6 +943,7 @@ async function main(): Promise<void> {
   const incoming: IncomingDeps = {
     db,
     queue,
+    topics: topicGateway,
     sender,
     // §16: сообщение раньше нажатия «Согласна» встречает экран согласия.
     privacyPolicyUrl: env.PRIVACY_POLICY_URL,
@@ -1377,15 +1378,23 @@ async function main(): Promise<void> {
     : () => undefined;
 
   installShutdownHandlers(server, worker, broadcastWorker, async () => {
-    stopSweep();
-    stopRenewals();
-    stopRenewalNotices();
-    stopInactivity();
-    balanceWatch?.stop();
-    misunderstoodDigestWatch.stop();
-    // Рассылка дорабатывает идущий проход: отправленное должно быть
-    // помечено до закрытия базы (ревизия этапа 3, D7).
-    await stopScheduler();
+    // Все таймеры отключаются сразу, до ожидания любого прохода.
+    const stopping = [
+      Promise.resolve(stopSweep()),
+      Promise.resolve(stopRenewals()),
+      Promise.resolve(stopRenewalNotices()),
+      Promise.resolve(stopInactivity()),
+      Promise.resolve(stopScheduler()),
+      Promise.resolve(balanceWatch?.stop()),
+      Promise.resolve(misunderstoodDigestWatch.stop()),
+    ];
+    // Ошибка одного прохода не позволяет закрыть базу под остальными.
+    const stopped = await Promise.allSettled(stopping);
+    for (const result of stopped) {
+      if (result.status === 'rejected') {
+        logger.error({ err: result.reason }, 'Фоновый цикл не остановился чисто');
+      }
+    }
   });
 }
 
@@ -1422,6 +1431,8 @@ function installShutdownHandlers(
         // следующий запуск продолжит с того же места.
         await broadcastWorker.close().catch(() => undefined);
 
+        await loopsStopped;
+
         /**
          * Запись ответов модели сохраняется на выходе (задача 3.80).
          *
@@ -1440,7 +1451,6 @@ function installShutdownHandlers(
           if (summary !== undefined) logger.info({ ...summary }, 'Запись ответов модели');
         }
 
-        await loopsStopped;
         await Promise.allSettled([closeDb(), closeRedis()]);
         clearTimeout(forceExit);
         process.exit(0);

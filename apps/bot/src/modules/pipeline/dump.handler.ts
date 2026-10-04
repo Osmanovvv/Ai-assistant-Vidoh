@@ -27,6 +27,7 @@ import {
 } from '../backlog/query.service.js';
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
+import { onlyConversationAck } from '../router/action-ack.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeGoal, planSteps } from '../projects/decomposer.service.js';
@@ -126,7 +127,7 @@ import { topicsFor } from '../topics/topics.repo.js';
 import { topicByThread } from '../topics/topics.service.js';
 import { looksLikeHelpRequest, looksLikeUndoRequest } from './bot-words.js';
 import { looksLikeDayClosing } from './day-closing.js';
-import { isRecordCommand, weaveForExtraction } from './patch-in-place.js';
+import { isRecordCommand, patchesOutsideExtraction, weaveForExtraction } from './patch-in-place.js';
 import type { QuestionSender } from '../presenter/telegram-sender.js';
 import {
   finishStatus,
@@ -2653,8 +2654,14 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           );
           return;
         }
-        if (talkLive && onlyAck(spokenHere)) {
-          await answer(texts.answer.ack);
+        // Обычное подтверждение — короткий ответ и при выключенном
+        // живом ответе. Открытый вопрос бота не перебиваем; благодарность
+        // сохраняет свою реплику и фирменное сердечко.
+        if (
+          (!questionOpen && onlyConversationAck(spokenHere)) ||
+          (talkLive && onlyAck(spokenHere))
+        ) {
+          await answer(thanked ? texts.answer.thanks : texts.answer.ack);
           return;
         }
 
@@ -2737,6 +2744,10 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * другим замером. Условия вплетения — в `patch-in-place.ts`.
      */
     const forExtraction = weaveForExtraction(parsed, segments);
+    // Правки про уже записанные дела не входят в `dumpText`, но их даты
+    // должны считаться занятыми при проверке новых мыслей рядом. Правки,
+    // вплетённые в извлечение, helper исключает: их срок уже у своей единицы.
+    const patchSiblings = patchesOutsideExtraction(segments);
 
     // ── Единицы ─────────────────────────────────────────────────────────
     const extracted = await extractUnits(heavy, {
@@ -2803,6 +2814,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * ними уходит отмена дня: «Хотя нет, давай мойку лучше в пятницу».
        */
       speech: parseText,
+      ...(patchSiblings.length === 0 ? {} : { siblings: patchSiblings }),
       topics: topics.names,
       defaultTopic: threadTopic?.name ?? topics.defaultName,
       timeZone: context.timeZone,
@@ -3230,6 +3242,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
         siblings: [
           ...extracted.units.map((unit) => unit.text),
           ...classified.items.map((item) => item.text),
+          ...patchSiblings,
         ],
         topics: topics.names,
         defaultTopic: threadTopic?.name ?? topics.defaultName,

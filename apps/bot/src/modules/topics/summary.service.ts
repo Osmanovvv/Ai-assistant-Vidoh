@@ -13,11 +13,14 @@ import {
   isThreadGone,
   isTopicsUnavailable,
   retryAfterSeconds,
+  type TopicButton,
   type TopicGateway,
 } from './gateway.js';
 import { sphereTitle } from './sphere-title.js';
 import { ensureThread, forgetThread } from './topics.service.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
+import { pageOf, PAGE_SIZE } from '../backlog/backlog.service.js';
+import { toShortId } from '../shared/short-id.js';
 
 /**
  * Закреплённая сводка темы (задача 2.16).
@@ -41,6 +44,15 @@ const MAX_LINES = 15;
  * строк укладываются в 4096 знаков с запасом.
  */
 export const FULL_LIST_LINES = 60;
+
+/** Действия кнопки полного списка темы. */
+export const TOPIC_SUMMARY_ACTION = {
+  full: 'topic:full:',
+  page: 'topic:full:p:',
+} as const;
+
+/** Размер страницы полного списка совпадает с обычными списками меню. */
+export const FULL_LIST_PAGE_SIZE = PAGE_SIZE;
 
 export interface SummaryDeps {
   readonly db: Executor;
@@ -94,6 +106,43 @@ export function buildSummary(params: {
   if (hidden > 0) lines.push('', texts.summary.more(hidden));
 
   return lines.join('\n');
+}
+
+/** Страница полного списка темы: у обзора нет общего лимита в 15 строк. */
+export function buildSummaryPage(params: {
+  readonly topicName: string;
+  readonly items: readonly Item[];
+  readonly texts: TextProfile;
+  readonly timeZone: string;
+  readonly index: number;
+}): {
+  readonly text: string;
+  readonly index: number;
+  readonly pages: number;
+  readonly hasPrevious: boolean;
+  readonly hasNext: boolean;
+} {
+  const page = pageOf(params.items, params.index, FULL_LIST_PAGE_SIZE);
+  const lines: string[] = [params.texts.summary.header(sphereTitle(params.topicName)), ''];
+
+  for (const item of page.items) {
+    lines.push(
+      item.deadlineAt === null
+        ? params.texts.summary.line(item.text)
+        : params.texts.summary.lineWithDate(
+            withCapital(titleWithoutDate(item.text)),
+            deadlineWords({ ...item, deadlineAt: item.deadlineAt }, params.timeZone, params.texts),
+          ),
+    );
+  }
+
+  return {
+    text: lines.join('\n'),
+    index: page.index,
+    pages: page.pages,
+    hasPrevious: page.hasPrevious,
+    hasNext: page.hasNext,
+  };
 }
 
 /**
@@ -202,18 +251,31 @@ export async function refreshSummary(
   // этом на месте, и плоский режим показывает их через меню (2.18).
   if (thread.flat || thread.threadId === undefined) return NOTHING;
 
+  const topicItems = await itemsOfTopic(deps.db, params.userId, topic.name);
+  const texts = textsFor(params.profile);
   const text = buildSummary({
     topicName: topic.name,
-    items: await itemsOfTopic(deps.db, params.userId, topic.name),
-    texts: textsFor(params.profile),
+    items: topicItems,
+    texts,
     timeZone: params.timeZone,
   });
+
+  const buttons: readonly TopicButton[] | undefined =
+    topicItems.length > MAX_LINES
+      ? [
+          {
+            label: texts.summary.buttonAll,
+            action: `${TOPIC_SUMMARY_ACTION.full}${toShortId(topic.id)}:0`,
+          },
+        ]
+      : undefined;
 
   const publish = async (): Promise<RefreshResult> => {
     const messageId = await deps.gateway.send({
       chatId: params.chatId,
       threadId: thread.threadId,
       text,
+      ...(buttons === undefined ? {} : { buttons }),
     });
 
     await deps.db
@@ -244,6 +306,7 @@ export async function refreshSummary(
         chatId: params.chatId,
         messageId: topic.summaryMessageId,
         text,
+        ...(buttons === undefined ? {} : { buttons }),
       });
       return { sent: false, edited: true, skipped: false };
     } catch (error) {

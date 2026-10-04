@@ -1696,25 +1696,30 @@ describe('чистая благодарность — ответ сразу (Н�
         call.method === 'sendMessage' && call.payload['text'] === defaultTexts.answer.thanks,
     ).length;
 
-  it.each(['Спасибо', 'Спасибо тебе большое!'])(
-    '«%s» — «Пожалуйста 🤍 Я всё помню.» сразу, без выгрузки и без «Слушаю»',
-    async (text) => {
-      const { sender, said } = recordingStatus();
-      const { bot, calls } = createTestBot({ sender });
+  it.each([
+    'Спасибо',
+    'Спасибо тебе большое!',
+    'Спасибо, поняла',
+    'Хорошо, спасибо',
+    'Супер, спасибо',
+    'Спасибо, всё понятно',
+    'Спасибо, пойду сделаю',
+  ])('«%s» — «Пожалуйста 🤍 Я всё помню.» сразу, без выгрузки и без «Слушаю»', async (text) => {
+    const { sender, said } = recordingStatus();
+    const { bot, calls } = createTestBot({ sender });
 
-      await bot.handleUpdate(textUpdate(text));
+    await bot.handleUpdate(textUpdate(text));
 
-      expect(thanksSent(calls)).toBe(1);
-      expect(said).toEqual([]);
-      expect(await dumpCount()).toBe(0);
-      // Съедено — не сирота в панели.
-      const [row] = await testDb()
-        .select({ consumedAt: messagesRaw.consumedAt })
-        .from(messagesRaw)
-        .where(eq(messagesRaw.userId, userId));
-      expect(row?.consumedAt).not.toBeNull();
-    },
-  );
+    expect(thanksSent(calls)).toBe(1);
+    expect(said).toEqual([]);
+    expect(await dumpCount()).toBe(0);
+    // Съедено — не сирота в панели.
+    const [row] = await testDb()
+      .select({ consumedAt: messagesRaw.consumedAt })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.userId, userId));
+    expect(row?.consumedAt).not.toBeNull();
+  });
 
   describe('как раньше', () => {
     it('благодарность с делом — в разбор', async () => {
@@ -1862,7 +1867,24 @@ describe('приветствие и «ок» — ответ сразу, из с�
     ]);
   });
 
-  it.each(['Ок', 'понятно', '👍'])('«%s» — 🙂 сразу, без выгрузки и без модели', async (text) => {
+  it.each([
+    'Ок',
+    'понятно',
+    '👍',
+    'Супер. Пошла делать',
+    'Да, поняла',
+    'Ага, понятно',
+    'Всё поняла',
+    'Хорошо, договорились',
+    'Супер',
+    'Отлично',
+    'Пойду сделаю',
+    'Приступаю',
+    'Начинаю',
+    'Сейчас займусь',
+    'Берусь за дело',
+    'Займусь этим',
+  ])('«%s» — 🙂 сразу, без выгрузки и без модели', async (text) => {
     const { sender, said } = recordingStatus();
     const { bot, calls } = createTestBot({ sender, now: () => DAY });
 
@@ -1885,17 +1907,24 @@ describe('приветствие и «ок» — ответ сразу, из с�
   });
 
   describe('как раньше', () => {
-    it.each(['Привет, купи хлеб', 'Привет, как дела?', 'Ок, и купи хлеб'])(
-      '«%s» — сверх приветствия есть слова: в разбор',
-      async (text) => {
-        const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+    it.each([
+      'Привет, купи хлеб',
+      'Привет, как дела?',
+      'Ок, и купи хлеб',
+      'Супер. Пошла делать отчёт',
+      'Пошла делать. Ещё купить хлеб',
+      'Спасибо, поняла, ещё надо позвонить маме',
+      'Приступаю к отчёту',
+      'Начинаю новый курс',
+      'Займусь этим завтра',
+    ])('«%s» — сверх приветствия есть слова: в разбор', async (text) => {
+      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
 
-        await bot.handleUpdate(textUpdate(text));
+      await bot.handleUpdate(textUpdate(text));
 
-        expect(sent(calls)).toEqual([]);
-        expect(await dumpCount()).toBe(1);
-      },
-    );
+      expect(sent(calls)).toEqual([]);
+      expect(await dumpCount()).toBe(1);
+    });
 
     it('выгрузка ещё собирается — «привет» и «ок» идут в неё, а не обгоняют итог', async () => {
       const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
@@ -1908,38 +1937,48 @@ describe('приветствие и «ок» — ответ сразу, из с�
       expect(await dumpCount()).toBe(1);
     });
 
-    it('бот ждёт ответа на свой вопрос — «ок» разбирается как раньше', async () => {
-      const [item] = await testDb()
-        .insert(items)
-        .values({ userId, text: 'Забрать ребенка', type: 'TASK', priority: 'SOON', topic: 'семья' })
-        .returning({ id: items.id });
-      const [batch] = await testDb()
-        .insert(batches)
-        .values({ userId, status: 'done', openedAt: new Date(), closedAt: new Date() })
-        .returning({ id: batches.id });
-      await askQuestion(testDb(), {
-        userId,
-        itemId: item!.id,
-        batchId: batch!.id,
-        segment: 'перенеси ребенка на вечер',
-        action: 'update',
-        changes: {
-          note: '',
-          text: '',
-          deadline: '',
-          deadlineAccuracy: 'none',
-          recurrenceKind: 'none',
-          recurrenceInterval: 0,
-          recurrenceText: '',
-        },
-      });
-      const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
+    it.each(['Ок', 'Да, поняла', 'Приступаю', 'Спасибо, поняла'])(
+      'бот ждёт ответа на свой вопрос — «%s» разбирается как раньше',
+      async (text) => {
+        const [item] = await testDb()
+          .insert(items)
+          .values({
+            userId,
+            text: 'Забрать ребенка',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'семья',
+          })
+          .returning({ id: items.id });
+        const [batch] = await testDb()
+          .insert(batches)
+          .values({ userId, status: 'done', openedAt: new Date(), closedAt: new Date() })
+          .returning({ id: batches.id });
+        await askQuestion(testDb(), {
+          userId,
+          itemId: item!.id,
+          batchId: batch!.id,
+          segment: 'перенеси ребенка на вечер',
+          action: 'update',
+          changes: {
+            note: '',
+            text: '',
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        });
+        const { bot, calls } = createTestBot({ sender: recordingStatus().sender, now: () => DAY });
 
-      await bot.handleUpdate(textUpdate('Ок'));
+        await bot.handleUpdate(textUpdate(text));
 
-      expect(sent(calls)).not.toContain(defaultTexts.answer.ack);
-      expect(await dumpCount()).toBe(2);
-    });
+        expect(sent(calls)).not.toContain(defaultTexts.answer.ack);
+        expect(sent(calls)).not.toContain(defaultTexts.answer.thanks);
+        expect(await dumpCount()).toBe(2);
+      },
+    );
 
     it('переспрос о часе открыт — «ок» остаётся ответом на него', async () => {
       await testDb().insert(items).values({

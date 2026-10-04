@@ -13,6 +13,8 @@ import { partOfDayIn } from '../presenter/context-pack.js';
 import type { Mood } from '../presenter/mood.js';
 import { picturesIn } from '../../texts/rules.js';
 import type { TextProfile } from '../../texts/index.js';
+import { onlyActionAck } from '../router/action-ack.js';
+import { onlyAgreementAck } from '../presenter/acknowledgement.js';
 
 /**
  * Живой ответ там, где у бота нет своего (план docs/29, 28.09.2026).
@@ -32,40 +34,24 @@ import type { TextProfile } from '../../texts/index.js';
  */
 
 /** «Ок», «понятно», 👍 — смайликом, без модели (решение Никиты 28.09.2026). */
-const ACK_WORDS: ReadonlySet<string> = new Set([
-  'ок',
-  'окей',
-  'ok',
-  'okay',
-  'понятно',
-  'ясно',
-  'ага',
-  'угу',
-  'хорошо',
-  'ладно',
-  'понял',
-  'поняла',
-  'принято',
-  'договорились',
-]);
-
 const ACK_PICTURES: ReadonlySet<string> = new Set(['👍', '👌', '🙂', '😊', '🙏']);
 
 /** Оттенок кожи — тот же знак: «👍🏻» — это «👍». */
 const withoutSkinTone = (picture: string): string => picture.replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '');
 
-/** Реплика — только согласие: одно слово из списка и/или знакомый знак. */
+/** Согласие целиком, знакомый знак или начало действий без конкретного дела. */
 export function onlyAck(text: string): boolean {
+  if (onlyActionAck(text)) return true;
   const pictures = picturesIn(text).map(withoutSkinTone);
   if (!pictures.every((picture) => ACK_PICTURES.has(picture))) return false;
   const words = (
     text
       .toLowerCase()
       .replace(/ё/gu, 'е')
-      .match(/[\p{L}]+/gu) ?? []
+      .match(/[\p{L}\p{N}]+/gu) ?? []
   ).filter((word) => word !== '');
   if (words.length === 0) return pictures.length > 0 && !/[?]/u.test(text);
-  return words.length === 1 && ACK_WORDS.has(words[0] ?? '') && !/[?]/u.test(text);
+  return onlyAgreementAck(text);
 }
 
 const MOOD_WORDS: Readonly<Record<Mood, string>> = {
