@@ -138,8 +138,15 @@ function lastSentenceOf(text: string): string {
  * Правка до первой мысли выгрузки сюда не попадает вовсе: она про то, что
  * человек говорил раньше, и её место — путь правок (задача 3.24).
  */
-export function patchesToWeave(segments: readonly Segment[]): ReadonlyMap<string, string> {
+interface PatchWeave {
+  readonly weave: ReadonlyMap<string, string>;
+  /** Сегменты правок, вошедшие в текст извлечения. */
+  readonly woven: ReadonlySet<Segment>;
+}
+
+function patchWeave(segments: readonly Segment[]): PatchWeave {
   const weave = new Map<string, string>();
+  const woven = new Set<Segment>();
   let thought: Segment | undefined;
 
   for (const segment of segments) {
@@ -157,9 +164,30 @@ export function patchesToWeave(segments: readonly Segment[]): ReadonlyMap<string
     // Две правки к одной мысли приписываются подряд, в порядке речи.
     const already = weave.get(thought.text);
     weave.set(thought.text, already === undefined ? segment.text : `${already} ${segment.text}`);
+    woven.add(segment);
   }
 
-  return weave;
+  return { weave, woven };
+}
+
+export function patchesToWeave(segments: readonly Segment[]): ReadonlyMap<string, string> {
+  return patchWeave(segments).weave;
+}
+
+/**
+ * Правки, которые остаются отдельными сегментами до резолвера.
+ *
+ * Они нужны классификатору как соседи при проверке сроков: дата в правке
+ * про уже записанное дело принадлежит этой правке, а не новой мысли рядом.
+ * Правки, вплетённые в извлечение, сюда не входят — их дата уже находится
+ * внутри собственной единицы и должна остаться у неё.
+ */
+export function patchesOutsideExtraction(segments: readonly Segment[]): readonly string[] {
+  const { woven } = patchWeave(segments);
+
+  return segments
+    .filter((segment) => segment.intent === 'PATCH' && !woven.has(segment))
+    .map((segment) => segment.text);
 }
 
 /**
@@ -173,7 +201,7 @@ export function weaveForExtraction(
   parsed: readonly Segment[],
   segments: readonly Segment[],
 ): string {
-  const weave = patchesToWeave(segments);
+  const weave = patchWeave(segments).weave;
   if (weave.size === 0) return parsed.map((segment) => segment.text).join('\n');
 
   return parsed

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { sharesSignificantWord } from '../classifier/own-sentence.js';
 import type { Segment } from '../router/router.service.js';
-import { isRecordCommand, patchesToWeave, weaveForExtraction } from './patch-in-place.js';
+import {
+  isRecordCommand,
+  patchesOutsideExtraction,
+  patchesToWeave,
+  weaveForExtraction,
+} from './patch-in-place.js';
 
 /**
  * Правка, вплетённая обратно в мысль (задача 3.57).
@@ -107,6 +112,23 @@ describe('правка о записи не вплетается (задача 3
       'Хотя нет, давай мойку лучше в пятницу, вот в пятницу тогда надо помыть машину, ещё позвонить стоматологу, записаться на следующую неделю.';
 
     expect(patchesToWeave([dump(thought), patch(named)]).get(thought)).toBe(named);
+  });
+
+  it('правка о записи остаётся соседом для проверки её даты', () => {
+    const segments = [
+      dump('Купила продукты.'),
+      patch('Врача перенеси на субботу.'),
+      dump('Ещё забрать посылку.'),
+    ];
+
+    expect(patchesOutsideExtraction(segments)).toEqual(['Врача перенеси на субботу.']);
+  });
+
+  it('вплетённая правка не становится внешним соседом', () => {
+    const thought = 'Ещё надо заехать на мойку.';
+    const correction = 'Хотя нет, мойку лучше в пятницу.';
+
+    expect(patchesOutsideExtraction([dump(thought), patch(correction)])).toEqual([]);
   });
 });
 

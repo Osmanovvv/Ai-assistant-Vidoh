@@ -10,6 +10,7 @@ import {
 } from '../eval/budget.js';
 import { BadOnlyError, parseOnly, pickCases } from '../eval/only.js';
 import { loadResolverCases } from '../eval/resolver-dataset.js';
+import { assertSafeEvalDatabaseUrl } from '../eval/database-safety.js';
 import { parsePins } from '../eval/pins.js';
 import {
   checkResolverThreshold,
@@ -86,6 +87,8 @@ if (datasetArg === undefined) usage();
 
 const dataset: string = datasetArg;
 const runs = outArg ?? join(dataset, 'runs');
+
+assertSafeEvalDatabaseUrl(process.env['DATABASE_URL']);
 
 const env = modelEnvSchema.parse(process.env);
 

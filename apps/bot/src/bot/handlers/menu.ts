@@ -13,7 +13,11 @@ import { stepButtons } from '../../modules/projects/project-actions.js';
 import { contextOf, projectsOf, withNextSteps } from '../../modules/projects/projects.service.js';
 import { titleUnderDayHeader } from '../../modules/items/item-text.js';
 import { selectForToday } from '../../modules/output/filter.js';
-import { itemsOfTopic } from '../../modules/topics/summary.service.js';
+import {
+  buildSummaryPage,
+  itemsOfTopic,
+  TOPIC_SUMMARY_ACTION,
+} from '../../modules/topics/summary.service.js';
 import { listTopics } from '../../modules/topics/topics.repo.js';
 import { sphereTitle } from '../../modules/topics/sphere-title.js';
 import {
@@ -949,9 +953,84 @@ export function registerMenuHandlers(
     );
   };
 
+  /** Полный список, открытый кнопкой под сводкой темы. */
+  const showFullTopic = async (
+    ctx: CallbackQueryContext<Context>,
+    code: string,
+    page: number,
+    asNewMessage: boolean,
+  ) => {
+    const active = await acting(ctx.from.id);
+    if (!active) return;
+
+    const topicId = fromShortId(code);
+    const own = await listTopics(db, active.userId);
+    const topic = own.find((candidate) => candidate.id === topicId);
+
+    if (!topic) {
+      if (asNewMessage) {
+        await ctx.reply(active.texts.menu.noTopics);
+      } else {
+        await ctx.editMessageText(active.texts.menu.noTopics);
+      }
+      return;
+    }
+
+    const inTopic = await itemsOfTopic(db, active.userId, topic.name);
+    const view = buildSummaryPage({
+      topicName: topic.name,
+      items: inTopic,
+      texts: active.texts,
+      timeZone: active.timeZone,
+      index: page,
+    });
+    const keyboard = new InlineKeyboard();
+
+    if (view.hasPrevious) {
+      keyboard.text(
+        active.texts.menu.buttonPrevious,
+        `${TOPIC_SUMMARY_ACTION.page}${code}:${String(view.index - 1)}`,
+      );
+    }
+    if (view.pages > 1) {
+      keyboard.text(
+        active.texts.menu.pageOf(view.index + 1, view.pages),
+        `${TOPIC_SUMMARY_ACTION.page}${code}:${String(view.index)}`,
+      );
+    }
+    if (view.hasNext) {
+      keyboard.text(
+        active.texts.menu.buttonNext,
+        `${TOPIC_SUMMARY_ACTION.page}${code}:${String(view.index + 1)}`,
+      );
+    }
+    if (view.pages > 1 || view.hasPrevious || view.hasNext) keyboard.row();
+    keyboard.text(active.texts.menu.buttonBack, `${MENU_ACTION.topicPrefix}${code}`);
+
+    if (asNewMessage) {
+      await ctx.reply(view.text, { reply_markup: keyboard });
+    } else {
+      await ctx.editMessageText(view.text, { reply_markup: keyboard });
+    }
+  };
+
   bot.callbackQuery(new RegExp(`^${MENU_ACTION.topicPrefix}`, 'u'), async (ctx) => {
     await ctx.answerCallbackQuery();
     await showTopic(ctx, ctx.callbackQuery.data.slice(MENU_ACTION.topicPrefix.length), 0);
+  });
+
+  bot.callbackQuery(new RegExp(`^${TOPIC_SUMMARY_ACTION.full}(?!p:)`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const rest = ctx.callbackQuery.data.slice(TOPIC_SUMMARY_ACTION.full.length);
+    const [code = '', rawPage = '0'] = rest.split(':');
+    await showFullTopic(ctx, code, Number.parseInt(rawPage, 10) || 0, true);
+  });
+
+  bot.callbackQuery(new RegExp(`^${TOPIC_SUMMARY_ACTION.page}`, 'u'), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const rest = ctx.callbackQuery.data.slice(TOPIC_SUMMARY_ACTION.page.length);
+    const [code = '', rawPage = '0'] = rest.split(':');
+    await showFullTopic(ctx, code, Number.parseInt(rawPage, 10) || 0, false);
   });
 
   bot.callbackQuery(new RegExp(`^${MENU_ACTION.pagePrefix}`, 'u'), async (ctx) => {

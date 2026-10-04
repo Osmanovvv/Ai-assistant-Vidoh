@@ -338,6 +338,151 @@ describe('разговор с делами внутри — мысль (бой 2
   });
 });
 
+describe('«Супер. Пошла делать» — подтверждение (заказчица, 02.10.2026)', () => {
+  it.each([
+    'Супер. Пошла делать',
+    'Да, поняла',
+    'Ага, понятно',
+    'Всё поняла',
+    'Хорошо, договорились',
+    'Супер',
+    'Отлично',
+    'Спасибо, поняла',
+    'Хорошо, спасибо',
+    'Супер, спасибо',
+    'Спасибо, всё понятно',
+    'Пойду сделаю',
+    'Приступаю',
+    'Начинаю',
+    'Сейчас займусь',
+    'Берусь за дело',
+    'Займусь этим',
+  ])('«%s»: чистое подтверждение не обращается к модели и не становится мыслью', async (input) => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({ respond: () => 'мусор' });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([{ intent: 'SMALLTALK', text: input }]);
+    expect(result.fallback).toBe(false);
+    expect(provider.requests).toHaveLength(0);
+    expect(await testDb().select().from(aiCalls)).toHaveLength(0);
+  });
+
+  it.each(['Супер. Пошла делать', 'Да, поняла', 'Хорошо, спасибо'])(
+    '«%s»: открытый вопрос остаётся у модели, намерение ANSWER не меняется',
+    async (input) => {
+      const prompts = await prepare();
+      const provider = new MockLlmProvider({
+        responses: [
+          JSON.stringify({ crisis: false, segments: [{ intent: 'ANSWER', text: input }] }),
+        ],
+      });
+
+      const result = await routeIntents(deps(provider, prompts), {
+        input,
+        openQuestion: 'Оставить как есть или выбрать главное?',
+      });
+
+      expect(provider.requests).toHaveLength(1);
+      expect(result.segments).toEqual([{ intent: 'ANSWER', text: input }]);
+    },
+  );
+
+  it.each(['один отрезок', 'два отрезка', 'пустой ответ', 'неразбор'])(
+    '%s: подтверждение отделяется, дело рядом остаётся',
+    async (mode) => {
+      const prompts = await prepare();
+      const ack = 'Супер. Пошла делать.';
+      const deed = 'Ещё надо купить хлеб.';
+      const input = `${ack} ${deed}`;
+      const provider = new MockLlmProvider({
+        respond: () =>
+          mode === 'неразбор'
+            ? 'мусор'
+            : JSON.stringify({
+                crisis: false,
+                segments:
+                  mode === 'пустой ответ'
+                    ? []
+                    : mode === 'два отрезка'
+                      ? [
+                          { intent: 'DUMP', text: ack },
+                          { intent: 'DUMP', text: deed },
+                        ]
+                      : [{ intent: 'DUMP', text: input }],
+              }),
+      });
+
+      const result = await routeIntents(deps(provider, prompts), { input });
+
+      expect(result.segments).toEqual([
+        { intent: 'SMALLTALK', text: ack },
+        { intent: 'DUMP', text: deed },
+      ]);
+    },
+  );
+
+  it('конкретное дело после «пошла делать» остаётся мыслью', async () => {
+    const prompts = await prepare();
+    const input = 'Пошла делать отчёт';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([{ intent: 'DUMP', text: input }]);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it.each(['DUMP', 'SMALLTALK'] as const)(
+    'модель назвала всё %s: благодарность через запятую отделяется, дело остаётся',
+    async (intent) => {
+      const prompts = await prepare();
+      const input = 'Спасибо, поняла, ещё надо позвонить маме';
+      const provider = new MockLlmProvider({
+        responses: [JSON.stringify({ crisis: false, segments: [{ intent, text: input }] })],
+      });
+      const result = await routeIntents(deps(provider, prompts), { input });
+      expect(result.segments).toEqual([
+        { intent: 'SMALLTALK', text: 'Спасибо, поняла,' },
+        { intent: 'DUMP', text: 'ещё надо позвонить маме' },
+      ]);
+    },
+  );
+
+  it.each([
+    ['Спасибо. Готово', 'COMPLETE', 'Готово'],
+    ['Спасибо. Перенеси посылку на завтра', 'PATCH', 'Перенеси посылку на завтра'],
+    ['Спасибо. Что у меня на завтра?', 'QUERY', 'Что у меня на завтра?'],
+  ] as const)(
+    '«%s» сохраняет собственное намерение после благодарности',
+    async (input, intent, text) => {
+      const prompts = await prepare();
+      const provider = new MockLlmProvider({
+        responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: input }] })],
+      });
+      const result = await routeIntents(deps(provider, prompts), { input });
+      expect(result.segments).toEqual([
+        { intent: 'SMALLTALK', text: 'Спасибо.' },
+        { intent, text },
+      ]);
+    },
+  );
+
+  it('второй контур кризиса сохраняется при разделении смешанной реплики', async () => {
+    const prompts = await prepare();
+    const input = 'Спасибо. Надо позвонить маме';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: true, segments: [{ intent: 'DUMP', text: input }] })],
+    });
+    const result = await routeIntents(deps(provider, prompts), { input });
+    expect(result.crisis).toBe(true);
+    expect(result.segments.at(-1)).toEqual({ intent: 'DUMP', text: 'Надо позвонить маме' });
+  });
+});
+
 describe('обрезанный ответ модели (бой 21.09.2026, выгрузка Никиты)', () => {
   it('хвост текста, которого нет ни в одном отрезке, возвращается в разбор мыслью', async () => {
     /**

@@ -89,7 +89,7 @@ describe('сторож сводки', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain('не понял 1 раз');
 
-    watch.stop();
+    await watch.stop();
   });
 
   it('отказ доставки не роняет бота', async () => {
@@ -100,7 +100,7 @@ describe('сторож сводки', () => {
     });
 
     await expect(watch.check()).resolves.toBeUndefined();
-    watch.stop();
+    await watch.stop();
   });
 });
 

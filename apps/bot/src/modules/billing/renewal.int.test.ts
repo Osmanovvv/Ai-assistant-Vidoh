@@ -854,7 +854,7 @@ describe('подъём не ждёт первого часа', () => {
         { timeout: 5_000, interval: 10 },
       );
     } finally {
-      stop();
+      await stop();
     }
   });
 
@@ -911,7 +911,7 @@ describe('подъём не ждёт первого часа', () => {
         { timeout: 5_000, interval: 10 },
       );
     } finally {
-      stop();
+      await stop();
     }
 
     /**

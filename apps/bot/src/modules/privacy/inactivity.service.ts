@@ -151,7 +151,7 @@ export async function retireInactive(
 export function startInactivityLoop(
   deps: InactivityDeps,
   params: { readonly intervalMs?: number } = {},
-): () => void {
+): () => Promise<void> {
   const intervalMs = params.intervalMs ?? 6 * 60 * 60_000;
   let inFlight: Promise<void> | null = null;
 
@@ -173,7 +173,8 @@ export function startInactivityLoop(
 
   pass();
   const timer = setInterval(pass, intervalMs);
-  return () => {
+  return async () => {
     clearInterval(timer);
+    if (inFlight !== null) await inFlight;
   };
 }

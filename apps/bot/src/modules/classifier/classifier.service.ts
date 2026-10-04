@@ -8,6 +8,7 @@ import type {
   Priority,
 } from '../ai/schemas/classifier.js';
 import type { ExtractedUnit } from '../extractor/extractor.service.js';
+import { restoreShortenedText } from '../extractor/dropped-deeds.js';
 import { sourceOf } from '../recurrence/asked.js';
 import { resolveRecurrence, type ResolvedRecurrence } from '../recurrence/recurrence.js';
 import { withoutDayQuestions } from '../router/day-question.js';
@@ -1065,7 +1066,24 @@ export async function classifyUnits(
     };
   }
 
-  const { items: corrected, corrections } = correctItems(outcome.value, {
+  const repairedModelItems =
+    outcome.value.items.length === params.units.length
+      ? outcome.value.items.map((item, index) => {
+          const source = params.units[index];
+          if (source === undefined) return item;
+          const repaired = restoreShortenedText(source.text, item.text);
+          if (repaired.restored === 0) return item;
+          deps.logger?.warn(
+            { promptVersion: outcome.promptVersion, restored: repaired.restored },
+            'Классификация укоротила предмет — восстановлено словами извлечения',
+          );
+          return { ...item, text: repaired.text };
+        })
+      : outcome.value.items;
+
+  const repairedOutcome = { ...outcome.value, items: repairedModelItems };
+
+  const { items: corrected, corrections } = correctItems(repairedOutcome, {
     ...(params.spoken === undefined ? {} : { spoken: params.spoken }),
     topics: params.topics,
     defaultTopic: params.defaultTopic,

@@ -77,11 +77,12 @@ export interface DigestWatchParams {
 export interface DigestWatchHandle {
   /** Один проход: нужен проверке и первому запуску. */
   readonly check: () => Promise<void>;
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 }
 
 export function startMisunderstoodDigest(params: DigestWatchParams): DigestWatchHandle {
-  const check = async (): Promise<void> => {
+  const inFlight = new Set<Promise<void>>();
+  const pass = async (): Promise<void> => {
     try {
       const digest = misunderstoodDigest(await params.list());
       if (digest === undefined) return;
@@ -92,13 +93,24 @@ export function startMisunderstoodDigest(params: DigestWatchParams): DigestWatch
     }
   };
 
+  const check = (): Promise<void> => {
+    const pending = pass();
+    inFlight.add(pending);
+    void pending.then(
+      () => inFlight.delete(pending),
+      () => inFlight.delete(pending),
+    );
+    return pending;
+  };
+
   const timer = setInterval(() => void check(), params.everyMs ?? EVERY_MS);
   timer.unref();
 
   return {
     check,
-    stop: () => {
+    stop: async () => {
       clearInterval(timer);
+      await Promise.allSettled([...inFlight]);
     },
   };
 }

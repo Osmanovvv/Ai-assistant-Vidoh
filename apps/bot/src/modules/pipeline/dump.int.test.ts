@@ -57,6 +57,7 @@ import { pickMain } from '../presenter/pick.service.js';
 import { FakeTopicGateway } from '../topics/fake-gateway.js';
 import { ensureThread } from '../topics/topics.service.js';
 import { listTopics, MAX_TOPICS, normalizeTopicName } from '../topics/topics.repo.js';
+import { refreshSummary } from '../topics/summary.service.js';
 import { AWAITING, setAwaiting } from '../onboarding/awaiting.js';
 import { STEP } from '../onboarding/onboarding.service.js';
 import { ANSWER_ACTION, countQuestions } from '../presenter/presenter.service.js';
@@ -2341,6 +2342,132 @@ describe('сводки веток после правок (§8)', () => {
     // Сводка ветки тронута, и в ней больше нет закрытого дела.
     expect(gateway.sent.length + gateway.edited.length).toBeGreaterThan(before);
     expect(gateway.edited.at(-1)?.text ?? '').not.toContain('Сверить кассу');
+  });
+
+  it('отмена убирает дело из сводки, а похожее дело оставляет', async () => {
+    const prompts = await seedPrompts();
+    const gateway = new FakeTopicGateway();
+
+    await testDb()
+      .insert(topics)
+      .values([{ userId, name: 'дом', sortOrder: 0, isDefault: true }]);
+
+    const [home] = await testDb().select().from(topics).where(eq(topics.name, 'дом'));
+    const thread = await ensureThread(
+      { db: testDb(), gateway },
+      { topicId: home!.id, chatId: 700 },
+    );
+
+    const [warm] = await testDb()
+      .insert(items)
+      .values({
+        userId,
+        text: 'Спрятать тёплую одежду ребёнка',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'дом',
+      })
+      .returning({ id: items.id });
+    const otherTitles = [
+      'Напомнить Самвелу починить горячую воду',
+      'Достать свою тёплую одежду',
+      'Спрятать летнюю одежду ребёнка',
+    ];
+    await testDb()
+      .insert(items)
+      .values(
+        otherTitles.map((text) => ({
+          userId,
+          text,
+          type: 'TASK' as const,
+          priority: 'SOON' as const,
+          topic: 'дом',
+        })),
+      );
+
+    // Сначала создаём сводку, как в живом чате, затем отменяем одну из двух
+    // похожих строк и проверяем, что редактируется именно это сообщение.
+    await refreshSummary(
+      { db: testDb(), gateway },
+      {
+        userId,
+        chatId: 700,
+        topicName: 'дом',
+        timeZone: 'Europe/Moscow',
+      },
+    );
+    expect(gateway.sent.at(-1)?.text).toContain('Спрятать тёплую одежду ребёнка');
+    const [beforeTopic] = await testDb().select().from(topics).where(eq(topics.id, home!.id));
+
+    const command =
+      'Здесь, пожалуйста, измени, убери, спрятать теплую одежду ребенка. Вот эта задача не нужна.';
+    const speech = new MockSpeechProvider({ responses: [command] });
+    const { sender, said } = recordingSender();
+    await queuedBatchOf([{ kind: 'voice', offsetMs: 0, threadId: thread.threadId }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'CANCEL', text: command }],
+      }),
+      resolver: (request) =>
+        JSON.stringify({
+          action: 'cancel',
+          mode: 'replace',
+          itemId: String(numberOfCandidate(request.input, 'Спрятать тёплую одежду ребёнка')),
+          confidence: 0.95,
+          changes: {
+            note: '',
+            text: '',
+            deadline: '',
+            deadlineAccuracy: 'none',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          reason: 'дело больше не нужно',
+        }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech,
+          prompts,
+          llm,
+          topics: gateway,
+          sender,
+        }),
+      },
+      userId,
+    );
+
+    const [cancelled] = await testDb().select().from(items).where(eq(items.id, warm!.id));
+    expect(cancelled?.status).toBe('cancelled');
+    expect(speech.callCount).toBe(1);
+    const remaining = await testDb().select().from(items).where(eq(items.userId, userId));
+    expect(remaining).toHaveLength(4);
+    expect(
+      remaining.filter((row) => row.id !== warm!.id).every((row) => row.status === 'new'),
+    ).toBe(true);
+
+    const updatedSummary = gateway.edited.at(-1)?.text ?? '';
+    expect(updatedSummary).not.toContain('Спрятать тёплую одежду ребёнка');
+    for (const title of otherTitles) expect(updatedSummary).toContain(title);
+    expect(gateway.sent).toHaveLength(1);
+    expect(gateway.edited).toHaveLength(1);
+    expect(gateway.edited[0]?.messageId).toBe(beforeTopic?.summaryMessageId);
+
+    const confirmation = said.find((one) =>
+      one.text.includes(defaultTexts.resolver.cancelled('Спрятать тёплую одежду ребёнка')),
+    );
+    expect(confirmation?.buttons).toContain(defaultTexts.resolver.buttonUndo);
+    expect(await testDb().select().from(pendingQuestions)).toHaveLength(0);
+    const revisions = await testDb().select().from(itemRevisions);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]?.itemId).toBe(warm!.id);
   });
 });
 
@@ -7123,6 +7250,98 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect((await pickedNow()).join(NEWLINE)).toMatch(/химчистк/iu);
   });
 
+  it('дата правки врача не переходит новой посылке', async () => {
+    const prompts = await seedPrompts();
+    const bought = await itemWith('Купить продукты');
+    const doctor = await itemWith('Записать сына к врачу в пятницу');
+    const longAgo = new Date(T0.getTime() - 3 * 60 * 60_000);
+    await testDb()
+      .update(items)
+      .set({ createdAt: longAgo, updatedAt: longAgo })
+      .where(eq(items.id, doctor));
+
+    const { sender } = recordingSender();
+    await queuedBatchOf([
+      {
+        kind: 'text',
+        text: 'купила продукты, врача перенеси на субботу, ещё забрать посылку',
+        offsetMs: 0,
+      },
+    ]);
+
+    let resolverCall = 0;
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [
+          { intent: 'COMPLETE', text: 'купила продукты' },
+          { intent: 'PATCH', text: 'врача перенеси на субботу' },
+          { intent: 'DUMP', text: 'ещё забрать посылку' },
+        ],
+      }),
+      extractor: JSON.stringify({
+        units: [{ text: 'Забрать посылку', isProject: false, isEmotion: false }],
+      }),
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: 'Забрать посылку',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '2026-08-29',
+            deadlineAccuracy: 'day',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+            deadlineText: 'на субботу',
+          },
+        ],
+      }),
+      resolver: (request) => {
+        resolverCall += 1;
+        const done = resolverCall === 1;
+        const title = done ? 'Купить продукты' : 'Записать сына к врачу в пятницу';
+
+        return JSON.stringify({
+          action: done ? 'complete' : 'update',
+          mode: 'replace',
+          itemId: String(numberOfCandidate(request.input, title)),
+          confidence: 0.95,
+          changes: {
+            note: '',
+            text: '',
+            deadline: done ? '' : '2026-08-29',
+            deadlineAccuracy: done ? 'none' : 'day',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          reason: 'сегмент разобран',
+        });
+      },
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb().select().from(items).where(eq(items.userId, userId));
+    const parcel = saved.find((row) => /посылк/iu.test(row.text));
+    const movedDoctor = saved.find((row) => row.id === doctor);
+
+    expect(saved.find((row) => row.id === bought)?.status).toBe('done');
+    expect(movedDoctor?.deadlineAt?.toISOString()).toBe('2026-08-28T21:00:00.000Z');
+    expect(parcel?.deadlineAt).toBeNull();
+    expect(resolverCall).toBe(2);
+  });
+
   it('после отметки выполнения бот не добавляет «расскажешь, что в голове»', async () => {
     /**
      * Регрессия, найденная сквозным тестом этапа 3.
@@ -10374,6 +10593,108 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
     expect(replies.at(-1)).toBe(defaultTexts.answer.ack);
     expect(talker).toHaveLength(0);
     expect(answerer).toHaveLength(0);
+  });
+
+  it.each(
+    [false, true].flatMap((live) =>
+      [
+        'Супер. Пошла делать',
+        'Да, поняла',
+        'Ага, понятно',
+        'Всё поняла',
+        'Хорошо, договорились',
+        'Супер',
+        'Отлично',
+        'Спасибо, поняла',
+        'Хорошо, спасибо',
+        'Супер, спасибо',
+        'Спасибо, всё понятно',
+        'Пойду сделаю',
+        'Приступаю',
+        'Начинаю',
+        'Сейчас займусь',
+        'Берусь за дело',
+        'Займусь этим',
+      ].map((text) => [live, text] as const),
+    ),
+  )('живой ответ %s, «%s»: без новой записи и вызовов модели', async (live, text) => {
+    const prompts = live ? await talkOn() : await seedPrompts();
+    if (!live) await putSetting(testDb(), { name: 'talkLive', value: '0' });
+    await withParcel();
+    const before = await testDb().select().from(items);
+    const llm = echoingLlm();
+
+    const { replies } = await say(text, llm, prompts);
+
+    expect(replies.at(-1)).toBe(
+      text.includes('спасибо') || text.includes('Спасибо')
+        ? defaultTexts.answer.thanks
+        : defaultTexts.answer.ack,
+    );
+    expect(llm.requests).toHaveLength(0);
+    expect(await testDb().select().from(items)).toEqual(before);
+    expect(await testDb().select().from(topics)).toHaveLength(0);
+    expect(await testDb().select().from(itemRevisions)).toHaveLength(0);
+  });
+
+  it.each(['Супер. Пошла делать', 'Спасибо, поняла', 'Приступаю', 'Да, поняла'])(
+    '«%s» голосом — только подтверждение после расшифровки',
+    async (text) => {
+      const prompts = await seedPrompts();
+      const batchId = await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+      const speech = new MockSpeechProvider({ responses: [text] });
+      const llm = echoingLlm();
+      const { sender, all } = recordingSender();
+
+      await processUserBatches(
+        { db: testDb(), lock, handleBatch: handler({ speech, prompts, llm, sender }) },
+        userId,
+      );
+
+      expect(speech.callCount).toBe(1);
+      expect(await combinedTextOf(batchId)).toBe(text);
+      expect(all.at(-1)).toBe(
+        text.includes('Спасибо') ? defaultTexts.answer.thanks : defaultTexts.answer.ack,
+      );
+      expect(llm.requests).toHaveLength(0);
+      expect(await testDb().select().from(items)).toHaveLength(0);
+      expect(await testDb().select().from(topics)).toHaveLength(0);
+    },
+  );
+
+  it.each(['Супер. Пошла делать.', 'Спасибо, поняла.', 'Спасибо, поняла,', 'Приступаю,'])(
+    '«%s» с новым делом: записывается только настоящее дело',
+    async (ack) => {
+      const prompts = await seedPrompts();
+      const deed = 'Ещё надо позвонить маме.';
+      const llm = echoingLlm(); // Маршрутизатор ошибочно отдаёт весь текст одной мыслью.
+
+      await say(`${ack} ${deed}`, llm, prompts);
+
+      const saved = await testDb().select().from(items);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]?.text).toContain('маме');
+      const extracted = llm.requests.filter((request) => stageOf(request) === 'extractor');
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0]?.input).toContain(deed);
+      expect(extracted[0]?.input).not.toContain('Пошла делать');
+      expect(extracted[0]?.input).not.toContain('Супер');
+      expect(extracted[0]?.input).not.toContain('Спасибо');
+      expect(extracted[0]?.input).not.toContain('поняла');
+      expect(extracted[0]?.input).not.toContain('Приступаю');
+    },
+  );
+
+  it('«пошла делать отчёт» с конкретным делом остаётся в обычном разборе', async () => {
+    const prompts = await seedPrompts();
+    const llm = echoingLlm();
+
+    await say('Супер. Пошла делать отчёт', llm, prompts);
+
+    const saved = await testDb().select().from(items);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.text).toContain('отчёт');
+    expect(llm.requests.some((request) => stageOf(request) === 'extractor')).toBe(true);
   });
 
   it('«Спасибо» — по-прежнему её «Пожалуйста 🤍», модель не зовётся', async () => {

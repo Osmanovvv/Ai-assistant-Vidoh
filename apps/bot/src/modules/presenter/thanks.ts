@@ -1,3 +1,5 @@
+import { ACK_WORDS } from './acknowledgement.js';
+
 /**
  * «Спасибо» — по закрытому списку слов, целыми словами (заказчица,
  * 16.09.2026). Благодарность — одна из немногих ситуаций, где бот ставит
@@ -52,15 +54,22 @@ const AROUND_THANKS = new Set([
   'выручаешь',
   'ой',
   'ну',
+  'да',
+  'я',
 ]);
 
 /** Сообщение — одна благодарность, и ничего сверх неё. */
 export function onlyThanks(text: string | undefined): boolean {
-  if (text === undefined) return false;
+  if (text === undefined || text.includes('?') || /[«»„“”‘’"'`]/u.test(text)) return false;
 
   const words = wordsOf(text);
   return (
     THANKS.some((word) => words.includes(word)) &&
-    words.every((word) => (THANKS as readonly string[]).includes(word) || AROUND_THANKS.has(word))
+    words.every(
+      (word) =>
+        (THANKS as readonly string[]).includes(word) ||
+        AROUND_THANKS.has(word) ||
+        ACK_WORDS.has(word),
+    )
   );
 }

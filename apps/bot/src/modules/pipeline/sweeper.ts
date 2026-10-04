@@ -296,7 +296,7 @@ export const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 export function startRecoverySweep(
   deps: SweepDeps,
   intervalMs: number = DEFAULT_SWEEP_INTERVAL_MS,
-): () => void {
+): () => Promise<void> {
   /**
    * Проходы не накладываются — как у планировщика и у продления.
    *
@@ -306,24 +306,26 @@ export function startRecoverySweep(
    * человека, а спасать он должен от перезапуска, а не от нас самих.
    * С уборкой внутри прохода наложение стало ещё и двойным `delete`.
    */
-  let running = false;
+  let inFlight: Promise<void> | null = null;
 
   const timer = setInterval(() => {
-    if (running) return;
-    running = true;
+    if (inFlight !== null) return;
 
-    void sweepOnce(deps)
+    inFlight = sweepOnce(deps)
+      .then(() => undefined)
       .catch((error: unknown) => {
         deps.logger.error({ err: error }, 'Досмотр застрявших выгрузок не удался');
       })
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   }, intervalMs);
 
   timer.unref();
 
-  return () => {
+  return async () => {
     clearInterval(timer);
+    // Досмотр разбирает выгрузки напрямую, мимо воркера очереди.
+    if (inFlight !== null) await inFlight;
   };
 }

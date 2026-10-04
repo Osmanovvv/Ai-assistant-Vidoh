@@ -57,6 +57,9 @@ services:
       context: .
     image: vydoh-bot:latest
     restart: unless-stopped
+    # Приложение завершает работу за 15 секунд; Docker оставляет запас
+    # для выхода процесса, вместо SIGKILL на десятой секунде.
+    stop_grace_period: 20s
     env_file: .env
     environment:
       # Куда смотреть за отчётами прогонов: см. том ниже.

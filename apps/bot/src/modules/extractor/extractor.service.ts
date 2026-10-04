@@ -1,6 +1,6 @@
 import { requestStructured, type AiClientDeps } from '../ai/client.js';
 import type { ExtractedUnits } from '../ai/schemas/index.js';
-import { restoreDroppedDeeds } from './dropped-deeds.js';
+import { restoreDroppedDeeds, restoreShortenedWords } from './dropped-deeds.js';
 
 /**
  * Извлечение атомарных единиц (задача 2.5).
@@ -144,5 +144,13 @@ export async function extractUnits(
     );
   }
 
-  return { ok: true, units: guarded.units, promptVersion: outcome.promptVersion, collapsed };
+  const repaired = restoreShortenedWords(params.input, guarded.units);
+  if (repaired.restored > 0) {
+    deps.logger?.warn(
+      { promptVersion: outcome.promptVersion, restored: repaired.restored },
+      'Извлечение укоротило предмет — восстановлено словами человека',
+    );
+  }
+
+  return { ok: true, units: repaired.units, promptVersion: outcome.promptVersion, collapsed };
 }

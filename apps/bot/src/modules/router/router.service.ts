@@ -13,6 +13,7 @@ import { onlyDoneWords } from './known-patch.js';
 import { splitPatchTails } from './patch-tail.js';
 import { looksLikeThought } from './thought-words.js';
 import { namesOnlyTime } from '../resolver/deixis.js';
+import { onlyConversationAck, splitConversationAcks } from './action-ack.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -142,6 +143,18 @@ function buildInput(params: RouteParams): string {
 }
 
 export async function routeIntents(deps: AiClientDeps, params: RouteParams): Promise<RouteResult> {
+  // Подтверждение без конкретного дела узнаётся кодом. Текст, голос и
+  // повторная обработка дают один исход, независимо от ответа модели.
+  // Ответ на открытый вопрос остаётся у обычного маршрутизатора.
+  if (params.openQuestion === undefined && onlyConversationAck(params.input)) {
+    return {
+      segments: [{ intent: 'SMALLTALK', text: params.input }],
+      crisis: false,
+      promptVersion: 'подтверждение',
+      reordered: false,
+      fallback: false,
+    };
+  }
   const outcome = await requestStructured<RoutedSegments>(deps, {
     stage: 'router',
     input: buildInput(params),
@@ -159,7 +172,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
 
     return {
-      segments: [{ intent: 'DUMP', text: params.input }],
+      segments: splitConversationAcks([{ intent: 'DUMP', text: params.input }]),
       // Модель не ответила — признака кризиса от неё нет. Второй контур
       // при этом остаётся: маркеры считаются в коде и без неё.
       crisis: false,
@@ -173,7 +186,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
   // намерения, но текст-то есть, и терять его нельзя.
   if (outcome.value.segments.length === 0) {
     return {
-      segments: [{ intent: 'DUMP', text: params.input }],
+      segments: splitConversationAcks([{ intent: 'DUMP', text: params.input }]),
       crisis: outcome.value.crisis,
       promptVersion: outcome.promptVersion,
       reordered: false,
@@ -190,17 +203,21 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * Непокрытый отрезками кусок с делами возвращается в разбор мыслью
    * на своём месте — см. `coverage.ts`.
    */
-  const segments = restoreUncovered(params.input, ordered.segments);
+  const covered = restoreUncovered(params.input, ordered.segments);
 
-  if (segments.length !== ordered.segments.length) {
+  if (covered.length !== ordered.segments.length) {
     deps.logger?.warn(
       {
         promptVersion: outcome.promptVersion,
-        restored: segments.length - ordered.segments.length,
+        restored: covered.length - ordered.segments.length,
       },
       'Модель вернула не весь текст, непокрытый кусок с делами возвращён в разбор мыслью',
     );
   }
+
+  // Отделяем разговор до распознавания дел, правок и выполнения:
+  // «Спасибо. Готово» оставляет «Готово» в его собственном сценарии.
+  const segments = splitConversationAcks(covered);
 
   /**
    * Дополнение к сказанному — правкой, а не новой мыслью (§7.4).
@@ -243,7 +260,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * (`deixis.ts`). Только когда отрезок в сообщении один: внутри выгрузки
    * «Так завтра.» клеится к соседней мысли, и это решает разбор.
    */
-  const alone = segments.length === 1;
+  const alone = segments.filter((segment) => !onlyConversationAck(segment.text)).length <= 1;
   const marked = segments.map((segment) =>
     (alone &&
       (segment.intent === 'DUMP' || segment.intent === 'SMALLTALK') &&
@@ -279,7 +296,9 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * см. `thought-words.ts`.
    */
   const thoughts = marked.map((segment) =>
-    segment.intent === 'SMALLTALK' && looksLikeThought(segment.text)
+    segment.intent === 'SMALLTALK' &&
+    !onlyConversationAck(segment.text) &&
+    looksLikeThought(segment.text)
       ? { ...segment, intent: 'DUMP' as const }
       : segment,
   );

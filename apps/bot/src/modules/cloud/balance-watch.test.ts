@@ -90,7 +90,7 @@ describe('запуск сторожа баланса', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(checks).toHaveLength(2);
 
-      started?.stop();
+      await started?.stop();
       await vi.advanceTimersByTimeAsync(120_000);
       expect(checks).toHaveLength(2);
     } finally {

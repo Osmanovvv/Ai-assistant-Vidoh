@@ -1,4 +1,4 @@
-import { GrammyError, type Api } from 'grammy';
+import { GrammyError, InlineKeyboard, type Api } from 'grammy';
 
 /**
  * Ветки Telegram за интерфейсом (задача 2.15).
@@ -14,6 +14,12 @@ export interface CreateThreadParams {
   readonly name: string;
   /** `icon_custom_emoji_id` из набора, который отдаёт Telegram. */
   readonly iconEmojiId?: string | undefined;
+}
+
+/** Кнопка под сводкой темы. Действие обрабатывается общим роутером бота. */
+export interface TopicButton {
+  readonly label: string;
+  readonly action: string;
 }
 
 export interface TopicGateway {
@@ -51,12 +57,14 @@ export interface TopicGateway {
     readonly chatId: number;
     readonly threadId?: number | undefined;
     readonly text: string;
+    readonly buttons?: readonly TopicButton[] | undefined;
   }): Promise<number>;
 
   edit(params: {
     readonly chatId: number;
     readonly messageId: number;
     readonly text: string;
+    readonly buttons?: readonly TopicButton[] | undefined;
   }): Promise<void>;
 
   /**
@@ -150,6 +158,13 @@ export function createTopicGateway(api: Api): TopicGateway {
   /** Набор иконок запрашивается один раз на процесс: он не меняется. */
   let icons: ReadonlyMap<string, string> | undefined;
 
+  const markup = (buttons: readonly TopicButton[] | undefined) => {
+    const first = buttons?.[0];
+    return first === undefined
+      ? {}
+      : { reply_markup: new InlineKeyboard().text(first.label, first.action) };
+  };
+
   return {
     async createThread({ chatId, name, iconEmojiId }) {
       const created = await api.createForumTopic(chatId, name, {
@@ -184,15 +199,16 @@ export function createTopicGateway(api: Api): TopicGateway {
       await api.editForumTopic(chatId, threadId, { name });
     },
 
-    async send({ chatId, threadId, text }) {
+    async send({ chatId, threadId, text, buttons }) {
       const message = await api.sendMessage(chatId, text, {
         ...(threadId === undefined ? {} : { message_thread_id: threadId }),
+        ...markup(buttons),
       });
       return message.message_id;
     },
 
-    async edit({ chatId, messageId, text }) {
-      await api.editMessageText(chatId, messageId, text);
+    async edit({ chatId, messageId, text, buttons }) {
+      await api.editMessageText(chatId, messageId, text, markup(buttons));
     },
 
     async deleteThread({ chatId, threadId }) {
