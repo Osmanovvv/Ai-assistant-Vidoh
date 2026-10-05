@@ -55,6 +55,32 @@ beforeEach(async () => {
 });
 
 describe('извлечение единиц', () => {
+  it('убирает придуманную единицу и сохраняет оба предмета списка', async () => {
+    const prompts = await prepare();
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          units: [
+            unit('заказать чеснок'),
+            unit('заказать новинку'),
+            unit('заказать отпугиватель от собак'),
+          ],
+        }),
+      ],
+    });
+
+    const result = await extractUnits(deps(provider, prompts), {
+      input: 'Заказать чеснокодавилку и отпугиватель от собак.',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.units.map((one) => one.text)).toEqual([
+      'заказать чеснокодавилку',
+      'заказать отпугиватель от собак',
+    ]);
+  });
+
   it('перечисление даёт три единицы', async () => {
     // Условие готовности задачи 2.5 дословно.
     const prompts = await prepare();

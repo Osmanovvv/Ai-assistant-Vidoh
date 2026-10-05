@@ -184,6 +184,7 @@ export const reserved: TextProfile = {
     buttonHelp: 'Помощь',
     buttonSettings: 'Настройки',
     buttonSubscription: 'Подписка',
+    buttonClearHistory: 'Очистить историю переписки',
     buttonDeleteData: 'Удалить мои данные',
     buttonBack: 'Назад',
     buttonPrevious: '←',
@@ -915,6 +916,15 @@ ${note}`,
       'и после удаления данных у меня больше нет ключа к ней. Отмените её сами: ' +
       'настройки Telegram → «Мои звёзды» → «Подписки». Иначе списания продолжатся.',
     deleteCancelled: 'Отменила. Всё на месте.',
+    clearHistoryFirstStep:
+      'Начну новый разговор: забуду контекст и удалю доступные сообщения переписки. Дела и записи сохранятся. Старые сообщения Telegram может не разрешить удалить.',
+    clearHistorySecondStep: 'Точно очистить переписку и начать с чистого листа?',
+    clearHistoryConfirmButton: 'Очистить переписку',
+    clearHistoryFinalButton: 'Да, очистить',
+    clearHistoryCancelButton: 'Отмена',
+    clearHistoryDone:
+      'Готово. Я забыла контекст разговора и удалила доступные сообщения. Дела и записи сохранены. Если старые сообщения остались, это ограничение Telegram.',
+    clearHistoryCancelled: 'Отменила. Переписка и контекст на месте.',
     nothingToDelete: 'Удалять нечего: данных нет.',
     nothingToExport: 'Выгружать нечего: данных пока нет.',
     exportReady: 'Вот всё, что у меня есть.',

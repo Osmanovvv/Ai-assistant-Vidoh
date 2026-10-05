@@ -37,6 +37,60 @@ export interface ShortenedWordsRestored {
   readonly restored: number;
 }
 
+/**
+ * Убирает только явно выдуманную единицу из короткого списка.
+ *
+ * Иногда модель при одном предложении «заказать A и B» возвращает
+ * «заказать A», «заказать новинку», «заказать B». Восстановление длинных
+ * слов чинит A, но не может доказать, что «новинку» модель придумала. Здесь
+ * удаляем такую единицу лишь когда все предметы исходной фразы уже покрыты
+ * другими единицами и в исходнике нет второго предложения с тем же глаголом.
+ * Поэтому обычные переформулировки и независимые дела не затрагиваются.
+ */
+export function removeUnsupportedUnits(
+  input: string,
+  units: readonly ExtractedUnit[],
+): { readonly units: readonly ExtractedUnit[]; readonly removed: number } {
+  const sentences = sentencesOf(input);
+  const current = [...units];
+  let removed = 0;
+
+  for (const sentence of sentences) {
+    const verb = openingAction(sentence);
+    if (verb === undefined) continue;
+    if (sentences.filter((one) => openingAction(one) === verb).length !== 1) continue;
+
+    const sourceWords = wordsOf(sentence);
+    const objects = objectsOf(sourceWords, verb).filter(
+      (word) => word.length >= 4 && !REFUSAL.has(word),
+    );
+    if (objects.length < 2) continue;
+
+    const hasObject = (unit: ExtractedUnit): boolean => {
+      const theirs = wordsOf(unit.text);
+      return objects.some((object) => theirs.some((word) => sameWord(word, object)));
+    };
+    if (
+      !objects.every((object) =>
+        current.some((unit) => wordsOf(unit.text).some((word) => sameWord(word, object))),
+      )
+    ) {
+      continue;
+    }
+
+    const next = current.filter((unit) => {
+      if (unit.isProject || unit.isEmotion) return true;
+      const hasVerb = wordsOf(unit.text).some((word) => sameWord(word, verb));
+      if (!hasVerb || hasObject(unit)) return true;
+      removed++;
+      return false;
+    });
+    current.splice(0, current.length, ...next);
+  }
+
+  return { units: removed === 0 ? units : current, removed };
+}
+
 /** Связки в начале предложения — не часть дела. */
 const CONNECTIVE =
   /^(?:(?:и|а|но|ещё|еще|так|потом|вот|ну|короче|значит|кстати|также|тоже)(?=[\s,]|$)[\s,]*)+/iu;

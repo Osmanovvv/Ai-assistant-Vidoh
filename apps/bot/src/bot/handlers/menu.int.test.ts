@@ -31,7 +31,7 @@ import { UNDO_PREFIX } from '../../modules/resolver/change-text.js';
 import { registerUndoHandlers } from './undo.js';
 import { ANSWER_ACTION } from '../../modules/presenter/presenter.service.js';
 import { BILLING_ACTION } from './billing.js';
-import { DELETE_STEP_ONE } from './privacy.js';
+import { CLEAR_HISTORY_STEP_ONE, DELETE_STEP_ONE } from './privacy.js';
 import { MENU_ACTION, registerMenuHandlers, type MenuOptions } from './menu.js';
 
 /**
@@ -207,6 +207,7 @@ describe('меню', () => {
       defaultTexts.menu.buttonHelp,
       defaultTexts.menu.buttonSettings,
       defaultTexts.menu.buttonSubscription,
+      defaultTexts.menu.buttonClearHistory,
       defaultTexts.menu.buttonDeleteData,
     ]);
   });
@@ -237,7 +238,11 @@ describe('меню', () => {
     const root = keyboardOf(calls.find((call) => call.method === 'sendMessage'));
 
     /** Кнопки, чей экран живёт не в `menu.ts`. */
-    const elsewhere = new Set<string>([BILLING_ACTION.open, DELETE_STEP_ONE]);
+    const elsewhere = new Set<string>([
+      BILLING_ACTION.open,
+      DELETE_STEP_ONE,
+      CLEAR_HISTORY_STEP_ONE,
+    ]);
 
     expect(root.length).toBeGreaterThan(4);
 

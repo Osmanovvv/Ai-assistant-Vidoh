@@ -12,6 +12,7 @@ import { textProfileByTgId } from '../../modules/users/settings.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { fitKeyboard } from '../../modules/presenter/keyboard.js';
+import { clearKnownChatHistory } from '../../modules/privacy/chat-history.service.js';
 
 /**
  * Удаление и экспорт данных (задача 1.20).
@@ -24,6 +25,9 @@ import { fitKeyboard } from '../../modules/presenter/keyboard.js';
 export const DELETE_STEP_ONE = 'privacy:delete:1';
 export const DELETE_STEP_TWO = 'privacy:delete:2';
 export const DELETE_CANCEL = 'privacy:delete:cancel';
+export const CLEAR_HISTORY_STEP_ONE = 'privacy:history:1';
+export const CLEAR_HISTORY_STEP_TWO = 'privacy:history:2';
+export const CLEAR_HISTORY_CANCEL = 'privacy:history:cancel';
 
 export interface PrivacyDeps {
   readonly db: Database;
@@ -72,6 +76,68 @@ export function registerPrivacyHandlers(bot: Bot, deps: PrivacyDeps): void {
         ],
       ]),
     });
+  });
+
+  bot.command('clear_chat', async (ctx) => {
+    const texts = await textsOf(ctx.from?.id);
+    await ctx.reply(texts.privacy.clearHistoryFirstStep, {
+      reply_markup: fitKeyboard([
+        [
+          { label: texts.privacy.clearHistoryConfirmButton, action: CLEAR_HISTORY_STEP_ONE },
+          { label: texts.privacy.clearHistoryCancelButton, action: CLEAR_HISTORY_CANCEL },
+        ],
+      ]),
+    });
+  });
+
+  bot.callbackQuery(CLEAR_HISTORY_STEP_ONE, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const texts = await textsOf(ctx.from.id);
+    await ctx.editMessageText(texts.privacy.clearHistorySecondStep, {
+      reply_markup: fitKeyboard([
+        [
+          { label: texts.privacy.clearHistoryFinalButton, action: CLEAR_HISTORY_STEP_TWO },
+          { label: texts.privacy.clearHistoryCancelButton, action: CLEAR_HISTORY_CANCEL },
+        ],
+      ]),
+    });
+  });
+
+  bot.callbackQuery(CLEAR_HISTORY_STEP_TWO, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const tgId = ctx.from.id;
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+
+    const texts = await textsOf(tgId);
+    const user = await findByTgId(db, tgId);
+    if (user) {
+      let recent = [] as Awaited<ReturnType<DialogStore['recent']>>;
+      if (deps.dialog !== undefined) {
+        try {
+          recent = await deps.dialog.recent(chatId, new Date());
+        } catch (error: unknown) {
+          logger.debug({ err: error, tgId }, 'Недавние реплики не получены при очистке переписки');
+        }
+      }
+      await clearKnownChatHistory(db, {
+        userId: user.id,
+        chatId,
+        deleteMessage: (targetChatId, messageId) => ctx.api.deleteMessage(targetChatId, messageId),
+        logger,
+        extraMessageIds: recent.flatMap((turn) =>
+          turn.messageId === undefined ? [] : [turn.messageId],
+        ),
+      });
+    }
+    await forgetDialog(deps, { tgId, chatId });
+    await ctx.editMessageText(texts.privacy.clearHistoryDone);
+  });
+
+  bot.callbackQuery(CLEAR_HISTORY_CANCEL, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const texts = await textsOf(ctx.from.id);
+    await ctx.editMessageText(texts.privacy.clearHistoryCancelled);
   });
 
   bot.command('export_my_data', async (ctx) => {
