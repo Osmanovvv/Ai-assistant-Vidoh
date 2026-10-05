@@ -284,6 +284,16 @@ export const messagesRaw = pgTable(
     fileId: text('file_id'),
     audioDurationSec: bigint('audio_duration_sec', { mode: 'number' }),
 
+    /**
+     * Сообщение Telegram, на которое человек ответил.
+     *
+     * Нужны для голосового ответа на статусный список: после расшифровки
+     * исходный Context уже недоступен, а по этим полям можно безопасно
+     * найти именно тот список, к которому относится команда.
+     */
+    replyToMessageId: bigint('reply_to_message_id', { mode: 'number' }),
+    replyToText: text('reply_to_text'),
+
     /** Заполняется модулем speech на задаче 1.15. */
     transcript: text('transcript'),
 

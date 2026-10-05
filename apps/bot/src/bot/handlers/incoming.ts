@@ -1,9 +1,6 @@
 import type { Queue } from 'bullmq';
 import { InlineKeyboard, type Context, type MiddlewareFn } from 'grammy';
-import { and, eq, inArray } from 'drizzle-orm';
-
 import type { Database } from '../../infra/db.js';
-import { batches, items } from '../../db/schema.js';
 import type { PipelineJob } from '../../infra/queue.js';
 import { cancelBatchClose, enqueueUserProcessing, scheduleBatchClose } from '../../infra/queue.js';
 import {
@@ -41,15 +38,7 @@ import { consentConfirmedOf } from '../../modules/users/users.repo.js';
 import { outputContextOf } from '../../modules/users/state.repo.js';
 import { textProfileOf } from '../../modules/users/settings.repo.js';
 import { textsFor } from '../../texts/index.js';
-import {
-  resolveDeadline,
-  localDateParts,
-  startOfDayAfter,
-} from '../../modules/classifier/dates.js';
-import { applyBulkDeadline } from '../../modules/resolver/bulk-deadline.js';
-import { itemsForBatch, OPEN_STATUSES } from '../../modules/items/items.repo.js';
-import { titleWithoutDate } from '../../modules/resolver/title-date.js';
-import { refreshSummaries } from '../../modules/topics/summary.service.js';
+import { handleBulkDeadlineReply } from '../../modules/resolver/bulk-deadline-reply.js';
 import type { TopicGateway } from '../../modules/topics/gateway.js';
 
 /**
@@ -174,210 +163,6 @@ function isServiceMessage(ctx: Context): boolean {
   return message.successful_payment !== undefined || message.refunded_payment !== undefined;
 }
 
-type BulkDeadlineRequest =
-  { readonly kind: 'valid'; readonly deadlineAt: Date } | { readonly kind: 'invalid' } | undefined;
-
-/**
- * Закрытая, дешёвая форма групповой правки из ответа на сообщение.
- *
- * Здесь намеренно только явная дата `день.месяц`: расплывчатые слова и
- * номера дел остаются обычной выгрузкой или уточняются позже, а не меняют
- * записи догадкой.
- */
-function bulkDeadlineRequest(
-  text: string | undefined,
-  context: { readonly now: Date; readonly timeZone: string },
-): BulkDeadlineRequest {
-  if (text === undefined) return undefined;
-  const normalized = text.trim().toLowerCase().replace(/ё/gu, 'е');
-  if (
-    !/^(?:назначь|назначить|поставь|поставить|обозначь|обозначить|перенеси|перенести|измени|изменить)\b/u.test(
-      normalized,
-    ) ||
-    !/(?:\bэт(?:им|ими)\s+(?:задачам|делам|записям)\b|\bэти\s+(?:задачи|дела|записи)\b|\bдля\s+этих\s+(?:задач|дел|записей)\b|\bк\s+этим\s+(?:задачам|делам|записям)\b)/u.test(
-      normalized,
-    )
-  ) {
-    return undefined;
-  }
-
-  const match = /(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)/u.exec(normalized);
-  if (match === null) {
-    const relative = /\b(сегодня|завтра|послезавтра)\b/u.exec(normalized)?.[1];
-    if (relative === undefined) return { kind: 'invalid' };
-
-    const days = relative === 'сегодня' ? 0 : relative === 'завтра' ? 1 : 2;
-    return { kind: 'valid', deadlineAt: startOfDayAfter(context.now, days, context.timeZone) };
-  }
-
-  const today = localDateParts(context.now, context.timeZone);
-  const rawYear = match[3];
-  const year =
-    rawYear === undefined
-      ? today.year
-      : rawYear.length === 2
-        ? 2000 + Number(rawYear)
-        : Number(rawYear);
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  const resolved = resolveDeadline(
-    { deadline: `${String(year)}-${pad(month)}-${pad(day)}`, accuracy: 'day' },
-    context,
-  );
-
-  return resolved.ok && resolved.deadline !== undefined
-    ? { kind: 'valid', deadlineAt: resolved.deadline.at }
-    : { kind: 'invalid' };
-}
-
-/** Формат даты для подтверждения в поясе человека. */
-function shortDayAndMonth(at: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('ru-RU', {
-    timeZone,
-    day: '2-digit',
-    month: '2-digit',
-  }).format(at);
-}
-
-/**
- * Обрабатывает явную групповую правку только при ответе на сообщение бота.
- * Возвращает true, если реплика съедена и не должна стать новой задачей.
- */
-async function handleBulkDeadlineReply(
-  deps: IncomingDeps,
-  ctx: Context,
-  params: {
-    readonly userId: string;
-    readonly messageId: string;
-    readonly timeZone: string;
-    readonly textProfile: string | null;
-  },
-): Promise<boolean> {
-  const text = ctx.message?.text;
-  const request = bulkDeadlineRequest(text, { now: new Date(), timeZone: params.timeZone });
-  if (request === undefined) return false;
-
-  const texts = textsFor(params.textProfile);
-  if (ctx.message?.reply_to_message === undefined) {
-    await ctx.reply(texts.resolver.whichRecord);
-    await markConsumed(deps.db, params.messageId);
-    return true;
-  }
-
-  const replyMessageId = ctx.message.reply_to_message.message_id;
-  const [batch] = await deps.db
-    .select({ id: batches.id, mentionedItemIds: batches.mentionedItemIds })
-    .from(batches)
-    .where(and(eq(batches.userId, params.userId), eq(batches.statusMessageId, replyMessageId)))
-    .limit(1);
-
-  if (request.kind === 'invalid' || batch === undefined) {
-    await ctx.reply(texts.resolver.whichRecord);
-    await markConsumed(deps.db, params.messageId);
-    return true;
-  }
-
-  const fromBatch = (await itemsForBatch(deps.db, batch.id)).filter(
-    (item) =>
-      !item.isDraft &&
-      item.type !== 'EMOTION' &&
-      OPEN_STATUSES.includes(item.status as (typeof OPEN_STATUSES)[number]),
-  );
-  const mentionedItems =
-    batch.mentionedItemIds === null || batch.mentionedItemIds.length === 0
-      ? []
-      : (
-          await deps.db
-            .select()
-            .from(items)
-            .where(
-              and(
-                eq(items.userId, params.userId),
-                inArray(items.id, batch.mentionedItemIds),
-                inArray(items.status, [...OPEN_STATUSES]),
-                eq(items.isDraft, false),
-              ),
-            )
-        ).filter((item) => item.type !== 'EMOTION');
-  const candidates = [
-    ...new Map([...fromBatch, ...mentionedItems].map((item) => [item.id, item])).values(),
-  ];
-  const quotedLines = (ctx.message.reply_to_message.text ?? '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^—\s+/u.test(line));
-  const shownInReply = candidates.filter((item) =>
-    quotedLines.some((line) => {
-      const visible = line.replace(/^—\s+/u, '').trim();
-      const title = titleWithoutDate(item.text);
-      return (
-        visible === item.text ||
-        visible === title ||
-        visible.startsWith(`${item.text} ·`) ||
-        visible.startsWith(`${title} ·`)
-      );
-    }),
-  );
-  const ids =
-    quotedLines.length > 0
-      ? shownInReply.map((item) => item.id)
-      : candidates.map((item) => item.id);
-
-  if (ids.length === 0) {
-    await ctx.reply(texts.resolver.whichRecord);
-    await markConsumed(deps.db, params.messageId);
-    return true;
-  }
-
-  const now = new Date();
-  const applied = await applyBulkDeadline(deps.db, {
-    userId: params.userId,
-    itemIds: ids,
-    deadlineAt: request.deadlineAt,
-    sourceMessageId: params.messageId,
-    now,
-  });
-
-  if (applied.kind === 'missing') {
-    await ctx.reply(texts.resolver.whichRecord);
-    await markConsumed(deps.db, params.messageId);
-    return true;
-  }
-
-  const date = shortDayAndMonth(request.deadlineAt, params.timeZone);
-  const changedLines = applied.changed.map((item) => texts.resolver.movedDeadline(item.text, date));
-  const confirmation =
-    changedLines.length === 0
-      ? texts.resolver.unchanged
-      : changedLines.join('\n') +
-        (applied.unchanged.length === 0 ? '' : `\n\n${texts.resolver.unchanged}`);
-  await ctx.reply(confirmation);
-
-  if (deps.topics !== undefined && ctx.chat?.id !== undefined && applied.changed.length > 0) {
-    const topicNames = [
-      ...new Set(applied.changed.flatMap((item) => (item.topic ? [item.topic] : []))),
-    ];
-    try {
-      await refreshSummaries(
-        { db: deps.db, gateway: deps.topics },
-        {
-          userId: params.userId,
-          chatId: ctx.chat.id,
-          topicNames,
-          timeZone: params.timeZone,
-          profile: params.textProfile,
-        },
-      );
-    } catch {
-      // Срок уже сохранён; сводка — удобство и обновится при следующей правке.
-    }
-  }
-
-  await markConsumed(deps.db, params.messageId);
-  return true;
-}
-
 export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
   const base = deps.limits ?? DEFAULT_LIMITS;
 
@@ -488,12 +273,20 @@ export function incomingMiddleware(deps: IncomingDeps): MiddlewareFn {
     // просьба «этим задачам…» сама станет новой задачей.
     const bulkContext = await outputContextOf(deps.db, outcome.userId);
     if (
-      await handleBulkDeadlineReply(deps, ctx, {
-        userId: outcome.userId,
-        messageId: outcome.messageId,
-        timeZone: bulkContext.timeZone,
-        textProfile: bulkContext.textProfile,
-      })
+      await handleBulkDeadlineReply(
+        { db: deps.db, ...(deps.topics === undefined ? {} : { topics: deps.topics }) },
+        {
+          userId: outcome.userId,
+          messageId: outcome.messageId,
+          text: ctx.message?.text,
+          replyToMessageId: ctx.message?.reply_to_message?.message_id,
+          replyToText: ctx.message?.reply_to_message?.text,
+          chatId: ctx.chat?.id,
+          timeZone: bulkContext.timeZone,
+          textProfile: bulkContext.textProfile,
+          reply: async (text) => await ctx.reply(text),
+        },
+      )
     ) {
       return;
     }

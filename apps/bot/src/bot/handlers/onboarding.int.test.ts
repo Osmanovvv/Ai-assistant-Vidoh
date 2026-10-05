@@ -969,7 +969,10 @@ describe('опрос начинается с первого запуска (за
     expect(sent).toHaveLength(1);
 
     const screen = textOf(sent[0]);
-    expect(screen).toContain('Привет. Я ВЫДОХ.');
+    expect(screen).toContain('*Привет. Я ВЫДОХ 🤍*');
+    expect(screen).toContain(
+      '*Я помогу собрать мысли, дела и всё, что важно не забыть, — и буду помнить это за тебя.*',
+    );
     expect(screen).toContain(defaultTexts.onboarding.opening);
     expect(screen).toContain(defaultTexts.onboarding.nameConfirm('Аня'));
 

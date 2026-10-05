@@ -4,6 +4,7 @@ import { effectiveThresholds, type SettingsRegistry } from '../settings/settings
 import type { Database } from '../../infra/db.js';
 import type { AiClientDeps } from '../ai/client.js';
 import type { Intent } from '../ai/schemas/router.js';
+import type { ResolverMode } from '../ai/schemas/resolver.js';
 import type { DialogTurn } from '../dialog/dialog.js';
 import { embedText } from '../embedder/embedder.service.js';
 import type { EmbeddingProvider } from '../embedder/providers/types.js';
@@ -21,6 +22,17 @@ import { resolveSegment } from './resolver.service.js';
 import { looksLikeAppend, startsWithReplacement } from '../router/append.js';
 import { saidAsDone } from '../router/closing.js';
 import { looksLikeThought, opensWithAction } from '../router/thought-words.js';
+
+/** Явная команда «измени/исправь/переименуй» всегда означает замену. */
+function modeAfterExplicitReplacement(
+  spoken: string,
+  mode: ResolverMode | undefined,
+  text: string | undefined,
+): ResolverMode | undefined {
+  return mode === 'append' && startsWithReplacement(spoken) && (text ?? '').trim() !== ''
+    ? 'replace'
+    : mode;
+}
 
 /**
  * Разбор одной правки: от сегмента до последствия (§7 ТЗ, задача 3.6а).
@@ -380,6 +392,7 @@ export async function resolvePatchSegment(
         batchId: params.batchId,
       });
       const changes = offered.changes ?? emptyChanges();
+      const mode = modeAfterExplicitReplacement(params.text, offered.mode, changes.text);
       const question = await askQuestion(deps.db, {
         userId: params.userId,
         itemId: target.id,
@@ -387,7 +400,7 @@ export async function resolvePatchSegment(
         segment: params.text,
         action: 'update',
         changes,
-        ...(offered.mode === undefined ? {} : { mode: offered.mode }),
+        ...(mode === undefined ? {} : { mode }),
         now,
       });
 
@@ -546,13 +559,15 @@ export async function resolvePatchSegment(
       };
     }
 
+    const changes = resolved.changes ?? emptyChanges();
+    const mode = modeAfterExplicitReplacement(params.text, resolved.mode, changes.text);
     const question = await askQuestion(deps.db, {
       userId: params.userId,
       itemId: candidate.id,
       batchId: params.batchId,
       segment: params.text,
       action: decision.action,
-      changes: resolved.changes ?? emptyChanges(),
+      changes,
       /**
        * Режим правки едет с вопросом (задача 3.82).
        *
@@ -561,7 +576,7 @@ export async function resolvePatchSegment(
        * человек получал «Добавила к прошлой». Различие §7.4 резолвер
        * возвращает — терять его между вопросом и ответом нельзя.
        */
-      ...(resolved.mode === undefined ? {} : { mode: resolved.mode }),
+      ...(mode === undefined ? {} : { mode }),
       now,
     });
 
@@ -589,12 +604,7 @@ export async function resolvePatchSegment(
    * модель здесь чаще отвечает вопросом, а не дополнением, поэтому
    * случай редкий и осторожность дешёвая.
    */
-  const replaceInstead =
-    resolved.mode === 'append' &&
-    startsWithReplacement(params.text) &&
-    (resolved.changes?.text ?? '').trim().length > 0;
-
-  const mode = replaceInstead ? 'replace' : resolved.mode;
+  const mode = modeAfterExplicitReplacement(params.text, resolved.mode, resolved.changes?.text);
 
   const outcome = await applyDecision(deps.db, {
     userId: params.userId,

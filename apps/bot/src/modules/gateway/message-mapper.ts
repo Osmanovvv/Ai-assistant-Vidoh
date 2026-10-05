@@ -17,6 +17,8 @@ export interface IncomingMessage {
   readonly text: string | null;
   readonly fileId: string | null;
   readonly audioDurationSec: number | null;
+  readonly replyToMessageId: number | null;
+  readonly replyToText: string | null;
 }
 
 export interface IncomingUser {
@@ -33,6 +35,8 @@ export function describeMessage(message: Message): IncomingMessage {
     // is_topic_message отличает сообщение в ветке от сообщения в общем чате:
     // без этой проверки message_thread_id иногда приходит и вне тем.
     tgThreadId: message.is_topic_message === true ? (message.message_thread_id ?? null) : null,
+    replyToMessageId: message.reply_to_message?.message_id ?? null,
+    replyToText: message.reply_to_message?.text ?? null,
   };
 
   if (message.voice) {

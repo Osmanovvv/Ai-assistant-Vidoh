@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { SETTINGS } from '../settings/settings.repo.js';
 
 import type { Database, Executor } from '../../infra/db.js';
@@ -388,7 +388,7 @@ export async function combineBatch(db: Executor, batchId: string): Promise<strin
       transcript: messagesRaw.transcript,
     })
     .from(messagesRaw)
-    .where(eq(messagesRaw.batchId, batchId))
+    .where(and(eq(messagesRaw.batchId, batchId), isNull(messagesRaw.consumedAt)))
     .orderBy(asc(messagesRaw.receivedAt), asc(messagesRaw.tgMessageId));
 
   // Расшифровку — со склеенной фразой, которую распознавание порвало «?»

@@ -75,6 +75,8 @@ export async function acceptUpdate(db: Database, update: Update): Promise<Gatewa
       text: described.text,
       fileId: described.fileId,
       audioDurationSec: described.audioDurationSec,
+      replyToMessageId: described.replyToMessageId,
+      replyToText: described.replyToText,
     });
 
     if (!saved) {
