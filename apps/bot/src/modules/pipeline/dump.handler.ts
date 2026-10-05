@@ -1,7 +1,14 @@
-import { and, desc, eq, isNull, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, ne } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
-import { itemRevisions, items, userSettings, type Batch, type Item } from '../../db/schema.js';
+import {
+  itemRevisions,
+  items,
+  messagesRaw,
+  userSettings,
+  type Batch,
+  type Item,
+} from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
 import { textsFor } from '../../texts/index.js';
 import { fallbackOf } from '../../texts/rules.js';
@@ -166,7 +173,9 @@ import type { BatchHandler } from './pipeline.service.js';
 import { restartedFragments } from './restarted.js';
 import { applyThreadTopic } from './thread-topic.js';
 import { statusTarget, transcribeBatch, type TranscribeDeps } from './transcribe.js';
+import { combineBatch } from '../buffer/buffer.service.js';
 import { titleWithoutDate } from '../resolver/title-date.js';
+import { handleBulkDeadlineReply } from '../resolver/bulk-deadline-reply.js';
 import { autoDeferReviewed, markReviewed, reviewDue } from '../review/review.service.js';
 import { reviewRows } from '../scheduler/digest.js';
 
@@ -747,7 +756,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const aiLight = { ...(deps.aiLight ?? deps.ai), db };
     const aiRouter = deps.aiRouter === undefined ? aiLight : { ...deps.aiRouter, db };
 
-    const { combined, truncated } = await transcribeBatch(db, batch, deps.speech, {
+    let { combined, truncated } = await transcribeBatch(db, batch, deps.speech, {
       onStart: async () => {
         if (!deps.sender || !target) return;
         await showStatus({ db, sender: deps.sender }, target, texts.listening.working);
@@ -761,6 +770,18 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       slowAfterMs: deps.speech.slowAfterMs,
     });
 
+    const replyRows = await db
+      .select({
+        id: messagesRaw.id,
+        text: messagesRaw.text,
+        transcript: messagesRaw.transcript,
+        replyToMessageId: messagesRaw.replyToMessageId,
+        replyToText: messagesRaw.replyToText,
+        consumedAt: messagesRaw.consumedAt,
+      })
+      .from(messagesRaw)
+      .where(eq(messagesRaw.batchId, batch.id))
+      .orderBy(asc(messagesRaw.receivedAt), asc(messagesRaw.tgMessageId));
     // Реплика человека — в хвост разговора, уже после чтения хвоста.
     // Пишется и при выключенном `useDialog`: так проверяется запись.
     if (deps.dialog !== undefined && target !== undefined && combined.trim() !== '') {
@@ -1029,6 +1050,43 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const tail = `\n\n${texts.listening.tooLong}`;
       await tell(truncated ? `${text}${tail}` : text, buttons);
     };
+
+    /**
+     * Голосовой ответ на статусный список хранит ссылку на цитату так же,
+     * как текстовый ответ, но до этого места доходит через общую выгрузку.
+     * Проверяем каждое такое сообщение отдельно: вся склеенная пачка не
+     * должна превратиться в дату для чужих голосовых. Съеденная строка
+     * остаётся в raw-журнале, а `combineBatch` исключает её из разбора.
+     */
+    let consumedReply = false;
+    for (const row of replyRows) {
+      if (row.replyToMessageId === null || row.consumedAt !== null) continue;
+
+      const handled = await handleBulkDeadlineReply(
+        { db, ...(deps.topics === undefined ? {} : { topics: deps.topics }) },
+        {
+          userId: batch.userId,
+          messageId: row.id,
+          text: row.transcript ?? row.text ?? undefined,
+          replyToMessageId: row.replyToMessageId,
+          replyToText: row.replyToText ?? undefined,
+          chatId: target?.chatId,
+          timeZone: context.timeZone,
+          textProfile: context.textProfile,
+          now,
+          reply: async (text) => await tell(text),
+        },
+      );
+
+      consumedReply ||= handled;
+    }
+
+    if (consumedReply) {
+      combined = await combineBatch(db, batch.id);
+      // A batch containing only a consumed voice command is complete after
+      // the confirmation; do not add a second «ничего не услышала» reply.
+      if (combined.trim() === '') return;
+    }
 
     if (combined === '') {
       await answer(texts.listening.nothingHeard);

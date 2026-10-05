@@ -94,6 +94,18 @@ describe('describeMessage', () => {
     expect(result.tgChatId).toBe(1108419534);
     expect(result.tgMessageId).toBe(777);
   });
+
+  it('сохраняет ссылку и текст процитированного сообщения', () => {
+    const result = describeMessage(
+      message({
+        voice: { file_id: 'voice', file_unique_id: 'u4', duration: 5 },
+        reply_to_message: message({ message_id: 901, text: '— Позвонить Анжеле' }) as never,
+      }),
+    );
+
+    expect(result.replyToMessageId).toBe(901);
+    expect(result.replyToText).toBe('— Позвонить Анжеле');
+  });
 });
 
 describe('describeUser', () => {

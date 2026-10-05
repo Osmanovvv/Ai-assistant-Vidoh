@@ -28,7 +28,13 @@ beforeEach(async () => {
 
 /** Кладёт сырое сообщение и возвращает его идентификатор. */
 async function putMessage(
-  params: { text?: string; transcript?: string; receivedAt?: Date; threadId?: number } = {},
+  params: {
+    text?: string;
+    transcript?: string;
+    receivedAt?: Date;
+    threadId?: number;
+    consumedAt?: Date;
+  } = {},
 ): Promise<string> {
   const id = nextTgMessageId++;
   const [row] = await testDb()
@@ -42,6 +48,7 @@ async function putMessage(
       kind: params.transcript === undefined ? 'text' : 'voice',
       text: params.text ?? null,
       transcript: params.transcript ?? null,
+      ...(params.consumedAt === undefined ? {} : { consumedAt: params.consumedAt }),
       receivedAt: params.receivedAt ?? at(id),
     })
     .returning({ id: messagesRaw.id });
@@ -509,6 +516,21 @@ describe('combineBatch', () => {
     });
 
     await expect(combineBatch(testDb(), batchId)).resolves.toBe('есть текст');
+  });
+
+  it('не возвращает в разбор сообщение, съеденное бесплатной командой', async () => {
+    const { batchId } = await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text: 'Назначь этим задачам дату на 2.10', consumedAt: at(3) }),
+      now: at(0),
+    });
+    await attachMessageToBatch(testDb(), {
+      userId,
+      messageId: await putMessage({ text: 'купить молоко', receivedAt: at(4) }),
+      now: at(1_000),
+    });
+
+    await expect(combineBatch(testDb(), batchId)).resolves.toBe('купить молоко');
   });
 
   it('сохраняет склейку в выгрузке', async () => {
