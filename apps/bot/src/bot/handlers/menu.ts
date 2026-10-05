@@ -34,7 +34,7 @@ import { outputContextOf } from '../../modules/users/state.repo.js';
 import { findByTgId } from '../../modules/users/users.repo.js';
 import { textsFor, type TextProfile } from '../../texts/index.js';
 import { BILLING_ACTION } from './billing.js';
-import { DELETE_STEP_ONE } from './privacy.js';
+import { CLEAR_HISTORY_STEP_ONE, DELETE_STEP_ONE } from './privacy.js';
 import { cardKeyboard, cardText, CARD_PREFIX } from './card.js';
 import { ANSWER_ACTION, buildActionsReply } from '../../modules/presenter/presenter.service.js';
 import { pickMain } from '../../modules/presenter/pick.service.js';
@@ -179,6 +179,7 @@ export function rootKeyboard(texts: TextProfile): InlineKeyboard {
      * нужна ровно тогда, когда цены с рельса сняли.
      */
     [{ label: texts.menu.buttonSubscription, action: BILLING_ACTION.open }],
+    [{ label: texts.menu.buttonClearHistory, action: CLEAR_HISTORY_STEP_ONE }],
     [{ label: texts.menu.buttonDeleteData, action: DELETE_STEP_ONE }],
   ]);
 }

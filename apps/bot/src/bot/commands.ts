@@ -17,6 +17,7 @@ export const BOT_COMMANDS: readonly BotCommand[] = [
   { command: 'menu', description: 'меню' },
   { command: 'export_my_data', description: 'выгрузить мои данные' },
   { command: 'delete_my_data', description: 'удалить все мои данные' },
+  { command: 'clear_chat', description: 'очистить историю переписки' },
 
   /**
    * Требования платёжной платформы Telegram (§14, задача 4.2).

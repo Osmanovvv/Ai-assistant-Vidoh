@@ -22,6 +22,9 @@ import { testDb } from '../../test/db.js';
 import { confirmConsent, upsertUser } from '../../modules/users/users.repo.js';
 import { CONSENT_ACTION, incomingMiddleware, releaseHeldMessages } from './incoming.js';
 import {
+  CLEAR_HISTORY_CANCEL,
+  CLEAR_HISTORY_STEP_ONE,
+  CLEAR_HISTORY_STEP_TWO,
   DELETE_CANCEL,
   DELETE_STEP_ONE,
   DELETE_STEP_TWO,
@@ -444,6 +447,56 @@ describe('/delete_my_data', () => {
 
     const edit = calls.find((call) => call.method === 'editMessageText');
     expect(String(edit?.payload['text'])).toContain('нечего');
+  });
+});
+
+describe('/clear_chat', () => {
+  it('не трогает дела и показывает подтверждение в два шага', async () => {
+    await seedUser();
+    const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(textUpdate('/clear_chat'));
+    expect(calls.some((call) => call.method === 'sendMessage')).toBe(true);
+    expect(await rowsFor(TG_ID)).toMatchObject({ users: 1, batches: 1 });
+
+    await bot.handleUpdate(callbackUpdate(CLEAR_HISTORY_STEP_ONE));
+    const second = calls.findLast((call) => call.method === 'editMessageText');
+    expect(String(second?.payload['text'])).toContain('очистить');
+  });
+
+  it('удаляет известные сообщения в Telegram, забывает контекст и оставляет записи', async () => {
+    await seedUser();
+    const forgotten: number[] = [];
+    const { bot, calls } = createTestBot({
+      dialog: {
+        remember: () => Promise.resolve(),
+        recent: () => Promise.resolve([]),
+        forget: (chatId) => {
+          forgotten.push(chatId);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    await bot.handleUpdate(callbackUpdate(CLEAR_HISTORY_STEP_TWO));
+
+    const deleted = calls.filter((call) => call.method === 'deleteMessage');
+    expect(deleted.map((call) => call.payload['message_id'])).toEqual([9001]);
+    expect(forgotten).toEqual([TG_ID]);
+    expect(await rowsFor(TG_ID)).toMatchObject({ users: 1, messages: 1, batches: 1 });
+    expect(
+      String(calls.findLast((call) => call.method === 'editMessageText')?.payload['text']),
+    ).toContain('забыла контекст');
+  });
+
+  it('отмена очистки ничего не удаляет', async () => {
+    await seedUser();
+    const { bot, calls } = createTestBot();
+
+    await bot.handleUpdate(callbackUpdate(CLEAR_HISTORY_CANCEL));
+
+    expect(calls.some((call) => call.method === 'deleteMessage')).toBe(false);
+    expect(await rowsFor(TG_ID)).toMatchObject({ users: 1, messages: 1, batches: 1 });
   });
 });
 

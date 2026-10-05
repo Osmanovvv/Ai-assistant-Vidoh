@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  removeUnsupportedUnits,
   restoreDroppedDeeds,
   restoreShortenedText,
   restoreShortenedWords,
@@ -181,5 +182,29 @@ describe('предмет, укороченный моделью, возвращ�
       text: 'Заказать чеснокодавилку и отпугиватель от собак',
       restored: 3,
     });
+  });
+});
+
+describe('выдуманная единица списка удаляется', () => {
+  it('не оставляет «заказать новинку» между чеснокодавилкой и отпугивателем', () => {
+    const result = removeUnsupportedUnits('Заказать чеснокодавилку и отпугиватель от собак.', [
+      unit('Заказать чеснокодавилку'),
+      unit('Заказать новинку'),
+      unit('Заказать отпугиватель от собак'),
+    ]);
+
+    expect(texts(result.units)).toEqual([
+      'Заказать чеснокодавилку',
+      'Заказать отпугиватель от собак',
+    ]);
+    expect(result.removed).toBe(1);
+  });
+
+  it('не удаляет независимое дело при двух предложениях с одним глаголом', () => {
+    const units = [unit('Заказать чеснокодавилку'), unit('Заказать новинку')];
+    const result = removeUnsupportedUnits('Заказать чеснокодавилку. Заказать новинку.', units);
+
+    expect(result.units).toEqual(units);
+    expect(result.removed).toBe(0);
   });
 });

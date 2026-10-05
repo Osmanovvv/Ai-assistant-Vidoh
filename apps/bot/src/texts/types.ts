@@ -263,6 +263,7 @@ export interface TextProfile {
     readonly buttonSettings: string;
     /** Подписка (§14, задача 4.2): оплата и отмена продления. */
     readonly buttonSubscription: string;
+    readonly buttonClearHistory: string;
     readonly buttonBack: string;
     /** Постраничность списков (задача 3.11). */
     readonly buttonPrevious: string;
@@ -1179,6 +1180,13 @@ export interface TextProfile {
      */
     readonly deleteDoneSubscriptionLeft: string;
     readonly deleteCancelled: string;
+    readonly clearHistoryFirstStep: string;
+    readonly clearHistorySecondStep: string;
+    readonly clearHistoryConfirmButton: string;
+    readonly clearHistoryFinalButton: string;
+    readonly clearHistoryCancelButton: string;
+    readonly clearHistoryDone: string;
+    readonly clearHistoryCancelled: string;
     readonly nothingToDelete: string;
     readonly nothingToExport: string;
     readonly exportReady: string;
