@@ -757,7 +757,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const aiLight = { ...(deps.aiLight ?? deps.ai), db };
     const aiRouter = deps.aiRouter === undefined ? aiLight : { ...deps.aiRouter, db };
 
-    let { combined, truncated } = await transcribeBatch(db, batch, deps.speech, {
+    const transcribed = await transcribeBatch(db, batch, deps.speech, {
       onStart: async () => {
         if (!deps.sender || !target) return;
         await showStatus({ db, sender: deps.sender }, target, texts.listening.working);
@@ -770,6 +770,8 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       },
       slowAfterMs: deps.speech.slowAfterMs,
     });
+    let { combined } = transcribed;
+    const { truncated } = transcribed;
 
     const replyRows = await db
       .select({
@@ -1075,7 +1077,9 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
           timeZone: context.timeZone,
           textProfile: context.textProfile,
           now,
-          reply: async (text) => await tell(text),
+          reply: async (text) => {
+            await tell(text);
+          },
         },
       );
 

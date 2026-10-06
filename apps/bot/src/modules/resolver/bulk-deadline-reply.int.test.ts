@@ -76,8 +76,9 @@ describe('голосовая групповая правка срока', () => 
         timeZone: 'Europe/Moscow',
         textProfile: null,
         now: NOW,
-        reply: async (text) => {
+        reply: (text) => {
           replies.push(text);
+          return Promise.resolve();
         },
       },
     );
@@ -157,8 +158,9 @@ describe('голосовая групповая правка срока', () => 
         timeZone: 'Europe/Moscow',
         textProfile: null,
         now: NOW,
-        reply: async (text) => {
+        reply: (text) => {
           replies.push(text);
+          return Promise.resolve();
         },
       },
     );
