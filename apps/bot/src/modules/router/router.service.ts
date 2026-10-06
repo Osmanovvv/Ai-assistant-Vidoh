@@ -6,7 +6,7 @@ import {
   looksLikeExplicitAppend,
   startsWithReplacement,
 } from './append.js';
-import { splitClosings } from './closing.js';
+import { splitClosings, splitDonePatch, startsWithDone } from './closing.js';
 import { restoreUncovered } from './coverage.js';
 import { splitDayQuestions } from './day-question.js';
 import { onlyDoneWords } from './known-patch.js';
@@ -261,24 +261,81 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * (`deixis.ts`). Только когда отрезок в сообщении один: внутри выгрузки
    * «Так завтра.» клеится к соседней мысли, и это решает разбор.
    */
-  const alone = segments.filter((segment) => !onlyConversationAck(segment.text)).length <= 1;
-  const marked = segments.map((segment) =>
-    (alone &&
-      (segment.intent === 'DUMP' || segment.intent === 'SMALLTALK') &&
-      namesOnlyTime(segment.text)) ||
-    (segment.intent === 'DUMP' &&
-      (looksLikeAppend(segment.text) ||
-        looksLikeCorrection(segment.text) ||
-        startsWithReplacement(segment.text))) ||
-    // «К банку добавь: …» — и мыслью, и вопросом (прогон 17.09.2026):
-    // человек назвал и запись, и действие, спорить с этим модели нечем.
-    ((segment.intent === 'DUMP' || segment.intent === 'QUERY') &&
-      looksLikeExplicitAppend(segment.text))
-      ? { ...segment, intent: 'PATCH' as const }
-      : segment,
-  );
+  const normalizedSegments = segments.flatMap(splitDonePatch);
+  const alone =
+    normalizedSegments.filter((segment) => !onlyConversationAck(segment.text)).length <= 1;
+  const marked = normalizedSegments.map((segment) => {
+    if (
+      segment.intent === 'PATCH' &&
+      startsWithDone(segment.text) &&
+      !startsWithReplacement(segment.text) &&
+      !looksLikeCorrection(segment.text)
+    ) {
+      return { ...segment, intent: 'COMPLETE' as const };
+    }
 
-  const appended = marked.filter((one, index) => one.intent !== segments[index]?.intent).length;
+    const shouldPatch =
+      (alone &&
+        (segment.intent === 'DUMP' || segment.intent === 'SMALLTALK') &&
+        namesOnlyTime(segment.text)) ||
+      (segment.intent === 'DUMP' &&
+        (looksLikeAppend(segment.text) ||
+          looksLikeCorrection(segment.text) ||
+          startsWithReplacement(segment.text))) ||
+      // «К банку добавь: …» — и мыслью, и вопросом (прогон 17.09.2026):
+      // человек назвал и запись, и действие, спорить с этим модели нечем.
+      ((segment.intent === 'DUMP' || segment.intent === 'QUERY') &&
+        looksLikeExplicitAppend(segment.text));
+
+    return shouldPatch ? { ...segment, intent: 'PATCH' as const } : segment;
+  });
+
+  /**
+   * Если модель оборвала фразу перед приказом, последнее слово закрытия —
+   * объект следующего переноса: «Купила продукты врача» + «перенеси…».
+   * Переносим только при голосовой склейке без знака препинания и только
+   * когда у закрытия уже есть отдельное действие и объект.
+   */
+  const separated = marked.map((segment, index) => {
+    const next = marked[index + 1];
+    if (
+      segment.intent !== 'COMPLETE' ||
+      next?.intent !== 'PATCH' ||
+      !startsWithDone(segment.text) ||
+      !startsWithReplacement(next.text) ||
+      /[.!?;]\s*$/u.test(segment.text)
+    ) {
+      return segment;
+    }
+
+    const words = segment.text.trim().split(/\s+/u);
+    if (words.length < 3) return segment;
+
+    words.pop();
+    return { ...segment, text: words.join(' ') };
+  });
+
+  const withSubjects = separated.flatMap((segment, index) => {
+    const previous = separated[index - 1];
+    if (
+      previous?.intent === 'COMPLETE' &&
+      segment.intent === 'PATCH' &&
+      startsWithDone(previous.text) &&
+      startsWithReplacement(segment.text) &&
+      !/[.!?;]\s*$/u.test(previous.text)
+    ) {
+      const original = marked[index - 1]?.text.trim().split(/\s+/u) ?? [];
+      const subject = original.at(-1);
+      if (subject !== undefined && original.length >= 3) {
+        return [{ ...segment, text: `${subject} ${segment.text}` }];
+      }
+    }
+    return [segment];
+  });
+
+  const appended = withSubjects.filter(
+    (one, index) => one.intent !== segments[index]?.intent,
+  ).length;
 
   if (appended > 0) {
     deps.logger?.info(
@@ -296,7 +353,7 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
    * или глагол дела в таком отрезке — признак мысли; списки закрытые,
    * см. `thought-words.ts`.
    */
-  const thoughts = marked.map((segment) =>
+  const thoughts = withSubjects.map((segment) =>
     segment.intent === 'SMALLTALK' &&
     !onlyConversationAck(segment.text) &&
     looksLikeThought(segment.text)

@@ -7264,7 +7264,7 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     await queuedBatchOf([
       {
         kind: 'text',
-        text: 'купила продукты, врача перенеси на субботу, ещё забрать посылку',
+        text: 'Купила продукты врача перенеси на субботу ещё забрать посылку',
         offsetMs: 0,
       },
     ]);
@@ -7274,9 +7274,8 @@ describe('выполнение и отмена голосом (§21 п.8, зад
       router: JSON.stringify({
         crisis: false,
         segments: [
-          { intent: 'COMPLETE', text: 'купила продукты' },
-          { intent: 'PATCH', text: 'врача перенеси на субботу' },
-          { intent: 'DUMP', text: 'ещё забрать посылку' },
+          { intent: 'PATCH', text: 'Купила продукты врача' },
+          { intent: 'DUMP', text: 'Перенеси на субботу ещё забрать посылку' },
         ],
       }),
       extractor: JSON.stringify({

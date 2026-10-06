@@ -245,6 +245,40 @@ function namesCandidate(spoken: readonly string[], candidate: Pick<Candidate, 't
 }
 
 /**
+ * Находит единственную запись, названную первым смысловым словом фразы.
+ *
+ * Отметка выполнения иногда приходит без знаков препинания вместе со
+ * следующей правкой: «купила продукты врача перенеси на субботу». В такой
+ * фразе модель может увидеть сразу двух кандидатов. Первое названное слово
+ * относится к закрытию, поэтому его можно безопасно использовать как
+ * локальный страж до вызова модели.
+ */
+export function firstNamedCandidate(
+  spoken: string,
+  candidates: readonly Candidate[],
+): Candidate | undefined {
+  const words = namingWords(spoken);
+  let best: Candidate | undefined;
+  let bestIndex = Number.POSITIVE_INFINITY;
+  let tied = false;
+
+  for (const candidate of candidates) {
+    const own = namingWords(candidate.text);
+    const index = words.findIndex((word) => own.some((other) => sameWord(word, other)));
+    if (index < 0) continue;
+    if (index < bestIndex) {
+      best = candidate;
+      bestIndex = index;
+      tied = false;
+    } else if (index === bestIndex) {
+      tied = true;
+    }
+  }
+
+  return tied ? undefined : best;
+}
+
+/**
  * Подходят ли слова человека к записи — теми же правилами, что четвёртый
  * сигнал: «посылку» подходит к «посылки с Вайлдберриз», связки, время и
  * глаголы-повеления не в счёт. Нужно стражу разговора в резолвере.

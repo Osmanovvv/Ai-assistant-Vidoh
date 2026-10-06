@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { saidAsDone, splitClosings } from './closing.js';
+import { saidAsDone, splitClosings, splitDonePatch, startsWithDone } from './closing.js';
 import type { Segment } from './router.service.js';
 
 /**
@@ -121,6 +121,33 @@ describe('что не трогается', () => {
 
   it('пустой список не ломает', () => {
     expect(splitClosings([])).toEqual([]);
+  });
+});
+
+describe('начало без пунктуации после голосового распознавания', () => {
+  it('узнаёт отметку выполнения в начале сегмента правки', () => {
+    expect(startsWithDone('Купила продукты врача перенеси на субботу')).toBe(true);
+  });
+
+  it('не принимает приказ о переносе за отметку', () => {
+    expect(startsWithDone('Перенеси врача на субботу')).toBe(false);
+  });
+
+  it.each([
+    'Хотела перенести врача на субботу',
+    'Планировала перенести врача на субботу',
+    'Начала переносить врача на субботу',
+  ])('не принимает намерение «%s» за отметку', (text) => {
+    expect(startsWithDone(text)).toBe(false);
+  });
+
+  it('выделяет объект переноса из склеенной фразы', () => {
+    expect(
+      splitDonePatch({ intent: 'PATCH', text: 'Купила продукты врача перенеси на субботу' }),
+    ).toEqual([
+      { intent: 'COMPLETE', text: 'Купила продукты' },
+      { intent: 'PATCH', text: 'врача перенеси на субботу' },
+    ]);
   });
 });
 

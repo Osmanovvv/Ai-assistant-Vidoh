@@ -49,6 +49,30 @@ beforeEach(async () => {
 });
 
 describe('разбор намерений', () => {
+  it('разделяет склеенную отметку, перенос и новую посылку без пунктуации', async () => {
+    const prompts = await prepare();
+    const input = 'Купила продукты врача перенеси на субботу ещё забрать посылку';
+    const provider = new MockLlmProvider({
+      responses: [
+        JSON.stringify({
+          crisis: false,
+          segments: [
+            { intent: 'PATCH', text: 'Купила продукты врача' },
+            { intent: 'DUMP', text: 'Перенеси на субботу ещё забрать посылку' },
+          ],
+        }),
+      ],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([
+      { intent: 'COMPLETE', text: 'Купила продукты' },
+      { intent: 'PATCH', text: 'врача Перенеси на субботу' },
+      { intent: 'DUMP', text: 'ещё забрать посылку' },
+    ]);
+  });
+
   it('фраза с тремя намерениями даёт три сегмента в правильном порядке', async () => {
     // Условие готовности задачи 2.4 дословно.
     const prompts = await prepare();

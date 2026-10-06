@@ -123,6 +123,38 @@ export function saidAsDone(text: string): boolean {
   return isDone(text) || isCancel(text) || DONE_HE.test(text) || DONE_IRREGULAR.test(text);
 }
 
+/** Прошедший глагол стоит в начале отрезка, значит это отметка выполнения. */
+export function startsWithDone(text: string): boolean {
+  const trimmed = text.trim();
+  return /^(?:купил|купила|купили|сделал|сделала|сделали|забрал|забрала|забрали|оплатил|оплатила|оплатили|записал|записала|записали|позвонил|позвонила|позвонили|написал|написала|написали|отнес|отнесла|отнесли|сходил|сходила|сходили|заказал|заказала|заказали|выкупил|выкупила|выкупили|помыл|помыла|помыли|пересчитал|пересчитала|пересчитали|зарядил|зарядила|зарядили|достал|достала|достали|спрятал|спрятала|спрятали|отправил|отправила|отправили|проверил|проверила|проверили|разобрал|разобрала|разобрали|вынес|внес|внёс|принес|принёс|отнёс|готово)(?!\p{L})/iu.test(
+    trimmed,
+  );
+}
+
+/**
+ * Отделяет объект следующей правки от склеенной отметки: «Купила продукты
+ * врача перенеси…» превращается в «Купила продукты» и «врача перенеси…».
+ */
+export function splitDonePatch(segment: Segment): readonly Segment[] {
+  if (segment.intent !== 'PATCH' || !startsWithDone(segment.text)) return [segment];
+
+  const marker =
+    /(?<!\p{L})(?:перенеси|перенести|сдвинь|сдвинуть|поменяй|поменять|измени|изменить|исправь|исправить)(?!\p{L})/iu.exec(
+      segment.text,
+    );
+  if (marker?.index === undefined || marker.index === 0) return [segment];
+
+  const before = segment.text.slice(0, marker.index).trim();
+  const words = before.split(/\s+/u);
+  const nextObject = words.pop();
+  if (nextObject === undefined || words.length === 0) return [segment];
+
+  return [
+    { intent: 'COMPLETE', text: words.join(' ') },
+    { intent: 'PATCH', text: `${nextObject} ${segment.text.slice(marker.index).trim()}` },
+  ];
+}
+
 export function splitClosings(segments: readonly Segment[]): readonly Segment[] {
   return segments.flatMap((segment) =>
     CLOSINGS.has(segment.intent) ? splitSegment(segment) : [segment],

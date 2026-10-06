@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ResolverAnswer } from '../ai/schemas/index.js';
 import type { Candidate, CandidateSource } from './candidates.js';
-import { decide, DEFAULT_THRESHOLDS, spokenFits } from './decision.js';
+import { decide, DEFAULT_THRESHOLDS, firstNamedCandidate, spokenFits } from './decision.js';
 
 /**
  * Пороговая логика резолвера (§7.3 ТЗ, задача 3.2).
@@ -656,5 +656,23 @@ describe('подходят ли слова человека к записи (с�
     expect(spokenFits('давай забрать на субботу', candidate({ text: 'Забрать посылку' }))).toBe(
       false,
     );
+  });
+});
+
+describe('первое дело в склеенной отметке выполнения', () => {
+  it('выбирает продукты до следующего упоминания врача', () => {
+    const products = candidate({ id: 'products', text: 'Купить продукты' });
+    const doctor = candidate({ id: 'doctor', text: 'Записать сына к врачу' });
+
+    expect(
+      firstNamedCandidate('Купила продукты врача перенеси на субботу', [products, doctor]),
+    ).toBe(products);
+  });
+
+  it('не выбирает кандидата при одинаковом первом слове', () => {
+    const first = candidate({ id: 'first', text: 'Купить продукты' });
+    const second = candidate({ id: 'second', text: 'Заказать продукты' });
+
+    expect(firstNamedCandidate('Купила продукты', [first, second])).toBeUndefined();
   });
 });

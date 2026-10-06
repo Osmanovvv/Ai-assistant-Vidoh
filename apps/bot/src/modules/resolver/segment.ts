@@ -12,7 +12,7 @@ import type { ModelPricing } from '../metering/pricing.js';
 import { collectCandidates } from './candidates.js';
 import { reembedIfRetitled } from '../embedder/reembed.js';
 import { applyDecision, emptyChanges, type Applied, type ApplyOutcome } from './patch.js';
-import { DEFAULT_THRESHOLDS } from './decision.js';
+import { DEFAULT_THRESHOLDS, firstNamedCandidate } from './decision.js';
 import { commandsRecord, deicticAction, namesNoDeed } from './deixis.js';
 import { lastDiscussed } from './deixis.repo.js';
 import type { ClarifyKind } from './clarify.js';
@@ -411,6 +411,24 @@ export async function resolvePatchSegment(
         action: 'update',
         deadline: changes.deadline,
       };
+    }
+  }
+
+  /**
+   * В длинной голосовой без пунктуации закрытие может захватить начало
+   * следующей правки: «купила продукты врача перенеси на субботу». У
+   * закрытия есть явное первое название — «продукты», — поэтому сужаем
+   * кандидатов до него. Следующая часть («перенеси…») обработается отдельно
+   * как правка врача и не смешается с выполнением.
+   */
+  if (narrowed === undefined && params.intent === 'COMPLETE' && candidates.length > 1) {
+    const first = firstNamedCandidate(params.text, candidates);
+    if (first !== undefined) {
+      narrowed = [first];
+      deps.logger?.info(
+        { userId: params.userId, batchId: params.batchId, itemId: first.id },
+        'Закрытие без пунктуации сужено по первому названному делу',
+      );
     }
   }
 
