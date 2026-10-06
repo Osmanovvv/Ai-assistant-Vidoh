@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 
 import { batches, items } from '../../db/schema.js';
 import type { Database } from '../../infra/db.js';
@@ -107,19 +107,40 @@ export async function handleBulkDeadlineReply(
   if (request === undefined) return false;
 
   const texts = textsFor(params.textProfile);
-  if (params.replyToMessageId === undefined) {
-    await params.reply(texts.resolver.whichRecord);
-    await markConsumed(deps.db, params.messageId);
-    return true;
-  }
 
-  const [batch] = await deps.db
-    .select({ id: batches.id, mentionedItemIds: batches.mentionedItemIds })
-    .from(batches)
-    .where(
-      and(eq(batches.userId, params.userId), eq(batches.statusMessageId, params.replyToMessageId)),
-    )
-    .limit(1);
+  /**
+   * «Этим задачам» часто говорят голосом сразу после статусного списка,
+   * без Telegram-ответа на сообщение. В таком случае у сырой реплики нет
+   * `replyToMessageId`, хотя ссылка однозначна: берём последний занятый
+   * статусный список этого пользователя за полчаса. Старые списки не
+   * трогаем, чтобы обычная фраза через несколько часов не меняла прошлое.
+   */
+  const [batch] =
+    params.replyToMessageId === undefined
+      ? await deps.db
+          .select({ id: batches.id, mentionedItemIds: batches.mentionedItemIds })
+          .from(batches)
+          .where(
+            and(
+              eq(batches.userId, params.userId),
+              eq(batches.statusTaken, true),
+              isNotNull(batches.statusMessageId),
+              isNotNull(batches.statusUpdatedAt),
+              gte(batches.statusUpdatedAt, new Date(now.getTime() - 30 * 60_000)),
+            ),
+          )
+          .orderBy(desc(batches.statusUpdatedAt))
+          .limit(1)
+      : await deps.db
+          .select({ id: batches.id, mentionedItemIds: batches.mentionedItemIds })
+          .from(batches)
+          .where(
+            and(
+              eq(batches.userId, params.userId),
+              eq(batches.statusMessageId, params.replyToMessageId),
+            ),
+          )
+          .limit(1);
 
   if (request.kind === 'invalid' || batch === undefined) {
     await params.reply(texts.resolver.whichRecord);

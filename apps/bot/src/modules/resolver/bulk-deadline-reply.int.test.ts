@@ -96,4 +96,76 @@ describe('голосовая групповая правка срока', () => 
     expect(consumed[0]?.consumedAt).not.toBeNull();
     expect(replies.join('\n')).toContain('Позвонить Анжеле');
   });
+
+  it('узнаёт голосовую команду без Telegram-ответа по последнему статусному списку', async () => {
+    const db = testDb();
+    const user = await upsertUser(db, { tgId: 50_000 + seq, firstName: 'Оля' });
+    const [batch] = await db
+      .insert(batches)
+      .values({
+        userId: user.id,
+        status: 'done',
+        statusMessageId: 800 + seq,
+        statusTaken: true,
+        statusUpdatedAt: NOW,
+      })
+      .returning();
+    if (!batch) throw new Error('выгрузка не создалась');
+
+    const [selected] = await db
+      .insert(items)
+      .values({
+        userId: user.id,
+        sourceBatchId: batch.id,
+        text: 'Позвонить Анжеле',
+        type: 'TASK',
+        priority: 'SOON',
+        topic: 'личное',
+      })
+      .returning();
+    if (!selected) throw new Error('дело не создалось');
+
+    await db
+      .update(batches)
+      .set({ mentionedItemIds: [selected.id] })
+      .where(eq(batches.id, batch.id));
+
+    const [message] = await db
+      .insert(messagesRaw)
+      .values({
+        userId: user.id,
+        updateId: 90_000 + seq,
+        tgChatId: 950 + seq,
+        tgMessageId: 951 + seq,
+        kind: 'voice',
+        fileId: 'voice-file',
+        audioDurationSec: 5,
+      })
+      .returning();
+    if (!message) throw new Error('голосовое не создалось');
+
+    const replies: string[] = [];
+    const handled = await handleBulkDeadlineReply(
+      { db },
+      {
+        userId: user.id,
+        messageId: message.id,
+        text: 'Назначь этим задачам дату на 2.10',
+        replyToMessageId: undefined,
+        replyToText: undefined,
+        chatId: 950 + seq,
+        timeZone: 'Europe/Moscow',
+        textProfile: null,
+        now: NOW,
+        reply: async (text) => {
+          replies.push(text);
+        },
+      },
+    );
+
+    const [after] = await db.select().from(items).where(eq(items.id, selected.id));
+    expect(handled).toBe(true);
+    expect(after?.deadlineAt?.toISOString()).toBe('2026-10-01T21:00:00.000Z');
+    expect(replies.join('\n')).toContain('Позвонить Анжеле');
+  });
 });

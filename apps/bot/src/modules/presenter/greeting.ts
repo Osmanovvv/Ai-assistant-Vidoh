@@ -167,7 +167,7 @@ export function salutationAt(texts: TextProfile, now: Date, timeZone: string): s
   return texts.answer.greetingNight;
 }
 
-/** Ответ на приветствие: «Добрый день 🙂 Расскажешь, что в голове?». */
+/** Ответ на приветствие: «Добрый день 🙂 Что нужно сделать, решить или не забыть?». */
 export function greetingLine(texts: TextProfile, now: Date, timeZone: string): string {
   return `${salutationAt(texts, now, timeZone)} ${texts.answer.greetingInvite}`;
 }

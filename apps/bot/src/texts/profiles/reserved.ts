@@ -171,7 +171,7 @@ export const reserved: TextProfile = {
     greetingDay: 'Добрый день 🙂',
     greetingEvening: 'Добрый вечер 🙂',
     greetingNight: 'Привет 🙂',
-    greetingInvite: 'Расскажешь, что в голове?',
+    greetingInvite: 'Что нужно сделать, решить или не забыть?',
   },
 
   menu: {
