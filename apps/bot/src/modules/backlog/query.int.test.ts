@@ -492,6 +492,18 @@ describe('вопрос обо всём сразу (заказчица, 16.09.202
     }
   });
 
+  it('разговорные «весь список» и повторная просьба возвращают весь бэклог', async () => {
+    await addItem('Заказать цветы', 'active');
+
+    for (const text of [
+      'Выкати, выдай мне весь список задач, которые я тебе надиктовала.',
+      'Нет, покажи мне весь список.',
+    ]) {
+      const answer = await answerBacklogQuery({ db: testDb(), embedder, logger }, { userId, text });
+      expect(answer.kind, text).toBe('all');
+    }
+  });
+
   it('вопрос обо всём при пустом бэклоге — «пусто», а не «ничего не записано» про несуществующий предмет', async () => {
     const answer = await answerBacklogQuery(
       { db: testDb(), embedder, logger },

@@ -35,6 +35,7 @@ import {
 import { askLiveAnswer, questionFacts } from '../backlog/live-answer.js';
 import { askTalk, onlyAck, talkFacts } from '../talk/talk.js';
 import { onlyConversationAck } from '../router/action-ack.js';
+import { looksLikeAssistantQuestion } from '../router/assistant-question.js';
 import { PAGE_SIZE } from '../backlog/backlog.service.js';
 import { aboutLine, isSingleDayPeriod, spanLine, underDayTitle } from '../backlog/day-list.js';
 import { decomposeGoal, planSteps } from '../projects/decomposer.service.js';
@@ -2774,7 +2775,12 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
               ).line
             : undefined;
         if (talked !== undefined) {
-          await journalTalk('answer.nothingToParse', talked);
+          // Полноценный вопрос о самом помощнике не является непонятой
+          // выгрузкой. Ответ отправляем, но не добавляем его в ежедневный
+          // журнал «не понял» техническим путём `answer.nothingToParse`.
+          if (!looksLikeAssistantQuestion(spokenHere)) {
+            await journalTalk('answer.nothingToParse', talked);
+          }
           await answer(talked);
           return;
         }

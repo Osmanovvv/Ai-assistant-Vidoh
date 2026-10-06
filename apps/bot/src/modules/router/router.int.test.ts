@@ -180,6 +180,19 @@ describe('явное дополнение поверх ответа модели
 
     expect(result.segments.map((item) => item.intent)).toEqual(['QUERY']);
   });
+
+  it('вопрос о добавочной ценности ВЫДОХа не уходит в backlog.nothing', async () => {
+    const prompts = await prepare();
+    const input =
+      'Привет, я пока не понимаю, для чего ты мне можешь ли рассказать свою добавочную ценность?';
+    const provider = new MockLlmProvider({
+      responses: [JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text: input }] })],
+    });
+
+    const result = await routeIntents(deps(provider, prompts), { input });
+
+    expect(result.segments).toEqual([{ intent: 'SMALLTALK', text: input }]);
+  });
 });
 
 describe('приказ о замене — правка, а не мысль (живой прогон Никиты 22.09.2026)', () => {

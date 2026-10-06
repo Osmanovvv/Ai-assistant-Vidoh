@@ -7492,6 +7492,33 @@ describe('выполнение и отмена голосом (§21 п.8, зад
     expect(all).not.toContain(defaultTexts.backlog.nothing);
   });
 
+  it('«Выкати, выдай мне весь список задач, которые я тебе надиктовала» — тоже полный список', async () => {
+    const prompts = await seedPrompts();
+    const { sender, all } = recordingSender();
+    const input = 'Выкати, выдай мне весь список задач, которые я тебе надиктовала.';
+    await testDb()
+      .insert(items)
+      .values({ userId, text: 'Заказать цветы', type: 'TASK', priority: 'SOON', topic: 'личное' });
+
+    await queuedBatchOf([{ kind: 'text', text: input, offsetMs: 0 }]);
+
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'QUERY', text: input }] }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    expect(all.join('\n')).toContain('— Заказать цветы');
+    expect(all).not.toContain(defaultTexts.backlog.nothing);
+  });
+
   it('«Покажи мои дела» — по сферам со счётчиками и иконками, только непустые, подпись и две кнопки (ТЗ 17.09.2026, 2.4)', async () => {
     /**
      * Макет заказчицы 16.09.2026, вариант 2, и ТЗ проджекта 17.09.2026
@@ -10836,6 +10863,25 @@ describe('живой ответ вне сценария (docs/29, 28.09.2026)', 
 
     expect(talker).toHaveLength(1);
     expect(replies.at(-1)).toBe('Понимаю 🙂 Скидывай сюда всё, что крутится в голове.');
+  });
+
+  it('вопрос о добавочной ценности ВЫДОХа не попадает в журнал backlog.nothing', async () => {
+    const prompts = await talkOn();
+    const input =
+      'Привет, я пока не понимаю, для чего ты мне можешь ли рассказать свою добавочную ценность?';
+    const llm = echoingLlm({
+      // На живом прогоне модель иногда ошибочно называет такую реплику QUERY.
+      // Код маршрутизатора должен вернуть её в разговорный сценарий.
+      router: query(input),
+      talker: talked('Я помогу собрать мысли, дела и то, что важно не забыть.'),
+    });
+
+    const { replies, talker, answerer } = await say(input, llm, prompts);
+
+    expect(talker).toHaveLength(1);
+    expect(answerer).toHaveLength(0);
+    expect(replies.at(-1)).toBe('Я помогу собрать мысли, дела и то, что важно не забыть.');
+    expect(await journal()).toEqual([]);
   });
 
   /** Журнал непонятого (заказчица 16.09.2026, п. 3): что там записано. */
