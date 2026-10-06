@@ -39,7 +39,7 @@ import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-k
 import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { attachListTails } from './list-tail.js';
-import { notShopping } from './shopping-topic.js';
+import { isReceivedPurchase, notShopping } from './shopping-topic.js';
 import { missingUnits } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 
@@ -432,6 +432,19 @@ export function correctItems(
   const aligned = said?.length === modelItems.length;
 
   /**
+   * Слова человека для проверки сроков держим отдельно от пересказа модели.
+   *
+   * Раньше `saidOf` склеивал оба текста и целиком передавался в
+   * `resolveDeadline`. Если модель по ошибке приписывала соседнюю дату к
+   * заголовку («забрать посылку в пятницу» после «записать сына к врачу в
+   * пятницу»), эта же приписка становилась доказательством срока. У каждой
+   * единицы должна быть своя дата, поэтому страж сроков получает только
+   * выровненные слова человека; цитата модели по-прежнему проходит отдельную
+   * проверку через `deadlineText` и `speech`.
+   */
+  const sourceSaidOf = modelItems.map((_, index) => (aligned ? (said[index] ?? '') : undefined));
+
+  /**
    * Слова каждой записи — человека и модели вместе — считаются заранее:
    * правилу срока нужны и свои, и соседей (чужая цитата, прогон
    * 17.09.2026).
@@ -440,13 +453,20 @@ export function correctItems(
     (item, index) => `${aligned ? (said[index] ?? '') : ''} ${item.text}`,
   );
   const siblingsOf = (index: number): readonly string[] => [
-    ...saidOf.filter((_, other) => other !== index),
+    ...sourceSaidOf.flatMap((value, other) =>
+      other !== index && value !== undefined ? [value] : [],
+    ),
     ...(ctx.outside ?? []),
   ];
 
   for (const [index, item] of modelItems.entries()) {
     let type = item.type;
     let priority: Priority = item.priority;
+    // Для привязки дня и часа используем текст этой единицы человека.
+    // Заголовок модели может уже содержать ошибочно перенесённую дату.
+    const sourceText = sourceSaidOf[index];
+    const itemSpeechText =
+      sourceText === undefined || sourceText.trim() === '' ? item.text : sourceText;
 
     /**
      * Желание с рамкой срока — дело (блок B 17.09.2026, решение Никиты).
@@ -541,9 +561,9 @@ export function correctItems(
       {
         now,
         timeZone: ctx.timeZone,
-        // Слова человека и пересказ модели вместе: слово о времени хоть
-        // в одном из них — уже основание для срока.
-        said: saidOf[index] ?? item.text,
+        // Только слова человека. Заголовок модели не может сам стать
+        // доказательством срока: иначе дата соседа легко «переедет» сюда.
+        said: sourceSaidOf[index],
         siblings: siblingsOf(index),
         /**
          * Вторая дорога к сроку (задача 3.37): цитата модели и речь, в
@@ -607,7 +627,7 @@ export function correctItems(
       heard !== undefined &&
       deadline?.accuracy === 'day' &&
       naDateEcho({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         at: deadline.at,
         now,
@@ -624,7 +644,7 @@ export function correctItems(
 
     if (deadline === undefined && isActionable(type) && heard !== undefined) {
       const fromSentence = dayFromOwnSentence({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
@@ -658,7 +678,7 @@ export function correctItems(
      */
     if (isActionable(type) && heard !== undefined) {
       const moved = dayAfterRetraction({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
@@ -694,7 +714,7 @@ export function correctItems(
       deadline?.accuracy !== 'month'
     ) {
       const inherited = dayBeforeDaypart({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
@@ -736,7 +756,7 @@ export function correctItems(
       deadline.at.getTime() === resolved.deadline.at.getTime()
     ) {
       const own = dayFromOwnSentence({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
@@ -772,7 +792,7 @@ export function correctItems(
       isoDateIn(deadline.at, ctx.timeZone) === isoDateIn(now, ctx.timeZone)
     ) {
       const later = dayAfterPassedClock({
-        itemText: item.text,
+        itemText: itemSpeechText,
         spoken: heard,
         now,
         timeZone: ctx.timeZone,
@@ -794,12 +814,12 @@ export function correctItems(
      */
     let unclearTime: readonly [number, number] | undefined;
     if (isActionable(type) && heard !== undefined && deadline?.accuracy === 'day') {
-      const time = clockTimeOf(item.text, heard, siblingsOf(index));
+      const time = clockTimeOf(itemSpeechText, heard, siblingsOf(index));
       if (time !== undefined) deadline = { ...deadline, time };
       // «В 9» — утро или вечер, не угадываем, но и не молчим: оба чтения
       // идут в конвейер, и он спрашивает сразу при записи (вариант Б,
       // решение Никиты 24.09.2026).
-      else unclearTime = unclearClockOf(item.text, heard, siblingsOf(index));
+      else unclearTime = unclearClockOf(itemSpeechText, heard, siblingsOf(index));
     }
 
     /**
@@ -808,7 +828,7 @@ export function correctItems(
      * от часов человека; через полночь — завтра.
      */
     if (isActionable(type) && heard !== undefined) {
-      const later = fromNowOf(item.text, heard, siblingsOf(index));
+      const later = fromNowOf(itemSpeechText, heard, siblingsOf(index));
       if (later !== undefined) {
         const at = new Date(now.getTime() + later * 60_000);
         deadline = {
@@ -986,7 +1006,9 @@ export function correctItems(
     // (видео заказчицы 15.09.2026): см. `title.ts`.
     const title = cleanTitle(item.text, {
       type,
-      hasDeadline: withRule !== undefined,
+      // Непрошедший страж срока может отвергнуть дату модели. Саму
+      // приписанную дату тогда тоже убираем из заголовка.
+      hasDeadline: withRule !== undefined || item.deadline.trim() !== '',
       // «Каждый вторник…» в заголовке — дубль правила повторения.
       hasRule: recurrence?.rule !== undefined,
       // «…в 3:10» в заголовке — дубль срока с часом (бой 22.09.2026).
@@ -1006,17 +1028,37 @@ export function correctItems(
       sameTopicName(named, SHOPPING_TOPIC) &&
       !sameTopicName(ctx.defaultTopic, SHOPPING_TOPIC) &&
       notShopping(title);
-    if (notBought) {
+    /**
+     * Не даём теме предыдущего дела переехать в следующее.
+     *
+     * «Записать сына к врачу в пятницу, забрать тестовую посылку» на бою
+     * пришло от модели двумя строками, но обеим она поставила «здоровье».
+     * Содержание второй строки однозначно говорит о получении покупки —
+     * выбираем существующую «покупки», а если её ещё нет, оставляем тему
+     * по умолчанию. Медицинские дела этот узкий маркер не содержат.
+     */
+    const receivedPurchaseTopic =
+      named !== undefined && sameTopicName(named, 'здоровье') && isReceivedPurchase(title)
+        ? (ctx.topics.find((own) => sameTopicName(own, SHOPPING_TOPIC)) ?? ctx.defaultTopic)
+        : undefined;
+    if (notBought || receivedPurchaseTopic !== undefined) {
       corrections.topic++;
-      logger?.info({ promptVersion }, 'Не покупка — из «Покупок» в сферу по умолчанию');
+      logger?.info(
+        { promptVersion },
+        notBought
+          ? 'Не покупка — из «Покупок» в сферу по умолчанию'
+          : 'Получение посылки — тема соседа снята, выбрана «Покупки»',
+      );
     }
 
     items.push({
       text: title,
       type,
       priority: withUrgency,
-      topic: notBought ? ctx.defaultTopic : (topic ?? ctx.defaultTopic),
-      ...(wantedTopic === undefined || notBought ? {} : { wantedTopic }),
+      topic: receivedPurchaseTopic ?? (notBought ? ctx.defaultTopic : (topic ?? ctx.defaultTopic)),
+      ...(wantedTopic === undefined || notBought || receivedPurchaseTopic !== undefined
+        ? {}
+        : { wantedTopic }),
       isProject,
       deadline: withRule,
       recurrence,

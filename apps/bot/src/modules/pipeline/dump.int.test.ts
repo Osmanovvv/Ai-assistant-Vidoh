@@ -6576,7 +6576,7 @@ describe('правка доходит до резолвера (§7, задача
       priority: 'SOON',
       topic: 'покупки',
     });
-    const { sender, all } = recordingSender();
+    const { sender, all, said } = recordingSender();
     const text = 'Забрать посылку';
 
     await queuedBatchOf([{ kind: 'text', text, offsetMs: 0 }]);
@@ -6620,8 +6620,16 @@ describe('правка доходит до резолвера (§7, задача
       .select()
       .from(items)
       .where(and(eq(items.userId, userId), eq(items.isDraft, false)));
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(all.some((line) => line.includes('Записала'))).toBe(false);
+    const question = said.find((message) =>
+      message.text.includes(defaultTexts.card.similarAsk('Забрать посылку', 'Покупки')),
+    );
+    expect(question?.buttons).toEqual([
+      defaultTexts.card.buttonSimilarNew,
+      defaultTexts.card.buttonSimilarSame,
+      defaultTexts.card.buttonSimilarEdit,
+    ]);
   });
 
   it('«Не поняла, 11:30 или 23:30?» → «утра» — ставит 11:30', async () => {

@@ -54,7 +54,7 @@ import {
   saveItems,
   type ItemToSave,
 } from '../items/items.repo.js';
-import { datelessTwins, knownByText, splitKnown } from '../items/same-text.js';
+import { datelessTwins, knownByText, sameTextKey, splitKnown } from '../items/same-text.js';
 import { similarButtons, similarOpen } from '../items/similar-open.js';
 import { sphereTitle } from '../topics/sphere-title.js';
 import { looksLikeNewTitle, newTitleFrom, renameItem } from '../items/title-edit.js';
@@ -3029,8 +3029,40 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       hourCommand === undefined || clarification === undefined
         ? undefined
         : await applyHourAnswer(clarification, hourCommand);
+    /**
+     * Дословный повтор без нового срока не теряем молча.
+     *
+     * Раньше `splitKnown` правильно не создавал вторую запись, но на
+     * повторное «ещё забрать посылку» человек получал лишь тишину: бот
+     * считал дело уже известным и не уточнял, нужна ли отдельная запись.
+     * Сохраняем повтор как новую кандидатуру и отдаём её в тот же вопрос
+     * «похожее уже есть», который уже умеет оставить, убрать или изменить
+     * запись. Повтор с названным сроком остаётся переносом и сюда не попадает.
+     */
+    const repeatCandidates =
+      split.repeats.length === 1
+        ? split.repeats.filter(({ unit }) => {
+            const others = units.filter((one) => one !== unit).map((one) => one.text);
+            const spoken =
+              ownSentences(unit.text, dumpText)[0] ??
+              sentenceNaming(unit.text, dumpText, others) ??
+              unit.text;
+            return !(
+              clockTimesIn(spoken).length > 0 ||
+              naHourReadings(spoken) !== undefined ||
+              timeShiftIn(spoken) !== undefined ||
+              fromNowIn(spoken) !== undefined ||
+              (unit.deadline !== undefined && namesDay(spoken))
+            );
+          })
+        : [];
     const unplanned =
-      hourApplied === undefined ? split.fresh : split.fresh.filter((unit) => unit !== hourAnswer);
+      hourApplied === undefined
+        ? [...split.fresh, ...repeatCandidates.map(({ unit }) => unit)]
+        : [
+            ...split.fresh.filter((unit) => unit !== hourAnswer),
+            ...repeatCandidates.map(({ unit }) => unit),
+          ];
     if (hourApplied !== undefined && clarification !== undefined) {
       await closeClarification(db, clarification, true);
       deps.logger?.info(
@@ -3382,7 +3414,11 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
      * противоречила другой. Уже имеющееся называет живая строка, счёт и
      * сферы — только заведённое сейчас.
      */
-    const freshUnits = [...fresh, ...late.fresh];
+    const repeatCandidateKeys = new Set(repeatCandidates.map(({ unit }) => sameTextKey(unit.text)));
+    const freshUnits = [
+      ...fresh.filter((unit) => !repeatCandidateKeys.has(sameTextKey(unit.text))),
+      ...late.fresh,
+    ];
     // Всё сказанное — повторы с новым сроком: ответ уже дан строкой
     // переноса, признание разбора сверху было бы лишним (23.09.2026).
     const onlyMovedRepeats =
@@ -3511,7 +3547,15 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
        * быть быстрым добавлением и отвечало полным разбором: человек
        * сказал одно дело, а получил список.
        */
-      created: saved.length + split.known.length + late.known.length - purchaseExtra,
+      // `split.known` включает прежнюю запись для пояснения контекста, а
+      // повтор без срока уже сохранён как кандидат на вопрос. Считаем его
+      // один раз, иначе итог соврал бы «Записала 2 дела».
+      created:
+        saved.length +
+        split.known.length +
+        late.known.length -
+        repeatCandidates.length -
+        purchaseExtra,
       hidden: selection.hidden,
       emotions: composition.emotions,
       spoken: dumpText,

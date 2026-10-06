@@ -51,6 +51,19 @@ const ORDER = /заказ|покупк|товар|вайлдбер|озон|ма
 /** Забрать посылку или из пункта выдачи — получить купленное. */
 const RECEIVED = /посылк|пункт\S*\s+выдачи/iu;
 
+/**
+ * Получение посылки — покупка, даже если модель унаследовала тему соседа.
+ *
+ * Это отдельная проверка от `notShopping`: последняя защищает «Покупки» от
+ * поручений вроде «отправить посылку», а эта — от обратной ошибки, когда
+ * «забрать тестовую посылку» после записи к врачу попадает в «Здоровье».
+ */
+export function isReceivedPurchase(title: string): boolean {
+  return /^(?:забрать|получить)\s+[^.!?\n]{0,80}(?:посылк|заказ|пункт\S*\s+выдачи|вайлдбер|озон)/iu.test(
+    title.trim(),
+  );
+}
+
 export function notShopping(title: string): boolean {
   const verb = openingAction(title);
   if (verb === undefined || !NOT_SHOPPING.has(verb)) return false;
