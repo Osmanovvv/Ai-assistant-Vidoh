@@ -59,6 +59,24 @@ const YESTERDAY = /(?<!\p{L})вчера(?!\p{L})/u;
 // «начать» стоит местоимение.
 const EXTRA_FRAME = ['дел', 'всего', 'записей', 'записаны', 'большие', 'большая', 'большой', 'с'];
 
+/**
+ * Расширенная форма просьбы показать весь список.
+ *
+ * У живого человека рамка часто звучит не так коротко, как в примерах:
+ * «Выкати, выдай мне весь список задач, которые я тебе надиктовала» или
+ * «Нет, покажи мне весь список». Эти слова не являются предметом поиска,
+ * но прежняя проверка знала только закрытый короткий набор и отправляла
+ * такие реплики в смысловой поиск. Дополнительная рамка применяется только
+ * при наличии одновременно глагола просьбы и слова про весь список — так
+ * фраза «покажи список покупок» по-прежнему остаётся вопросом о покупках.
+ */
+const ALL_REQUEST =
+  /(?<!\p{L})(?:покаж\p{L}*|выдай\p{L}*|выкат\p{L}*|пришл\p{L}*|скин\p{L}*|отправ\p{L}*|перечисл\p{L}*|вывед\p{L}*|напиш\p{L}*|выпиш\p{L}*|дай)(?!\p{L})/u;
+const ALL_MARKER =
+  /(?<!\p{L})(?:все|весь|всю|всех|всем|всё|полный|полную|полное|список|задач\p{L}*|дел\p{L}*|надиктов\p{L}*|наговор\p{L}*|запис\p{L}*)(?!\p{L})/u;
+const ALL_CONNECTOR =
+  /(?<!\p{L})(?:нет|которые|который|которую|которых|тебе|тебя|мне|моя|мои|мой|моё|моих|я)(?!\p{L})/u;
+
 /** Остаток без рамки — только слова вопроса: предмета нет. */
 function onlyFrame(rest: string): boolean {
   const frame = new Set([...FRAME_WORDS, ...EXTRA_FRAME].map((word) => normalizeText(word)));
@@ -92,8 +110,14 @@ export function asksAboutEverything(text: string): boolean {
   if (askedDay(text) !== undefined) return false;
 
   const frame = new Set(FRAME_WORDS.map((word) => word.replace(/ё/gu, 'е')));
+  if (words.every((word) => frame.has(word))) return true;
 
-  return words.every((word) => frame.has(word));
+  // Разговорная расширенная форма: «покажи весь список, который я…».
+  // Удаляем только слова, доказанно относящиеся к просьбе, и проверяем,
+  // что предмета (например, «покупок») в остатке нет.
+  const normalized = normalizeText(text);
+  if (!ALL_REQUEST.test(normalized) || !ALL_MARKER.test(normalized)) return false;
+  return onlyFrame(without(normalized, ALL_REQUEST, ALL_MARKER, ALL_CONNECTOR));
 }
 
 function typeOf(marker: string): 'DESIRE' | 'IDEA' | 'goal' {

@@ -14,6 +14,7 @@ import { splitPatchTails } from './patch-tail.js';
 import { looksLikeThought } from './thought-words.js';
 import { namesOnlyTime } from '../resolver/deixis.js';
 import { onlyConversationAck, splitConversationAcks } from './action-ack.js';
+import { looksLikeAssistantQuestion } from './assistant-question.js';
 
 /**
  * Маршрутизатор намерений (задача 2.4).
@@ -380,8 +381,17 @@ export async function routeIntents(deps: AiClientDeps, params: RouteParams): Pro
     );
   }
 
+  // Вопрос о пользе самого помощника — разговор, даже если лёгкая модель
+  // назвала его `QUERY` из-за слов «расскажи» и «можешь». Иначе пустой
+  // поиск по бэклогу записывает корректный вопрос в `backlog.nothing`.
+  const withAssistantQuestions = withTails.map((segment) =>
+    segment.intent === 'QUERY' && looksLikeAssistantQuestion(segment.text)
+      ? { ...segment, intent: 'SMALLTALK' as const }
+      : segment,
+  );
+
   return {
-    segments: withTails,
+    segments: withAssistantQuestions,
     crisis: outcome.value.crisis,
     promptVersion: outcome.promptVersion,
     reordered,
