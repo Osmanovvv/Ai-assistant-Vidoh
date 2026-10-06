@@ -20,7 +20,7 @@ import {
   naDateEcho,
   unclearClockOf,
 } from './clock-time.js';
-import { splitItems } from './split-actions.js';
+import { splitActions, splitItems } from './split-actions.js';
 import { splitPurchases } from './purchase-split.js';
 import { looksLikeDatedWish } from './dated-wish.js';
 import { looksLikeSomedayTask } from './someday-task.js';
@@ -1108,12 +1108,38 @@ export async function classifyUnits(
     };
   }
 
+  /**
+   * Модель иногда возвращает одну запись с несколькими действиями, хотя
+   * извлекатель уже выделил их как отдельные единицы. В таком случае делим
+   * ответ до проверок сроков и сфер: иначе `correctItems` не может понять,
+   * к какой из двух задач относится дата, а позднее `splitItems` скопирует
+   * срок и сферу первой задачи на обе.
+   *
+   * Делим только если количество частей совпало с количеством единиц. Для
+   * обычного списка, который извлекатель оставил одной единицей, сохраняем
+   * прежний путь и прежнее общее поле срока/сферы.
+   */
+  const splitForAlignment = splitItems(outcome.value.items);
+  const modelItemsForCorrection =
+    splitForAlignment.length === params.units.length ? splitForAlignment : outcome.value.items;
+
+  const normalizedText = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/ё/gu, 'е')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+  const sourceTextFor = (item: (typeof modelItemsForCorrection)[number], index: number): string => {
+    const source = params.units[index]?.text ?? '';
+    const itemKey = normalizedText(item.text);
+    return splitActions(source).find((part) => normalizedText(part) === itemKey) ?? source;
+  };
+
   const repairedModelItems =
-    outcome.value.items.length === params.units.length
-      ? outcome.value.items.map((item, index) => {
-          const source = params.units[index];
-          if (source === undefined) return item;
-          const repaired = restoreShortenedText(source.text, item.text);
+    modelItemsForCorrection.length === params.units.length
+      ? modelItemsForCorrection.map((item, index) => {
+          const sourceText = sourceTextFor(item, index);
+          const repaired = restoreShortenedText(sourceText, item.text);
           if (repaired.restored === 0) return item;
           deps.logger?.warn(
             { promptVersion: outcome.promptVersion, restored: repaired.restored },
@@ -1125,13 +1151,25 @@ export async function classifyUnits(
 
   const repairedOutcome = { ...outcome.value, items: repairedModelItems };
 
+  /**
+   * Извлечение тоже может вернуть склеенную первую единицу (его защитное
+   * восстановление текста работает по всей фразе). Если модель уже дала
+   * отдельные части, берём для проверки сроков ту часть исходных слов,
+   * которая совпадает с каждой записью. Иначе склеенный источник снова
+   * станет доказательством чужой даты.
+   */
+  const sourceSaid =
+    repairedModelItems.length === params.units.length
+      ? modelItemsForCorrection.map((item, index) => sourceTextFor(item, index))
+      : params.units.map((unit) => unit.text);
+
   const { items: corrected, corrections } = correctItems(repairedOutcome, {
     ...(params.spoken === undefined ? {} : { spoken: params.spoken }),
     topics: params.topics,
     defaultTopic: params.defaultTopic,
     timeZone: params.timeZone,
     now,
-    said: params.units.map((unit) => unit.text),
+    said: sourceSaid,
     ...(params.speech === undefined ? {} : { speech: params.speech }),
     ...(params.siblings === undefined ? {} : { outside: params.siblings }),
     promptVersion: outcome.promptVersion,

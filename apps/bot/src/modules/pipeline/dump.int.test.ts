@@ -851,6 +851,77 @@ describe('разбор', () => {
     expect(all.join('\n')).not.toContain('Ириной Михайловной, проверить');
   });
 
+  it('у объединённых моделью задач срок и сфера не переезжают на соседнюю (пункт 1)', async () => {
+    const prompts = await seedPrompts();
+    const source = 'Записать сына к врачу завтра, забрать тестовую посылку';
+
+    // «Покупки» уже есть у человека: получение посылки должно попасть туда,
+    // даже если модель дала обеим частям сферу «здоровье».
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'покупки', sortOrder: 1 },
+        { userId, name: 'личное', sortOrder: 2, isDefault: true },
+      ]);
+
+    await queuedBatchOf([{ kind: 'text', text: source, offsetMs: 0 }]);
+    const { sender } = recordingSender();
+    const llm = echoingLlm({
+      router: JSON.stringify({ crisis: false, segments: [{ intent: 'DUMP', text: source }] }),
+      extractor: JSON.stringify({
+        units: [
+          { text: 'Записать сына к врачу завтра', isProject: false, isEmotion: false },
+          { text: 'Забрать тестовую посылку', isProject: false, isEmotion: false },
+        ],
+      }),
+      // Имитация реального сбоя: классификатор вернул один объект на две
+      // единицы извлечения и унаследовал дату и сферу врача от посылки.
+      classifier: JSON.stringify({
+        items: [
+          {
+            text: source,
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'здоровье',
+            isProject: false,
+            deadline: tomorrowIso(),
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ],
+      }),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({ speech: new MockSpeechProvider(), prompts, llm, sender }),
+      },
+      userId,
+    );
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.isDraft, false)))
+      .orderBy(asc(items.sourceOrder));
+    expect(saved).toHaveLength(2);
+
+    const doctor = saved.find((item) => item.text.includes('врачу'));
+    const parcel = saved.find((item) => item.text.includes('посылку'));
+    expect(doctor?.topic).toBe('здоровье');
+    expect(doctor?.deadlineAccuracy).toBe('day');
+    expect(doctor?.deadlineAt).not.toBeNull();
+    expect(parcel?.topic).toBe('покупки');
+    expect(parcel?.deadlineAccuracy).toBeNull();
+    expect(parcel?.deadlineAt).toBeNull();
+  });
+
   it('список покупок через запятую — по-прежнему одно дело', async () => {
     const text = 'Купить овощи, мясо и специи';
 
