@@ -111,6 +111,14 @@ cleanup() {
     || printf '  \033[31mНе удалось убрать тестового человека tg_id=%s — уберите руками\033[0m\n' "$CHAT_ID" >&2
 }
 
+prepare() {
+  # Согласие в бою даётся отдельной кнопкой. У выдуманного Telegram-чата
+  # нет настоящего сообщения с этой кнопкой, поэтому перед проверкой
+  # конвейера помечаем только тестового пользователя согласившимся;
+  # сам тест не проверяет экран согласия.
+  sql "insert into users (tg_id, first_name, consent_at, consent_confirmed_at) values ($CHAT_ID, 'Сквозной тест', now(), now()) on conflict (tg_id) do update set consent_at = coalesce(users.consent_at, now()), consent_confirmed_at = coalesce(users.consent_confirmed_at, now());" > /dev/null
+}
+
 expect_eq() {
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (ожидалось «$3», получено «$2»)"; fi
 }
@@ -181,6 +189,7 @@ read_facts() {
 
 say "Сценарий 1: три сообщения подряд дают одну выгрузку"
 cleanup
+prepare
 
 send 101 'надо записать сына к врачу'
 sleep 3
@@ -209,6 +218,7 @@ expect_eq "несостоявшийся ответ не сохранён как 
 
 say "Сценарий 2: сообщение во время обработки не потеряно"
 cleanup
+prepare
 
 send 201 'первая мысль'
 echo "  жду закрытия первой выгрузки"
@@ -231,6 +241,7 @@ skipped=""
 if [ -n "$RESTART" ]; then
   say "Сценарий 3: перезапуск сервиса не съедает незавершённую обработку"
   cleanup
+  prepare
 
   send 301 'мысль, которую прервёт перезапуск'
   echo "  жду закрытия выгрузки"
