@@ -69,8 +69,11 @@ export function repairMergedItems<T extends { readonly text: string }>(
     // соседних делах. Два значимых слова дают надёжный признак склейки.
     if (ownMatches === 0 || foreignMatches < 2) return item;
 
+    const unit = units[index];
+    if (unit === undefined) return item;
+
     repaired++;
-    return { ...item, text: units[index]!.text };
+    return { ...item, text: unit.text };
   });
 
   return { items: fixed, repaired };

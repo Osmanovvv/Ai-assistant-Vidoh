@@ -319,6 +319,36 @@ function sharedTrailingDay(params: {
 
   const last = params.said.at(-1)?.trim();
   if (last === undefined || last === '' || !namesDay(last)) return undefined;
+  const lastText = last;
+
+  /**
+   * A repeated task may be extracted twice, with the day attached only to
+   * the second copy. Do not turn both copies into dated tasks: the later
+   * one must remain the dated twin so the pipeline can collapse the pair.
+   */
+  const normalizeUnit = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/ё/gu, 'е')
+      .replace(/[.!?,;:]+$/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim();
+  const withoutTrailingDay = (text: string): string =>
+    normalizeUnit(text)
+      .replace(
+        /\s+(?:(?:сегодня|завтра|послезавтра)|(?:в|во)\s+(?:(?:этот|эту|это|следующий|следующую|следующее|ближайший|ближайшую|ближайшее)\s+)?(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье))$/u,
+        '',
+      )
+      .trim();
+  const lastWithoutDay = withoutTrailingDay(lastText);
+  if (
+    lastWithoutDay !== '' &&
+    params.said
+      .slice(0, -1)
+      .some((one) => one !== undefined && withoutTrailingDay(one) === lastWithoutDay)
+  ) {
+    return undefined;
+  }
 
   const normalize = (text: string): string =>
     text
