@@ -32,7 +32,12 @@ import {
   localDateParts,
   startOfDayInZone,
 } from './dates.js';
-import { dayAfterRetraction, dayBeforeDaypart, dayFromOwnSentence } from './own-sentence.js';
+import {
+  dayAfterRetraction,
+  dayBeforeDaypart,
+  dayFromOwnSentence,
+  namesDay,
+} from './own-sentence.js';
 import { quoteInSpeech } from './time-words.js';
 import { cleanTitle } from './title.js';
 import { catalogueTopic, knownTopicName, sameTopicName } from '../topics/topic-key.js';
@@ -284,6 +289,54 @@ function normalizeTopic(text: string): string {
 }
 
 /**
+ * Нейтральный звонок может быть частью рабочей пачки, даже если в его
+ * собственных словах нет «офиса» или «клиента». Родственные маркеры
+ * исключают очевидные личные звонки; рабочий сосед даёт подтверждение.
+ */
+function looksLikeWorkContact(text: string): boolean {
+  const value = text.toLowerCase().replace(/ё/gu, 'е');
+  if (!/(?:созвониться|позвонить|встретиться|обсудить)/iu.test(value)) return false;
+  return !/(?:мам|пап|муж|жен|сын|доч|бабуш|дедуш|подруг|друг|семь|ребен|детск)/iu.test(value);
+}
+
+/**
+ * Общий день в хвосте одной фразы относится ко всем её действиям.
+ *
+ * «Созвониться с Ириной, проверить документы завтра» отличается от
+ * «записать сына к врачу в субботу, забрать посылку»: в первом случае
+ * последний extractor-текст сам содержит день и заканчивает речь, а во
+ * втором последний текст дня не содержит. Это узкое условие не переносит
+ * дату из первого дела на второе.
+ */
+function sharedTrailingDay(params: {
+  readonly said: readonly (string | undefined)[];
+  readonly spoken: string | undefined;
+  readonly now: Date;
+  readonly timeZone: string;
+}): ResolvedDeadline | undefined {
+  if (params.spoken === undefined || params.said.length < 2) return undefined;
+
+  const last = params.said.at(-1)?.trim();
+  if (last === undefined || last === '' || !namesDay(last)) return undefined;
+
+  const normalize = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/ё/gu, 'е')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+  if (!normalize(params.spoken).endsWith(normalize(last))) return undefined;
+
+  return dayFromOwnSentence({
+    itemText: params.spoken,
+    spoken: params.spoken,
+    now: params.now,
+    timeZone: params.timeZone,
+    siblings: [],
+  });
+}
+
+/**
  * Что отправляем модели: дата, темы, **исходная речь** и разобранные мысли.
  *
  * **Речь целиком добавлена 02.09.2026, и без неё классификация датировала
@@ -444,6 +497,20 @@ export function correctItems(
    * проверку через `deadlineText` и `speech`.
    */
   const sourceSaidOf = modelItems.map((_, index) => (aligned ? (said[index] ?? '') : undefined));
+
+  // Сначала ищем сильный рабочий сигнал по всей пачке. Нейтральный звонок
+  // рядом с «проверить документы» получает ту же сферу, но самостоятельный
+  // личный звонок без такого соседа остаётся в своей теме.
+  const semanticMatches = modelItems.map((item, index) =>
+    semanticTopicFor(`${sourceSaidOf[index] ?? ''} ${item.text}`.trim(), ctx.topics),
+  );
+  const workPeer = semanticMatches.find((match) => match?.topic === 'работа');
+  const sharedDay = sharedTrailingDay({
+    said: sourceSaidOf,
+    spoken: ctx.speech ?? ctx.spoken,
+    now,
+    timeZone: ctx.timeZone,
+  });
 
   /**
    * Слова каждой записи — человека и модели вместе — считаются заранее:
@@ -660,6 +727,15 @@ export function correctItems(
           'Срок взят из своего предложения речи: модель его не дала',
         );
       }
+    }
+
+    if (deadline === undefined && isActionable(type) && sharedDay !== undefined) {
+      deadline = { at: sharedDay.at, accuracy: sharedDay.accuracy };
+      corrections.deadline++;
+      logger?.info(
+        { promptVersion, точность: sharedDay.accuracy },
+        'Общий хвостовой день применён ко всем действиям одной фразы',
+      );
     }
 
     /**
@@ -1040,7 +1116,9 @@ export function correctItems(
      * модельная тема остаётся без догадки.
      */
     const semanticText = `${sourceText ?? ''} ${title}`.trim();
-    const semantic = semanticTopicFor(semanticText, ctx.topics);
+    const semantic =
+      semanticMatches[index] ??
+      (workPeer !== undefined && looksLikeWorkContact(semanticText) ? workPeer : undefined);
     const semanticTopic =
       topic !== undefined && shouldApplySemanticTopic(topic, ctx.topics, semantic)
         ? semantic?.name
