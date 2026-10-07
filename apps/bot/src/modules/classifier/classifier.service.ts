@@ -48,6 +48,7 @@ import { isReceivedPurchase, notShopping } from './shopping-topic.js';
 import { missingUnits, repairMergedItems } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 import { semanticTopicFor, shouldApplySemanticTopic } from './topic-routing.js';
+import { validateFinalItems } from './final-guard.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -1329,6 +1330,8 @@ export async function classifyUnits(
           params.units,
           repairedMerge.items.map((item) => item.text),
         );
+  let finalItems = items;
+  let extraFromModel: readonly ClassifiedItems['items'][number][] = [];
   if (missing.length > 0) {
     deps.logger?.warn(
       { promptVersion: outcome.promptVersion, missing: missing.length },
@@ -1336,20 +1339,48 @@ export async function classifyUnits(
     );
     const again = await classifyUnits(deps, { ...params, units: missing, forMissing: true });
     if (again.ok) {
-      return {
-        ok: true,
-        items: [...items, ...again.items],
-        fromModel: [...outcome.value.items, ...again.fromModel],
-        promptVersion: outcome.promptVersion,
-        corrections,
-      };
+      finalItems = [...items, ...again.items];
+      extraFromModel = again.fromModel;
     }
+  }
+
+  const finalIssues =
+    params.units.length < 2
+      ? []
+      : validateFinalItems({
+          units: params.units,
+          items: finalItems,
+          topics: params.topics,
+          ...((params.spoken ?? params.speech) === undefined
+            ? {}
+            : { spoken: params.spoken ?? params.speech }),
+          now,
+          timeZone: params.timeZone,
+        });
+  if (finalIssues.length > 0) {
+    deps.logger?.warn(
+      {
+        promptVersion: outcome.promptVersion,
+        issues: finalIssues.map(({ kind, itemIndex, unitIndex }) => ({
+          kind,
+          itemIndex,
+          unitIndex,
+        })),
+      },
+      'Финальная проверка классификации не пройдена: записи сохранены в черновик',
+    );
+    return {
+      ok: false,
+      promptVersion: outcome.promptVersion,
+      raw: JSON.stringify({ items: finalItems, issues: finalIssues }),
+      problem: finalIssues.map((issue) => issue.detail).join('; '),
+    };
   }
 
   return {
     ok: true,
-    items,
-    fromModel: outcome.value.items,
+    items: finalItems,
+    fromModel: [...outcome.value.items, ...extraFromModel],
     promptVersion: outcome.promptVersion,
     corrections,
   };
