@@ -40,7 +40,7 @@ import { TOPIC_ICONS } from '../topics/topics.service.js';
 import { handOffTrailingDay } from './day-handoff.js';
 import { attachListTails } from './list-tail.js';
 import { isReceivedPurchase, notShopping } from './shopping-topic.js';
-import { missingUnits } from './missing-units.js';
+import { missingUnits, repairMergedItems } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
 import { semanticTopicFor, shouldApplySemanticTopic } from './topic-routing.js';
 
@@ -1140,19 +1140,28 @@ export async function classifyUnits(
   }
 
   /**
-   * Модель иногда возвращает одну запись с несколькими действиями, хотя
-   * извлекатель уже выделил их как отдельные единицы. В таком случае делим
-   * ответ до проверок сроков и сфер: иначе `correctItems` не может понять,
-   * к какой из двух задач относится дата, а позднее `splitItems` скопирует
-   * срок и сферу первой задачи на обе.
-   *
-   * Делим только если количество частей совпало с количеством единиц. Для
-   * обычного списка, который извлекатель оставил одной единицей, сохраняем
-   * прежний путь и прежнее общее поле срока/сферы.
+   * Модель иногда возвращает правильное число записей, но вписывает вторую
+   * единицу в текст первой: тогда одной проверки количества недостаточно.
+   * Сначала возвращаем такие заголовки к границам extractor, а уже потом
+   * делим явные действия и проверяем сроки со сферами.
    */
-  const splitForAlignment = splitItems(outcome.value.items);
+  const repairedMerge = repairMergedItems(params.units, outcome.value.items);
+  if (repairedMerge.repaired > 0) {
+    deps.logger?.warn(
+      { promptVersion: outcome.promptVersion, repaired: repairedMerge.repaired },
+      'Классификация склеила соседние единицы — границы восстановлены по извлечению',
+    );
+  }
+
+  /**
+   * Модель также может вернуть одну запись с несколькими действиями, хотя
+   * извлекатель оставил их одной единицей. В таком случае делим ответ до
+   * проверок сроков и сфер. Для обычной составной мысли сохраняем прежний
+   * путь и общее поле срока/сферы.
+   */
+  const splitForAlignment = splitItems(repairedMerge.items);
   const modelItemsForCorrection =
-    splitForAlignment.length === params.units.length ? splitForAlignment : outcome.value.items;
+    splitForAlignment.length === params.units.length ? splitForAlignment : repairedMerge.items;
 
   const normalizedText = (text: string): string =>
     text
@@ -1240,7 +1249,7 @@ export async function classifyUnits(
       ? []
       : missingUnits(
           params.units,
-          outcome.value.items.map((item) => item.text),
+          repairedMerge.items.map((item) => item.text),
         );
   if (missing.length > 0) {
     deps.logger?.warn(

@@ -1,4 +1,5 @@
 import { FUNCTION_WORDS, namesDay } from '../classifier/own-sentence.js';
+import { isStrictInfinitive } from '../classifier/split-actions.js';
 import { sameWord } from '../resolver/clarify.js';
 import { openingAction } from '../router/thought-words.js';
 import type { ExtractedUnit } from './extractor.service.js';
@@ -256,7 +257,12 @@ export function restoreShortenedWords(
     const actionCandidates = current
       .map((unit, index) => ({ unit, index }))
       .filter(({ unit }) => tokensOf(unit.text).some((token) => sameWord(token.normalized, verb)));
-    if (actionCandidates.length === 1) {
+    // Если в одном предложении есть два самостоятельных действия, второе
+    // действие не является «предметом» первого. Иначе защитное восстановление
+    // сокращённого текста принимает его за пропавшие слова и склеивает две
+    // уже найденные единицы в одну («записать ... , ещё забрать ...»).
+    const actionCount = sourceWords.filter((word) => isStrictInfinitive(word)).length;
+    if (actionCandidates.length === 1 && actionCount <= 1) {
       const candidate = actionCandidates[0];
       if (candidate !== undefined) {
         const repaired = restoreShortenedText(sentence, candidate.unit.text);
