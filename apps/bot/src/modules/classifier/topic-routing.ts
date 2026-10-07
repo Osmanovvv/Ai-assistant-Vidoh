@@ -34,6 +34,7 @@ const PURCHASE =
 const HOME =
   /(?:дом|квартир|химчист|ремонт|почин|уборк|помыть|убраться|одежд|пальто|стирал|кран|иск?упать|подстричь\s+собак|вычесать\s+собак|груминг)/iu;
 const BUY_VERB = /(?:^|\s)(?:купить|куплю|покупать|заказать|закажу|приобрести)(?:$|\s)/iu;
+const BUY_ITEM_VERB = /(?:^|\s)(?:купить|куплю|покупать)(?:$|\s)/iu;
 const RECEIVE = /(?:^|\s)(?:забрать|получить)(?:$|\s)/iu;
 const SEND = /(?:^|\s)(?:отправить|послать|сдать|отнести)(?:$|\s)/iu;
 const PERSONAL_SERVICE = /(?:маникюр|педикюр|косметолог|салон)/iu;
@@ -97,6 +98,11 @@ export function semanticTopicFor(text: string, topics: readonly string[]): Topic
   // выше общего глагола «купить».
   const isPurchaseAction = ACTION.test(value) && !SEND.test(value);
   if (isPurchaseAction && has(value, PURCHASE)) signals.push({ topic: 'покупки', score: 4 });
+  // Покупка с конкретным глаголом остаётся покупкой даже для нового товара,
+  // которого нет в словаре (например, «купить зелёные яблоки»).
+  if (BUY_ITEM_VERB.test(value) && !SEND.test(value)) {
+    signals.push({ topic: 'покупки', score: 3 });
+  }
   if (has(value, /сходить\s+(?:на\s+)?(?:wildberries|вайлдбер|озон|маркетплейс)/iu)) {
     signals.push({ topic: 'покупки', score: 5 });
   }
