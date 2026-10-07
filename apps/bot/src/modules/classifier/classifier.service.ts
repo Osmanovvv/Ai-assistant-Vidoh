@@ -1239,6 +1239,9 @@ export async function classifyUnits(
    * путь и общее поле срока/сферы.
    */
   const splitForAlignment = splitItems(repairedMerge.items);
+  const preSplitAligned =
+    splitForAlignment.length === params.units.length &&
+    splitForAlignment.length !== repairedMerge.items.length;
   const modelItemsForCorrection =
     splitForAlignment.length === params.units.length ? splitForAlignment : repairedMerge.items;
 
@@ -1301,7 +1304,11 @@ export async function classifyUnits(
    * «отдельные 2 задачи, не через запятую»). После поправок: сверка
    * слов записей с единицами идёт по номеру и деления не видит.
    */
-  const actions = splitItems(corrected);
+  // If the response was already split to extractor units before correction,
+  // keep those corrected records intact. The old post-correction splitter
+  // remains the fallback for ordinary one-unit compound thoughts, but must
+  // not split the records we just aligned a second time.
+  const actions = preSplitAligned ? corrected : splitItems(corrected);
   if (actions.length > corrected.length) {
     deps.logger?.info(
       { added: actions.length - corrected.length },
