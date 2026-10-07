@@ -21,6 +21,14 @@ describe('осторожная проверка сферы по смыслу з�
     expect(semanticTopicFor('Проверить документы завтра', TOPICS)?.name).toBe('работа');
   });
 
+  it('не считает документы из МФЦ рабочей задачей', () => {
+    expect(semanticTopicFor('Забрать документы из МФЦ', TOPICS)).toBeUndefined();
+  });
+
+  it('не переносит звонок родственнику в работу по рабочему соседу', () => {
+    expect(semanticTopicFor('Позвонить маме', TOPICS)).toBeUndefined();
+  });
+
   it('распознаёт товар из проблемного голосового', () => {
     expect(semanticTopicFor('Заказать чеснокодавилку и отпугиватель от собак', TOPICS)?.name).toBe(
       'покупки',
