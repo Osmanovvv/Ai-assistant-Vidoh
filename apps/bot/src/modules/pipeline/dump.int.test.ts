@@ -922,6 +922,166 @@ describe('разбор', () => {
     expect(parcel?.deadlineAt).toBeNull();
   });
 
+  /**
+   * Регрессионные записи с боевого прогона 07.10.2026.
+   *
+   * Здесь намеренно оставлены два варианта расшифровки одного голосового:
+   * пауза может стать запятой или точкой. Extractor уже нашёл две единицы,
+   * поэтому классификатор обязан сохранить границы каждой из них.
+   * Отдельно проверяем общий хвостовой срок и рабочую сферу во втором
+   * голосовом. Эти проверки должны падать до исправления, а после него
+   * защищают именно результат в базе, а не только ответ модели.
+   */
+  async function runVoiceRegression(params: {
+    readonly speech: string;
+    readonly units: readonly string[];
+    readonly classifier: Record<string, unknown>;
+  }): Promise<{
+    readonly batchId: string;
+    readonly saved: readonly (typeof items.$inferSelect)[];
+  }> {
+    const prompts = await seedPrompts();
+    await testDb()
+      .insert(topics)
+      .values([
+        { userId, name: 'здоровье', sortOrder: 0 },
+        { userId, name: 'покупки', sortOrder: 1 },
+        { userId, name: 'работа', sortOrder: 2 },
+        { userId, name: 'личное', sortOrder: 3, isDefault: true },
+      ]);
+
+    const batchId = await queuedBatchOf([{ kind: 'voice', offsetMs: 0 }]);
+    const { sender } = recordingSender();
+    const llm = echoingLlm({
+      router: JSON.stringify({
+        crisis: false,
+        segments: [{ intent: 'DUMP', text: params.speech }],
+      }),
+      extractor: JSON.stringify({
+        units: params.units.map((text) => ({ text, isProject: false, isEmotion: false })),
+      }),
+      classifier: JSON.stringify(params.classifier),
+    });
+
+    await processUserBatches(
+      {
+        db: testDb(),
+        lock,
+        handleBatch: handler({
+          speech: new MockSpeechProvider({ responses: [params.speech] }),
+          prompts,
+          llm,
+          sender,
+        }),
+      },
+      userId,
+    );
+
+    const saved = await testDb()
+      .select()
+      .from(items)
+      .where(and(eq(items.userId, userId), eq(items.sourceBatchId, batchId)))
+      .orderBy(asc(items.sourceOrder));
+    expect(await combinedTextOf(batchId)).toBe(params.speech);
+    return { batchId, saved };
+  }
+
+  it.each([
+    'Записать сына к врачу в субботу, ещё забрать тестовую посылку',
+    'Записать сына к врачу в субботу. Ещё забрать тестовую посылку',
+  ])('боевое голосовое про врача и посылку не склеивает две задачи (%s)', async (speech) => {
+    const { saved } = await runVoiceRegression({
+      speech,
+      units: ['Записать сына к врачу в субботу', 'Забрать тестовую посылку'],
+      classifier: {
+        items: [
+          {
+            text: 'Записать сына к врачу в субботу, ещё забрать тестовую посылку',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'здоровье',
+            isProject: false,
+            deadline: '2026-08-29',
+            deadlineAccuracy: 'day',
+            deadlineText: 'в субботу',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          {
+            text: 'Забрать тестовую посылку',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'покупки',
+            isProject: false,
+            deadline: '',
+            deadlineAccuracy: 'none',
+            deadlineText: '',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ],
+      },
+    });
+
+    expect(saved.map((item) => [item.text, item.topic, item.deadlineAt?.toISOString()])).toEqual([
+      ['Записать сына к врачу', 'здоровье', '2026-08-28T21:00:00.000Z'],
+      ['Забрать тестовую посылку', 'покупки', undefined],
+    ]);
+  });
+
+  it.each([
+    'Созвониться с Ириной, проверить документы завтра',
+    'Созвониться с Ириной. Проверить документы завтра',
+  ])('два рабочих дела с общей датой не уходят в «личное» (%s)', async (speech) => {
+    const { saved } = await runVoiceRegression({
+      speech,
+      units: ['Созвониться с Ириной', 'Проверить документы завтра'],
+      classifier: {
+        items: [
+          {
+            text: 'Созвониться с Ириной',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '2026-08-25',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+          {
+            text: 'Проверить документы завтра',
+            type: 'TASK',
+            priority: 'SOON',
+            topic: 'личное',
+            isProject: false,
+            deadline: '2026-08-25',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+            recurrenceKind: 'none',
+            recurrenceInterval: 0,
+            recurrenceText: '',
+          },
+        ],
+      },
+    });
+
+    expect(
+      saved.map((item) => [
+        item.text.replace(/\s+завтра$/iu, ''),
+        item.topic,
+        item.deadlineAt?.toISOString(),
+      ]),
+    ).toEqual([
+      ['Созвониться с Ириной', 'работа', '2026-08-24T21:00:00.000Z'],
+      ['Проверить документы', 'работа', '2026-08-24T21:00:00.000Z'],
+    ]);
+  });
+
   it('список покупок через запятую — по-прежнему одно дело', async () => {
     const text = 'Купить овощи, мясо и специи';
 
