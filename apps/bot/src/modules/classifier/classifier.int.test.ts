@@ -2278,3 +2278,43 @@ describe('«Покупки» — то, что покупают (заказчиц
     expect(result.items[0]?.topic).toBe('работа');
   });
 });
+
+describe('старый сценарий двух действий с общим сроком (пункт 7)', () => {
+  it('«Созвониться с Ириной, проверить документы завтра» — два дела, оба «работа» и «завтра»', async () => {
+    const prompts = await prepare();
+    const speech = 'Созвониться с Ириной, проверить документы завтра';
+    const provider = new MockLlmProvider({
+      responses: [
+        answer([
+          {
+            text: 'Созвониться с Ириной, проверить документы',
+            topic: 'работа',
+            deadline: '2026-09-28',
+            deadlineAccuracy: 'day',
+            deadlineText: 'завтра',
+          },
+        ]),
+      ],
+    });
+
+    const result = await classifyUnits(deps(provider, prompts), {
+      ...params(speech),
+      now: new Date('2026-09-27T16:40:00.000Z'),
+      spoken: speech,
+      speech,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((item) => item.text)).toEqual([
+      'Созвониться с Ириной',
+      'Проверить документы',
+    ]);
+    expect(result.items.map((item) => item.topic)).toEqual(['работа', 'работа']);
+    expect(result.items.map((item) => item.deadline?.at.toISOString())).toEqual([
+      '2026-09-27T21:00:00.000Z',
+      '2026-09-27T21:00:00.000Z',
+    ]);
+  });
+});

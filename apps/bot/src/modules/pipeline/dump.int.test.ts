@@ -635,7 +635,7 @@ describe('разбор', () => {
     const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
     expect(saved.map((item) => item.text)).toEqual(['Записать сына к врачу', 'Купить продукты']);
     expect(saved.every((item) => item.sourceBatchId === batchId)).toBe(true);
-    expect(saved.every((item) => item.topic === 'личное')).toBe(true);
+    expect(saved.map((item) => item.topic)).toEqual(['здоровье', 'покупки']);
     expect(saved.every((item) => item.embedding !== null)).toBe(true);
     expect(saved.some((item) => item.isDraft)).toBe(false);
   });
@@ -1278,8 +1278,8 @@ describe('разбор', () => {
     const saved = await testDb().select().from(items).orderBy(asc(items.createdAt));
     expect(saved.filter((item) => item.isDraft)).toHaveLength(0);
     expect(saved.map((item) => [item.text, item.topic])).toEqual([
-      ['Записать сына к врачу в четверг', 'личное'],
-      ['Купить молоко', 'дом'],
+      ['Записать сына к врачу в четверг', 'здоровье'],
+      ['Купить молоко', 'покупки'],
     ]);
     expect(saved.every((item) => item.sourceBatchId !== null)).toBe(true);
 
@@ -9599,7 +9599,7 @@ describe('наблюдатель конвейера (стенд набора, 20
     ]);
     expect(classified?.kind === 'classified' && classified.items[0]).toMatchObject({
       type: 'TASK',
-      topic: 'личное',
+      topic: 'покупки',
     });
   });
 
@@ -9826,7 +9826,8 @@ describe('живая строка поверх ответа (слой A, 22.09.2
     expect(presenterInputs).toHaveLength(1);
     expect(presenterInputs[0]).toContain('Имя: Аня');
     expect(presenterInputs[0]).toContain('Записано сейчас:');
-    expect(presenterInputs[0]).toContain('— записаться к стоматологу (личное)');
+    expect(presenterInputs[0]).toContain('— записаться к стоматологу (здоровье)');
+    expect(presenterInputs[0]).toContain('— купить хлеб (покупки)');
     expect(presenterInputs[0]).toContain('Первая выгрузка');
   });
 
@@ -9869,7 +9870,8 @@ describe('живая строка поверх ответа (слой A, 22.09.2
 
     expect(reply).toContain('Записала 2 дела');
     // При двух делах вопроса нет (30.09.2026): целый ответ — счёт и раскладка.
-    expect(reply).toMatch(/— 2$/mu);
+    expect(reply).toContain('💊 Здоровье — 1');
+    expect(reply).toContain('🛒 Покупки — 1');
   });
 
   it('о ком сказала строка — три дня не повод: во второй выгрузке подряд факты без него (хвост слоя A)', async () => {
