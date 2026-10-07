@@ -42,6 +42,7 @@ import { attachListTails } from './list-tail.js';
 import { isReceivedPurchase, notShopping } from './shopping-topic.js';
 import { missingUnits } from './missing-units.js';
 import { rejoinSplitByDays } from './split-by-days.js';
+import { semanticTopicFor, shouldApplySemanticTopic } from './topic-routing.js';
 
 /**
  * Классификация записей (задача 2.6).
@@ -1028,6 +1029,22 @@ export function correctItems(
       sameTopicName(named, SHOPPING_TOPIC) &&
       !sameTopicName(ctx.defaultTopic, SHOPPING_TOPIC) &&
       notShopping(title);
+
+    /**
+     * Пост-проверка темы по самому делу (пункты 4–6).
+     *
+     * Ветка уже передана в `defaultTopic` и позже применяется только к
+     * безадресным записям. Здесь сначала исправляем явный смысл записи —
+     * врач, покупка, химчистка и т. п. — чтобы контекст ветки не перебил
+     * его. При неоднозначном тексте `semanticTopicFor` возвращает пусто и
+     * модельная тема остаётся без догадки.
+     */
+    const semanticText = `${sourceText ?? ''} ${title}`.trim();
+    const semantic = semanticTopicFor(semanticText, ctx.topics);
+    const semanticTopic =
+      topic !== undefined && shouldApplySemanticTopic(topic, ctx.topics, semantic)
+        ? semantic?.name
+        : undefined;
     /**
      * Не даём теме предыдущего дела переехать в следующее.
      *
@@ -1041,22 +1058,36 @@ export function correctItems(
       named !== undefined && sameTopicName(named, 'здоровье') && isReceivedPurchase(title)
         ? (ctx.topics.find((own) => sameTopicName(own, SHOPPING_TOPIC)) ?? ctx.defaultTopic)
         : undefined;
-    if (notBought || receivedPurchaseTopic !== undefined) {
+    if (notBought || receivedPurchaseTopic !== undefined || semanticTopic !== undefined) {
       corrections.topic++;
       logger?.info(
-        { promptVersion },
-        notBought
-          ? 'Не покупка — из «Покупок» в сферу по умолчанию'
-          : 'Получение посылки — тема соседа снята, выбрана «Покупки»',
+        {
+          promptVersion,
+          from: topic,
+          to: semanticTopic ?? receivedPurchaseTopic ?? ctx.defaultTopic,
+        },
+        semanticTopic !== undefined
+          ? 'Тема исправлена по однозначному смыслу записи'
+          : notBought
+            ? 'Не покупка — из «Покупок» в сферу по умолчанию'
+            : 'Получение посылки — тема соседа снята, выбрана «Покупки»',
       );
     }
+
+    const finalTopic =
+      semanticTopic ??
+      receivedPurchaseTopic ??
+      (notBought ? ctx.defaultTopic : (topic ?? ctx.defaultTopic));
 
     items.push({
       text: title,
       type,
       priority: withUrgency,
-      topic: receivedPurchaseTopic ?? (notBought ? ctx.defaultTopic : (topic ?? ctx.defaultTopic)),
-      ...(wantedTopic === undefined || notBought || receivedPurchaseTopic !== undefined
+      topic: finalTopic,
+      ...(wantedTopic === undefined ||
+      notBought ||
+      receivedPurchaseTopic !== undefined ||
+      semanticTopic !== undefined
         ? {}
         : { wantedTopic }),
       isProject,

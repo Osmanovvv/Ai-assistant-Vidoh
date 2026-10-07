@@ -1,4 +1,5 @@
 import { normalizeTopicName } from '../topics/topics.repo.js';
+import { semanticTopicFor } from '../classifier/topic-routing.js';
 
 /**
  * Тема ветки, в которую написал человек (§8.1 ТЗ).
@@ -42,6 +43,8 @@ export interface ThreadTopicContext {
    * нужно, потому что ответ в обоих один и тот же.
    */
   readonly catchAllTopic: string;
+  /** Список тем для защиты явно подтверждённой смыслом записи. */
+  readonly topics?: readonly string[] | undefined;
 }
 
 /**
@@ -51,7 +54,7 @@ export interface ThreadTopicContext {
  * даже если сказано из ветки «здоровье». Ветка — контекст по умолчанию,
  * а не приказ.
  */
-export function applyThreadTopic<T extends { readonly topic: string }>(
+export function applyThreadTopic<T extends { readonly topic: string; readonly text: string }>(
   items: readonly T[],
   context: ThreadTopicContext,
 ): T[] {
@@ -66,7 +69,13 @@ export function applyThreadTopic<T extends { readonly topic: string }>(
   // Ветка и есть тема по умолчанию: подстановка была бы холостой.
   if (target === catchAll) return [...items];
 
-  return items.map((item) =>
-    normalizeTopicName(item.topic) === catchAll ? { ...item, topic: threadTopic } : item,
-  );
+  return items.map((item) => {
+    // Если классификатор уже подтвердил смысл записи (например, «к врачу»
+    // или «забрать посылку»), совпадение с темой по умолчанию не должно
+    // скрыть это подтверждение при переносе в ветку.
+    const semantic =
+      context.topics === undefined ? undefined : semanticTopicFor(item.text, context.topics);
+    if (semantic !== undefined) return item;
+    return normalizeTopicName(item.topic) === catchAll ? { ...item, topic: threadTopic } : item;
+  });
 }

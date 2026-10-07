@@ -2977,6 +2977,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
     const placed = applyThreadTopic(adopted.units, {
       threadTopic: threadTopic?.name,
       catchAllTopic: topics.defaultName,
+      topics: topics.names,
     });
 
     // Темы под записи: заводятся те, куда что-то легло, под пределом из
@@ -3379,6 +3380,7 @@ export function createDumpHandler(deps: DumpHandlerDeps): BatchHandler {
       const latePlaced = applyThreadTopic(lateAdopted.units, {
         threadTopic: threadTopic?.name,
         catchAllTopic: topics.defaultName,
+        topics: topics.names,
       });
       const { units: lateUnits } = await settleTopics(db, {
         userId: batch.userId,

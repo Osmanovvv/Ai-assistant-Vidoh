@@ -41,6 +41,16 @@ describe('тема ветки как умолчание', () => {
     expect(kept?.topic).toBe('покупки');
   });
 
+  it('смысловая сфера не подменяется веткой, даже если она тема по умолчанию', () => {
+    const [kept] = applyThreadTopic([item('семья', 'Записать сына в школу')], {
+      threadTopic: 'здоровье',
+      catchAllTopic: 'семья',
+      topics: ['семья', 'здоровье', 'работа', 'покупки', 'дом', 'личное'],
+    });
+
+    expect(kept?.topic).toBe('семья');
+  });
+
   it('в общей ветке ничего не двигается', () => {
     const [kept] = applyThreadTopic([item('личное')], {
       threadTopic: undefined,
